@@ -1,0 +1,4 @@
+.DS_Store
+DerivedData/
+Vendor/.build/
+Vendor/.install/

@@ -6,7 +6,16 @@ Packetry is a macOS-native SwiftUI packet analyzer aimed at TCP/UDP-heavy workfl
 ## Deliverables In This Folder
 - `docs/roadmap.md`: program-level roadmap, scope, sequencing, and release expectations.
 - `docs/ticket-template.md`: shared ticket structure for future additions.
+- `docs/architecture/`: architecture decisions and subsystem contracts locked during foundation work.
+- `docs/product/`: user-facing behavior strategies such as onboarding, permissions, and recovery.
+- `docs/testing/`: fixture catalog rules, ownership splits, and deterministic test expectations.
 - `docs/tickets/v0.1/` through `docs/tickets/v1.0/`: one markdown file per implementation ticket.
+
+## Ticket Conventions
+- Every active ticket may declare `Status:` at the top of the file. `COMPLETE` means the owned artifact exists in the repo, any planned light scaffolding has landed, and the ticket's unit/integration expectations are explicit.
+- Every ticket should list its owned artifact paths so future work can extend the right document, type, or folder without rediscovering where the decision lives.
+- `v0.1` tickets are allowed to land documentation plus minimal scaffolding only. They do not pull runtime feature work forward from later phases.
+- Future tickets should preserve stable filenames and titles so roadmap references remain durable.
 
 ## Architectural Boundaries
 - `PcapPlusPlusCore` is the only target that talks directly to PcapPlusPlus, libpcap, and mixed-language glue.
@@ -31,6 +40,7 @@ Exit criteria:
 - PcapPlusPlus integration approach is documented.
 - macOS capture permission strategy is defined.
 - test fixture and architecture expectations are explicit.
+- all `v0.1` tickets are marked `COMPLETE` with linked owned artifacts.
 
 ### v0.2 Capture Core
 Build the capture engine contract, interface model, file pipeline, and ingest model required for both live and offline workflows.
