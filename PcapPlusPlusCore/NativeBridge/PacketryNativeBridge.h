@@ -248,6 +248,7 @@ typedef NS_ENUM(NSInteger, PCPPNativeLiveSessionPhase) {
 @property (nonatomic, readonly) NSInteger snapshotLength;
 @property (nonatomic, readonly) NSInteger kernelBufferSizeBytes;
 @property (nonatomic, readonly) NSInteger readTimeoutMilliseconds;
+@property (nonatomic, copy, readonly, nullable) NSString *captureFilterExpression;
 @property (nonatomic, copy, readonly) NSString *stopMode;
 @property (nonatomic, readonly) unsigned long long stopValue;
 @property (nonatomic, copy, readonly) NSString *fileWritingMode;
@@ -261,6 +262,7 @@ typedef NS_ENUM(NSInteger, PCPPNativeLiveSessionPhase) {
                          snapshotLength:(NSInteger)snapshotLength
                   kernelBufferSizeBytes:(NSInteger)kernelBufferSizeBytes
                 readTimeoutMilliseconds:(NSInteger)readTimeoutMilliseconds
+                captureFilterExpression:(nullable NSString *)captureFilterExpression
                                stopMode:(NSString *)stopMode
                               stopValue:(unsigned long long)stopValue
                         fileWritingMode:(NSString *)fileWritingMode
@@ -273,10 +275,79 @@ typedef NS_ENUM(NSInteger, PCPPNativeLiveSessionPhase) {
 
 @end
 
+@interface PCPPNativePacketByteRangeDescriptor : NSObject
+
+@property (nonatomic, readonly) NSInteger offset;
+@property (nonatomic, readonly) NSInteger length;
+
+- (instancetype)initWithOffset:(NSInteger)offset length:(NSInteger)length NS_DESIGNATED_INITIALIZER;
+- (instancetype)init NS_UNAVAILABLE;
+
+@end
+
+@interface PCPPNativePacketDetailNodeDescriptor : NSObject
+
+@property (nonatomic, copy, readonly) NSString *identifier;
+@property (nonatomic, copy, readonly) NSString *name;
+@property (nonatomic, copy, readonly, nullable) NSString *value;
+@property (nonatomic, copy, readonly) NSString *kind;
+@property (nonatomic, strong, readonly, nullable) PCPPNativePacketByteRangeDescriptor *byteRange;
+@property (nonatomic, readonly, nullable) NSNumber *jumpTargetPacketIdentifier;
+@property (nonatomic, copy, readonly) NSArray<PCPPNativePacketDetailNodeDescriptor *> *children;
+
+- (instancetype)initWithIdentifier:(NSString *)identifier
+                              name:(NSString *)name
+                             value:(nullable NSString *)value
+                              kind:(NSString *)kind
+                         byteRange:(nullable PCPPNativePacketByteRangeDescriptor *)byteRange
+          jumpTargetPacketIdentifier:(nullable NSNumber *)jumpTargetPacketIdentifier
+                           children:(NSArray<PCPPNativePacketDetailNodeDescriptor *> *)children NS_DESIGNATED_INITIALIZER;
+- (instancetype)init NS_UNAVAILABLE;
+
+@end
+
+@interface PCPPNativePacketInspectionDescriptor : NSObject
+
+@property (nonatomic, readonly) unsigned long long packetIdentifier;
+@property (nonatomic, readonly) unsigned long long packetNumber;
+@property (nonatomic, copy, readonly) NSData *rawBytes;
+@property (nonatomic, copy, readonly) NSArray<PCPPNativePacketDetailNodeDescriptor *> *detailNodes;
+@property (nonatomic, strong, readonly) PCPPNativeDecodeStatusDescriptor *decodeStatus;
+
+- (instancetype)initWithPacketIdentifier:(unsigned long long)packetIdentifier
+                            packetNumber:(unsigned long long)packetNumber
+                                rawBytes:(NSData *)rawBytes
+                             detailNodes:(NSArray<PCPPNativePacketDetailNodeDescriptor *> *)detailNodes
+                            decodeStatus:(PCPPNativeDecodeStatusDescriptor *)decodeStatus NS_DESIGNATED_INITIALIZER;
+- (instancetype)init NS_UNAVAILABLE;
+
+@end
+
+@interface PCPPNativePacketLoadProgressDescriptor : NSObject
+
+@property (nonatomic, copy, readonly) NSString *phase;
+@property (nonatomic, readonly) unsigned long long loadedPacketCount;
+@property (nonatomic, readonly, nullable) NSNumber *processedBytes;
+@property (nonatomic, readonly, nullable) NSNumber *totalBytes;
+@property (nonatomic, readonly, getter=isPartialResult) BOOL partialResult;
+@property (nonatomic, copy, readonly) NSString *message;
+
+- (instancetype)initWithPhase:(NSString *)phase
+            loadedPacketCount:(unsigned long long)loadedPacketCount
+               processedBytes:(nullable NSNumber *)processedBytes
+                   totalBytes:(nullable NSNumber *)totalBytes
+                partialResult:(BOOL)partialResult
+                      message:(NSString *)message NS_DESIGNATED_INITIALIZER;
+- (instancetype)init NS_UNAVAILABLE;
+
+@end
+
 typedef void (^PCPPNativePacketBatchHandler)(NSArray<PCPPNativePacketSummaryDescriptor *> *packets);
 typedef void (^PCPPNativeSessionPhaseHandler)(PCPPNativeLiveSessionPhase phase, NSString *message);
 typedef void (^PCPPNativeHealthHandler)(PCPPNativeCaptureHealthDescriptor *health);
 typedef void (^PCPPNativeErrorHandler)(NSError *error);
+typedef void (^PCPPNativeLoadProgressHandler)(PCPPNativePacketLoadProgressDescriptor *progress);
+typedef BOOL (^PCPPNativeCancellationHandler)(void);
 
 @interface PCPPNativeLiveSession : NSObject
 
@@ -295,6 +366,7 @@ typedef void (^PCPPNativeErrorHandler)(NSError *error);
 - (BOOL)pauseAndReturnError:(NSError **)error NS_SWIFT_NAME(pause());
 - (BOOL)resumeAndReturnError:(NSError **)error NS_SWIFT_NAME(resume());
 - (BOOL)stopAndReturnError:(NSError **)error NS_SWIFT_NAME(stop());
+- (nullable PCPPNativePacketInspectionDescriptor *)inspectPacketWithIdentifier:(unsigned long long)identifier error:(NSError **)error;
 
 @end
 
@@ -310,6 +382,17 @@ typedef void (^PCPPNativeErrorHandler)(NSError *error);
 
 - (NSArray<PCPPNativePacketSummaryDescriptor *> *)openAndReturnError:(NSError **)error;
 - (NSArray<PCPPNativePacketSummaryDescriptor *> *)reopenAndReturnError:(NSError **)error;
+- (NSArray<PCPPNativePacketSummaryDescriptor *> *)openIncrementallyWithBatchSize:(NSUInteger)batchSize
+                                                                    batchHandler:(nullable PCPPNativePacketBatchHandler)batchHandler
+                                                                 progressHandler:(nullable PCPPNativeLoadProgressHandler)progressHandler
+                                                               cancellationCheck:(nullable PCPPNativeCancellationHandler)cancellationCheck
+                                                                           error:(NSError **)error;
+- (NSArray<PCPPNativePacketSummaryDescriptor *> *)reopenIncrementallyWithBatchSize:(NSUInteger)batchSize
+                                                                      batchHandler:(nullable PCPPNativePacketBatchHandler)batchHandler
+                                                                   progressHandler:(nullable PCPPNativeLoadProgressHandler)progressHandler
+                                                                 cancellationCheck:(nullable PCPPNativeCancellationHandler)cancellationCheck
+                                                                             error:(NSError **)error;
+- (nullable PCPPNativePacketInspectionDescriptor *)inspectPacketWithIdentifier:(unsigned long long)identifier error:(NSError **)error;
 - (BOOL)saveAndReturnError:(NSError **)error NS_SWIFT_NAME(save());
 - (BOOL)saveToURL:(NSURL *)url format:(NSString *)format error:(NSError **)error NS_SWIFT_NAME(save(to:format:));
 

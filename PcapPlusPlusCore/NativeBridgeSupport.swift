@@ -213,6 +213,43 @@ enum NativeBridgeMapper {
         )
     }
 
+    static func packetByteRange(_ descriptor: PCPPNativePacketByteRangeDescriptor?) -> PacketByteRange? {
+        guard let descriptor else {
+            return nil
+        }
+
+        return PacketByteRange(
+            offset: descriptor.offset,
+            length: descriptor.length
+        )
+    }
+
+    static func detailNodeKind(_ rawValue: String) -> PacketDetailNodeKind {
+        PacketDetailNodeKind(rawValue: rawValue.lowercased()) ?? .field
+    }
+
+    static func packetDetailNode(_ descriptor: PCPPNativePacketDetailNodeDescriptor) -> PacketDetailNode {
+        PacketDetailNode(
+            id: descriptor.identifier,
+            name: descriptor.name,
+            value: descriptor.value,
+            kind: detailNodeKind(descriptor.kind),
+            byteRange: packetByteRange(descriptor.byteRange),
+            jumpTargetPacketID: descriptor.jumpTargetPacketIdentifier?.uint64Value,
+            children: descriptor.children.map(packetDetailNode)
+        )
+    }
+
+    static func packetInspection(_ descriptor: PCPPNativePacketInspectionDescriptor) -> PacketInspection {
+        PacketInspection(
+            packetID: descriptor.packetIdentifier,
+            packetNumber: descriptor.packetNumber,
+            rawBytes: descriptor.rawBytes,
+            detailNodes: descriptor.detailNodes.map(packetDetailNode),
+            decodeStatus: decodeStatus(descriptor.decodeStatus)
+        )
+    }
+
     static func packetSummary(
         _ descriptor: PCPPNativePacketSummaryDescriptor,
         source: CaptureSource
@@ -277,6 +314,21 @@ enum NativeBridgeMapper {
         )
     }
 
+    static func loadProgressPhase(_ rawValue: String) -> PacketLoadProgress.Phase {
+        PacketLoadProgress.Phase(rawValue: rawValue.lowercased()) ?? .failed
+    }
+
+    static func loadProgress(_ descriptor: PCPPNativePacketLoadProgressDescriptor) -> PacketLoadProgress {
+        PacketLoadProgress(
+            phase: loadProgressPhase(descriptor.phase),
+            loadedPacketCount: Int(descriptor.loadedPacketCount),
+            processedBytes: descriptor.processedBytes?.uint64Value,
+            totalBytes: descriptor.totalBytes?.uint64Value,
+            isPartialResult: descriptor.isPartialResult,
+            message: descriptor.message
+        )
+    }
+
     static func nativeCaptureOptions(_ options: CaptureOptions) -> PCPPNativeCaptureOptionsDescriptor {
         let stopMode: String
         let stopValue: UInt64
@@ -297,6 +349,7 @@ enum NativeBridgeMapper {
             snapshotLength: options.snapshotLength,
             kernelBufferSizeBytes: options.kernelBufferSizeBytes,
             readTimeoutMilliseconds: options.readTimeoutMilliseconds,
+            captureFilterExpression: options.captureFilterExpression,
             stopMode: stopMode,
             stopValue: stopValue,
             fileWritingMode: options.fileWriting.mode.rawValue,
@@ -336,7 +389,28 @@ enum NativeBridgeMapper {
 
         let nsError = error as NSError
         let message = nsError.localizedDescription.isEmpty ? String(describing: error) : nsError.localizedDescription
-        return PacketryCoreError(code: defaultCode, message: message)
+        let code: PacketryCoreError.Code
+        switch nsError.code {
+        case 1001:
+            code = .unsupportedInterface
+        case 1003:
+            code = .liveSessionStartFailed
+        case 1004, 1005, 1006:
+            code = .liveSessionControlFailed
+        case 1007:
+            code = .offlineFileOpenFailed
+        case 1008:
+            code = .offlineFileSaveFailed
+        case 1009:
+            code = .invalidCaptureOptions
+        case 1010:
+            code = .invalidCaptureFilter
+        case 1011:
+            code = .operationCancelled
+        default:
+            code = defaultCode
+        }
+        return PacketryCoreError(code: code, message: message)
     }
 
     private static func sortKey(for interface: CaptureInterfaceSummary) -> (Int, Int, String, String) {
@@ -394,8 +468,17 @@ extension CaptureOptions {
             snapshotLength: snapshotLength,
             kernelBufferSizeBytes: kernelBufferSizeBytes,
             readTimeoutMilliseconds: readTimeoutMilliseconds,
+            captureFilterExpression: captureFilterExpression?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .nilIfEmpty,
             stopCondition: stopCondition,
             fileWriting: normalizedFileWriting
         )
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }

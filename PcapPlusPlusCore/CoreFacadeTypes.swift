@@ -96,6 +96,131 @@ public enum OfflineCaptureDocumentPhase: String, Sendable, Codable {
     case failed
 }
 
+public enum PacketDetailNodeKind: String, Sendable, Codable {
+    case layer
+    case field
+    case warning
+}
+
+public enum PacketBatchDisposition: String, Sendable, Codable {
+    case append
+    case replace
+}
+
+public struct PacketByteRange: Sendable, Codable, Hashable {
+    public let offset: Int
+    public let length: Int
+
+    public init(offset: Int, length: Int) {
+        self.offset = offset
+        self.length = length
+    }
+
+    public var upperBound: Int {
+        offset + length
+    }
+}
+
+public struct PacketDetailNode: Identifiable, Sendable, Codable, Hashable {
+    public let id: String
+    public let name: String
+    public let value: String?
+    public let kind: PacketDetailNodeKind
+    public let byteRange: PacketByteRange?
+    public let jumpTargetPacketID: UInt64?
+    public let children: [PacketDetailNode]
+
+    public init(
+        id: String,
+        name: String,
+        value: String? = nil,
+        kind: PacketDetailNodeKind = .field,
+        byteRange: PacketByteRange? = nil,
+        jumpTargetPacketID: UInt64? = nil,
+        children: [PacketDetailNode] = []
+    ) {
+        self.id = id
+        self.name = name
+        self.value = value
+        self.kind = kind
+        self.byteRange = byteRange
+        self.jumpTargetPacketID = jumpTargetPacketID
+        self.children = children
+    }
+}
+
+public struct PacketInspection: Sendable, Codable, Hashable {
+    public let packetID: UInt64
+    public let packetNumber: UInt64
+    public let rawBytes: Data
+    public let detailNodes: [PacketDetailNode]
+    public let decodeStatus: PacketDecodeStatus
+
+    public init(
+        packetID: UInt64,
+        packetNumber: UInt64,
+        rawBytes: Data,
+        detailNodes: [PacketDetailNode],
+        decodeStatus: PacketDecodeStatus
+    ) {
+        self.packetID = packetID
+        self.packetNumber = packetNumber
+        self.rawBytes = rawBytes
+        self.detailNodes = detailNodes
+        self.decodeStatus = decodeStatus
+    }
+}
+
+public struct PacketLoadProgress: Sendable, Codable, Hashable {
+    public enum Phase: String, Sendable, Codable {
+        case idle
+        case loading
+        case completed
+        case cancelled
+        case failed
+    }
+
+    public let phase: Phase
+    public let loadedPacketCount: Int
+    public let processedBytes: UInt64?
+    public let totalBytes: UInt64?
+    public let isPartialResult: Bool
+    public let message: String
+
+    public init(
+        phase: Phase,
+        loadedPacketCount: Int,
+        processedBytes: UInt64? = nil,
+        totalBytes: UInt64? = nil,
+        isPartialResult: Bool = false,
+        message: String
+    ) {
+        self.phase = phase
+        self.loadedPacketCount = loadedPacketCount
+        self.processedBytes = processedBytes
+        self.totalBytes = totalBytes
+        self.isPartialResult = isPartialResult
+        self.message = message
+    }
+
+    public var fractionCompleted: Double? {
+        guard let processedBytes, let totalBytes, totalBytes > 0 else {
+            return nil
+        }
+
+        return min(max(Double(processedBytes) / Double(totalBytes), 0), 1)
+    }
+
+    public static let idle = PacketLoadProgress(
+        phase: .idle,
+        loadedPacketCount: 0,
+        processedBytes: nil,
+        totalBytes: nil,
+        isPartialResult: false,
+        message: "No offline capture is loading."
+    )
+}
+
 public struct CaptureInterfaceCapabilities: Sendable, Codable, Hashable {
     public let canCapture: Bool
     public let supportsPromiscuousMode: Bool
@@ -420,6 +545,7 @@ public struct CaptureOptions: Sendable, Codable, Hashable {
     public let snapshotLength: Int
     public let kernelBufferSizeBytes: Int
     public let readTimeoutMilliseconds: Int
+    public let captureFilterExpression: String?
     public let stopCondition: CaptureStopCondition
     public let fileWriting: CaptureFileWriting
 
@@ -428,6 +554,7 @@ public struct CaptureOptions: Sendable, Codable, Hashable {
         snapshotLength: Int,
         kernelBufferSizeBytes: Int,
         readTimeoutMilliseconds: Int,
+        captureFilterExpression: String? = nil,
         stopCondition: CaptureStopCondition,
         fileWriting: CaptureFileWriting = .disabled
     ) {
@@ -435,6 +562,7 @@ public struct CaptureOptions: Sendable, Codable, Hashable {
         self.snapshotLength = snapshotLength
         self.kernelBufferSizeBytes = kernelBufferSizeBytes
         self.readTimeoutMilliseconds = readTimeoutMilliseconds
+        self.captureFilterExpression = captureFilterExpression
         self.stopCondition = stopCondition
         self.fileWriting = fileWriting
     }
@@ -445,6 +573,7 @@ public struct CaptureOptions: Sendable, Codable, Hashable {
             snapshotLength: 65_535,
             kernelBufferSizeBytes: 4 * 1024 * 1024,
             readTimeoutMilliseconds: 250,
+            captureFilterExpression: nil,
             stopCondition: .manual,
             fileWriting: .disabled
         )
@@ -532,7 +661,8 @@ public struct CaptureOptions: Sendable, Codable, Hashable {
 public enum PacketIngestEvent: Sendable, Equatable {
     case liveStateChanged(phase: LiveCaptureSessionPhase, message: String)
     case documentStateChanged(phase: OfflineCaptureDocumentPhase, message: String)
-    case packetBatch([PacketSummary])
+    case packetBatch([PacketSummary], disposition: PacketBatchDisposition)
+    case loadProgressChanged(PacketLoadProgress)
     case healthChanged(CaptureHealthSnapshot)
     case documentMetadataChanged(CaptureDocumentMetadata)
 }
@@ -551,6 +681,7 @@ public protocol LiveCaptureSessionProviding: Sendable {
     func pause() async throws
     func resume() async throws
     func stop() async throws
+    func inspectPacket(id: PacketSummary.ID) async throws -> PacketInspection
     func healthSnapshot() async -> CaptureHealthSnapshot
 }
 
@@ -558,11 +689,14 @@ public protocol OfflineCaptureDocumentProviding: Sendable {
     func events() -> AsyncThrowingStream<PacketIngestEvent, Error>
     func open() async throws -> [PacketSummary]
     func reopen() async throws -> [PacketSummary]
+    func cancelLoading() async
+    func inspectPacket(id: PacketSummary.ID) async throws -> PacketInspection
     func save() async throws
     func save(to url: URL, format: CaptureFileFormat) async throws
     func currentURL() async -> URL
     func currentMetadata() async -> CaptureDocumentMetadata
     func packetSummaries() async -> [PacketSummary]
+    func loadProgress() async -> PacketLoadProgress
 }
 
 public protocol LiveCaptureProviding: Sendable {
@@ -636,5 +770,96 @@ public struct UnconfiguredPacketryCore: PacketryCoreProviding {
     public func loadPacketSummaries(from fileURL: URL) async throws -> [PacketSummary] {
         let document = try await openOfflineCaptureDocument(at: fileURL)
         return try await document.open()
+    }
+}
+
+public struct UnconfiguredLiveCaptureSession: LiveCaptureSessionProviding {
+    public init() {}
+
+    public func events() -> AsyncThrowingStream<PacketIngestEvent, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    public func start() async throws {
+        throw PacketryCoreError(code: .integrationMisconfigured, message: "Native live capture sessions are not wired into PcapPlusPlusCore yet.")
+    }
+
+    public func pause() async throws {
+        throw PacketryCoreError(code: .integrationMisconfigured, message: "Native live capture sessions are not wired into PcapPlusPlusCore yet.")
+    }
+
+    public func resume() async throws {
+        throw PacketryCoreError(code: .integrationMisconfigured, message: "Native live capture sessions are not wired into PcapPlusPlusCore yet.")
+    }
+
+    public func stop() async throws {
+        throw PacketryCoreError(code: .integrationMisconfigured, message: "Native live capture sessions are not wired into PcapPlusPlusCore yet.")
+    }
+
+    public func inspectPacket(id: PacketSummary.ID) async throws -> PacketInspection {
+        _ = id
+        throw PacketryCoreError(code: .integrationMisconfigured, message: "Packet inspection is not wired into PcapPlusPlusCore yet.")
+    }
+
+    public func healthSnapshot() async -> CaptureHealthSnapshot {
+        .empty
+    }
+}
+
+public struct UnconfiguredOfflineCaptureDocument: OfflineCaptureDocumentProviding {
+    public let fileURL: URL
+
+    public init(fileURL: URL) {
+        self.fileURL = fileURL
+    }
+
+    public func events() -> AsyncThrowingStream<PacketIngestEvent, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.finish()
+        }
+    }
+
+    public func open() async throws -> [PacketSummary] {
+        throw PacketryCoreError(code: .integrationMisconfigured, message: "Native offline capture documents are not wired into PcapPlusPlusCore yet for \(fileURL.lastPathComponent).")
+    }
+
+    public func reopen() async throws -> [PacketSummary] {
+        try await open()
+    }
+
+    public func cancelLoading() async {
+    }
+
+    public func inspectPacket(id: PacketSummary.ID) async throws -> PacketInspection {
+        _ = id
+        throw PacketryCoreError(code: .integrationMisconfigured, message: "Packet inspection is not wired into PcapPlusPlusCore yet.")
+    }
+
+    public func save() async throws {
+        throw PacketryCoreError(code: .integrationMisconfigured, message: "Native offline capture documents are not wired into PcapPlusPlusCore yet for \(fileURL.lastPathComponent).")
+    }
+
+    public func save(to url: URL, format: CaptureFileFormat) async throws {
+        _ = url
+        _ = format
+        throw PacketryCoreError(code: .integrationMisconfigured, message: "Native offline capture documents are not wired into PcapPlusPlusCore yet for \(fileURL.lastPathComponent).")
+    }
+
+    public func currentURL() async -> URL {
+        fileURL
+    }
+
+    public func currentMetadata() async -> CaptureDocumentMetadata {
+        CaptureDocumentMetadata(format: .pcapng)
+    }
+
+    public func packetSummaries() async -> [PacketSummary] {
+        []
+    }
+
+    public func loadProgress() async -> PacketLoadProgress {
+        .idle
     }
 }

@@ -85,6 +85,7 @@ struct CaptureDocumentState: Sendable, Equatable {
     var metadata: CaptureDocumentMetadata?
     var packetCount: Int
     var isDirty: Bool
+    var isPartialResult: Bool
     var statusMessage: String
     var lastError: PacketryCoreError?
 
@@ -95,6 +96,7 @@ struct CaptureDocumentState: Sendable, Equatable {
         metadata: nil,
         packetCount: 0,
         isDirty: false,
+        isPartialResult: false,
         statusMessage: "Open a capture file to inspect packets offline.",
         lastError: nil
     )
@@ -104,11 +106,11 @@ struct CaptureDocumentState: Sendable, Equatable {
     }
 
     var canSave: Bool {
-        fileURL != nil && packetCount > 0 && phase != .opening && phase != .reopening && phase != .saving
+        fileURL != nil && packetCount > 0 && phase != .opening && phase != .reopening && phase != .saving && !isPartialResult
     }
 
     var canSaveAs: Bool {
-        packetCount > 0 && phase != .opening && phase != .reopening && phase != .saving
+        packetCount > 0 && phase != .opening && phase != .reopening && phase != .saving && !isPartialResult
     }
 }
 
@@ -200,19 +202,108 @@ struct PacketryWindowSnapshot: Sendable, Equatable {
     var documentState: CaptureDocumentState
     var sessionState: CaptureSessionState
     var packetIngestState: PacketIngestState
-    var selectedPacketID: PacketSummary.ID?
+    var filterState: PacketFilterState
+    var inspectionState: PacketInspectionState
+    var navigationState: PacketNavigationState
+    var loadState: PacketLoadState
+    var layoutState: WindowLayoutState
 
     static let foundation = PacketryWindowSnapshot(
         accessState: .unknown,
         documentState: .idle,
         sessionState: .idle,
         packetIngestState: .empty,
-        selectedPacketID: nil
+        filterState: .empty,
+        inspectionState: .empty,
+        navigationState: .empty,
+        loadState: .idle,
+        layoutState: .default
     )
 
     var visiblePacketCount: Int {
-        packetIngestState.totalPacketCount
+        navigationState.visiblePackets.count
     }
+
+    var selectedPacketID: PacketSummary.ID? {
+        get { inspectionState.selectedPacketID }
+        set { inspectionState.selectedPacketID = newValue }
+    }
+}
+
+struct PacketFilterState: Sendable, Equatable {
+    var captureFilterText: String
+    var validation: CaptureFilterValidation
+    var recentCaptureFilters: [String]
+    var isValidating: Bool
+    var statusMessage: String
+
+    static let empty = PacketFilterState(
+        captureFilterText: "",
+        validation: CaptureFilterValidation(disposition: .unavailable, normalizedExpression: nil, message: nil),
+        recentCaptureFilters: [],
+        isValidating: false,
+        statusMessage: "Capture filter is optional."
+    )
+
+    var normalizedCaptureFilter: String? {
+        let trimmed = captureFilterText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let normalizedExpression = validation.normalizedExpression, !normalizedExpression.isEmpty {
+            return normalizedExpression
+        }
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    var hasValidationError: Bool {
+        validation.disposition == .invalid
+    }
+}
+
+struct PacketInspectionState: Sendable, Equatable {
+    var selectedPacketID: PacketSummary.ID?
+    var inspection: PacketInspection?
+    var selectedDetailNodeID: String?
+    var highlightedByteRange: PacketByteRange?
+    var isLoading: Bool
+    var statusMessage: String
+
+    static let empty = PacketInspectionState(
+        selectedPacketID: nil,
+        inspection: nil,
+        selectedDetailNodeID: nil,
+        highlightedByteRange: nil,
+        isLoading: false,
+        statusMessage: "Select a packet to inspect its decode tree and bytes."
+    )
+}
+
+struct PacketNavigationState: Sendable, Equatable {
+    var visiblePackets: [PacketSummary]
+    var jumpText: String
+    var jumpErrorMessage: String?
+    var statusMessage: String
+
+    static let empty = PacketNavigationState(
+        visiblePackets: [],
+        jumpText: "",
+        jumpErrorMessage: nil,
+        statusMessage: "No packets available."
+    )
+}
+
+struct PacketLoadState: Sendable, Equatable {
+    var progress: PacketLoadProgress
+
+    static let idle = PacketLoadState(progress: .idle)
+
+    var canCancel: Bool {
+        progress.phase == .loading
+    }
+}
+
+struct WindowLayoutState: Sendable, Equatable {
+    let verticalAutosaveName: String
+
+    static let `default` = WindowLayoutState(verticalAutosaveName: "Packetry.Analyzer.VerticalSplit.v0_3")
 }
 
 actor PacketryBackgroundCoordinator {
@@ -248,12 +339,42 @@ struct PacketryServiceRegistry {
     static let foundation = PacketryServiceRegistry()
 }
 
+private struct PacketryPreferences {
+    private enum Key {
+        static let captureFilterText = "Packetry.captureFilterText"
+        static let recentCaptureFilters = "Packetry.recentCaptureFilters"
+    }
+
+    let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    var captureFilterText: String {
+        defaults.string(forKey: Key.captureFilterText) ?? ""
+    }
+
+    var recentCaptureFilters: [String] {
+        defaults.stringArray(forKey: Key.recentCaptureFilters) ?? []
+    }
+
+    func persistCaptureFilter(_ value: String?) {
+        defaults.set(value ?? "", forKey: Key.captureFilterText)
+    }
+
+    func persistRecentCaptureFilters(_ values: [String]) {
+        defaults.set(values, forKey: Key.recentCaptureFilters)
+    }
+}
+
 @MainActor
 final class PacketryWindowController: ObservableObject {
     @Published private(set) var snapshot: PacketryWindowSnapshot
 
     let services: PacketryServiceRegistry
     private let backgroundCoordinator: PacketryBackgroundCoordinator
+    private let preferences: PacketryPreferences
 
     private var hasPerformedInitialLoad = false
     private var liveSession: (any LiveCaptureSessionProviding)?
@@ -261,20 +382,30 @@ final class PacketryWindowController: ObservableObject {
     private var liveEventsTask: Task<Void, Never>?
     private var document: (any OfflineCaptureDocumentProviding)?
     private var documentEventsTask: Task<Void, Never>?
+    private var documentEventGeneration = 0
+    private var inspectionTask: Task<Void, Never>?
+    private var filterValidationTask: Task<Void, Never>?
 
     init(
         services: PacketryServiceRegistry? = nil,
         backgroundCoordinator: PacketryBackgroundCoordinator = PacketryBackgroundCoordinator(),
-        snapshot: PacketryWindowSnapshot? = nil
+        snapshot: PacketryWindowSnapshot? = nil,
+        userDefaults: UserDefaults = .standard
     ) {
         self.services = services ?? .foundation
         self.backgroundCoordinator = backgroundCoordinator
-        self.snapshot = snapshot ?? .foundation
+        self.preferences = PacketryPreferences(defaults: userDefaults)
+        var resolvedSnapshot = snapshot ?? .foundation
+        resolvedSnapshot.filterState.captureFilterText = preferences.captureFilterText
+        resolvedSnapshot.filterState.recentCaptureFilters = preferences.recentCaptureFilters
+        self.snapshot = resolvedSnapshot
     }
 
     deinit {
         liveEventsTask?.cancel()
         documentEventsTask?.cancel()
+        inspectionTask?.cancel()
+        filterValidationTask?.cancel()
     }
 
     func performInitialLoadIfNeeded() async {
@@ -313,7 +444,7 @@ final class PacketryWindowController: ObservableObject {
     func selectInterface(_ identifier: String?) {
         guard let identifier else {
             snapshot.sessionState.selectedInterfaceID = nil
-            snapshot.sessionState.options = CaptureOptions.defaults()
+            snapshot.sessionState.options = options(for: nil)
             snapshot.sessionState.statusMessage = "Cleared interface selection."
             snapshot.sessionState.lastError = nil
             return
@@ -321,7 +452,7 @@ final class PacketryWindowController: ObservableObject {
 
         guard let interface = snapshot.sessionState.interfaceInventory.first(where: { $0.id == identifier }) else {
             snapshot.sessionState.selectedInterfaceID = nil
-            snapshot.sessionState.options = CaptureOptions.defaults()
+            snapshot.sessionState.options = options(for: nil)
             snapshot.sessionState.statusMessage = "The selected interface is no longer present."
             snapshot.sessionState.lastError = PacketryCoreError(
                 code: .unsupportedInterface,
@@ -332,7 +463,7 @@ final class PacketryWindowController: ObservableObject {
 
         guard interface.isSelectable else {
             snapshot.sessionState.selectedInterfaceID = nil
-            snapshot.sessionState.options = CaptureOptions.defaults()
+            snapshot.sessionState.options = options(for: nil)
             snapshot.sessionState.statusMessage = interface.availabilityReason ?? "This interface is not currently available for capture."
             snapshot.sessionState.lastError = PacketryCoreError(
                 code: .unsupportedInterface,
@@ -342,10 +473,7 @@ final class PacketryWindowController: ObservableObject {
         }
 
         snapshot.sessionState.selectedInterfaceID = interface.id
-        snapshot.sessionState.options = (try? services.core.validateCaptureOptions(
-            CaptureOptions.defaults(for: interface),
-            for: interface
-        )) ?? CaptureOptions.defaults(for: interface)
+        snapshot.sessionState.options = options(for: interface)
         snapshot.sessionState.lastError = nil
 
         if snapshot.sessionState.phase == .idle || snapshot.sessionState.phase == .failed || snapshot.sessionState.phase == .stopped {
@@ -353,6 +481,103 @@ final class PacketryWindowController: ObservableObject {
         }
 
         snapshot.sessionState.statusMessage = "Selected \(displayName(for: interface))."
+    }
+
+    func updateCaptureFilterText(_ text: String) {
+        snapshot.filterState.captureFilterText = text
+        snapshot.filterState.statusMessage = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "Capture filter is optional."
+            : "Capture filter will be validated before live capture starts."
+        snapshot.filterState.validation = CaptureFilterValidation(
+            disposition: .unavailable,
+            normalizedExpression: text.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
+            message: nil
+        )
+        preferences.persistCaptureFilter(text.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty)
+    }
+
+    func applyRecentCaptureFilter(_ value: String) {
+        updateCaptureFilterText(value)
+    }
+
+    func validateCaptureFilter() async {
+        let trimmedFilter = snapshot.filterState.captureFilterText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedFilter.isEmpty else {
+            snapshot.filterState.validation = CaptureFilterValidation(
+                disposition: .unavailable,
+                normalizedExpression: nil,
+                message: nil
+            )
+            snapshot.filterState.isValidating = false
+            snapshot.filterState.statusMessage = "Capture filter is optional."
+            return
+        }
+
+        filterValidationTask?.cancel()
+        snapshot.filterState.isValidating = true
+        let task = Task { [weak self] in
+            guard let self else {
+                return
+            }
+
+            let validation = await self.services.core.validateCaptureFilter(trimmedFilter)
+            await MainActor.run {
+                self.snapshot.filterState.isValidating = false
+                self.snapshot.filterState.validation = validation
+                self.snapshot.filterState.statusMessage = validation.message ?? "Capture filter is ready."
+                if validation.disposition == .valid {
+                    let normalizedExpression = validation.normalizedExpression ?? trimmedFilter
+                    self.snapshot.filterState.captureFilterText = normalizedExpression
+                    self.persistCaptureFilter(normalizedExpression)
+                }
+            }
+        }
+
+        filterValidationTask = task
+        await task.value
+    }
+
+    func updateJumpText(_ text: String) {
+        snapshot.navigationState.jumpText = text
+        snapshot.navigationState.jumpErrorMessage = nil
+    }
+
+    func jumpToPacketNumber() {
+        let trimmedValue = snapshot.navigationState.jumpText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let packetNumber = UInt64(trimmedValue) else {
+            snapshot.navigationState.jumpErrorMessage = "Enter a valid packet number."
+            return
+        }
+
+        guard let packet = snapshot.navigationState.visiblePackets.first(where: { $0.packetNumber == packetNumber }) else {
+            snapshot.navigationState.jumpErrorMessage = "Packet \(packetNumber) is not visible right now."
+            return
+        }
+
+        snapshot.navigationState.jumpErrorMessage = nil
+        selectPacket(packet.id)
+    }
+
+    func selectPreviousPacket() {
+        guard let currentIndex = selectedVisiblePacketIndex(), currentIndex > 0 else {
+            return
+        }
+
+        selectPacket(snapshot.navigationState.visiblePackets[currentIndex - 1].id)
+    }
+
+    func selectNextPacket() {
+        guard let currentIndex = selectedVisiblePacketIndex(),
+              currentIndex < snapshot.navigationState.visiblePackets.count - 1 else {
+            return
+        }
+
+        selectPacket(snapshot.navigationState.visiblePackets[currentIndex + 1].id)
+    }
+
+    func selectDetailNode(_ identifier: String?) {
+        snapshot.inspectionState.selectedDetailNodeID = identifier
+        snapshot.inspectionState.highlightedByteRange = detailNode(with: identifier)?.byteRange
     }
 
     func startLiveCapture() async {
@@ -367,8 +592,19 @@ final class PacketryWindowController: ObservableObject {
         }
 
         do {
-            let validatedOptions = try services.core.validateCaptureOptions(snapshot.sessionState.options, for: interface)
+            await validateCaptureFilter()
+            if snapshot.filterState.hasValidationError {
+                let message = snapshot.filterState.validation.message ?? "Packetry could not compile this capture filter."
+                snapshot.sessionState.lastError = PacketryCoreError(code: .invalidCaptureFilter, message: message)
+                snapshot.sessionState.statusMessage = message
+                snapshot.sessionState.phase = .ready
+                return
+            }
+
+            let configuredOptions = options(for: interface)
+            let validatedOptions = try services.core.validateCaptureOptions(configuredOptions, for: interface)
             snapshot.sessionState.options = validatedOptions
+            persistCaptureFilter(validatedOptions.captureFilterExpression)
 
             if liveSession == nil || liveSessionConfiguration != LiveSessionConfiguration(interfaceID: interface.id, options: validatedOptions) {
                 try await resetLiveSession()
@@ -379,12 +615,15 @@ final class PacketryWindowController: ObservableObject {
             }
 
             releaseDocumentContext(resetState: true)
+            resetInspectionState()
+            snapshot.loadState = .idle
 
             snapshot.selectedPacketID = nil
             snapshot.packetIngestState.reset(
                 source: .live,
                 message: "Starting live capture on \(displayName(for: interface))..."
             )
+            synchronizeVisiblePackets(message: "Waiting for live packets…")
             snapshot.sessionState.phase = .starting
             snapshot.sessionState.health = .empty
             snapshot.sessionState.capturedPacketCount = 0
@@ -459,7 +698,9 @@ final class PacketryWindowController: ObservableObject {
     func openDocument(at fileURL: URL) async {
         do {
             try await stopLiveCaptureIfNeeded()
+            releaseDocumentContext()
 
+            resetInspectionState()
             snapshot.selectedPacketID = nil
             snapshot.documentState = CaptureDocumentState(
                 phase: .opening,
@@ -468,28 +709,48 @@ final class PacketryWindowController: ObservableObject {
                 metadata: nil,
                 packetCount: 0,
                 isDirty: false,
+                isPartialResult: false,
                 statusMessage: "Opening \(fileURL.lastPathComponent)...",
                 lastError: nil
             )
             snapshot.packetIngestState.reset(source: .offline, message: "Opening \(fileURL.lastPathComponent)...")
+            synchronizeVisiblePackets(message: "Opening \(fileURL.lastPathComponent)...")
+            snapshot.loadState.progress = PacketLoadProgress(
+                phase: .loading,
+                loadedPacketCount: 0,
+                message: "Opening \(fileURL.lastPathComponent)..."
+            )
 
             let document = try await services.core.openOfflineCaptureDocument(at: fileURL)
-            releaseDocumentContext()
             self.document = document
             observeDocumentEvents(document)
 
-            let packets = try await document.open()
-            snapshot.packetIngestState.replace(
-                with: packets,
-                source: .offline,
-                message: "Loaded \(packets.count) packets from \(fileURL.lastPathComponent)."
+            _ = try await document.open()
+            await refreshDocumentSnapshotFromHandle(
+                document,
+                phase: .loaded,
+                message: "Loaded \(snapshot.packetIngestState.totalPacketCount) packets from \(fileURL.lastPathComponent)."
             )
-            await refreshDocumentSnapshotFromHandle(document, phase: .loaded, message: "Loaded \(packets.count) packets from \(fileURL.lastPathComponent).")
         } catch {
             let packetryError = packetryError(from: error, defaultCode: .offlineFileOpenFailed)
-            snapshot.documentState.phase = .failed
-            snapshot.documentState.lastError = packetryError
-            snapshot.documentState.statusMessage = packetryError.message
+            if packetryError.code == .operationCancelled {
+                if let document {
+                    await refreshDocumentSnapshotFromHandle(
+                        document,
+                        phase: .loaded,
+                        message: packetryError.message
+                    )
+                } else {
+                    snapshot.documentState.phase = .loaded
+                    snapshot.documentState.isPartialResult = true
+                    snapshot.documentState.statusMessage = snapshot.loadState.progress.message
+                    snapshot.documentState.lastError = nil
+                }
+            } else {
+                snapshot.documentState.phase = .failed
+                snapshot.documentState.lastError = packetryError
+                snapshot.documentState.statusMessage = packetryError.message
+            }
         }
     }
 
@@ -501,21 +762,36 @@ final class PacketryWindowController: ObservableObject {
         let fileName = snapshot.documentState.fileURL?.lastPathComponent ?? "capture"
         snapshot.documentState.phase = .reopening
         snapshot.documentState.statusMessage = "Reopening \(fileName)..."
+        snapshot.documentState.isPartialResult = false
         snapshot.packetIngestState.reset(source: .offline, message: "Reopening \(fileName)...")
+        synchronizeVisiblePackets(message: "Reopening \(fileName)...")
+        resetInspectionState()
+        snapshot.loadState.progress = PacketLoadProgress(
+            phase: .loading,
+            loadedPacketCount: 0,
+            message: "Reopening \(fileName)..."
+        )
 
         do {
-            let packets = try await document.reopen()
-            snapshot.packetIngestState.replace(
-                with: packets,
-                source: .offline,
-                message: "Reloaded \(packets.count) packets from \(fileName)."
+            _ = try await document.reopen()
+            await refreshDocumentSnapshotFromHandle(
+                document,
+                phase: .loaded,
+                message: "Reloaded \(snapshot.packetIngestState.totalPacketCount) packets from \(fileName)."
             )
-            await refreshDocumentSnapshotFromHandle(document, phase: .loaded, message: "Reloaded \(packets.count) packets from \(fileName).")
         } catch {
             let packetryError = packetryError(from: error, defaultCode: .offlineFileOpenFailed)
-            snapshot.documentState.phase = .failed
-            snapshot.documentState.lastError = packetryError
-            snapshot.documentState.statusMessage = packetryError.message
+            if packetryError.code == .operationCancelled {
+                await refreshDocumentSnapshotFromHandle(
+                    document,
+                    phase: .loaded,
+                    message: packetryError.message
+                )
+            } else {
+                snapshot.documentState.phase = .failed
+                snapshot.documentState.lastError = packetryError
+                snapshot.documentState.statusMessage = packetryError.message
+            }
         }
     }
 
@@ -565,6 +841,14 @@ final class PacketryWindowController: ObservableObject {
         }
     }
 
+    func cancelDocumentLoading() async {
+        guard let document else {
+            return
+        }
+
+        await document.cancelLoading()
+    }
+
     func presentOpenCapturePanel() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
@@ -610,6 +894,10 @@ final class PacketryWindowController: ObservableObject {
 
     func selectPacket(_ identifier: PacketSummary.ID?) {
         snapshot.selectedPacketID = identifier
+        snapshot.inspectionState.selectedDetailNodeID = nil
+        snapshot.inspectionState.highlightedByteRange = nil
+        snapshot.navigationState.jumpErrorMessage = nil
+        scheduleInspection(for: identifier)
     }
 
     func cancelBackgroundWork() {
@@ -617,9 +905,14 @@ final class PacketryWindowController: ObservableObject {
         liveEventsTask = nil
         documentEventsTask?.cancel()
         documentEventsTask = nil
+        inspectionTask?.cancel()
+        inspectionTask = nil
+        filterValidationTask?.cancel()
+        filterValidationTask = nil
 
         Task {
             await backgroundCoordinator.cancelAll()
+            await self.document?.cancelLoading()
         }
 
         snapshot.sessionState.statusMessage = "Cancelled background work."
@@ -637,24 +930,18 @@ final class PacketryWindowController: ObservableObject {
            let previousInterface = interfaces.first(where: { $0.id == previousSelectionID }),
            previousInterface.isSelectable || isActiveCapture {
             snapshot.sessionState.selectedInterfaceID = previousSelectionID
-            snapshot.sessionState.options = validatedOptions(
-                snapshot.sessionState.options,
-                for: previousInterface
-            )
+            snapshot.sessionState.options = options(for: previousInterface)
             snapshot.sessionState.statusMessage = "Refreshed \(interfaces.count) interfaces. Keeping \(displayName(for: previousInterface))."
         } else if previousSelectionID != nil {
             snapshot.sessionState.selectedInterfaceID = nil
-            snapshot.sessionState.options = CaptureOptions.defaults()
+            snapshot.sessionState.options = options(for: nil)
             snapshot.sessionState.statusMessage = "The previously selected interface is no longer available. Choose another interface before starting capture."
         } else if snapshot.sessionState.selectedInterfaceID == nil, let firstSelectable = selectableInterfaces.first {
             snapshot.sessionState.selectedInterfaceID = firstSelectable.id
-            snapshot.sessionState.options = validatedOptions(
-                CaptureOptions.defaults(for: firstSelectable),
-                for: firstSelectable
-            )
+            snapshot.sessionState.options = options(for: firstSelectable)
             snapshot.sessionState.statusMessage = "Discovered \(interfaces.count) interfaces. Selected \(displayName(for: firstSelectable))."
         } else if let selectedInterface = snapshot.sessionState.selectedInterface {
-            snapshot.sessionState.options = validatedOptions(snapshot.sessionState.options, for: selectedInterface)
+            snapshot.sessionState.options = options(for: selectedInterface)
             snapshot.sessionState.statusMessage = "Refreshed \(interfaces.count) interfaces."
         } else {
             snapshot.sessionState.statusMessage = selectableInterfaces.isEmpty
@@ -677,6 +964,40 @@ final class PacketryWindowController: ObservableObject {
 
     private func validatedOptions(_ options: CaptureOptions, for interface: CaptureInterfaceSummary?) -> CaptureOptions {
         (try? services.core.validateCaptureOptions(options, for: interface)) ?? CaptureOptions.defaults(for: interface)
+    }
+
+    private func options(for interface: CaptureInterfaceSummary?) -> CaptureOptions {
+        let baseOptions = validatedOptions(
+            CaptureOptions.defaults(for: interface),
+            for: interface
+        )
+        let configuredOptions = CaptureOptions(
+            promiscuousMode: baseOptions.promiscuousMode,
+            snapshotLength: baseOptions.snapshotLength,
+            kernelBufferSizeBytes: baseOptions.kernelBufferSizeBytes,
+            readTimeoutMilliseconds: baseOptions.readTimeoutMilliseconds,
+            captureFilterExpression: snapshot.filterState.normalizedCaptureFilter,
+            stopCondition: baseOptions.stopCondition,
+            fileWriting: baseOptions.fileWriting
+        )
+        return validatedOptions(configuredOptions, for: interface)
+    }
+
+    private func persistCaptureFilter(_ value: String?) {
+        let normalizedValue = value?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        preferences.persistCaptureFilter(normalizedValue)
+
+        guard let normalizedValue else {
+            snapshot.filterState.recentCaptureFilters = preferences.recentCaptureFilters
+            return
+        }
+
+        let updatedRecents = ([normalizedValue] + snapshot.filterState.recentCaptureFilters)
+            .removingDuplicates()
+            .prefix(8)
+        let recents = Array(updatedRecents)
+        snapshot.filterState.recentCaptureFilters = recents
+        preferences.persistRecentCaptureFilters(recents)
     }
 
     private func observeLiveSessionEvents(_ session: any LiveCaptureSessionProviding) {
@@ -710,6 +1031,8 @@ final class PacketryWindowController: ObservableObject {
 
     private func observeDocumentEvents(_ document: any OfflineCaptureDocumentProviding) {
         documentEventsTask?.cancel()
+        documentEventGeneration += 1
+        let generation = documentEventGeneration
 
         let task = Task { [weak self] in
             guard let self else {
@@ -719,12 +1042,18 @@ final class PacketryWindowController: ObservableObject {
             do {
                 for try await event in document.events() {
                     await MainActor.run {
+                        guard self.documentEventGeneration == generation else {
+                            return
+                        }
                         self.applyPacketIngestEvent(event)
                     }
                 }
             } catch is CancellationError {
             } catch {
                 await MainActor.run {
+                    guard self.documentEventGeneration == generation else {
+                        return
+                    }
                     self.handleStreamFailure(error, context: .document)
                 }
             }
@@ -751,28 +1080,68 @@ final class PacketryWindowController: ObservableObject {
             if mappedPhase(phase) != .failed {
                 snapshot.documentState.lastError = nil
             }
-        case .packetBatch(let packets):
-            guard let firstPacket = packets.first else {
+        case .packetBatch(let packets, let disposition):
+            let source = packets.first?.source ?? snapshot.packetIngestState.source
+            let isOfflineStreaming = snapshot.documentState.phase == .opening || snapshot.documentState.phase == .reopening
+
+            if source == .offline && !isOfflineStreaming {
                 return
             }
 
-            switch firstPacket.source {
-            case .live:
-                snapshot.packetIngestState.append(
-                    packets,
-                    source: .live,
-                    message: "Captured \(snapshot.packetIngestState.totalPacketCount + packets.count) packets."
+            switch disposition {
+            case .replace:
+                snapshot.packetIngestState.reset(
+                    source: source,
+                    message: source == .live ? "Waiting for live packets…" : "Loading packets from disk…"
                 )
-                snapshot.sessionState.capturedPacketCount = snapshot.packetIngestState.totalPacketCount
-            case .offline:
-                snapshot.packetIngestState.replace(
-                    with: packets,
-                    source: .offline,
-                    message: "Loaded \(packets.count) packets from disk."
-                )
-                snapshot.documentState.packetCount = packets.count
+                if let source, !packets.isEmpty {
+                    snapshot.packetIngestState.replace(
+                        with: packets,
+                        source: source,
+                        message: source == .live
+                            ? "Captured \(packets.count) packets."
+                            : "Loaded \(packets.count) packets from disk."
+                    )
+                }
+            case .append:
+                if let source {
+                    snapshot.packetIngestState.append(
+                        packets,
+                        source: source,
+                        message: source == .live
+                            ? "Captured \(snapshot.packetIngestState.totalPacketCount + packets.count) packets."
+                            : "Loaded \(snapshot.packetIngestState.totalPacketCount + packets.count) packets from disk."
+                    )
+                }
             @unknown default:
-                break
+                if let source {
+                    snapshot.packetIngestState.append(packets, source: source)
+                }
+            }
+
+            if let source {
+                switch source {
+                case .live:
+                    snapshot.sessionState.capturedPacketCount = snapshot.packetIngestState.totalPacketCount
+                    synchronizeVisiblePackets(message: "Showing \(snapshot.packetIngestState.totalPacketCount) captured packets.")
+                case .offline:
+                    snapshot.documentState.packetCount = snapshot.packetIngestState.totalPacketCount
+                    synchronizeVisiblePackets(message: "Showing \(snapshot.packetIngestState.totalPacketCount) packets from disk.")
+                @unknown default:
+                    synchronizeVisiblePackets(message: "Showing \(snapshot.packetIngestState.totalPacketCount) packets.")
+                }
+            } else {
+                synchronizeVisiblePackets(message: "No packets available.")
+            }
+        case .loadProgressChanged(let progress):
+            guard snapshot.documentState.phase == .opening || snapshot.documentState.phase == .reopening else {
+                return
+            }
+            snapshot.loadState.progress = progress
+            snapshot.documentState.isPartialResult = progress.isPartialResult
+            snapshot.documentState.packetCount = max(snapshot.documentState.packetCount, progress.loadedPacketCount)
+            if progress.phase == .loading || progress.phase == .cancelled {
+                snapshot.documentState.statusMessage = progress.message
             }
         case .healthChanged(let health):
             snapshot.sessionState.health = health
@@ -794,9 +1163,16 @@ final class PacketryWindowController: ObservableObject {
             snapshot.sessionState.lastError = packetryError
             snapshot.sessionState.statusMessage = packetryError.message
         case .document:
-            snapshot.documentState.phase = .failed
-            snapshot.documentState.lastError = packetryError
-            snapshot.documentState.statusMessage = packetryError.message
+            if packetryError.code == .operationCancelled {
+                snapshot.documentState.phase = .loaded
+                snapshot.documentState.isPartialResult = true
+                snapshot.documentState.statusMessage = snapshot.loadState.progress.message
+                snapshot.documentState.lastError = nil
+            } else {
+                snapshot.documentState.phase = .failed
+                snapshot.documentState.lastError = packetryError
+                snapshot.documentState.statusMessage = packetryError.message
+            }
         }
     }
 
@@ -808,6 +1184,15 @@ final class PacketryWindowController: ObservableObject {
         let url = await document.currentURL()
         let metadata = await document.currentMetadata()
         let packets = await document.packetSummaries()
+        let progress = await document.loadProgress()
+        let resolvedMessage = progress.message.isEmpty ? message : progress.message
+
+        snapshot.loadState.progress = progress
+        if packets.isEmpty {
+            snapshot.packetIngestState.reset(source: .offline, message: resolvedMessage)
+        } else {
+            snapshot.packetIngestState.replace(with: packets, source: .offline, message: resolvedMessage)
+        }
 
         snapshot.documentState.phase = phase
         snapshot.documentState.fileURL = url
@@ -815,8 +1200,10 @@ final class PacketryWindowController: ObservableObject {
         snapshot.documentState.format = metadata.format
         snapshot.documentState.packetCount = packets.count
         snapshot.documentState.isDirty = false
+        snapshot.documentState.isPartialResult = progress.isPartialResult
         snapshot.documentState.lastError = nil
-        snapshot.documentState.statusMessage = message
+        snapshot.documentState.statusMessage = resolvedMessage
+        synchronizeVisiblePackets(message: "Showing \(packets.count) packets.")
     }
 
     private func stopLiveCaptureIfNeeded() async throws {
@@ -834,6 +1221,7 @@ final class PacketryWindowController: ObservableObject {
         releaseLiveSession()
         snapshot.sessionState.phase = snapshot.accessState.isCaptureReady ? .ready : .idle
         snapshot.sessionState.health = .empty
+        snapshot.loadState = .idle
     }
 
     private func resetLiveSession() async throws {
@@ -847,6 +1235,8 @@ final class PacketryWindowController: ObservableObject {
     private func releaseLiveSession() {
         liveEventsTask?.cancel()
         liveEventsTask = nil
+        inspectionTask?.cancel()
+        inspectionTask = nil
         liveSession = nil
         liveSessionConfiguration = nil
 
@@ -856,17 +1246,142 @@ final class PacketryWindowController: ObservableObject {
     }
 
     private func releaseDocumentContext(resetState: Bool = false) {
+        let currentDocument = document
+        documentEventGeneration += 1
         documentEventsTask?.cancel()
         documentEventsTask = nil
+        inspectionTask?.cancel()
+        inspectionTask = nil
         document = nil
 
         Task {
             await backgroundCoordinator.endOperation("document-events")
+            await currentDocument?.cancelLoading()
         }
 
         if resetState {
             snapshot.documentState = .idle
+            snapshot.loadState = .idle
         }
+    }
+
+    private func synchronizeVisiblePackets(message: String) {
+        snapshot.navigationState.visiblePackets = snapshot.packetIngestState.packets
+        snapshot.navigationState.statusMessage = message
+
+        if let selectedPacketID = snapshot.selectedPacketID,
+           !snapshot.navigationState.visiblePackets.contains(where: { $0.id == selectedPacketID }) {
+            resetInspectionState()
+        }
+    }
+
+    private func resetInspectionState() {
+        inspectionTask?.cancel()
+        inspectionTask = nil
+        snapshot.inspectionState = .empty
+        snapshot.selectedPacketID = nil
+    }
+
+    private func selectedVisiblePacketIndex() -> Int? {
+        guard let selectedPacketID = snapshot.selectedPacketID else {
+            return nil
+        }
+
+        return snapshot.navigationState.visiblePackets.firstIndex(where: { $0.id == selectedPacketID })
+    }
+
+    private func scheduleInspection(for identifier: PacketSummary.ID?) {
+        inspectionTask?.cancel()
+        inspectionTask = nil
+
+        guard let identifier else {
+            snapshot.inspectionState = .empty
+            return
+        }
+
+        snapshot.inspectionState.selectedPacketID = identifier
+        snapshot.inspectionState.inspection = nil
+        snapshot.inspectionState.selectedDetailNodeID = nil
+        snapshot.inspectionState.highlightedByteRange = nil
+        snapshot.inspectionState.isLoading = true
+        snapshot.inspectionState.statusMessage = "Inspecting packet \(identifier)..."
+
+        let liveSession = self.liveSession
+        let document = self.document
+        let visiblePackets = snapshot.navigationState.visiblePackets
+
+        let task = Task { [weak self] in
+            guard let self,
+                  let packet = visiblePackets.first(where: { $0.id == identifier }) else {
+                return
+            }
+
+            do {
+                let inspection: PacketInspection
+                switch packet.source {
+                case .live:
+                    guard let liveSession else {
+                        return
+                    }
+                    inspection = try await liveSession.inspectPacket(id: identifier)
+                case .offline:
+                    guard let document else {
+                        return
+                    }
+                    inspection = try await document.inspectPacket(id: identifier)
+                @unknown default:
+                    return
+                }
+
+                await MainActor.run {
+                    guard self.snapshot.selectedPacketID == identifier else {
+                        return
+                    }
+
+                    self.snapshot.inspectionState.selectedPacketID = identifier
+                    self.snapshot.inspectionState.inspection = inspection
+                    self.snapshot.inspectionState.isLoading = false
+                    self.snapshot.inspectionState.statusMessage = "Inspecting packet \(inspection.packetNumber)."
+                }
+            } catch is CancellationError {
+            } catch {
+                await MainActor.run {
+                    guard self.snapshot.selectedPacketID == identifier else {
+                        return
+                    }
+
+                    let packetryError = self.packetryError(from: error, defaultCode: .offlineFileOpenFailed)
+                    self.snapshot.inspectionState.inspection = nil
+                    self.snapshot.inspectionState.isLoading = false
+                    self.snapshot.inspectionState.statusMessage = packetryError.message
+                }
+            }
+        }
+
+        inspectionTask = task
+    }
+
+    private func detailNode(with identifier: String?) -> PacketDetailNode? {
+        guard let identifier,
+              let inspection = snapshot.inspectionState.inspection else {
+            return nil
+        }
+
+        return detailNode(in: inspection.detailNodes, matching: identifier)
+    }
+
+    private func detailNode(in nodes: [PacketDetailNode], matching identifier: String) -> PacketDetailNode? {
+        for node in nodes {
+            if node.id == identifier {
+                return node
+            }
+
+            if let match = detailNode(in: node.children, matching: identifier) {
+                return match
+            }
+        }
+
+        return nil
     }
 
     private func mappedPhase(_ phase: LiveCaptureSessionPhase) -> CaptureSessionState.Phase {
@@ -930,4 +1445,17 @@ private struct LiveSessionConfiguration: Equatable {
 private enum StreamContext {
     case live
     case document
+}
+
+private extension Array where Element: Hashable {
+    func removingDuplicates() -> [Element] {
+        var seen = Set<Element>()
+        return filter { seen.insert($0).inserted }
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
+    }
 }

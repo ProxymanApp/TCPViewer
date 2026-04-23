@@ -1,7 +1,9 @@
 #import "PacketryNativeBridge.h"
 
+#include <arpa/inet.h>
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <mutex>
@@ -44,6 +46,8 @@ typedef NS_ENUM(NSInteger, PacketryNativeErrorCode) {
     PacketryNativeErrorCodeFileReadFailed = 1007,
     PacketryNativeErrorCodeFileWriteFailed = 1008,
     PacketryNativeErrorCodeInvalidOptions = 1009,
+    PacketryNativeErrorCodeInvalidFilter = 1010,
+    PacketryNativeErrorCodeOperationCancelled = 1011,
 };
 
 namespace {
@@ -393,6 +397,419 @@ PCPPNativePacketSummaryDescriptor *MakePacketSummary(const pcpp::RawPacket &rawP
                                                                        layers:@[]
                                                                  decodeStatus:decodeDescriptor
                                                               captureMetadata:captureMetadata];
+    }
+}
+
+PCPPNativePacketByteRangeDescriptor *MakeByteRange(NSUInteger offset, NSUInteger length)
+{
+    return [[PCPPNativePacketByteRangeDescriptor alloc] initWithOffset:(NSInteger)offset length:(NSInteger)length];
+}
+
+PCPPNativePacketDetailNodeDescriptor *MakeDetailNode(NSString *identifier,
+                                                     NSString *name,
+                                                     NSString * _Nullable value,
+                                                     NSString *kind,
+                                                     PCPPNativePacketByteRangeDescriptor * _Nullable byteRange,
+                                                     NSNumber * _Nullable jumpTargetPacketIdentifier,
+                                                     NSArray<PCPPNativePacketDetailNodeDescriptor *> *children)
+{
+    return [[PCPPNativePacketDetailNodeDescriptor alloc] initWithIdentifier:identifier
+                                                                       name:name
+                                                                      value:value
+                                                                       kind:kind
+                                                                  byteRange:byteRange
+                                                   jumpTargetPacketIdentifier:jumpTargetPacketIdentifier
+                                                                    children:children];
+}
+
+PCPPNativePacketDetailNodeDescriptor *MakeFieldNode(NSString *identifier,
+                                                    NSString *name,
+                                                    NSString * _Nullable value,
+                                                    NSUInteger baseOffset,
+                                                    NSUInteger relativeOffset,
+                                                    NSUInteger length)
+{
+    return MakeDetailNode(identifier,
+                          name,
+                          value,
+                          @"field",
+                          MakeByteRange(baseOffset + relativeOffset, length),
+                          nil,
+                          @[]);
+}
+
+PCPPNativePacketDetailNodeDescriptor *MakeSyntheticFieldNode(NSString *identifier,
+                                                             NSString *name,
+                                                             NSString * _Nullable value)
+{
+    return MakeDetailNode(identifier, name, value, @"field", nil, nil, @[]);
+}
+
+PCPPNativePacketDetailNodeDescriptor *MakeLayerNode(NSString *identifier,
+                                                    NSString *name,
+                                                    NSString * _Nullable value,
+                                                    NSUInteger offset,
+                                                    NSUInteger length,
+                                                    NSArray<PCPPNativePacketDetailNodeDescriptor *> *children)
+{
+    return MakeDetailNode(identifier,
+                          name,
+                          value,
+                          @"layer",
+                          MakeByteRange(offset, length),
+                          nil,
+                          children);
+}
+
+PCPPNativePacketDetailNodeDescriptor *MakeWarningNode(NSString *identifier, NSString *message)
+{
+    return MakeDetailNode(identifier, @"Decode Warning", message, @"warning", nil, nil, @[]);
+}
+
+NSUInteger LayerOffset(const pcpp::Layer &layer, const pcpp::RawPacket &rawPacket)
+{
+    return static_cast<NSUInteger>(layer.getData() - rawPacket.getRawData());
+}
+
+NSString *FormatHex16(uint16_t value)
+{
+    return [NSString stringWithFormat:@"0x%04x", value];
+}
+
+NSString *FormatHex32(uint32_t value)
+{
+    return [NSString stringWithFormat:@"0x%08x", value];
+}
+
+NSString *PayloadPreview(const uint8_t *bytes, size_t length, NSUInteger limit = 16)
+{
+    if (bytes == nullptr || length == 0) {
+        return @"Empty";
+    }
+
+    NSMutableArray<NSString *> *segments = [NSMutableArray array];
+    NSUInteger visibleLength = std::min<NSUInteger>(length, limit);
+    for (NSUInteger index = 0; index < visibleLength; index += 1) {
+        [segments addObject:[NSString stringWithFormat:@"%02x", bytes[index]]];
+    }
+
+    NSString *joined = [segments componentsJoinedByString:@" "];
+    if (length > visibleLength) {
+        return [joined stringByAppendingString:@" …"];
+    }
+
+    return joined;
+}
+
+NSString *TCPFlagsSummary(const pcpp::tcphdr *header)
+{
+    NSMutableArray<NSString *> *flags = [NSMutableArray array];
+    if (header->finFlag) {
+        [flags addObject:@"FIN"];
+    }
+    if (header->synFlag) {
+        [flags addObject:@"SYN"];
+    }
+    if (header->rstFlag) {
+        [flags addObject:@"RST"];
+    }
+    if (header->pshFlag) {
+        [flags addObject:@"PSH"];
+    }
+    if (header->ackFlag) {
+        [flags addObject:@"ACK"];
+    }
+    if (header->urgFlag) {
+        [flags addObject:@"URG"];
+    }
+    if (header->eceFlag) {
+        [flags addObject:@"ECE"];
+    }
+    if (header->cwrFlag) {
+        [flags addObject:@"CWR"];
+    }
+
+    if (flags.count == 0) {
+        return @"None";
+    }
+
+    return [flags componentsJoinedByString:@", "];
+}
+
+NSArray<PCPPNativePacketDetailNodeDescriptor *> *BuildPacketDetailNodes(const pcpp::Packet &packet,
+                                                                        const pcpp::RawPacket &rawPacket,
+                                                                        unsigned long long packetIdentifier,
+                                                                        NSString * _Nullable interfaceName,
+                                                                        NSString * _Nullable packetComment)
+{
+    NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *nodes = [NSMutableArray array];
+    NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *frameChildren = [NSMutableArray array];
+    [frameChildren addObject:MakeSyntheticFieldNode(@"frame.number", @"Frame Number", [NSString stringWithFormat:@"%llu", packetIdentifier])];
+    [frameChildren addObject:MakeSyntheticFieldNode(@"frame.arrival", @"Arrival Time", MakeNSDate(rawPacket.getPacketTimeStamp()).description)];
+    [frameChildren addObject:MakeSyntheticFieldNode(@"frame.length", @"Frame Length", [NSString stringWithFormat:@"%d bytes", rawPacket.getFrameLength()])];
+    [frameChildren addObject:MakeSyntheticFieldNode(@"frame.captureLength", @"Captured Length", [NSString stringWithFormat:@"%d bytes", rawPacket.getRawDataLen()])];
+    if (interfaceName != nil) {
+        [frameChildren addObject:MakeSyntheticFieldNode(@"frame.interface", @"Interface", interfaceName)];
+    }
+    if (packetComment != nil) {
+        [frameChildren addObject:MakeSyntheticFieldNode(@"frame.comment", @"Packet Comment", packetComment)];
+    }
+    [nodes addObject:MakeLayerNode(@"frame",
+                                   @"Frame",
+                                   [NSString stringWithFormat:@"Packet %llu: %d bytes on wire (%d captured)",
+                                                              packetIdentifier,
+                                                              rawPacket.getFrameLength(),
+                                                              rawPacket.getRawDataLen()],
+                                   0,
+                                   rawPacket.getRawDataLen(),
+                                   frameChildren)];
+
+    for (pcpp::Layer *layer = packet.getFirstLayer(); layer != nullptr; layer = layer->getNextLayer()) {
+        NSUInteger offset = LayerOffset(*layer, rawPacket);
+        switch (layer->getProtocol()) {
+            case pcpp::Ethernet: {
+                auto *ethLayer = static_cast<pcpp::EthLayer *>(layer);
+                auto *header = ethLayer->getEthHeader();
+                NSArray *children = @[
+                    MakeFieldNode(@"eth.dst", @"Destination", MakeNSString(ethLayer->getDestMac().toString()), offset, 0, 6),
+                    MakeFieldNode(@"eth.src", @"Source", MakeNSString(ethLayer->getSourceMac().toString()), offset, 6, 6),
+                    MakeFieldNode(@"eth.type", @"Type", FormatHex16(ntohs(header->etherType)), offset, 12, 2),
+                ];
+                [nodes addObject:MakeLayerNode(@"eth",
+                                               @"Ethernet",
+                                               [NSString stringWithFormat:@"Src: %@, Dst: %@",
+                                                                          MakeNSString(ethLayer->getSourceMac().toString()),
+                                                                          MakeNSString(ethLayer->getDestMac().toString())],
+                                               offset,
+                                               ethLayer->getHeaderLen(),
+                                               children)];
+                break;
+            }
+            case pcpp::ARP: {
+                auto *arpLayer = static_cast<pcpp::ArpLayer *>(layer);
+                auto *header = arpLayer->getArpHeader();
+                NSArray *children = @[
+                    MakeFieldNode(@"arp.hardware", @"Hardware Type", [NSString stringWithFormat:@"%u", ntohs(header->hardwareType)], offset, 0, 2),
+                    MakeFieldNode(@"arp.protocol", @"Protocol Type", FormatHex16(ntohs(header->protocolType)), offset, 2, 2),
+                    MakeFieldNode(@"arp.hardwareSize", @"Hardware Size", [NSString stringWithFormat:@"%u", header->hardwareSize], offset, 4, 1),
+                    MakeFieldNode(@"arp.protocolSize", @"Protocol Size", [NSString stringWithFormat:@"%u", header->protocolSize], offset, 5, 1),
+                    MakeFieldNode(@"arp.opcode", @"Opcode", [NSString stringWithFormat:@"%u", ntohs(header->opcode)], offset, 6, 2),
+                    MakeFieldNode(@"arp.senderMac", @"Sender MAC", MakeNSString(arpLayer->getSenderMacAddress().toString()), offset, 8, 6),
+                    MakeFieldNode(@"arp.senderIP", @"Sender IP", MakeNSString(arpLayer->getSenderIpAddr().toString()), offset, 14, 4),
+                    MakeFieldNode(@"arp.targetMac", @"Target MAC", MakeNSString(arpLayer->getTargetMacAddress().toString()), offset, 18, 6),
+                    MakeFieldNode(@"arp.targetIP", @"Target IP", MakeNSString(arpLayer->getTargetIpAddr().toString()), offset, 24, 4),
+                ];
+                [nodes addObject:MakeLayerNode(@"arp",
+                                               @"ARP",
+                                               MakeNSString(arpLayer->toString()),
+                                               offset,
+                                               arpLayer->getHeaderLen(),
+                                               children)];
+                break;
+            }
+            case pcpp::IPv4: {
+                auto *ipv4Layer = static_cast<pcpp::IPv4Layer *>(layer);
+                auto *header = ipv4Layer->getIPv4Header();
+                NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *children = [NSMutableArray arrayWithArray:@[
+                    MakeFieldNode(@"ipv4.version", @"Version", [NSString stringWithFormat:@"%u", header->ipVersion], offset, 0, 1),
+                    MakeFieldNode(@"ipv4.ihl", @"Header Length", [NSString stringWithFormat:@"%zu bytes", ipv4Layer->getHeaderLen()], offset, 0, 1),
+                    MakeFieldNode(@"ipv4.dscp", @"Differentiated Services", FormatHex16(header->typeOfService), offset, 1, 1),
+                    MakeFieldNode(@"ipv4.totalLength", @"Total Length", [NSString stringWithFormat:@"%u", ntohs(header->totalLength)], offset, 2, 2),
+                    MakeFieldNode(@"ipv4.identification", @"Identification", FormatHex16(ntohs(header->ipId)), offset, 4, 2),
+                    MakeFieldNode(@"ipv4.flagsOffset", @"Flags / Fragment Offset", FormatHex16(ntohs(header->fragmentOffset)), offset, 6, 2),
+                    MakeFieldNode(@"ipv4.ttl", @"Time To Live", [NSString stringWithFormat:@"%u", header->timeToLive], offset, 8, 1),
+                    MakeFieldNode(@"ipv4.protocol", @"Protocol", [NSString stringWithFormat:@"%u", header->protocol], offset, 9, 1),
+                    MakeFieldNode(@"ipv4.checksum", @"Header Checksum", FormatHex16(ntohs(header->headerChecksum)), offset, 10, 2),
+                    MakeFieldNode(@"ipv4.src", @"Source", MakeNSString(ipv4Layer->getSrcIPv4Address().toString()), offset, 12, 4),
+                    MakeFieldNode(@"ipv4.dst", @"Destination", MakeNSString(ipv4Layer->getDstIPv4Address().toString()), offset, 16, 4),
+                ]];
+                if (ipv4Layer->getHeaderLen() > sizeof(pcpp::iphdr)) {
+                    [children addObject:MakeFieldNode(@"ipv4.options",
+                                                      @"Options",
+                                                      [NSString stringWithFormat:@"%zu bytes", ipv4Layer->getHeaderLen() - sizeof(pcpp::iphdr)],
+                                                      offset,
+                                                      sizeof(pcpp::iphdr),
+                                                      ipv4Layer->getHeaderLen() - sizeof(pcpp::iphdr))];
+                }
+                [nodes addObject:MakeLayerNode(@"ipv4",
+                                               @"IPv4",
+                                               [NSString stringWithFormat:@"Src: %@, Dst: %@",
+                                                                          MakeNSString(ipv4Layer->getSrcIPv4Address().toString()),
+                                                                          MakeNSString(ipv4Layer->getDstIPv4Address().toString())],
+                                               offset,
+                                               ipv4Layer->getHeaderLen(),
+                                               children)];
+                break;
+            }
+            case pcpp::IPv6: {
+                auto *ipv6Layer = static_cast<pcpp::IPv6Layer *>(layer);
+                auto *header = ipv6Layer->getIPv6Header();
+                uint32_t versionTrafficFlow = 0;
+                std::memcpy(&versionTrafficFlow, header, sizeof(versionTrafficFlow));
+                NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *children = [NSMutableArray arrayWithArray:@[
+                    MakeFieldNode(@"ipv6.versionTraffic", @"Version / Traffic Class / Flow Label", FormatHex32(ntohl(versionTrafficFlow)), offset, 0, 4),
+                    MakeFieldNode(@"ipv6.payloadLength", @"Payload Length", [NSString stringWithFormat:@"%u", ntohs(header->payloadLength)], offset, 4, 2),
+                    MakeFieldNode(@"ipv6.nextHeader", @"Next Header", [NSString stringWithFormat:@"%u", header->nextHeader], offset, 6, 1),
+                    MakeFieldNode(@"ipv6.hopLimit", @"Hop Limit", [NSString stringWithFormat:@"%u", header->hopLimit], offset, 7, 1),
+                    MakeFieldNode(@"ipv6.src", @"Source", MakeNSString(ipv6Layer->getSrcIPv6Address().toString()), offset, 8, 16),
+                    MakeFieldNode(@"ipv6.dst", @"Destination", MakeNSString(ipv6Layer->getDstIPv6Address().toString()), offset, 24, 16),
+                ]];
+                if (ipv6Layer->getHeaderLen() > sizeof(pcpp::ip6_hdr)) {
+                    [children addObject:MakeFieldNode(@"ipv6.extensions",
+                                                      @"Extension Headers",
+                                                      [NSString stringWithFormat:@"%zu bytes", ipv6Layer->getHeaderLen() - sizeof(pcpp::ip6_hdr)],
+                                                      offset,
+                                                      sizeof(pcpp::ip6_hdr),
+                                                      ipv6Layer->getHeaderLen() - sizeof(pcpp::ip6_hdr))];
+                }
+                [nodes addObject:MakeLayerNode(@"ipv6",
+                                               @"IPv6",
+                                               [NSString stringWithFormat:@"Src: %@, Dst: %@",
+                                                                          MakeNSString(ipv6Layer->getSrcIPv6Address().toString()),
+                                                                          MakeNSString(ipv6Layer->getDstIPv6Address().toString())],
+                                               offset,
+                                               ipv6Layer->getHeaderLen(),
+                                               children)];
+                break;
+            }
+            case pcpp::TCP: {
+                auto *tcpLayer = static_cast<pcpp::TcpLayer *>(layer);
+                auto *header = tcpLayer->getTcpHeader();
+                NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *children = [NSMutableArray arrayWithArray:@[
+                    MakeFieldNode(@"tcp.srcPort", @"Source Port", [NSString stringWithFormat:@"%u", tcpLayer->getSrcPort()], offset, 0, 2),
+                    MakeFieldNode(@"tcp.dstPort", @"Destination Port", [NSString stringWithFormat:@"%u", tcpLayer->getDstPort()], offset, 2, 2),
+                    MakeFieldNode(@"tcp.sequence", @"Sequence Number", [NSString stringWithFormat:@"%u", ntohl(header->sequenceNumber)], offset, 4, 4),
+                    MakeFieldNode(@"tcp.ack", @"Acknowledgment Number", [NSString stringWithFormat:@"%u", ntohl(header->ackNumber)], offset, 8, 4),
+                    MakeFieldNode(@"tcp.dataOffset", @"Header Length", [NSString stringWithFormat:@"%zu bytes", tcpLayer->getHeaderLen()], offset, 12, 2),
+                    MakeFieldNode(@"tcp.flags", @"Flags", TCPFlagsSummary(header), offset, 12, 2),
+                    MakeFieldNode(@"tcp.window", @"Window", [NSString stringWithFormat:@"%u", ntohs(header->windowSize)], offset, 14, 2),
+                    MakeFieldNode(@"tcp.checksum", @"Checksum", FormatHex16(ntohs(header->headerChecksum)), offset, 16, 2),
+                    MakeFieldNode(@"tcp.urgentPointer", @"Urgent Pointer", [NSString stringWithFormat:@"%u", ntohs(header->urgentPointer)], offset, 18, 2),
+                ]];
+                if (tcpLayer->getHeaderLen() > sizeof(pcpp::tcphdr)) {
+                    [children addObject:MakeFieldNode(@"tcp.options",
+                                                      @"Options",
+                                                      [NSString stringWithFormat:@"%zu bytes", tcpLayer->getHeaderLen() - sizeof(pcpp::tcphdr)],
+                                                      offset,
+                                                      sizeof(pcpp::tcphdr),
+                                                      tcpLayer->getHeaderLen() - sizeof(pcpp::tcphdr))];
+                }
+                [nodes addObject:MakeLayerNode(@"tcp",
+                                               @"TCP",
+                                               [NSString stringWithFormat:@"%u → %u (%@)",
+                                                                          tcpLayer->getSrcPort(),
+                                                                          tcpLayer->getDstPort(),
+                                                                          TCPFlagsSummary(header)],
+                                               offset,
+                                               tcpLayer->getHeaderLen(),
+                                               children)];
+                break;
+            }
+            case pcpp::UDP: {
+                auto *udpLayer = static_cast<pcpp::UdpLayer *>(layer);
+                auto *header = udpLayer->getUdpHeader();
+                NSArray *children = @[
+                    MakeFieldNode(@"udp.srcPort", @"Source Port", [NSString stringWithFormat:@"%u", udpLayer->getSrcPort()], offset, 0, 2),
+                    MakeFieldNode(@"udp.dstPort", @"Destination Port", [NSString stringWithFormat:@"%u", udpLayer->getDstPort()], offset, 2, 2),
+                    MakeFieldNode(@"udp.length", @"Length", [NSString stringWithFormat:@"%u", ntohs(header->length)], offset, 4, 2),
+                    MakeFieldNode(@"udp.checksum", @"Checksum", FormatHex16(ntohs(header->headerChecksum)), offset, 6, 2),
+                ];
+                [nodes addObject:MakeLayerNode(@"udp",
+                                               @"UDP",
+                                               [NSString stringWithFormat:@"%u → %u", udpLayer->getSrcPort(), udpLayer->getDstPort()],
+                                               offset,
+                                               udpLayer->getHeaderLen(),
+                                               children)];
+                break;
+            }
+            case pcpp::GenericPayload: {
+                auto *payloadLayer = static_cast<pcpp::PayloadLayer *>(layer);
+                NSArray *children = @[
+                    MakeFieldNode(@"payload.length",
+                                  @"Length",
+                                  [NSString stringWithFormat:@"%zu bytes", payloadLayer->getPayloadLen()],
+                                  offset,
+                                  0,
+                                  payloadLayer->getPayloadLen()),
+                    MakeFieldNode(@"payload.preview",
+                                  @"Preview",
+                                  PayloadPreview(payloadLayer->getPayload(), payloadLayer->getPayloadLen()),
+                                  offset,
+                                  0,
+                                  payloadLayer->getPayloadLen()),
+                ];
+                [nodes addObject:MakeLayerNode(@"payload",
+                                               @"Payload",
+                                               [NSString stringWithFormat:@"%zu bytes", payloadLayer->getPayloadLen()],
+                                               offset,
+                                               payloadLayer->getPayloadLen(),
+                                               children)];
+                break;
+            }
+            default: {
+                [nodes addObject:MakeLayerNode([NSString stringWithFormat:@"layer-%lu", (unsigned long)offset],
+                                               LayerName(*layer),
+                                               [NSString stringWithFormat:@"Detailed field decoding is not available yet for %@.",
+                                                                          LayerName(*layer)],
+                                               offset,
+                                               layer->getHeaderLen(),
+                                               @[
+                                                   MakeFieldNode([NSString stringWithFormat:@"layer-%lu.bytes", (unsigned long)offset],
+                                                                 @"Bytes",
+                                                                 [NSString stringWithFormat:@"%zu bytes", layer->getHeaderLen()],
+                                                                 offset,
+                                                                 0,
+                                                                 layer->getHeaderLen()),
+                                               ])];
+                break;
+            }
+        }
+    }
+
+    auto decodeStatus = DetermineDecodeStatus(packet, rawPacket);
+    if (decodeStatus.first != PCPPNativeDecodeStatusKindComplete && decodeStatus.second != nil) {
+        [nodes addObject:MakeWarningNode(@"warning.decode", decodeStatus.second)];
+    }
+
+    return nodes;
+}
+
+PCPPNativePacketInspectionDescriptor *MakePacketInspection(const pcpp::RawPacket &rawPacket,
+                                                           unsigned long long identifier,
+                                                           NSString * _Nullable interfaceName,
+                                                           NSString * _Nullable packetComment)
+{
+    NSData *rawBytes = [NSData dataWithBytes:rawPacket.getRawData() length:static_cast<NSUInteger>(rawPacket.getRawDataLen())];
+
+    try {
+        pcpp::Packet packet(const_cast<pcpp::RawPacket *>(&rawPacket), false);
+        auto decodeStatus = DetermineDecodeStatus(packet, rawPacket);
+        auto *decodeDescriptor = [[PCPPNativeDecodeStatusDescriptor alloc] initWithKind:decodeStatus.first
+                                                                                  reason:decodeStatus.second];
+        return [[PCPPNativePacketInspectionDescriptor alloc] initWithPacketIdentifier:identifier
+                                                                         packetNumber:identifier
+                                                                             rawBytes:rawBytes
+                                                                          detailNodes:BuildPacketDetailNodes(packet, rawPacket, identifier, interfaceName, packetComment)
+                                                                         decodeStatus:decodeDescriptor];
+    } catch (const std::exception &exception) {
+        auto *decodeDescriptor = [[PCPPNativeDecodeStatusDescriptor alloc] initWithKind:PCPPNativeDecodeStatusKindMalformed
+                                                                                  reason:MakeNSString(exception.what())];
+        return [[PCPPNativePacketInspectionDescriptor alloc] initWithPacketIdentifier:identifier
+                                                                         packetNumber:identifier
+                                                                             rawBytes:rawBytes
+                                                                          detailNodes:@[
+                                                                              MakeLayerNode(@"frame",
+                                                                                            @"Frame",
+                                                                                            [NSString stringWithFormat:@"Packet %llu: %d bytes on wire (%d captured)",
+                                                                                                                       identifier,
+                                                                                                                       rawPacket.getFrameLength(),
+                                                                                                                       rawPacket.getRawDataLen()],
+                                                                                            0,
+                                                                                            rawPacket.getRawDataLen(),
+                                                                                            @[]),
+                                                                              MakeWarningNode(@"warning.decode", MakeNSString(exception.what())),
+                                                                          ]
+                                                                         decodeStatus:decodeDescriptor];
     }
 }
 
@@ -808,6 +1225,7 @@ PCPPNativeCaptureHealthDescriptor *MakeHealthDescriptor(const LiveCaptureState &
                          snapshotLength:(NSInteger)snapshotLength
                   kernelBufferSizeBytes:(NSInteger)kernelBufferSizeBytes
                 readTimeoutMilliseconds:(NSInteger)readTimeoutMilliseconds
+                captureFilterExpression:(NSString *)captureFilterExpression
                                stopMode:(NSString *)stopMode
                               stopValue:(unsigned long long)stopValue
                         fileWritingMode:(NSString *)fileWritingMode
@@ -823,6 +1241,7 @@ PCPPNativeCaptureHealthDescriptor *MakeHealthDescriptor(const LiveCaptureState &
         _snapshotLength = snapshotLength;
         _kernelBufferSizeBytes = kernelBufferSizeBytes;
         _readTimeoutMilliseconds = readTimeoutMilliseconds;
+        _captureFilterExpression = [captureFilterExpression copy];
         _stopMode = [stopMode copy];
         _stopValue = stopValue;
         _fileWritingMode = [fileWritingMode copy];
@@ -831,6 +1250,89 @@ PCPPNativeCaptureHealthDescriptor *MakeHealthDescriptor(const LiveCaptureState &
         _fileFormat = [fileFormat copy];
         _maxFileSizeBytes = maxFileSizeBytes;
         _ringFileCount = ringFileCount;
+    }
+    return self;
+}
+
+@end
+
+@implementation PCPPNativePacketByteRangeDescriptor
+
+- (instancetype)initWithOffset:(NSInteger)offset length:(NSInteger)length
+{
+    self = [super init];
+    if (self) {
+        _offset = offset;
+        _length = length;
+    }
+    return self;
+}
+
+@end
+
+@implementation PCPPNativePacketDetailNodeDescriptor
+
+- (instancetype)initWithIdentifier:(NSString *)identifier
+                              name:(NSString *)name
+                             value:(NSString *)value
+                              kind:(NSString *)kind
+                         byteRange:(PCPPNativePacketByteRangeDescriptor *)byteRange
+          jumpTargetPacketIdentifier:(NSNumber *)jumpTargetPacketIdentifier
+                           children:(NSArray<PCPPNativePacketDetailNodeDescriptor *> *)children
+{
+    self = [super init];
+    if (self) {
+        _identifier = [identifier copy];
+        _name = [name copy];
+        _value = [value copy];
+        _kind = [kind copy];
+        _byteRange = byteRange;
+        _jumpTargetPacketIdentifier = jumpTargetPacketIdentifier;
+        _children = [children copy];
+    }
+    return self;
+}
+
+@end
+
+@implementation PCPPNativePacketInspectionDescriptor
+
+- (instancetype)initWithPacketIdentifier:(unsigned long long)packetIdentifier
+                            packetNumber:(unsigned long long)packetNumber
+                                rawBytes:(NSData *)rawBytes
+                             detailNodes:(NSArray<PCPPNativePacketDetailNodeDescriptor *> *)detailNodes
+                            decodeStatus:(PCPPNativeDecodeStatusDescriptor *)decodeStatus
+{
+    self = [super init];
+    if (self) {
+        _packetIdentifier = packetIdentifier;
+        _packetNumber = packetNumber;
+        _rawBytes = [rawBytes copy];
+        _detailNodes = [detailNodes copy];
+        _decodeStatus = decodeStatus;
+    }
+    return self;
+}
+
+@end
+
+@implementation PCPPNativePacketLoadProgressDescriptor
+
+- (instancetype)initWithPhase:(NSString *)phase
+            loadedPacketCount:(unsigned long long)loadedPacketCount
+               processedBytes:(NSNumber *)processedBytes
+                   totalBytes:(NSNumber *)totalBytes
+                partialResult:(BOOL)partialResult
+                      message:(NSString *)message
+{
+    self = [super init];
+    if (self) {
+        _phase = [phase copy];
+        _loadedPacketCount = loadedPacketCount;
+        _processedBytes = processedBytes;
+        _totalBytes = totalBytes;
+        _partialResult = partialResult;
+        _message = [message copy];
     }
     return self;
 }
@@ -969,6 +1471,19 @@ static void OnLiveStatsUpdate(pcpp::IPcapDevice::PcapStats &stats, void *userCoo
             }
             _state->phase = PCPPNativeLiveSessionPhaseFailed;
             _state->statusMessage = @"Failed to open the live capture interface.";
+            return NO;
+        }
+
+        std::string captureFilter = MakeStdString(_state->options_.captureFilterExpression);
+        if (!captureFilter.empty() && !_state->device->setFilter(captureFilter)) {
+            if (error != nullptr) {
+                *error = MakeError(PacketryNativeErrorCodeInvalidFilter, @"Packetry could not apply this capture filter to the selected interface.");
+            }
+            if (_state->device->isOpened()) {
+                _state->device->close();
+            }
+            _state->phase = PCPPNativeLiveSessionPhaseFailed;
+            _state->statusMessage = @"Failed to apply the live capture filter.";
             return NO;
         }
 
@@ -1119,6 +1634,29 @@ static void OnLiveStatsUpdate(pcpp::IPcapDevice::PcapStats &stats, void *userCoo
     }
 }
 
+- (PCPPNativePacketInspectionDescriptor *)inspectPacketWithIdentifier:(unsigned long long)identifier error:(NSError **)error
+{
+    std::unique_ptr<pcpp::RawPacket> rawPacket;
+    NSString *interfaceName = nil;
+
+    {
+        std::lock_guard<std::mutex> lock(_state->mutex);
+        if (identifier == 0 || identifier > _state->packets.size()) {
+            if (error != nullptr) {
+                *error = MakeError(PacketryNativeErrorCodeFileReadFailed, @"Packetry could not find that packet in the live session.");
+            }
+            return nil;
+        }
+
+        rawPacket = std::unique_ptr<pcpp::RawPacket>(_state->packets[identifier - 1].rawPacket->clone());
+        if (_state->device != nullptr) {
+            interfaceName = MakeNSString(_state->device->getName());
+        }
+    }
+
+    return MakePacketInspection(*rawPacket, identifier, interfaceName, nil);
+}
+
 - (void)dealloc
 {
     NSError *error = nil;
@@ -1132,6 +1670,7 @@ namespace {
 struct OfflineDocumentState {
     explicit OfflineDocumentState(NSURL *fileURL) : currentURL(fileURL) {}
 
+    mutable std::mutex mutex;
     NSURL *currentURL = nil;
     std::vector<StoredPacket> packets;
     std::string format;
@@ -1140,6 +1679,18 @@ struct OfflineDocumentState {
     std::string captureApplication;
     std::string fileComment;
     bool dirty = false;
+    bool loading = false;
+    bool partialResult = false;
+};
+
+struct OfflineDocumentSaveSnapshot {
+    NSURL *currentURL = nil;
+    std::vector<StoredPacket> packets;
+    std::string format;
+    std::string operatingSystem;
+    std::string hardware;
+    std::string captureApplication;
+    std::string fileComment;
 };
 
 std::string NormalizedFormatForURL(NSURL *url)
@@ -1154,11 +1705,43 @@ std::string NormalizedFormatForURL(NSURL *url)
 
 PCPPNativeCaptureDocumentMetadataDescriptor *MakeMetadata(const OfflineDocumentState &state)
 {
-    return [[PCPPNativeCaptureDocumentMetadataDescriptor alloc] initWithFormat:MakeNSString(state.format)
+    const std::string format = state.format.empty() ? NormalizedFormatForURL(state.currentURL) : state.format;
+    return [[PCPPNativeCaptureDocumentMetadataDescriptor alloc] initWithFormat:MakeNSString(format)
                                                                operatingSystem:NullableNSString(state.operatingSystem)
                                                                       hardware:NullableNSString(state.hardware)
                                                             captureApplication:NullableNSString(state.captureApplication)
-                                                                   fileComment:NullableNSString(state.fileComment)];
+                                                                    fileComment:NullableNSString(state.fileComment)];
+}
+
+PCPPNativePacketLoadProgressDescriptor *MakeLoadProgressDescriptor(NSString *phase,
+                                                                   NSUInteger loadedPacketCount,
+                                                                   std::optional<uint64_t> processedBytes,
+                                                                   std::optional<uint64_t> totalBytes,
+                                                                   bool partialResult,
+                                                                   NSString *message)
+{
+    NSNumber *boxedProcessedBytes = processedBytes ? @(*processedBytes) : nil;
+    NSNumber *boxedTotalBytes = totalBytes ? @(*totalBytes) : nil;
+    return [[PCPPNativePacketLoadProgressDescriptor alloc] initWithPhase:phase
+                                                       loadedPacketCount:loadedPacketCount
+                                                          processedBytes:boxedProcessedBytes
+                                                              totalBytes:boxedTotalBytes
+                                                           partialResult:partialResult
+                                                                 message:message];
+}
+
+std::optional<uint64_t> FileSizeForURL(NSURL *url)
+{
+    try {
+        const std::filesystem::path path = MakeStdString(url.path);
+        if (path.empty() || !std::filesystem::exists(path)) {
+            return std::nullopt;
+        }
+
+        return static_cast<uint64_t>(std::filesystem::file_size(path));
+    } catch (const std::exception &) {
+        return std::nullopt;
+    }
 }
 
 NSURL *TemporarySaveURL(NSURL *targetURL)
@@ -1229,17 +1812,97 @@ bool ReplaceSavedFile(NSURL *temporaryURL, NSURL *targetURL, NSError **error)
     return true;
 }
 
-NSArray<PCPPNativePacketSummaryDescriptor *> *LoadPacketsFromURL(OfflineDocumentState &state, NSError **error)
+OfflineDocumentSaveSnapshot MakeSaveSnapshotLocked(const OfflineDocumentState &state)
 {
-    state.packets.clear();
-    state.format = NormalizedFormatForURL(state.currentURL);
-    state.operatingSystem.clear();
-    state.hardware.clear();
-    state.captureApplication.clear();
-    state.fileComment.clear();
+    OfflineDocumentSaveSnapshot snapshot;
+    snapshot.currentURL = state.currentURL;
+    snapshot.format = state.format;
+    snapshot.operatingSystem = state.operatingSystem;
+    snapshot.hardware = state.hardware;
+    snapshot.captureApplication = state.captureApplication;
+    snapshot.fileComment = state.fileComment;
 
-    auto reader = std::unique_ptr<pcpp::IFileReaderDevice>(pcpp::IFileReaderDevice::getReader(MakeStdString(state.currentURL.path)));
+    snapshot.packets.reserve(state.packets.size());
+    for (const auto &packet : state.packets) {
+        snapshot.packets.push_back({
+            std::unique_ptr<pcpp::RawPacket>(packet.rawPacket == nullptr ? nullptr : packet.rawPacket->clone()),
+            packet.packetComment,
+        });
+    }
+
+    return snapshot;
+}
+
+NSArray<PCPPNativePacketSummaryDescriptor *> *LoadPacketsFromURLIncrementally(OfflineDocumentState &state,
+                                                                              NSUInteger batchSize,
+                                                                              PCPPNativePacketBatchHandler batchHandler,
+                                                                              PCPPNativeLoadProgressHandler progressHandler,
+                                                                              PCPPNativeCancellationHandler cancellationCheck,
+                                                                              NSError **error)
+{
+    NSURL *currentURL = nil;
+    {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        currentURL = state.currentURL;
+        state.packets.clear();
+        state.format = NormalizedFormatForURL(currentURL);
+        state.operatingSystem.clear();
+        state.hardware.clear();
+        state.captureApplication.clear();
+        state.fileComment.clear();
+        state.dirty = false;
+        state.loading = true;
+        state.partialResult = false;
+    }
+
+    if (currentURL == nil) {
+        if (error != nullptr) {
+            *error = MakeError(PacketryNativeErrorCodeFileReadFailed, @"A capture URL is required.");
+        }
+        return nil;
+    }
+
+    NSString *fileName = currentURL.lastPathComponent ?: @"capture";
+    std::optional<uint64_t> totalBytes = FileSizeForURL(currentURL);
+    const NSUInteger effectiveBatchSize = std::max<NSUInteger>(batchSize, 1);
+
+    auto emitProgress = [&](NSString *phase,
+                            NSUInteger loadedPacketCount,
+                            uint64_t processedBytes,
+                            bool partialResult,
+                            NSString *message) {
+        if (progressHandler == nil) {
+            return;
+        }
+
+        std::optional<uint64_t> normalizedProcessedBytes;
+        if (totalBytes.has_value()) {
+            normalizedProcessedBytes = std::min<uint64_t>(processedBytes, *totalBytes);
+        } else {
+            normalizedProcessedBytes = processedBytes;
+        }
+
+        progressHandler(MakeLoadProgressDescriptor(phase,
+                                                   loadedPacketCount,
+                                                   normalizedProcessedBytes,
+                                                   totalBytes,
+                                                   partialResult,
+                                                   message));
+    };
+
+    emitProgress(@"loading",
+                 0,
+                 0,
+                 false,
+                 [NSString stringWithFormat:@"Loading %@…", fileName]);
+
+    auto reader = std::unique_ptr<pcpp::IFileReaderDevice>(pcpp::IFileReaderDevice::getReader(MakeStdString(currentURL.path)));
     if (reader == nullptr) {
+        {
+            std::lock_guard<std::mutex> lock(state.mutex);
+            state.loading = false;
+        }
+        emitProgress(@"failed", 0, 0, false, [NSString stringWithFormat:@"Packetry could not load %@.", fileName]);
         if (error != nullptr) {
             *error = MakeError(PacketryNativeErrorCodeFileReadFailed, @"Packetry could not determine a file reader for this capture.");
         }
@@ -1247,6 +1910,11 @@ NSArray<PCPPNativePacketSummaryDescriptor *> *LoadPacketsFromURL(OfflineDocument
     }
 
     if (!reader->open()) {
+        {
+            std::lock_guard<std::mutex> lock(state.mutex);
+            state.loading = false;
+        }
+        emitProgress(@"failed", 0, 0, false, [NSString stringWithFormat:@"Packetry could not open %@.", fileName]);
         if (error != nullptr) {
             *error = MakeError(PacketryNativeErrorCodeFileReadFailed, @"Packetry could not open the requested capture file.");
         }
@@ -1254,6 +1922,7 @@ NSArray<PCPPNativePacketSummaryDescriptor *> *LoadPacketsFromURL(OfflineDocument
     }
 
     if (auto *pcapngReader = dynamic_cast<pcpp::PcapNgFileReaderDevice *>(reader.get())) {
+        std::lock_guard<std::mutex> lock(state.mutex);
         state.operatingSystem = pcapngReader->getOS();
         state.hardware = pcapngReader->getHardware();
         state.captureApplication = pcapngReader->getCaptureApplication();
@@ -1261,37 +1930,116 @@ NSArray<PCPPNativePacketSummaryDescriptor *> *LoadPacketsFromURL(OfflineDocument
     }
 
     NSMutableArray<PCPPNativePacketSummaryDescriptor *> *packets = [NSMutableArray array];
+    NSMutableArray<PCPPNativePacketSummaryDescriptor *> *pendingBatch = [NSMutableArray array];
     unsigned long long identifier = 1;
-    while (true) {
-        pcpp::RawPacket rawPacket;
-        std::string packetComment;
-        bool didReadPacket = false;
+    uint64_t processedBytes = 0;
+    bool wasCancelled = false;
+    NSError *caughtError = nil;
 
-        if (auto *pcapngReader = dynamic_cast<pcpp::PcapNgFileReaderDevice *>(reader.get())) {
-            didReadPacket = pcapngReader->getNextPacket(rawPacket, packetComment);
-        } else {
-            didReadPacket = reader->getNextPacket(rawPacket);
+    auto flushPendingBatch = [&]() {
+        if (pendingBatch.count == 0) {
+            return;
         }
 
-        if (!didReadPacket) {
-            break;
+        if (batchHandler != nil) {
+            batchHandler([pendingBatch copy]);
         }
+        [pendingBatch removeAllObjects];
+    };
 
-        state.packets.push_back({std::make_unique<pcpp::RawPacket>(rawPacket), packetComment});
-        [packets addObject:MakePacketSummary(*state.packets.back().rawPacket,
-                                             identifier,
-                                             nil,
-                                             nil,
-                                             NullableNSString(packetComment))];
-        identifier += 1;
+    try {
+        while (true) {
+            if (cancellationCheck != nil && cancellationCheck()) {
+                wasCancelled = true;
+                break;
+            }
+
+            pcpp::RawPacket rawPacket;
+            std::string packetComment;
+            bool didReadPacket = false;
+
+            if (auto *pcapngReader = dynamic_cast<pcpp::PcapNgFileReaderDevice *>(reader.get())) {
+                didReadPacket = pcapngReader->getNextPacket(rawPacket, packetComment);
+            } else {
+                didReadPacket = reader->getNextPacket(rawPacket);
+            }
+
+            if (!didReadPacket) {
+                break;
+            }
+
+            auto *summary = MakePacketSummary(rawPacket,
+                                              identifier,
+                                              nil,
+                                              nil,
+                                              NullableNSString(packetComment));
+            {
+                std::lock_guard<std::mutex> lock(state.mutex);
+                state.packets.push_back({std::make_unique<pcpp::RawPacket>(rawPacket), packetComment});
+            }
+
+            [packets addObject:summary];
+            [pendingBatch addObject:summary];
+            processedBytes += static_cast<uint64_t>(rawPacket.getRawDataLen());
+            identifier += 1;
+
+            if (pendingBatch.count >= effectiveBatchSize) {
+                flushPendingBatch();
+                emitProgress(@"loading",
+                             packets.count,
+                             processedBytes,
+                             false,
+                             [NSString stringWithFormat:@"Loaded %lu packets from %@…", (unsigned long)packets.count, fileName]);
+            }
+        }
+    } catch (const std::exception &exception) {
+        caughtError = MakeError(PacketryNativeErrorCodeFileReadFailed, MakeNSString(exception.what()));
     }
 
+    flushPendingBatch();
     reader->close();
-    state.dirty = false;
+
+    {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        state.loading = false;
+        state.partialResult = wasCancelled || caughtError != nil;
+        state.dirty = false;
+    }
+
+    if (caughtError != nil) {
+        emitProgress(@"failed",
+                     packets.count,
+                     processedBytes,
+                     packets.count > 0,
+                     [NSString stringWithFormat:@"Packetry could not finish loading %@.", fileName]);
+        if (error != nullptr) {
+            *error = caughtError;
+        }
+        return nil;
+    }
+
+    if (wasCancelled) {
+        emitProgress(@"cancelled",
+                     packets.count,
+                     processedBytes,
+                     true,
+                     [NSString stringWithFormat:@"Loading cancelled after %lu packets from %@.", (unsigned long)packets.count, fileName]);
+        if (error != nullptr) {
+            *error = MakeError(PacketryNativeErrorCodeOperationCancelled,
+                               [NSString stringWithFormat:@"Loading %@ was cancelled after %lu packets.", fileName, (unsigned long)packets.count]);
+        }
+        return nil;
+    }
+
+    emitProgress(@"completed",
+                 packets.count,
+                 totalBytes.value_or(processedBytes),
+                 false,
+                 [NSString stringWithFormat:@"Loaded %lu packets from %@.", (unsigned long)packets.count, fileName]);
     return packets;
 }
 
-bool SavePacketsToURL(const OfflineDocumentState &state, NSURL *targetURL, const std::string &format, NSError **error)
+bool SavePacketsToURL(const OfflineDocumentSaveSnapshot &state, NSURL *targetURL, const std::string &format, NSError **error)
 {
     if (state.packets.empty()) {
         if (error != nullptr) {
@@ -1387,64 +2135,165 @@ bool SavePacketsToURL(const OfflineDocumentState &state, NSURL *targetURL, const
 
 - (NSURL *)currentURL
 {
+    std::lock_guard<std::mutex> lock(_state->mutex);
     return _state->currentURL;
 }
 
 - (NSString *)currentFormat
 {
+    std::lock_guard<std::mutex> lock(_state->mutex);
+    if (_state->format.empty()) {
+        return MakeNSString(NormalizedFormatForURL(_state->currentURL));
+    }
+
     return MakeNSString(_state->format);
 }
 
 - (PCPPNativeCaptureDocumentMetadataDescriptor *)documentMetadata
 {
+    std::lock_guard<std::mutex> lock(_state->mutex);
     return MakeMetadata(*_state);
 }
 
 - (BOOL)dirty
 {
+    std::lock_guard<std::mutex> lock(_state->mutex);
     return _state->dirty;
 }
 
 - (NSArray<PCPPNativePacketSummaryDescriptor *> *)openAndReturnError:(NSError **)error
 {
-    return LoadPacketsFromURL(*_state, error);
+    return LoadPacketsFromURLIncrementally(*_state, 256, nil, nil, nil, error);
 }
 
 - (NSArray<PCPPNativePacketSummaryDescriptor *> *)reopenAndReturnError:(NSError **)error
 {
-    return LoadPacketsFromURL(*_state, error);
+    return LoadPacketsFromURLIncrementally(*_state, 256, nil, nil, nil, error);
+}
+
+- (NSArray<PCPPNativePacketSummaryDescriptor *> *)openIncrementallyWithBatchSize:(NSUInteger)batchSize
+                                                                    batchHandler:(PCPPNativePacketBatchHandler)batchHandler
+                                                                 progressHandler:(PCPPNativeLoadProgressHandler)progressHandler
+                                                               cancellationCheck:(PCPPNativeCancellationHandler)cancellationCheck
+                                                                           error:(NSError **)error
+{
+    return LoadPacketsFromURLIncrementally(*_state, batchSize, batchHandler, progressHandler, cancellationCheck, error);
+}
+
+- (NSArray<PCPPNativePacketSummaryDescriptor *> *)reopenIncrementallyWithBatchSize:(NSUInteger)batchSize
+                                                                      batchHandler:(PCPPNativePacketBatchHandler)batchHandler
+                                                                   progressHandler:(PCPPNativeLoadProgressHandler)progressHandler
+                                                                 cancellationCheck:(PCPPNativeCancellationHandler)cancellationCheck
+                                                                             error:(NSError **)error
+{
+    return LoadPacketsFromURLIncrementally(*_state, batchSize, batchHandler, progressHandler, cancellationCheck, error);
+}
+
+- (PCPPNativePacketInspectionDescriptor *)inspectPacketWithIdentifier:(unsigned long long)identifier error:(NSError **)error
+{
+    std::unique_ptr<pcpp::RawPacket> rawPacket;
+    NSString *packetComment = nil;
+
+    {
+        std::lock_guard<std::mutex> lock(_state->mutex);
+        if (identifier == 0 || identifier > _state->packets.size()) {
+            if (error != nullptr) {
+                *error = MakeError(PacketryNativeErrorCodeFileReadFailed, @"Packetry could not find that packet in this capture.");
+            }
+            return nil;
+        }
+
+        const auto &storedPacket = _state->packets[identifier - 1];
+        rawPacket = std::unique_ptr<pcpp::RawPacket>(storedPacket.rawPacket == nullptr ? nullptr : storedPacket.rawPacket->clone());
+        packetComment = NullableNSString(storedPacket.packetComment);
+    }
+
+    if (rawPacket == nullptr) {
+        if (error != nullptr) {
+            *error = MakeError(PacketryNativeErrorCodeFileReadFailed, @"Packetry could not inspect that packet.");
+        }
+        return nil;
+    }
+
+    return MakePacketInspection(*rawPacket, identifier, nil, packetComment);
 }
 
 - (BOOL)saveAndReturnError:(NSError **)error
 {
-    if (!SavePacketsToURL(*_state, _state->currentURL, _state->format, error)) {
+    OfflineDocumentSaveSnapshot snapshot;
+    {
+        std::lock_guard<std::mutex> lock(_state->mutex);
+        if (_state->loading) {
+            if (error != nullptr) {
+                *error = MakeError(PacketryNativeErrorCodeFileWriteFailed, @"Packetry cannot save while the capture is still loading.");
+            }
+            return NO;
+        }
+
+        if (_state->partialResult) {
+            if (error != nullptr) {
+                *error = MakeError(PacketryNativeErrorCodeFileWriteFailed, @"Packetry cannot save a partially loaded capture. Reload the file to finish loading first.");
+            }
+            return NO;
+        }
+
+        snapshot = MakeSaveSnapshotLocked(*_state);
+    }
+
+    if (!SavePacketsToURL(snapshot, snapshot.currentURL, snapshot.format, error)) {
         return NO;
     }
 
-    _state->dirty = false;
+    {
+        std::lock_guard<std::mutex> lock(_state->mutex);
+        _state->dirty = false;
+    }
     return YES;
 }
 
 - (BOOL)saveToURL:(NSURL *)url format:(NSString *)format error:(NSError **)error
 {
+    OfflineDocumentSaveSnapshot snapshot;
+    {
+        std::lock_guard<std::mutex> lock(_state->mutex);
+        if (_state->loading) {
+            if (error != nullptr) {
+                *error = MakeError(PacketryNativeErrorCodeFileWriteFailed, @"Packetry cannot save while the capture is still loading.");
+            }
+            return NO;
+        }
+
+        if (_state->partialResult) {
+            if (error != nullptr) {
+                *error = MakeError(PacketryNativeErrorCodeFileWriteFailed, @"Packetry cannot save a partially loaded capture. Reload the file to finish loading first.");
+            }
+            return NO;
+        }
+
+        snapshot = MakeSaveSnapshotLocked(*_state);
+    }
+
     std::string normalizedFormat = MakeStdString(format);
     if (normalizedFormat.empty()) {
         normalizedFormat = NormalizedFormatForURL(url);
     }
 
-    if (!SavePacketsToURL(*_state, url, normalizedFormat, error)) {
+    if (!SavePacketsToURL(snapshot, url, normalizedFormat, error)) {
         return NO;
     }
 
-    _state->currentURL = url;
-    _state->format = normalizedFormat;
-    if (normalizedFormat != "pcapng") {
-        _state->operatingSystem.clear();
-        _state->hardware.clear();
-        _state->captureApplication.clear();
-        _state->fileComment.clear();
+    {
+        std::lock_guard<std::mutex> lock(_state->mutex);
+        _state->currentURL = url;
+        _state->format = normalizedFormat;
+        if (normalizedFormat != "pcapng") {
+            _state->operatingSystem.clear();
+            _state->hardware.clear();
+            _state->captureApplication.clear();
+            _state->fileComment.clear();
+        }
+        _state->dirty = false;
     }
-    _state->dirty = false;
     return YES;
 }
 
