@@ -3,7 +3,6 @@ import SwiftUI
 
 struct NetworkInspectorWindow: View {
     @StateObject private var viewModel: NetworkInspectorViewModel
-    @State private var isCaptureFilterPopoverPresented = false
 
     init(services: PacketryServiceRegistry = .foundation) {
         _viewModel = StateObject(wrappedValue: NetworkInspectorViewModel(services: services))
@@ -36,15 +35,6 @@ struct NetworkInspectorWindow: View {
         .frame(minWidth: 1_180, minHeight: 760)
         .toolbar {
             ToolbarItemGroup(placement: .navigation) {
-                Button {
-                    Task {
-                        await viewModel.refreshInterfaces()
-                    }
-                } label: {
-                    Label("Refresh Interfaces", systemImage: "arrow.clockwise")
-                }
-                .packetryToolbarButtonStyle()
-
                 CaptureSourceMenu(viewModel: viewModel)
 
                 Button {
@@ -52,36 +42,28 @@ struct NetworkInspectorWindow: View {
                         await viewModel.toggleLiveCapture()
                     }
                 } label: {
-                    Label(viewModel.captureButtonTitle(), systemImage: viewModel.captureButtonSystemImage())
+                    Image(systemName: viewModel.captureButtonSystemImage())
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 30, height: 30)
+                        .background(captureButtonTint, in: Circle())
+                        .overlay {
+                            Circle()
+                                .strokeBorder(.white.opacity(0.22), lineWidth: 1)
+                        }
+                        .shadow(color: captureButtonTint.opacity(0.25), radius: 3, y: 1)
                 }
                 .disabled(!viewModel.snapshot.base.sessionState.canStart && !viewModel.snapshot.base.sessionState.canStop)
-                .packetryToolbarButtonStyle(prominent: true)
+                .buttonStyle(.plain)
+                .opacity(viewModel.snapshot.base.sessionState.canStart || viewModel.snapshot.base.sessionState.canStop ? 1 : 0.45)
+                .help(viewModel.captureButtonTitle())
             }
 
             ToolbarItemGroup(placement: .principal) {
-                DisplayFilterToolbarField(viewModel: viewModel)
+                ToolbarStatusView(snapshot: viewModel.snapshot)
             }
 
             ToolbarItemGroup(placement: .primaryAction) {
-                Button {
-                    viewModel.presentOpenCapturePanel()
-                } label: {
-                    Label("Open", systemImage: "folder")
-                }
-                .packetryToolbarButtonStyle()
-
-                Button {
-                    isCaptureFilterPopoverPresented.toggle()
-                } label: {
-                    Label("Capture Filter", systemImage: "line.3.horizontal.decrease.circle")
-                }
-                .popover(isPresented: $isCaptureFilterPopoverPresented, arrowEdge: .bottom) {
-                    CaptureFilterPopover(viewModel: viewModel)
-                        .frame(width: 420)
-                        .padding(16)
-                }
-                .packetryToolbarButtonStyle()
-
                 Menu {
                     Button("Save") {
                         Task {
@@ -102,23 +84,26 @@ struct NetworkInspectorWindow: View {
                     }
                     .disabled(!viewModel.snapshot.base.documentState.canSaveAs)
                 } label: {
-                    Label("Export", systemImage: "square.and.arrow.up")
+                    Label("Share", systemImage: "square.and.arrow.up")
                 }
                 .packetryToolbarButtonStyle()
-
-                LayoutMenu(viewModel: viewModel)
 
                 Button {
                     viewModel.toggleInspector()
                 } label: {
-                    Label("Inspector", systemImage: "sidebar.trailing")
+                    Label("Toggle Inspector", systemImage: "sidebar.trailing")
                 }
                 .packetryToolbarButtonStyle()
+                .help("Toggle Inspector View")
             }
         }
         .task {
             await viewModel.performInitialLoadIfNeeded()
         }
+    }
+
+    private var captureButtonTint: Color {
+        viewModel.snapshot.base.sessionState.canStop ? .red : .green
     }
 }
 
@@ -134,16 +119,19 @@ private struct CaptureSourceMenu: View {
                     Button {
                         viewModel.selectInterface(interface.id)
                     } label: {
-                        Label(interfaceTitle(interface), systemImage: interface.id == viewModel.snapshot.base.sessionState.selectedInterfaceID ? "checkmark" : "network")
+                        Label(interfaceTitle(interface), systemImage: interface.id == viewModel.snapshot.base.sessionState.selectedInterfaceID ? "checkmark.circle.fill" : "network")
                     }
                     .disabled(!interface.isSelectable || viewModel.snapshot.isCaptureLocked)
                     .help(interfaceHelp(interface))
                 }
             }
         } label: {
-            Label("Capture: \(viewModel.selectedInterfaceTitle())", systemImage: "network")
+            Label(viewModel.selectedInterfaceTitle(), systemImage: "network")
+                .font(.callout.weight(.medium))
                 .lineLimit(1)
+                .frame(maxWidth: 180)
         }
+        .controlSize(.regular)
         .disabled(viewModel.snapshot.base.sessionState.interfaceInventory.isEmpty || viewModel.snapshot.isCaptureLocked)
         .help(viewModel.snapshot.isCaptureLocked ? "Stop capture before changing interfaces" : "Capture source")
         .packetryToolbarButtonStyle()
@@ -162,99 +150,122 @@ private struct CaptureSourceMenu: View {
     }
 }
 
-private struct DisplayFilterToolbarField: View {
-    @ObservedObject var viewModel: NetworkInspectorViewModel
+private struct ToolbarStatusView: View {
+    let snapshot: NetworkInspectorSnapshot
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
+        HStack(spacing: 7) {
+            ZStack {
+                Circle()
+                    .fill(tint.opacity(0.2))
+                    .frame(width: 16, height: 16)
 
-            TextField(
-                "Filter packets...",
-                text: Binding(
-                    get: { viewModel.snapshot.displayFilterText },
-                    set: { viewModel.updateDisplayFilterText($0) }
-                )
-            )
-            .textFieldStyle(.roundedBorder)
-            .frame(minWidth: 320, idealWidth: 460, maxWidth: 560)
-
-            if !viewModel.snapshot.displayFilterText.isEmpty {
-                Button {
-                    viewModel.clearDisplayFilter()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .help("Clear packet filter")
-            }
-        }
-    }
-}
-
-private struct LayoutMenu: View {
-    @ObservedObject var viewModel: NetworkInspectorViewModel
-
-    var body: some View {
-        Menu {
-            Picker(
-                "Density",
-                selection: Binding(
-                    get: { viewModel.snapshot.tableDensity },
-                    set: { viewModel.setTableDensity($0) }
-                )
-            ) {
-                ForEach(PacketTableDensity.allCases) { density in
-                    Text(density.title).tag(density)
-                }
+                Circle()
+                    .fill(tint)
+                    .frame(width: 7, height: 7)
             }
 
-            Divider()
-
-            Toggle(
-                "Show Inspector",
-                isOn: Binding(
-                    get: { viewModel.snapshot.isInspectorVisible },
-                    set: { viewModel.setInspectorVisible($0) }
-                )
-            )
-        } label: {
-            Label("Layout", systemImage: "rectangle.split.3x1")
-        }
-        .packetryToolbarButtonStyle()
-    }
-}
-
-private struct CaptureFilterPopover: View {
-    @ObservedObject var viewModel: NetworkInspectorViewModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Capture Filter")
-                .font(.headline)
-
-            CaptureFilterToolbarView(
-                text: Binding(
-                    get: { viewModel.snapshot.base.filterState.captureFilterText },
-                    set: { viewModel.updateCaptureFilterText($0) }
-                ),
-                validation: viewModel.snapshot.base.filterState.validation,
-                isValidating: viewModel.snapshot.base.filterState.isValidating,
-                recentFilters: viewModel.snapshot.base.filterState.recentCaptureFilters,
-                onSubmit: {
-                    Task {
-                        await viewModel.validateCaptureFilter()
-                    }
-                },
-                onPickRecent: { viewModel.applyRecentCaptureFilter($0) }
-            )
-
-            Text(viewModel.snapshot.base.filterState.statusMessage)
-                .font(.caption)
+            Text(statusText)
+                .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+            if let emphasizedText {
+                Text(emphasizedText)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+            }
         }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 4)
+        .fixedSize(horizontal: true, vertical: false)
+        .frame(maxWidth: 620)
+        .background(.regularMaterial, in: Capsule())
+        .help(helpText)
+    }
+
+    private var tint: Color {
+        if snapshot.base.sessionState.phase == .failed || snapshot.base.documentState.phase == .failed {
+            return .red
+        }
+
+        if snapshot.base.documentState.isPartialResult || snapshot.droppedPacketCount > 0 || snapshot.malformedPacketCount > 0 {
+            return .orange
+        }
+
+        if [.starting, .running, .paused, .stopping].contains(snapshot.base.sessionState.phase) ||
+            [.opening, .loaded, .saving, .saved, .reopening].contains(snapshot.base.documentState.phase) {
+            return .green
+        }
+
+        return .secondary
+    }
+
+    private var statusText: String {
+        if snapshot.base.sessionState.phase == .running {
+            return "Packetry | Listening on"
+        }
+
+        if snapshot.base.loadState.progress.phase == .loading {
+            return "Packetry | Loading"
+        }
+
+        if snapshot.base.documentState.phase == .loaded || snapshot.base.documentState.phase == .saved {
+            return "Packetry | Viewing"
+        }
+
+        if snapshot.base.sessionState.phase == .failed || snapshot.base.documentState.phase == .failed {
+            return "Packetry | Attention"
+        }
+
+        return "Packetry | \(snapshot.base.sessionState.phase.rawValue.capitalized)"
+    }
+
+    private var emphasizedText: String? {
+        if snapshot.base.sessionState.phase == .running {
+            return listeningTarget
+        }
+
+        if snapshot.base.loadState.progress.phase == .loading {
+            return snapshot.base.loadState.progress.message
+        }
+
+        if snapshot.base.documentState.phase == .loaded || snapshot.base.documentState.phase == .saved {
+            return snapshot.base.documentState.fileURL?.lastPathComponent ?? "\(snapshot.totalPacketCount) packets"
+        }
+
+        if let error = snapshot.base.sessionState.lastError ?? snapshot.base.documentState.lastError {
+            return error.message
+        }
+
+        return snapshot.base.sessionState.selectedInterface.map(interfaceTitle)
+    }
+
+    private var helpText: String {
+        [
+            snapshot.base.sessionState.statusMessage,
+            "\(snapshot.totalPacketCount) packets",
+            "\(snapshot.droppedPacketCount) dropped",
+            "\(snapshot.malformedPacketCount) malformed",
+        ]
+        .joined(separator: " | ")
+    }
+
+    private var listeningTarget: String {
+        guard let interface = snapshot.base.sessionState.selectedInterface else {
+            return "selected interface"
+        }
+
+        if let ipv4Address = interface.addresses.first(where: { $0.family == .ipv4 })?.value {
+            return ipv4Address
+        }
+
+        return interfaceTitle(interface)
+    }
+
+    private func interfaceTitle(_ interface: CaptureInterfaceSummary) -> String {
+        interface.friendlyName ?? interface.displayName
     }
 }
 
@@ -278,53 +289,8 @@ private struct NetworkInspectorSidebar: View {
                 Label("Saved Sessions", systemImage: "externaldrive")
                     .tag(NetworkInspectorSidebarSelection.savedSessions)
             }
-
-            Section("Interfaces") {
-                ForEach(viewModel.snapshot.base.sessionState.interfaceInventory) { interface in
-                    SidebarInterfaceRow(interface: interface)
-                        .tag(NetworkInspectorSidebarSelection.interface(interface.id))
-                        .disabled(!interface.isSelectable || viewModel.snapshot.isCaptureLocked)
-                }
-            }
-
-            Section("Views") {
-                ForEach(NetworkInspectorWorkspaceMode.allCases) { mode in
-                    Label(mode.title, systemImage: mode.systemImage)
-                        .tag(NetworkInspectorSidebarSelection.view(mode))
-                }
-            }
         }
         .listStyle(.sidebar)
-    }
-}
-
-private struct SidebarInterfaceRow: View {
-    let interface: CaptureInterfaceSummary
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: interface.isLoopback ? "arrow.triangle.2.circlepath" : "network")
-                .foregroundStyle(interface.isSelectable ? .secondary : .tertiary)
-                .frame(width: 16)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(interface.friendlyName ?? interface.displayName)
-                    .lineLimit(1)
-
-                Text(interfaceDetail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-        }
-    }
-
-    private var interfaceDetail: String {
-        if let reason = interface.availabilityReason, !interface.isSelectable {
-            return reason
-        }
-
-        return interface.technicalName
     }
 }
 
