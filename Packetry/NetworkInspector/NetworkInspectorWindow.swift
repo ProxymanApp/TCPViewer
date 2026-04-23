@@ -1,5 +1,5 @@
-import SwiftUI
 import PcapPlusPlusCore
+import SwiftUI
 
 struct NetworkInspectorWindow: View {
     @StateObject private var viewModel: NetworkInspectorViewModel
@@ -642,39 +642,10 @@ private struct PacketHexInspector: View {
 
     var body: some View {
         if let inspection = snapshot.base.inspectionState.inspection {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 4) {
-                    ForEach(hexRows(for: inspection.rawBytes)) { row in
-                        HStack(alignment: .top, spacing: 12) {
-                            Text(String(format: "%04X", row.offset))
-                                .foregroundStyle(.secondary)
-                                .frame(width: 56, alignment: .leading)
-
-                            HStack(spacing: 4) {
-                                ForEach(0..<16, id: \.self) { column in
-                                    if let byte = row.byte(at: column) {
-                                        Text(String(format: "%02X", byte))
-                                            .foregroundStyle(isHighlighted(row.offset + column) ? .primary : .secondary)
-                                            .padding(.horizontal, 4)
-                                            .padding(.vertical, 2)
-                                            .background(isHighlighted(row.offset + column) ? Color.accentColor.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: 4))
-                                    } else {
-                                        Text("  ")
-                                            .foregroundStyle(.clear)
-                                            .padding(.horizontal, 4)
-                                            .padding(.vertical, 2)
-                                    }
-                                }
-                            }
-
-                            Text(row.ascii)
-                                .foregroundStyle(.secondary)
-                        }
-                        .font(.system(.caption, design: .monospaced))
-                    }
-                }
-                .padding(12)
-            }
+            PacketHexFiendView(
+                data: inspection.rawBytes,
+                highlightedByteRange: snapshot.base.inspectionState.highlightedByteRange
+            )
         } else {
             ContentUnavailableView(
                 "Hex",
@@ -682,48 +653,6 @@ private struct PacketHexInspector: View {
                 description: Text("Select a packet to inspect raw bytes.")
             )
         }
-    }
-
-    private func isHighlighted(_ offset: Int) -> Bool {
-        guard let range = snapshot.base.inspectionState.highlightedByteRange else {
-            return false
-        }
-
-        return offset >= range.offset && offset < range.upperBound
-    }
-
-    private func hexRows(for data: Data) -> [NetworkHexDumpRow] {
-        let bytes = Array(data)
-        return stride(from: 0, to: bytes.count, by: 16).map { offset in
-            let chunk = Array(bytes[offset..<min(offset + 16, bytes.count)])
-            return NetworkHexDumpRow(offset: offset, bytes: chunk)
-        }
-    }
-}
-
-private struct NetworkHexDumpRow: Identifiable {
-    let offset: Int
-    let bytes: [UInt8]
-
-    var id: Int { offset }
-
-    func byte(at index: Int) -> UInt8? {
-        guard bytes.indices.contains(index) else {
-            return nil
-        }
-
-        return bytes[index]
-    }
-
-    var ascii: String {
-        String(bytes.map { byte in
-            switch byte {
-            case 32...126:
-                Character(UnicodeScalar(byte))
-            default:
-                "."
-            }
-        })
     }
 }
 
