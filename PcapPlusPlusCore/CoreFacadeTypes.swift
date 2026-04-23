@@ -3,10 +3,17 @@ import Foundation
 public struct PacketryCoreError: Error, Sendable, Codable, Hashable, Equatable, CustomStringConvertible {
     public enum Code: String, Sendable, Codable {
         case integrationMisconfigured
+        case interfaceDiscoveryFailed
         case capturePermissionDenied
         case invalidCaptureFilter
+        case invalidCaptureOptions
         case malformedCapture
         case unsupportedInterface
+        case liveSessionStartFailed
+        case liveSessionControlFailed
+        case offlineFileOpenFailed
+        case offlineFileSaveFailed
+        case writerFailure
         case operationCancelled
         case unavailableFeature
     }
@@ -70,6 +77,25 @@ public enum TransportProtocolHint: String, Sendable, Codable {
     case unknown
 }
 
+public enum LiveCaptureSessionPhase: String, Sendable, Codable {
+    case ready
+    case starting
+    case running
+    case paused
+    case stopping
+    case stopped
+    case failed
+}
+
+public enum OfflineCaptureDocumentPhase: String, Sendable, Codable {
+    case opening
+    case loaded
+    case saving
+    case saved
+    case reopening
+    case failed
+}
+
 public struct CaptureInterfaceCapabilities: Sendable, Codable, Hashable {
     public let canCapture: Bool
     public let supportsPromiscuousMode: Bool
@@ -99,40 +125,69 @@ public struct CaptureInterfaceAddress: Sendable, Codable, Hashable {
     }
 }
 
+public struct CaptureInterfaceActivityPreview: Sendable, Codable, Hashable {
+    public let packetsPerSecond: Double?
+    public let observedAt: Date?
+
+    public init(packetsPerSecond: Double? = nil, observedAt: Date? = nil) {
+        self.packetsPerSecond = packetsPerSecond
+        self.observedAt = observedAt
+    }
+}
+
 public struct CaptureInterfaceSummary: Identifiable, Sendable, Codable, Hashable {
     public let id: String
+    public let technicalName: String
     public let displayName: String
     public let friendlyName: String?
+    public let interfaceDescription: String?
+    public let isLoopback: Bool
     public let addresses: [CaptureInterfaceAddress]
     public let linkType: CaptureLinkType
     public let availability: CaptureInterfaceAvailability
+    public let availabilityReason: String?
+    public let activityPreview: CaptureInterfaceActivityPreview
     public let capabilities: CaptureInterfaceCapabilities
 
     public init(
         id: String,
+        technicalName: String,
         displayName: String,
         friendlyName: String? = nil,
+        interfaceDescription: String? = nil,
+        isLoopback: Bool,
         addresses: [CaptureInterfaceAddress],
         linkType: CaptureLinkType,
         availability: CaptureInterfaceAvailability,
+        availabilityReason: String? = nil,
+        activityPreview: CaptureInterfaceActivityPreview = CaptureInterfaceActivityPreview(),
         capabilities: CaptureInterfaceCapabilities
     ) {
         self.id = id
+        self.technicalName = technicalName
         self.displayName = displayName
         self.friendlyName = friendlyName
+        self.interfaceDescription = interfaceDescription
+        self.isLoopback = isLoopback
         self.addresses = addresses
         self.linkType = linkType
         self.availability = availability
+        self.availabilityReason = availabilityReason
+        self.activityPreview = activityPreview
         self.capabilities = capabilities
+    }
+
+    public var isSelectable: Bool {
+        availability == .available && capabilities.canCapture
     }
 }
 
 public struct PacketEndpoint: Sendable, Codable, Hashable {
-    public let host: String?
+    public let address: String?
     public let port: UInt16?
 
-    public init(host: String? = nil, port: UInt16? = nil) {
-        self.host = host
+    public init(address: String? = nil, port: UInt16? = nil) {
+        self.address = address
         self.port = port
     }
 }
@@ -174,6 +229,25 @@ public struct PacketDecodeStatus: Sendable, Codable, Hashable {
     }
 }
 
+public struct PacketCaptureMetadata: Sendable, Codable, Hashable {
+    public let linkType: CaptureLinkType
+    public let isTruncated: Bool
+    public let packetComment: String?
+    public let interfaceName: String?
+
+    public init(
+        linkType: CaptureLinkType,
+        isTruncated: Bool,
+        packetComment: String? = nil,
+        interfaceName: String? = nil
+    ) {
+        self.linkType = linkType
+        self.isTruncated = isTruncated
+        self.packetComment = packetComment
+        self.interfaceName = interfaceName
+    }
+}
+
 public struct PacketSummary: Identifiable, Sendable, Codable, Hashable {
     public let id: UInt64
     public let packetNumber: UInt64
@@ -184,8 +258,11 @@ public struct PacketSummary: Identifiable, Sendable, Codable, Hashable {
     public let endpoints: PacketEndpoints
     public let originalLength: Int
     public let capturedLength: Int
+    public let streamID: UInt32?
+    public let infoSummary: String
     public let layers: [PacketLayer]
     public let decodeStatus: PacketDecodeStatus
+    public let captureMetadata: PacketCaptureMetadata
 
     public init(
         id: UInt64? = nil,
@@ -197,8 +274,11 @@ public struct PacketSummary: Identifiable, Sendable, Codable, Hashable {
         endpoints: PacketEndpoints,
         originalLength: Int,
         capturedLength: Int,
+        streamID: UInt32? = nil,
+        infoSummary: String,
         layers: [PacketLayer],
-        decodeStatus: PacketDecodeStatus
+        decodeStatus: PacketDecodeStatus,
+        captureMetadata: PacketCaptureMetadata
     ) {
         self.id = id ?? packetNumber
         self.packetNumber = packetNumber
@@ -209,8 +289,67 @@ public struct PacketSummary: Identifiable, Sendable, Codable, Hashable {
         self.endpoints = endpoints
         self.originalLength = originalLength
         self.capturedLength = capturedLength
+        self.streamID = streamID
+        self.infoSummary = infoSummary
         self.layers = layers
         self.decodeStatus = decodeStatus
+        self.captureMetadata = captureMetadata
+    }
+}
+
+public struct CaptureHealthSnapshot: Sendable, Codable, Hashable {
+    public let packetsReceived: UInt64
+    public let packetsDropped: UInt64
+    public let packetsDroppedByInterface: UInt64
+    public let packetsObserved: UInt64
+    public let lastUpdated: Date?
+    public let statusMessage: String?
+
+    public init(
+        packetsReceived: UInt64,
+        packetsDropped: UInt64,
+        packetsDroppedByInterface: UInt64,
+        packetsObserved: UInt64,
+        lastUpdated: Date? = nil,
+        statusMessage: String? = nil
+    ) {
+        self.packetsReceived = packetsReceived
+        self.packetsDropped = packetsDropped
+        self.packetsDroppedByInterface = packetsDroppedByInterface
+        self.packetsObserved = packetsObserved
+        self.lastUpdated = lastUpdated
+        self.statusMessage = statusMessage
+    }
+
+    public static let empty = CaptureHealthSnapshot(
+        packetsReceived: 0,
+        packetsDropped: 0,
+        packetsDroppedByInterface: 0,
+        packetsObserved: 0,
+        lastUpdated: nil,
+        statusMessage: nil
+    )
+}
+
+public struct CaptureDocumentMetadata: Sendable, Codable, Hashable {
+    public let format: CaptureFileFormat
+    public let operatingSystem: String?
+    public let hardware: String?
+    public let captureApplication: String?
+    public let fileComment: String?
+
+    public init(
+        format: CaptureFileFormat,
+        operatingSystem: String? = nil,
+        hardware: String? = nil,
+        captureApplication: String? = nil,
+        fileComment: String? = nil
+    ) {
+        self.format = format
+        self.operatingSystem = operatingSystem
+        self.hardware = hardware
+        self.captureApplication = captureApplication
+        self.fileComment = fileComment
     }
 }
 
@@ -236,6 +375,168 @@ public struct CaptureFilterValidation: Sendable, Codable, Hashable {
     }
 }
 
+public enum CaptureStopCondition: Sendable, Codable, Hashable {
+    case manual
+    case packetCount(UInt64)
+    case durationMilliseconds(UInt64)
+}
+
+public struct CaptureFileWriting: Sendable, Codable, Hashable {
+    public enum Mode: String, Sendable, Codable {
+        case disabled
+        case single
+        case rotating
+        case ring
+    }
+
+    public let mode: Mode
+    public let directoryURL: URL?
+    public let fileNameStem: String?
+    public let format: CaptureFileFormat?
+    public let maxFileSizeBytes: UInt64?
+    public let ringFileCount: Int?
+
+    public init(
+        mode: Mode,
+        directoryURL: URL? = nil,
+        fileNameStem: String? = nil,
+        format: CaptureFileFormat? = nil,
+        maxFileSizeBytes: UInt64? = nil,
+        ringFileCount: Int? = nil
+    ) {
+        self.mode = mode
+        self.directoryURL = directoryURL
+        self.fileNameStem = fileNameStem
+        self.format = format
+        self.maxFileSizeBytes = maxFileSizeBytes
+        self.ringFileCount = ringFileCount
+    }
+
+    public static let disabled = CaptureFileWriting(mode: .disabled)
+}
+
+public struct CaptureOptions: Sendable, Codable, Hashable {
+    public let promiscuousMode: Bool
+    public let snapshotLength: Int
+    public let kernelBufferSizeBytes: Int
+    public let readTimeoutMilliseconds: Int
+    public let stopCondition: CaptureStopCondition
+    public let fileWriting: CaptureFileWriting
+
+    public init(
+        promiscuousMode: Bool,
+        snapshotLength: Int,
+        kernelBufferSizeBytes: Int,
+        readTimeoutMilliseconds: Int,
+        stopCondition: CaptureStopCondition,
+        fileWriting: CaptureFileWriting = .disabled
+    ) {
+        self.promiscuousMode = promiscuousMode
+        self.snapshotLength = snapshotLength
+        self.kernelBufferSizeBytes = kernelBufferSizeBytes
+        self.readTimeoutMilliseconds = readTimeoutMilliseconds
+        self.stopCondition = stopCondition
+        self.fileWriting = fileWriting
+    }
+
+    public static func defaults(for interface: CaptureInterfaceSummary? = nil) -> CaptureOptions {
+        CaptureOptions(
+            promiscuousMode: !(interface?.isLoopback ?? false),
+            snapshotLength: 65_535,
+            kernelBufferSizeBytes: 4 * 1024 * 1024,
+            readTimeoutMilliseconds: 250,
+            stopCondition: .manual,
+            fileWriting: .disabled
+        )
+    }
+
+    public func validated(for interface: CaptureInterfaceSummary? = nil) throws -> CaptureOptions {
+        guard snapshotLength > 0 else {
+            throw PacketryCoreError(code: .invalidCaptureOptions, message: "Snapshot length must be greater than zero.")
+        }
+
+        guard kernelBufferSizeBytes >= 0 else {
+            throw PacketryCoreError(code: .invalidCaptureOptions, message: "Kernel buffer size cannot be negative.")
+        }
+
+        guard readTimeoutMilliseconds >= 0 else {
+            throw PacketryCoreError(code: .invalidCaptureOptions, message: "Read timeout cannot be negative.")
+        }
+
+        switch stopCondition {
+        case .manual:
+            break
+        case .packetCount(let count):
+            guard count > 0 else {
+                throw PacketryCoreError(code: .invalidCaptureOptions, message: "Packet-count stop conditions must be greater than zero.")
+            }
+        case .durationMilliseconds(let duration):
+            guard duration > 0 else {
+                throw PacketryCoreError(code: .invalidCaptureOptions, message: "Duration stop conditions must be greater than zero.")
+            }
+        }
+
+        switch fileWriting.mode {
+        case .disabled:
+            break
+        case .single:
+            guard fileWriting.directoryURL != nil else {
+                throw PacketryCoreError(code: .invalidCaptureOptions, message: "Single-file capture writing needs a directory.")
+            }
+            guard !(fileWriting.fileNameStem?.isEmpty ?? true) else {
+                throw PacketryCoreError(code: .invalidCaptureOptions, message: "Single-file capture writing needs a filename stem.")
+            }
+            guard fileWriting.format != nil else {
+                throw PacketryCoreError(code: .invalidCaptureOptions, message: "Single-file capture writing needs an output format.")
+            }
+        case .rotating:
+            guard fileWriting.directoryURL != nil else {
+                throw PacketryCoreError(code: .invalidCaptureOptions, message: "Rotating capture writing needs a directory.")
+            }
+            guard !(fileWriting.fileNameStem?.isEmpty ?? true) else {
+                throw PacketryCoreError(code: .invalidCaptureOptions, message: "Rotating capture writing needs a filename stem.")
+            }
+            guard fileWriting.format != nil else {
+                throw PacketryCoreError(code: .invalidCaptureOptions, message: "Rotating capture writing needs an output format.")
+            }
+            guard (fileWriting.maxFileSizeBytes ?? 0) > 0 else {
+                throw PacketryCoreError(code: .invalidCaptureOptions, message: "Rotating capture writing needs a max file size.")
+            }
+        case .ring:
+            guard fileWriting.directoryURL != nil else {
+                throw PacketryCoreError(code: .invalidCaptureOptions, message: "Ring capture writing needs a directory.")
+            }
+            guard !(fileWriting.fileNameStem?.isEmpty ?? true) else {
+                throw PacketryCoreError(code: .invalidCaptureOptions, message: "Ring capture writing needs a filename stem.")
+            }
+            guard fileWriting.format != nil else {
+                throw PacketryCoreError(code: .invalidCaptureOptions, message: "Ring capture writing needs an output format.")
+            }
+            guard (fileWriting.maxFileSizeBytes ?? 0) > 0 else {
+                throw PacketryCoreError(code: .invalidCaptureOptions, message: "Ring capture writing needs a max file size.")
+            }
+            guard (fileWriting.ringFileCount ?? 0) > 1 else {
+                throw PacketryCoreError(code: .invalidCaptureOptions, message: "Ring capture writing needs at least two files.")
+            }
+        }
+
+        let defaultPromiscuous = !(interface?.isLoopback ?? false)
+        if interface?.isLoopback == true && promiscuousMode != defaultPromiscuous {
+            throw PacketryCoreError(code: .invalidCaptureOptions, message: "Loopback interfaces do not support promiscuous mode in Packetry.")
+        }
+
+        return self
+    }
+}
+
+public enum PacketIngestEvent: Sendable, Equatable {
+    case liveStateChanged(phase: LiveCaptureSessionPhase, message: String)
+    case documentStateChanged(phase: OfflineCaptureDocumentPhase, message: String)
+    case packetBatch([PacketSummary])
+    case healthChanged(CaptureHealthSnapshot)
+    case documentMetadataChanged(CaptureDocumentMetadata)
+}
+
 public protocol CaptureInterfaceProviding: Sendable {
     func listInterfaces() async throws -> [CaptureInterfaceSummary]
 }
@@ -244,14 +545,41 @@ public protocol CaptureFilterValidating: Sendable {
     func validateCaptureFilter(_ expression: String) async -> CaptureFilterValidation
 }
 
+public protocol LiveCaptureSessionProviding: Sendable {
+    func events() -> AsyncThrowingStream<PacketIngestEvent, Error>
+    func start() async throws
+    func pause() async throws
+    func resume() async throws
+    func stop() async throws
+    func healthSnapshot() async -> CaptureHealthSnapshot
+}
+
+public protocol OfflineCaptureDocumentProviding: Sendable {
+    func events() -> AsyncThrowingStream<PacketIngestEvent, Error>
+    func open() async throws -> [PacketSummary]
+    func reopen() async throws -> [PacketSummary]
+    func save() async throws
+    func save(to url: URL, format: CaptureFileFormat) async throws
+    func currentURL() async -> URL
+    func currentMetadata() async -> CaptureDocumentMetadata
+    func packetSummaries() async -> [PacketSummary]
+}
+
+public protocol LiveCaptureProviding: Sendable {
+    func validateCaptureOptions(_ options: CaptureOptions, for interface: CaptureInterfaceSummary?) throws -> CaptureOptions
+    func makeLiveCaptureSession(interfaceID: String, options: CaptureOptions) async throws -> any LiveCaptureSessionProviding
+}
+
 public protocol OfflineCaptureProviding: Sendable {
     func supportedOfflineFormats() -> [CaptureFileFormat]
+    func openOfflineCaptureDocument(at fileURL: URL) async throws -> any OfflineCaptureDocumentProviding
     func loadPacketSummaries(from fileURL: URL) async throws -> [PacketSummary]
 }
 
 public protocol PacketryCoreProviding:
     CaptureInterfaceProviding,
     CaptureFilterValidating,
+    LiveCaptureProviding,
     OfflineCaptureProviding {}
 
 public struct UnconfiguredPacketryCore: PacketryCoreProviding {
@@ -278,7 +606,19 @@ public struct UnconfiguredPacketryCore: PacketryCoreProviding {
         return CaptureFilterValidation(
             disposition: .unavailable,
             normalizedExpression: trimmed,
-            message: "Filter compilation will be provided by the native core in a later ticket."
+            message: "Native capture-filter validation is not available in the unconfigured core."
+        )
+    }
+
+    public func validateCaptureOptions(_ options: CaptureOptions, for interface: CaptureInterfaceSummary?) throws -> CaptureOptions {
+        try options.validated(for: interface)
+    }
+
+    public func makeLiveCaptureSession(interfaceID: String, options: CaptureOptions) async throws -> any LiveCaptureSessionProviding {
+        _ = try validateCaptureOptions(options, for: nil)
+        throw PacketryCoreError(
+            code: .integrationMisconfigured,
+            message: "Native live capture sessions are not wired into PcapPlusPlusCore yet."
         )
     }
 
@@ -286,10 +626,15 @@ public struct UnconfiguredPacketryCore: PacketryCoreProviding {
         CaptureFileFormat.allCases
     }
 
-    public func loadPacketSummaries(from fileURL: URL) async throws -> [PacketSummary] {
+    public func openOfflineCaptureDocument(at fileURL: URL) async throws -> any OfflineCaptureDocumentProviding {
         throw PacketryCoreError(
             code: .integrationMisconfigured,
-            message: "Offline packet loading is not wired into PcapPlusPlusCore yet for \(fileURL.lastPathComponent)."
+            message: "Native offline capture documents are not wired into PcapPlusPlusCore yet for \(fileURL.lastPathComponent)."
         )
+    }
+
+    public func loadPacketSummaries(from fileURL: URL) async throws -> [PacketSummary] {
+        let document = try await openOfflineCaptureDocument(at: fileURL)
+        return try await document.open()
     }
 }

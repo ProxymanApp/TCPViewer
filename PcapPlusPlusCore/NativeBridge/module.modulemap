@@ -1,0 +1,4 @@
+module PacketryNativeBridge {
+  header "PacketryNativeBridge.h"
+  export *
+}
