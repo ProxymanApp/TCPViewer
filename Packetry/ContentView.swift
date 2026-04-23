@@ -1,17 +1,13 @@
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var controller: PacketryWindowController
+    private let services: PacketryServiceRegistry
 
     init(services: PacketryServiceRegistry = .foundation) {
-        _controller = StateObject(wrappedValue: PacketryWindowController(services: services))
+        self.services = services
     }
 
     var body: some View {
-        AnalyzerWorkspaceView(controller: controller)
-            .frame(minWidth: 1_140, minHeight: 820)
-            .task {
-                await controller.performInitialLoadIfNeeded()
-            }
+        NetworkInspectorWindow(services: services)
     }
 }

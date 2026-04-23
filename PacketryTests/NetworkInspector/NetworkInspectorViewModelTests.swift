@@ -1,0 +1,389 @@
+import Foundation
+import Testing
+import PcapPlusPlusCore
+@testable import Packetry
+
+@Suite(.serialized)
+@MainActor
+struct NetworkInspectorViewModelTests {
+
+    @Test func liveCaptureBuildsPacketRowsSelectionAndFilters() async {
+        let packet = makePacket(
+            packetNumber: 1,
+            source: .live,
+            transportHint: .tcp,
+            sourcePort: 54_321,
+            destinationPort: 443
+        )
+        let liveSession = InspectorFakeLiveSession()
+        liveSession.inspections[packet.id] = makeInspection(for: packet)
+        let viewModel = NetworkInspectorViewModel(
+            services: PacketryServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                liveSession: liveSession
+            )),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.performInitialLoadIfNeeded()
+        await viewModel.toggleLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        liveSession.send(.packetBatch([packet], disposition: .append))
+
+        await waitUntil {
+            viewModel.snapshot.base.sessionState.phase == .running &&
+                viewModel.snapshot.packetRows.count == 1
+        }
+
+        #expect(viewModel.snapshot.base.sessionState.selectedInterfaceID == "en0")
+        #expect(viewModel.snapshot.packetRows.first?.protocolText == "TCP")
+        #expect(viewModel.snapshot.packetRows.first?.destinationText == "10.0.0.2:443")
+
+        viewModel.selectPacket(packet.id)
+        await waitUntil {
+            viewModel.snapshot.base.inspectionState.inspection?.packetID == packet.id
+        }
+
+        #expect(viewModel.snapshot.selectedPacket?.id == packet.id)
+        #expect(viewModel.snapshot.base.inspectionState.inspection?.rawBytes.count == 16)
+
+        viewModel.updateDisplayFilterText("protocol:tcp port:443")
+        #expect(viewModel.snapshot.visiblePacketCount == 1)
+        #expect(viewModel.snapshot.displayFilterChips.map(\.label) == ["Protocol: TCP", "Port: 443"])
+
+        viewModel.updateDisplayFilterText("protocol:udp")
+        #expect(viewModel.snapshot.visiblePacketCount == 0)
+    }
+
+    @Test func offlineOpenSaveAndSaveAsFlowThroughCoreDocument() async {
+        let openURL = URL(fileURLWithPath: "/tmp/inspector-fixture.pcapng")
+        let saveURL = URL(fileURLWithPath: "/tmp/inspector-export.pcap")
+        let packets = [
+            makePacket(packetNumber: 1, source: .offline, transportHint: .udp),
+            makePacket(packetNumber: 2, source: .offline, transportHint: .dns),
+        ]
+        let document = InspectorFakeDocument(url: openURL, packets: packets)
+        let viewModel = NetworkInspectorViewModel(
+            services: PacketryServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                document: document
+            )),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.openDocument(at: openURL)
+        await waitUntil {
+            viewModel.snapshot.base.documentState.phase == .loaded &&
+                viewModel.snapshot.packetRows.count == 2
+        }
+
+        #expect(viewModel.snapshot.totalPacketCount == 2)
+        #expect(viewModel.snapshot.packetRows.map(\.protocolText) == ["UDP", "DNS"])
+
+        await viewModel.saveDocument()
+        #expect(document.saveCount == 1)
+
+        await viewModel.saveDocument(to: saveURL, format: .pcap)
+        #expect(document.saveAsRequests.count == 1)
+        #expect(document.saveAsRequests.first?.0 == saveURL)
+        #expect(document.saveAsRequests.first?.1 == .pcap)
+        #expect(viewModel.snapshot.base.documentState.fileURL == saveURL)
+    }
+
+    @Test func packetFormattingFilteringAndTableUpdatePlansAreStable() {
+        let healthy = makePacket(packetNumber: 1, source: .offline, transportHint: .http1, destinationPort: 80)
+        let malformed = makePacket(
+            packetNumber: 2,
+            source: .offline,
+            transportHint: .udp,
+            decodeStatus: PacketDecodeStatus(kind: .malformed, reason: "Bad length")
+        )
+
+        let healthyRow = PacketTableRow(packet: healthy)
+        let malformedRow = PacketTableRow(packet: malformed)
+
+        #expect(healthyRow.protocolText == "HTTP1")
+        #expect(healthyRow.lengthText == "128 B")
+        #expect(malformedRow.severity == .malformed)
+        #expect(malformedRow.tags.map(\.label) == ["Malformed"])
+
+        #expect(PacketDisplayFilter("protocol:http port:80").matches(healthy))
+        #expect(PacketDisplayFilter("error:malformed").matches(malformed))
+        #expect(!PacketDisplayFilter("protocol:tcp").matches(malformed))
+
+        #expect(PacketTableUpdatePlanner.plan(previousIDs: [], currentIDs: [1, 2]) == .append(0..<2))
+        #expect(PacketTableUpdatePlanner.plan(previousIDs: [1], currentIDs: [1, 2]) == .append(1..<2))
+        #expect(PacketTableUpdatePlanner.plan(previousIDs: [1, 2], currentIDs: [2, 1]) == .reload)
+        #expect(PacketTableUpdatePlanner.plan(previousIDs: [1, 2], currentIDs: [1, 2]) == .none)
+    }
+
+    private func isolatedDefaults() -> UserDefaults {
+        let suiteName = "Packetry.NetworkInspectorTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        return defaults
+    }
+
+    private func makeInterface(id: String, displayName: String) -> CaptureInterfaceSummary {
+        CaptureInterfaceSummary(
+            id: id,
+            technicalName: id,
+            displayName: displayName,
+            friendlyName: nil,
+            interfaceDescription: nil,
+            isLoopback: false,
+            addresses: [],
+            linkType: .ethernet,
+            availability: .available,
+            capabilities: CaptureInterfaceCapabilities(
+                canCapture: true,
+                supportsPromiscuousMode: true,
+                requiresBPFPermissionSetup: true,
+                providesMacOSMetadata: true
+            )
+        )
+    }
+
+    private func makePacket(
+        packetNumber: UInt64,
+        source: CaptureSource,
+        transportHint: TransportProtocolHint,
+        sourcePort: UInt16 = 1234,
+        destinationPort: UInt16 = 80,
+        decodeStatus: PacketDecodeStatus = PacketDecodeStatus(kind: .complete)
+    ) -> PacketSummary {
+        PacketSummary(
+            packetNumber: packetNumber,
+            timestamp: Date(timeIntervalSince1970: TimeInterval(packetNumber)),
+            source: source,
+            interfaceID: source == .live ? "en0" : nil,
+            transportHint: transportHint,
+            endpoints: PacketEndpoints(
+                source: PacketEndpoint(address: "10.0.0.1", port: sourcePort),
+                destination: PacketEndpoint(address: "10.0.0.2", port: destinationPort)
+            ),
+            originalLength: 128,
+            capturedLength: 128,
+            streamID: 7,
+            infoSummary: "Packet \(packetNumber)",
+            layers: [PacketLayer(name: "Ethernet"), PacketLayer(name: transportHint.rawValue.uppercased())],
+            decodeStatus: decodeStatus,
+            captureMetadata: PacketCaptureMetadata(linkType: .ethernet, isTruncated: false)
+        )
+    }
+
+    private func makeInspection(for packet: PacketSummary) -> PacketInspection {
+        PacketInspection(
+            packetID: packet.id,
+            packetNumber: packet.packetNumber,
+            rawBytes: Data(repeating: UInt8(packet.packetNumber), count: 16),
+            detailNodes: [
+                PacketDetailNode(id: "frame", name: "Frame", value: "Packet \(packet.packetNumber)", kind: .layer)
+            ],
+            decodeStatus: packet.decodeStatus
+        )
+    }
+
+    private func waitUntil(
+        timeoutNanoseconds: UInt64 = 2_000_000_000,
+        condition: @escaping @MainActor () -> Bool
+    ) async {
+        let deadline = ContinuousClock.now + .nanoseconds(Int64(timeoutNanoseconds))
+
+        while ContinuousClock.now < deadline {
+            if condition() {
+                return
+            }
+
+            await Task.yield()
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+    }
+}
+
+private final class InspectorFakeCore: PacketryCoreProviding, @unchecked Sendable {
+    private let interfaces: [CaptureInterfaceSummary]
+    private let liveSession: InspectorFakeLiveSession
+    private let document: InspectorFakeDocument
+
+    init(
+        interfaces: [CaptureInterfaceSummary],
+        liveSession: InspectorFakeLiveSession = InspectorFakeLiveSession(),
+        document: InspectorFakeDocument = InspectorFakeDocument(url: URL(fileURLWithPath: "/tmp/empty.pcapng"), packets: [])
+    ) {
+        self.interfaces = interfaces
+        self.liveSession = liveSession
+        self.document = document
+    }
+
+    func listInterfaces() async throws -> [CaptureInterfaceSummary] {
+        interfaces
+    }
+
+    func validateCaptureFilter(_ expression: String) async -> CaptureFilterValidation {
+        CaptureFilterValidation(
+            disposition: expression.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .invalid : .valid,
+            normalizedExpression: expression.trimmingCharacters(in: .whitespacesAndNewlines),
+            message: nil
+        )
+    }
+
+    func validateCaptureOptions(_ options: CaptureOptions, for interface: CaptureInterfaceSummary?) throws -> CaptureOptions {
+        try options.validated(for: interface)
+    }
+
+    func makeLiveCaptureSession(interfaceID: String, options: CaptureOptions) async throws -> any LiveCaptureSessionProviding {
+        liveSession
+    }
+
+    func supportedOfflineFormats() -> [CaptureFileFormat] {
+        [.pcap, .pcapng]
+    }
+
+    func openOfflineCaptureDocument(at fileURL: URL) async throws -> any OfflineCaptureDocumentProviding {
+        document
+    }
+
+    func loadPacketSummaries(from fileURL: URL) async throws -> [PacketSummary] {
+        try await document.open()
+    }
+}
+
+private final class InspectorFakeLiveSession: LiveCaptureSessionProviding, @unchecked Sendable {
+    private let pipe = InspectorEventPipe<PacketIngestEvent>()
+    var inspections: [PacketSummary.ID: PacketInspection] = [:]
+    private(set) var startCount = 0
+    private(set) var stopCount = 0
+
+    func events() -> AsyncThrowingStream<PacketIngestEvent, Error> {
+        pipe.stream
+    }
+
+    func start() async throws {
+        startCount += 1
+    }
+
+    func pause() async throws {}
+
+    func resume() async throws {}
+
+    func stop() async throws {
+        stopCount += 1
+    }
+
+    func inspectPacket(id: PacketSummary.ID) async throws -> PacketInspection {
+        guard let inspection = inspections[id] else {
+            throw PacketryCoreError(code: .liveSessionControlFailed, message: "Missing inspection.")
+        }
+
+        return inspection
+    }
+
+    func healthSnapshot() async -> CaptureHealthSnapshot {
+        .empty
+    }
+
+    func send(_ event: PacketIngestEvent) {
+        pipe.yield(event)
+    }
+}
+
+private final class InspectorFakeDocument: OfflineCaptureDocumentProviding, @unchecked Sendable {
+    private let pipe = InspectorEventPipe<PacketIngestEvent>()
+    private(set) var url: URL
+    private(set) var packets: [PacketSummary]
+    private(set) var metadata: CaptureDocumentMetadata
+    private(set) var saveCount = 0
+    private(set) var saveAsRequests: [(URL, CaptureFileFormat)] = []
+    private var progress: PacketLoadProgress = .idle
+
+    init(url: URL, packets: [PacketSummary]) {
+        self.url = url
+        self.packets = packets
+        self.metadata = CaptureDocumentMetadata(format: .pcapng)
+    }
+
+    func events() -> AsyncThrowingStream<PacketIngestEvent, Error> {
+        pipe.stream
+    }
+
+    func open() async throws -> [PacketSummary] {
+        progress = PacketLoadProgress(
+            phase: .completed,
+            loadedPacketCount: packets.count,
+            message: "Loaded \(packets.count) packets."
+        )
+        pipe.yield(.documentMetadataChanged(metadata))
+        pipe.yield(.packetBatch(packets, disposition: .append))
+        pipe.yield(.loadProgressChanged(progress))
+        pipe.yield(.documentStateChanged(phase: .loaded, message: progress.message))
+        return packets
+    }
+
+    func reopen() async throws -> [PacketSummary] {
+        try await open()
+    }
+
+    func cancelLoading() async {}
+
+    func inspectPacket(id: PacketSummary.ID) async throws -> PacketInspection {
+        guard let packet = packets.first(where: { $0.id == id }) else {
+            throw PacketryCoreError(code: .offlineFileOpenFailed, message: "Missing packet.")
+        }
+
+        return PacketInspection(
+            packetID: packet.id,
+            packetNumber: packet.packetNumber,
+            rawBytes: Data(repeating: 0, count: 8),
+            detailNodes: [],
+            decodeStatus: packet.decodeStatus
+        )
+    }
+
+    func save() async throws {
+        saveCount += 1
+    }
+
+    func save(to url: URL, format: CaptureFileFormat) async throws {
+        saveAsRequests.append((url, format))
+        self.url = url
+        metadata = CaptureDocumentMetadata(format: format)
+    }
+
+    func currentURL() async -> URL {
+        url
+    }
+
+    func currentMetadata() async -> CaptureDocumentMetadata {
+        metadata
+    }
+
+    func packetSummaries() async -> [PacketSummary] {
+        packets
+    }
+
+    func loadProgress() async -> PacketLoadProgress {
+        progress
+    }
+}
+
+private final class InspectorEventPipe<Element> {
+    let stream: AsyncThrowingStream<Element, Error>
+    private let continuation: AsyncThrowingStream<Element, Error>.Continuation
+
+    init() {
+        var capturedContinuation: AsyncThrowingStream<Element, Error>.Continuation?
+        stream = AsyncThrowingStream { continuation in
+            capturedContinuation = continuation
+        }
+        continuation = capturedContinuation!
+    }
+
+    deinit {
+        continuation.finish()
+    }
+
+    func yield(_ element: Element) {
+        continuation.yield(element)
+    }
+}
