@@ -111,10 +111,94 @@ struct NetworkInspectorViewModelTests {
         #expect(PacketDisplayFilter("error:malformed").matches(malformed))
         #expect(!PacketDisplayFilter("protocol:tcp").matches(malformed))
 
-        #expect(PacketTableUpdatePlanner.plan(previousIDs: [], currentIDs: [1, 2]) == .append(0..<2))
-        #expect(PacketTableUpdatePlanner.plan(previousIDs: [1], currentIDs: [1, 2]) == .append(1..<2))
-        #expect(PacketTableUpdatePlanner.plan(previousIDs: [1, 2], currentIDs: [2, 1]) == .reload)
-        #expect(PacketTableUpdatePlanner.plan(previousIDs: [1, 2], currentIDs: [1, 2]) == .none)
+        #expect(PacketTableUpdatePlanner.plan(previousIDs: [], previousGeneration: 0, currentIDs: [1, 2], currentGeneration: 1) == .append(0..<2))
+        #expect(PacketTableUpdatePlanner.plan(previousIDs: [1], previousGeneration: 1, currentIDs: [1, 2], currentGeneration: 2) == .append(1..<2))
+        #expect(PacketTableUpdatePlanner.plan(previousIDs: [1, 2], previousGeneration: 1, currentIDs: [2, 1], currentGeneration: 2) == .reload)
+        #expect(PacketTableUpdatePlanner.plan(previousIDs: [1, 2], previousGeneration: 1, currentIDs: [1, 2], currentGeneration: 1) == .none)
+        #expect(PacketTableUpdatePlanner.plan(previousIDs: [1, 2], previousGeneration: 1, currentIDs: [1, 2], currentGeneration: 2) == .reload)
+    }
+
+    @Test func packetRowsAreCachedAcrossNonPacketUpdates() async {
+        let packet = makePacket(packetNumber: 1, source: .live, transportHint: .tcp)
+        let liveSession = InspectorFakeLiveSession()
+        let viewModel = NetworkInspectorViewModel(
+            services: PacketryServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                liveSession: liveSession
+            )),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.performInitialLoadIfNeeded()
+        await viewModel.toggleLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        liveSession.send(.packetBatch([packet], disposition: .append))
+
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == 1
+        }
+
+        let generationAfterPackets = viewModel.snapshot.packetTableGeneration
+
+        viewModel.selectInspectorTab(.hex)
+        viewModel.setTableDensity(.compact)
+        #expect(viewModel.snapshot.packetTableGeneration == generationAfterPackets)
+
+        liveSession.send(.healthChanged(CaptureHealthSnapshot(
+            packetsReceived: 1,
+            packetsDropped: 1,
+            packetsDroppedByInterface: 0,
+            packetsObserved: 1,
+            lastUpdated: Date(timeIntervalSince1970: 2),
+            statusMessage: "1 packet dropped."
+        )))
+
+        await waitUntil {
+            viewModel.snapshot.droppedPacketCount == 1
+        }
+
+        #expect(viewModel.snapshot.packetTableGeneration == generationAfterPackets)
+    }
+
+    @Test func packetRowsRefreshWhenOfflinePacketsReuseIDs() async {
+        let openURL = URL(fileURLWithPath: "/tmp/reused-ids.pcapng")
+        let firstPacket = makePacket(
+            packetNumber: 1,
+            source: .offline,
+            transportHint: .udp,
+            destinationPort: 500
+        )
+        let replacementPacket = makePacket(
+            packetNumber: 1,
+            source: .offline,
+            transportHint: .tcp,
+            destinationPort: 443
+        )
+        let document = InspectorFakeDocument(url: openURL, packets: [firstPacket])
+        let viewModel = NetworkInspectorViewModel(
+            services: PacketryServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                document: document
+            )),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.openDocument(at: openURL)
+        await waitUntil {
+            viewModel.snapshot.packetRows.first?.protocolText == "UDP"
+        }
+
+        let firstGeneration = viewModel.snapshot.packetTableGeneration
+        document.replacePackets([replacementPacket])
+
+        await viewModel.openDocument(at: openURL)
+        await waitUntil {
+            viewModel.snapshot.packetRows.first?.protocolText == "TCP"
+        }
+
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [firstPacket.id])
+        #expect(viewModel.snapshot.packetRows.first?.destinationText == "10.0.0.2:443")
+        #expect(viewModel.snapshot.packetTableGeneration > firstGeneration)
     }
 
     private func isolatedDefaults() -> UserDefaults {
@@ -301,6 +385,10 @@ private final class InspectorFakeDocument: OfflineCaptureDocumentProviding, @unc
         self.url = url
         self.packets = packets
         self.metadata = CaptureDocumentMetadata(format: .pcapng)
+    }
+
+    func replacePackets(_ packets: [PacketSummary]) {
+        self.packets = packets
     }
 
     func events() -> AsyncThrowingStream<PacketIngestEvent, Error> {

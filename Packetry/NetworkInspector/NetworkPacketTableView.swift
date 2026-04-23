@@ -4,15 +4,14 @@ import PcapPlusPlusCore
 
 struct NetworkPacketTableView: NSViewRepresentable {
     let rows: [PacketTableRow]
+    let rowIDs: [PacketSummary.ID]
+    let contentGeneration: UInt64
     let density: PacketTableDensity
-    @Binding var selectedPacketID: PacketSummary.ID?
+    let selectedRowIndex: Int?
     let onSelectPacket: (PacketSummary.ID?) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(
-            selectedPacketID: $selectedPacketID,
-            onSelectPacket: onSelectPacket
-        )
+        Coordinator(onSelectPacket: onSelectPacket)
     }
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -46,8 +45,10 @@ struct NetworkPacketTableView: NSViewRepresentable {
         scrollView.backgroundColor = .controlBackgroundColor
 
         context.coordinator.rows = rows
+        context.coordinator.rowIDs = rowIDs
+        context.coordinator.contentGeneration = contentGeneration
         tableView.reloadData()
-        context.coordinator.syncSelection(in: tableView)
+        context.coordinator.syncSelection(in: tableView, selectedRowIndex: selectedRowIndex)
 
         return scrollView
     }
@@ -57,15 +58,16 @@ struct NetworkPacketTableView: NSViewRepresentable {
             return
         }
 
-        let previousIDs = context.coordinator.rows.map(\.id)
-        let currentIDs = rows.map(\.id)
         let updatePlan = PacketTableUpdatePlanner.plan(
-            previousIDs: previousIDs,
-            currentIDs: currentIDs
+            previousIDs: context.coordinator.rowIDs,
+            previousGeneration: context.coordinator.contentGeneration,
+            currentIDs: rowIDs,
+            currentGeneration: contentGeneration
         )
 
         context.coordinator.rows = rows
-        context.coordinator.selectedPacketID = $selectedPacketID
+        context.coordinator.rowIDs = rowIDs
+        context.coordinator.contentGeneration = contentGeneration
         context.coordinator.onSelectPacket = onSelectPacket
         tableView.rowHeight = density.rowHeight
 
@@ -81,7 +83,7 @@ struct NetworkPacketTableView: NSViewRepresentable {
             tableView.reloadData()
         }
 
-        context.coordinator.syncSelection(in: tableView)
+        context.coordinator.syncSelection(in: tableView, selectedRowIndex: selectedRowIndex)
     }
 
     private static func addColumn(
@@ -101,15 +103,12 @@ struct NetworkPacketTableView: NSViewRepresentable {
 
     final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         var rows: [PacketTableRow] = []
-        var selectedPacketID: Binding<PacketSummary.ID?>
+        var rowIDs: [PacketSummary.ID] = []
+        var contentGeneration: UInt64 = 0
         var onSelectPacket: (PacketSummary.ID?) -> Void
         private var isApplyingSelection = false
 
-        init(
-            selectedPacketID: Binding<PacketSummary.ID?>,
-            onSelectPacket: @escaping (PacketSummary.ID?) -> Void
-        ) {
-            self.selectedPacketID = selectedPacketID
+        init(onSelectPacket: @escaping (PacketSummary.ID?) -> Void) {
             self.onSelectPacket = onSelectPacket
         }
 
@@ -168,14 +167,13 @@ struct NetworkPacketTableView: NSViewRepresentable {
             onSelectPacket(selectedID)
         }
 
-        func syncSelection(in tableView: NSTableView) {
+        func syncSelection(in tableView: NSTableView, selectedRowIndex: Int?) {
             isApplyingSelection = true
             defer {
                 isApplyingSelection = false
             }
 
-            guard let selectedPacketID = selectedPacketID.wrappedValue,
-                  let rowIndex = rows.firstIndex(where: { $0.id == selectedPacketID }) else {
+            guard let rowIndex = selectedRowIndex, rows.indices.contains(rowIndex) else {
                 tableView.deselectAll(nil)
                 return
             }

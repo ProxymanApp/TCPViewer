@@ -51,6 +51,65 @@ private struct NetworkInspectorPreferences {
     }
 }
 
+private struct PacketTableContentCache {
+    private var packetRevision: UInt64?
+    private var displayFilterText: String?
+    private var generation: UInt64 = 0
+    private var cachedContent = PacketTableContent.empty
+
+    mutating func content(
+        for ingestState: PacketIngestState,
+        displayFilterText: String
+    ) -> PacketTableContent {
+        guard packetRevision != ingestState.packetRevision || self.displayFilterText != displayFilterText else {
+            return cachedContent
+        }
+
+        let displayFilter = PacketDisplayFilter(displayFilterText)
+        var rows: [PacketTableRow] = []
+        var rowIDs: [PacketSummary.ID] = []
+        var visiblePacketsByID: [PacketSummary.ID: PacketSummary] = [:]
+        var visiblePacketRowIndexByID: [PacketSummary.ID: Int] = [:]
+        var malformedPacketCount = 0
+        rows.reserveCapacity(ingestState.packets.count)
+        rowIDs.reserveCapacity(ingestState.packets.count)
+        visiblePacketsByID.reserveCapacity(ingestState.packets.count)
+        visiblePacketRowIndexByID.reserveCapacity(ingestState.packets.count)
+
+        for packet in ingestState.packets {
+            if NetworkInspectorFormatters.severity(for: packet) == .malformed {
+                malformedPacketCount += 1
+            }
+
+            guard displayFilter.isEmpty || displayFilter.matches(packet) else {
+                continue
+            }
+
+            let rowIndex = rows.count
+            rows.append(PacketTableRow(packet: packet))
+            rowIDs.append(packet.id)
+            visiblePacketsByID[packet.id] = packet
+            visiblePacketRowIndexByID[packet.id] = rowIndex
+        }
+
+        generation &+= 1
+        let content = PacketTableContent(
+            displayFilter: displayFilter,
+            displayFilterChips: displayFilter.chips,
+            rows: rows,
+            rowIDs: rowIDs,
+            generation: generation,
+            malformedPacketCount: malformedPacketCount,
+            visiblePacketsByID: visiblePacketsByID,
+            visiblePacketRowIndexByID: visiblePacketRowIndexByID
+        )
+        packetRevision = ingestState.packetRevision
+        self.displayFilterText = displayFilterText
+        cachedContent = content
+        return content
+    }
+}
+
 @MainActor
 final class NetworkInspectorViewModel: ObservableObject {
     @Published private(set) var snapshot: NetworkInspectorSnapshot
@@ -58,6 +117,7 @@ final class NetworkInspectorViewModel: ObservableObject {
     private let controller: PacketryWindowController
     private let preferences: NetworkInspectorPreferences
     private var cancellables: Set<AnyCancellable> = []
+    private var packetTableContentCache = PacketTableContentCache()
     private var hasPerformedInitialLoad = false
 
     private var selectedSidebar: NetworkInspectorSidebarSelection = .liveCapture
@@ -80,6 +140,10 @@ final class NetworkInspectorViewModel: ObservableObject {
         self.isInspectorVisible = preferences.isInspectorVisible
         self.tableDensity = preferences.tableDensity
         self.displayFilterText = preferences.displayFilterText
+        let packetTableContent = packetTableContentCache.content(
+            for: controller.snapshot.packetIngestState,
+            displayFilterText: displayFilterText
+        )
         self.snapshot = NetworkInspectorSnapshot.make(
             base: controller.snapshot,
             selectedSidebar: selectedSidebar,
@@ -87,7 +151,8 @@ final class NetworkInspectorViewModel: ObservableObject {
             inspectorTab: inspectorTab,
             isInspectorVisible: isInspectorVisible,
             tableDensity: tableDensity,
-            displayFilterText: displayFilterText
+            displayFilterText: displayFilterText,
+            packetTableContent: packetTableContent
         )
 
         controller.objectWillChange
@@ -280,6 +345,10 @@ final class NetworkInspectorViewModel: ObservableObject {
     }
 
     private func rebuildSnapshot() {
+        let packetTableContent = packetTableContentCache.content(
+            for: controller.snapshot.packetIngestState,
+            displayFilterText: displayFilterText
+        )
         snapshot = NetworkInspectorSnapshot.make(
             base: controller.snapshot,
             selectedSidebar: selectedSidebar,
@@ -287,7 +356,8 @@ final class NetworkInspectorViewModel: ObservableObject {
             inspectorTab: inspectorTab,
             isInspectorVisible: isInspectorVisible,
             tableDensity: tableDensity,
-            displayFilterText: displayFilterText
+            displayFilterText: displayFilterText,
+            packetTableContent: packetTableContent
         )
     }
 }

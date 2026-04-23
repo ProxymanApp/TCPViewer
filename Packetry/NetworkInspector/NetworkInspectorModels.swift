@@ -325,9 +325,14 @@ enum PacketTableUpdatePlan: Equatable {
 }
 
 enum PacketTableUpdatePlanner {
-    static func plan(previousIDs: [PacketSummary.ID], currentIDs: [PacketSummary.ID]) -> PacketTableUpdatePlan {
+    static func plan(
+        previousIDs: [PacketSummary.ID],
+        previousGeneration: UInt64,
+        currentIDs: [PacketSummary.ID],
+        currentGeneration: UInt64
+    ) -> PacketTableUpdatePlan {
         guard previousIDs != currentIDs else {
-            return .none
+            return previousGeneration == currentGeneration ? .none : .reload
         }
 
         guard currentIDs.count > previousIDs.count else {
@@ -354,7 +359,11 @@ struct NetworkInspectorSnapshot: Equatable {
     var displayFilter: PacketDisplayFilter
     var displayFilterChips: [PacketFilterChip]
     var packetRows: [PacketTableRow]
+    var packetRowIDs: [PacketSummary.ID]
+    var packetTableGeneration: UInt64
+    var malformedPacketCount: Int
     var selectedPacket: PacketSummary?
+    var selectedPacketRowIndex: Int?
 
     @MainActor
     static func make(
@@ -364,14 +373,9 @@ struct NetworkInspectorSnapshot: Equatable {
         inspectorTab: PacketInspectorTab,
         isInspectorVisible: Bool,
         tableDensity: PacketTableDensity,
-        displayFilterText: String
+        displayFilterText: String,
+        packetTableContent: PacketTableContent
     ) -> NetworkInspectorSnapshot {
-        let displayFilter = PacketDisplayFilter(displayFilterText)
-        let packets = base.packetIngestState.packets.filter { packet in
-            displayFilter.isEmpty || displayFilter.matches(packet)
-        }
-        let rows = packets.map(PacketTableRow.init(packet:))
-
         return NetworkInspectorSnapshot(
             base: base,
             selectedSidebar: selectedSidebar,
@@ -380,10 +384,14 @@ struct NetworkInspectorSnapshot: Equatable {
             isInspectorVisible: isInspectorVisible,
             tableDensity: tableDensity,
             displayFilterText: displayFilterText,
-            displayFilter: displayFilter,
-            displayFilterChips: displayFilter.chips,
-            packetRows: rows,
-            selectedPacket: rows.first(where: { $0.id == base.selectedPacketID })?.packet
+            displayFilter: packetTableContent.displayFilter,
+            displayFilterChips: packetTableContent.displayFilterChips,
+            packetRows: packetTableContent.rows,
+            packetRowIDs: packetTableContent.rowIDs,
+            packetTableGeneration: packetTableContent.generation,
+            malformedPacketCount: packetTableContent.malformedPacketCount,
+            selectedPacket: packetTableContent.selectedPacket(id: base.selectedPacketID),
+            selectedPacketRowIndex: packetTableContent.selectedRowIndex(id: base.selectedPacketID)
         )
     }
 
@@ -403,16 +411,68 @@ struct NetworkInspectorSnapshot: Equatable {
         base.sessionState.health.packetsDropped + base.sessionState.health.packetsDroppedByInterface
     }
 
-    var malformedPacketCount: Int {
-        base.packetIngestState.packets.filter { packet in
-            NetworkInspectorFormatters.severity(for: packet) == .malformed
-        }.count
-    }
-
     var isCaptureLocked: Bool {
         base.sessionState.canPause ||
             base.sessionState.canResume ||
             base.sessionState.canStop
+    }
+}
+
+struct PacketTableContent: Sendable {
+    let displayFilter: PacketDisplayFilter
+    let displayFilterChips: [PacketFilterChip]
+    let rows: [PacketTableRow]
+    let rowIDs: [PacketSummary.ID]
+    let generation: UInt64
+    let malformedPacketCount: Int
+    private let visiblePacketsByID: [PacketSummary.ID: PacketSummary]
+    private let visiblePacketRowIndexByID: [PacketSummary.ID: Int]
+
+    static let empty = PacketTableContent(
+        displayFilter: PacketDisplayFilter(""),
+        displayFilterChips: [],
+        rows: [],
+        rowIDs: [],
+        generation: 0,
+        malformedPacketCount: 0,
+        visiblePacketsByID: [:],
+        visiblePacketRowIndexByID: [:]
+    )
+
+    init(
+        displayFilter: PacketDisplayFilter,
+        displayFilterChips: [PacketFilterChip],
+        rows: [PacketTableRow],
+        rowIDs: [PacketSummary.ID],
+        generation: UInt64,
+        malformedPacketCount: Int,
+        visiblePacketsByID: [PacketSummary.ID: PacketSummary],
+        visiblePacketRowIndexByID: [PacketSummary.ID: Int]
+    ) {
+        self.displayFilter = displayFilter
+        self.displayFilterChips = displayFilterChips
+        self.rows = rows
+        self.rowIDs = rowIDs
+        self.generation = generation
+        self.malformedPacketCount = malformedPacketCount
+        self.visiblePacketsByID = visiblePacketsByID
+        self.visiblePacketRowIndexByID = visiblePacketRowIndexByID
+    }
+
+    func selectedPacket(id: PacketSummary.ID?) -> PacketSummary? {
+        guard let id else {
+            return nil
+        }
+
+        return visiblePacketsByID[id]
+    }
+
+    func selectedRowIndex(id: PacketSummary.ID?) -> Int? {
+        guard let id else {
+            return nil
+        }
+
+        return visiblePacketRowIndexByID[id]
     }
 }
 

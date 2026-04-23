@@ -7,6 +7,7 @@ import UniformTypeIdentifiers
 struct PacketIngestState: Sendable, Equatable {
     var source: CaptureSource?
     var packets: [PacketSummary]
+    var packetRevision: UInt64
     var lastBatchCount: Int
     var truncatedPacketCount: Int
     var decodeIssueCount: Int
@@ -15,6 +16,7 @@ struct PacketIngestState: Sendable, Equatable {
     static let empty = PacketIngestState(
         source: nil,
         packets: [],
+        packetRevision: 0,
         lastBatchCount: 0,
         truncatedPacketCount: 0,
         decodeIssueCount: 0,
@@ -28,6 +30,7 @@ struct PacketIngestState: Sendable, Equatable {
     mutating func reset(source: CaptureSource? = nil, message: String) {
         self.source = source
         packets = []
+        packetRevision &+= 1
         lastBatchCount = 0
         truncatedPacketCount = 0
         decodeIssueCount = 0
@@ -37,6 +40,7 @@ struct PacketIngestState: Sendable, Equatable {
     mutating func replace(with batch: [PacketSummary], source: CaptureSource, message: String? = nil) {
         self.source = source
         packets = batch
+        packetRevision &+= 1
         lastBatchCount = batch.count
         recalculateCounters()
         if let message {
@@ -47,6 +51,9 @@ struct PacketIngestState: Sendable, Equatable {
     mutating func append(_ batch: [PacketSummary], source: CaptureSource, message: String? = nil) {
         self.source = source
         packets.append(contentsOf: batch)
+        if !batch.isEmpty {
+            packetRevision &+= 1
+        }
         lastBatchCount = batch.count
         recalculateCounters()
         if let message {
