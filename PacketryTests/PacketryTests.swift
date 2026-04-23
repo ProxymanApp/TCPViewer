@@ -51,29 +51,4 @@ struct PacketryTests {
         #expect(ingestState.statusMessage == "Loaded fixture packets.")
     }
 
-    @Test func windowSnapshotVisiblePacketCountMirrorsNavigationState() {
-        var snapshot = PacketryWindowSnapshot.foundation
-        let packet = PacketSummary(
-            packetNumber: 1,
-            timestamp: .now,
-            source: .live,
-            interfaceID: "en0",
-            transportHint: .tcp,
-            endpoints: PacketEndpoints(
-                source: PacketEndpoint(address: "10.0.0.1", port: 5000),
-                destination: PacketEndpoint(address: "10.0.0.2", port: 443)
-            ),
-            originalLength: 64,
-            capturedLength: 64,
-            infoSummary: "Live packet",
-            layers: [PacketLayer(name: "TCP")],
-            decodeStatus: PacketDecodeStatus(kind: .complete),
-            captureMetadata: PacketCaptureMetadata(linkType: .ethernet, isTruncated: false)
-        )
-        snapshot.packetIngestState.append([packet], source: .live)
-        snapshot.navigationState.visiblePackets = [packet]
-
-        #expect(snapshot.visiblePacketCount == 1)
-        #expect(snapshot.packetIngestState.source == .live)
-    }
 }

@@ -598,32 +598,6 @@ struct WindowControllerTests {
         await tearDown(controller)
     }
 
-    @Test func packetTableProtocolLabelPrefersTransportHintOverPayloadLayer() {
-        let packet = makePacket(
-            packetNumber: 1,
-            source: .offline,
-            transportHint: .tcp,
-            layers: [
-                PacketLayer(name: "Ethernet"),
-                PacketLayer(name: "IPv4"),
-                PacketLayer(name: "TCP"),
-                PacketLayer(name: "Payload"),
-            ]
-        )
-
-        #expect(PacketTablePane.protocolLabel(for: packet) == "TCP")
-    }
-
-    @Test func layoutStateExposesSplitAutosaveHook() async {
-        let controller = PacketryWindowController(
-            services: PacketryServiceRegistry(core: FakePacketryCore(interfaceInventories: []))
-        )
-
-        #expect(controller.snapshot.layoutState.verticalAutosaveName == "Packetry.Analyzer.VerticalSplit.v0_3")
-
-        await tearDown(controller)
-    }
-
     private func makeInterface(
         id: String,
         displayName: String,

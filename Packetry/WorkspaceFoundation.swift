@@ -213,7 +213,6 @@ struct PacketryWindowSnapshot: Sendable, Equatable {
     var inspectionState: PacketInspectionState
     var navigationState: PacketNavigationState
     var loadState: PacketLoadState
-    var layoutState: WindowLayoutState
 
     static let foundation = PacketryWindowSnapshot(
         accessState: .unknown,
@@ -223,13 +222,8 @@ struct PacketryWindowSnapshot: Sendable, Equatable {
         filterState: .empty,
         inspectionState: .empty,
         navigationState: .empty,
-        loadState: .idle,
-        layoutState: .default
+        loadState: .idle
     )
-
-    var visiblePacketCount: Int {
-        navigationState.visiblePackets.count
-    }
 
     var selectedPacketID: PacketSummary.ID? {
         get { inspectionState.selectedPacketID }
@@ -305,12 +299,6 @@ struct PacketLoadState: Sendable, Equatable {
     var canCancel: Bool {
         progress.phase == .loading
     }
-}
-
-struct WindowLayoutState: Sendable, Equatable {
-    let verticalAutosaveName: String
-
-    static let `default` = WindowLayoutState(verticalAutosaveName: "Packetry.Analyzer.VerticalSplit.v0_3")
 }
 
 actor PacketryBackgroundCoordinator {
