@@ -42,7 +42,20 @@ struct CoreFacadeTypesTests {
         #expect(loopbackDefaults.readTimeoutMilliseconds == 250)
     }
 
-    @Test func loopbackValidationRejectsPromiscuousOverride() throws {
+    @Test func captureDefaultsDisablePromiscuousModeWhenUnsupported() {
+        let interface = makeInterface(
+            id: "en0",
+            technicalName: "en0",
+            displayName: "Wi-Fi",
+            supportsPromiscuousMode: false
+        )
+
+        let defaults = CaptureOptions.defaults(for: interface)
+
+        #expect(!defaults.promiscuousMode)
+    }
+
+    @Test func validationCoercesLoopbackPromiscuousOverride() throws {
         let loopback = makeInterface(
             id: "lo0",
             technicalName: "lo0",
@@ -57,9 +70,29 @@ struct CoreFacadeTypesTests {
             stopCondition: .manual
         )
 
-        #expect(throws: PacketryCoreError.self) {
-            try invalidOptions.validated(for: loopback)
-        }
+        let validatedOptions = try invalidOptions.validated(for: loopback)
+
+        #expect(!validatedOptions.promiscuousMode)
+    }
+
+    @Test func validationCoercesUnsupportedPromiscuousRequest() throws {
+        let interface = makeInterface(
+            id: "en0",
+            technicalName: "en0",
+            displayName: "Wi-Fi",
+            supportsPromiscuousMode: false
+        )
+        let options = CaptureOptions(
+            promiscuousMode: true,
+            snapshotLength: 65_535,
+            kernelBufferSizeBytes: 4 * 1024 * 1024,
+            readTimeoutMilliseconds: 250,
+            stopCondition: .manual
+        )
+
+        let validatedOptions = try options.validated(for: interface)
+
+        #expect(!validatedOptions.promiscuousMode)
     }
 
     @Test func rotatingAndRingWritersDefaultToPcapngWhenNormalized() {
@@ -147,7 +180,8 @@ struct CoreFacadeTypesTests {
         isLoopback: Bool = false,
         availability: CaptureInterfaceAvailability = .available,
         reason: String? = nil,
-        canCapture: Bool = true
+        canCapture: Bool = true,
+        supportsPromiscuousMode: Bool? = nil
     ) -> CaptureInterfaceSummary {
         CaptureInterfaceSummary(
             id: id,
@@ -163,7 +197,7 @@ struct CoreFacadeTypesTests {
             activityPreview: CaptureInterfaceActivityPreview(),
             capabilities: CaptureInterfaceCapabilities(
                 canCapture: canCapture,
-                supportsPromiscuousMode: !isLoopback,
+                supportsPromiscuousMode: supportsPromiscuousMode ?? !isLoopback,
                 requiresBPFPermissionSetup: true,
                 providesMacOSMetadata: true
             )

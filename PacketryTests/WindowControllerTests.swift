@@ -169,6 +169,29 @@ struct WindowControllerTests {
         await tearDown(controller)
     }
 
+    @Test func liveCaptureStartsInNormalModeWhenInterfaceDoesNotSupportPromiscuousMode() async {
+        let liveSession = FakeLiveSession()
+        let fakeCore = FakePacketryCore(
+            interfaceInventories: [[
+                makeInterface(id: "en0", displayName: "Wi-Fi", supportsPromiscuousMode: false),
+            ]],
+            liveSession: liveSession
+        )
+        let controller = PacketryWindowController(
+            services: PacketryServiceRegistry(core: fakeCore)
+        )
+
+        await controller.refreshInterfaces()
+        await controller.startLiveCapture()
+
+        #expect(controller.snapshot.sessionState.options.promiscuousMode == false)
+        #expect(fakeCore.liveSessionRequests.last?.interfaceID == "en0")
+        #expect(fakeCore.liveSessionRequests.last?.options.promiscuousMode == false)
+        #expect(liveSession.startCount == 1)
+
+        await tearDown(controller)
+    }
+
     @Test func documentOpenReopenSaveAndSaveAsUpdateSnapshot() async {
         let openURL = URL(fileURLWithPath: "/tmp/session.pcapng")
         let saveAsURL = URL(fileURLWithPath: "/tmp/exported.pcap")
@@ -604,7 +627,8 @@ struct WindowControllerTests {
         isLoopback: Bool = false,
         availability: CaptureInterfaceAvailability = .available,
         reason: String? = nil,
-        canCapture: Bool = true
+        canCapture: Bool = true,
+        supportsPromiscuousMode: Bool? = nil
     ) -> CaptureInterfaceSummary {
         CaptureInterfaceSummary(
             id: id,
@@ -620,7 +644,7 @@ struct WindowControllerTests {
             activityPreview: CaptureInterfaceActivityPreview(),
             capabilities: CaptureInterfaceCapabilities(
                 canCapture: canCapture,
-                supportsPromiscuousMode: !isLoopback,
+                supportsPromiscuousMode: supportsPromiscuousMode ?? !isLoopback,
                 requiresBPFPermissionSetup: true,
                 providesMacOSMetadata: true
             )

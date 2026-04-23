@@ -47,8 +47,10 @@ struct NetworkPacketTableView: NSViewRepresentable {
         context.coordinator.rows = rows
         context.coordinator.rowIDs = rowIDs
         context.coordinator.contentGeneration = contentGeneration
-        tableView.reloadData()
-        context.coordinator.syncSelection(in: tableView, selectedRowIndex: selectedRowIndex)
+        context.coordinator.suppressSelectionCallbacks {
+            tableView.reloadData()
+            context.coordinator.syncSelection(in: tableView, selectedRowIndex: selectedRowIndex)
+        }
 
         return scrollView
     }
@@ -71,19 +73,21 @@ struct NetworkPacketTableView: NSViewRepresentable {
         context.coordinator.onSelectPacket = onSelectPacket
         tableView.rowHeight = density.rowHeight
 
-        switch updatePlan {
-        case .none:
-            break
-        case .append(let range):
-            tableView.insertRows(
-                at: IndexSet(integersIn: range),
-                withAnimation: []
-            )
-        case .reload:
-            tableView.reloadData()
-        }
+        context.coordinator.suppressSelectionCallbacks {
+            switch updatePlan {
+            case .none:
+                break
+            case .append(let range):
+                tableView.insertRows(
+                    at: IndexSet(integersIn: range),
+                    withAnimation: []
+                )
+            case .reload:
+                tableView.reloadData()
+            }
 
-        context.coordinator.syncSelection(in: tableView, selectedRowIndex: selectedRowIndex)
+            context.coordinator.syncSelection(in: tableView, selectedRowIndex: selectedRowIndex)
+        }
     }
 
     private static func addColumn(
@@ -106,10 +110,23 @@ struct NetworkPacketTableView: NSViewRepresentable {
         var rowIDs: [PacketSummary.ID] = []
         var contentGeneration: UInt64 = 0
         var onSelectPacket: (PacketSummary.ID?) -> Void
-        private var isApplyingSelection = false
+        private var selectionCallbackSuppressionDepth = 0
+
+        private var isSuppressingSelectionCallbacks: Bool {
+            selectionCallbackSuppressionDepth > 0
+        }
 
         init(onSelectPacket: @escaping (PacketSummary.ID?) -> Void) {
             self.onSelectPacket = onSelectPacket
+        }
+
+        func suppressSelectionCallbacks(_ updates: () -> Void) {
+            selectionCallbackSuppressionDepth += 1
+            defer {
+                selectionCallbackSuppressionDepth -= 1
+            }
+
+            updates()
         }
 
         func numberOfRows(in tableView: NSTableView) -> Int {
@@ -157,33 +174,33 @@ struct NetworkPacketTableView: NSViewRepresentable {
         }
 
         func tableViewSelectionDidChange(_ notification: Notification) {
-            guard !isApplyingSelection,
+            guard !isSuppressingSelectionCallbacks,
                   let tableView = notification.object as? NSTableView else {
                 return
             }
 
             let selectedRow = tableView.selectedRow
             let selectedID = rows.indices.contains(selectedRow) ? rows[selectedRow].id : nil
-            onSelectPacket(selectedID)
+            let onSelectPacket = onSelectPacket
+            DispatchQueue.main.async {
+                onSelectPacket(selectedID)
+            }
         }
 
         func syncSelection(in tableView: NSTableView, selectedRowIndex: Int?) {
-            isApplyingSelection = true
-            defer {
-                isApplyingSelection = false
-            }
+            suppressSelectionCallbacks {
+                guard let rowIndex = selectedRowIndex, rows.indices.contains(rowIndex) else {
+                    tableView.deselectAll(nil)
+                    return
+                }
 
-            guard let rowIndex = selectedRowIndex, rows.indices.contains(rowIndex) else {
-                tableView.deselectAll(nil)
-                return
-            }
+                guard tableView.selectedRow != rowIndex else {
+                    return
+                }
 
-            guard tableView.selectedRow != rowIndex else {
-                return
+                tableView.selectRowIndexes(IndexSet(integer: rowIndex), byExtendingSelection: false)
+                tableView.scrollRowToVisible(rowIndex)
             }
-
-            tableView.selectRowIndexes(IndexSet(integer: rowIndex), byExtendingSelection: false)
-            tableView.scrollRowToVisible(rowIndex)
         }
 
         private func text(for column: String, in row: PacketTableRow) -> String {

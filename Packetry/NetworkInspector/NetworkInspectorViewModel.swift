@@ -349,7 +349,7 @@ final class NetworkInspectorViewModel: ObservableObject {
             for: controller.snapshot.packetIngestState,
             displayFilterText: displayFilterText
         )
-        snapshot = NetworkInspectorSnapshot.make(
+        let updatedSnapshot = NetworkInspectorSnapshot.make(
             base: controller.snapshot,
             selectedSidebar: selectedSidebar,
             workspaceMode: workspaceMode,
@@ -359,5 +359,10 @@ final class NetworkInspectorViewModel: ObservableObject {
             displayFilterText: displayFilterText,
             packetTableContent: packetTableContent
         )
+        guard updatedSnapshot != snapshot else {
+            return
+        }
+
+        snapshot = updatedSnapshot
     }
 }
