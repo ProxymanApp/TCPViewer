@@ -1,5 +1,8 @@
 # v0.2.5 Packet Ingest Model
 
+## Status
+COMPLETE
+
 ## Summary
 Define the normalized packet summary model that turns raw capture input into stable app-facing rows for live and offline workflows.
 
@@ -12,6 +15,18 @@ Define the normalized packet summary model that turns raw capture input into sta
 - The summary model must work for both live capture and file playback.
 - Missing data and decode errors must be explicit, not silently dropped.
 - The model must support later features such as filters, graphs, follow stream, and expert events.
+
+## Delivered Artifacts
+- `PcapPlusPlusCore/CoreFacadeTypes.swift` expands `PacketSummary` with stream IDs, info summaries, capture metadata, decode status, and protocol-neutral endpoint addresses.
+- `PcapPlusPlusCore/NativeBridge/PacketryNativeBridge.mm` maps one normalized packet-summary pipeline for both live and offline ingest, flags truncation, computes stream IDs when possible, and keeps raw packets inside core-owned state.
+- `Packetry/WorkspaceFoundation.swift` adds `PacketIngestState` so the app only stores stable summary batches plus derived counters for visible packets, truncation, and decode issues.
+- `Packetry/ContentView.swift` keeps the UI intentionally thin while verifying that live and offline packet rows, summary text, and health counters surface correctly.
+
+## Verification
+- `PcapPlusPlusCoreTests.nativeCoreLoadsTcpFixtureAndMatchesGolden()`
+- `PcapPlusPlusCoreTests.nativeCoreLoadsUdpPcapngFixtureAndMatchesGolden()`
+- `PcapPlusPlusCoreTests.malformedFixtureSurfacesDecodeIssuesExplicitly()`
+- `PacketryTests.packetIngestStateTracksTotalsTruncationAndDecodeIssues()`
 
 ## Dependencies
 - v0.2.2 live capture session lifecycle.

@@ -1,0 +1,7 @@
+{
+  "fixture": "captures/udp/someip-sd.pcapng",
+  "expectedPacketCount": 3,
+  "expectedTransportHints": [
+    "udp"
+  ]
+}
