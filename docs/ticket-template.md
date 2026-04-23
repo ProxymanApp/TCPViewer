@@ -1,5 +1,13 @@
 # Ticket Title
 
+Status: PROPOSED
+
+## Owned Artifacts
+- Primary artifact path(s) this ticket is expected to create or update.
+
+## Definition Of Done
+- Concrete conditions that must be true before the ticket can be marked `COMPLETE`.
+
 ## Summary
 Short statement of the user-facing or platform-facing value of this ticket.
 

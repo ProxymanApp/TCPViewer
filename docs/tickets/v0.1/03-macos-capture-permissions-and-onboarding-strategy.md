@@ -1,5 +1,16 @@
 # v0.1.3 macOS Capture Permissions And Onboarding Strategy
 
+Status: COMPLETE
+
+## Owned Artifacts
+- [docs/product/capture-permissions-and-onboarding.md](../../product/capture-permissions-and-onboarding.md)
+- [Packetry/CaptureAccessModels.swift](../../../Packetry/CaptureAccessModels.swift)
+
+## Definition Of Done
+- Define the supported non-root macOS capture model and the repair path Packetry will guide users through.
+- Lock the onboarding state machine for first run, missing helper, broken helper, denied access, no eligible interfaces, unsupported interfaces, upgrade revalidation, and repair/retry recovery.
+- Land pure Swift onboarding models in the app target so later UI work can bind to one stable contract.
+
 ## Summary
 Plan a reliable macOS-native onboarding path for packet capture, including non-root capture setup, permission failures, and first-run guidance.
 
@@ -17,8 +28,8 @@ Plan a reliable macOS-native onboarding path for packet capture, including non-r
 - v0.1.1 roadmap and docs scaffold.
 
 ## Tests
-- Unit tests: cover permission-state models and recovery-state transitions.
-- Integration tests: cover successful onboarding, denied access, broken setup, and recovery flows using mocked permission states.
+- Unit tests: cover blocker-to-step mapping, ready-state detection, and recovery-state transitions in `PacketryTests`.
+- Integration tests: cover mocked helper states for successful onboarding, denied access, broken setup, and repair-retry recovery once the onboarding surface is wired into the app.
 - UI tests: out of scope.
 
 ## Out Of Scope
