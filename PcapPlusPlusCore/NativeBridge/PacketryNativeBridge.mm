@@ -1362,12 +1362,12 @@ static void OnLivePacketArrives(pcpp::RawPacket *rawPacket, pcpp::PcapLiveDevice
                                       session->_state->interfaceIdentifier_,
                                       session->_state->device == nullptr ? nil : MakeNSString(session->_state->device->getName()),
                                       nil);
-    NSLog(@"Packetry captured live packet #%llu on %@ (%d/%d bytes, observed=%llu)",
-          summary.packetNumber,
-          summary.captureMetadata.interfaceName ?: session->_state->interfaceIdentifier_,
-          rawPacket->getRawDataLen(),
-          rawPacket->getFrameLength(),
-          session->_state->packetsObserved);
+//    NSLog(@"Packetry captured live packet #%llu on %@ (%d/%d bytes, observed=%llu)",
+//          summary.packetNumber,
+//          summary.captureMetadata.interfaceName ?: session->_state->interfaceIdentifier_,
+//          rawPacket->getRawDataLen(),
+//          rawPacket->getFrameLength(),
+//          session->_state->packetsObserved);
     session->_state->nextPacketIdentifier += 1;
 
     try {

@@ -117,6 +117,107 @@ struct WindowControllerTests {
         await tearDown(controller)
     }
 
+    @Test func terminationPreparationStopsRunningLiveCaptureOnce() async {
+        let liveSession = FakeLiveSession()
+        let controller = PacketryWindowController(
+            services: PacketryServiceRegistry(core: FakePacketryCore(
+                interfaceInventories: [[makeInterface(id: "en0", displayName: "Wi-Fi")]],
+                liveSession: liveSession
+            ))
+        )
+
+        await controller.refreshInterfaces()
+        await controller.startLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        await waitUntil {
+            controller.snapshot.sessionState.phase == .running
+        }
+
+        let shouldTerminate = await controller.prepareForApplicationTermination()
+
+        #expect(shouldTerminate)
+        #expect(liveSession.stopCount == 1)
+
+        await tearDown(controller)
+    }
+
+    @Test func terminationPreparationStopsFailedRetainedLiveCapture() async {
+        let liveSession = FakeLiveSession()
+        let controller = PacketryWindowController(
+            services: PacketryServiceRegistry(core: FakePacketryCore(
+                interfaceInventories: [[makeInterface(id: "en0", displayName: "Wi-Fi")]],
+                liveSession: liveSession
+            ))
+        )
+
+        await controller.refreshInterfaces()
+        await controller.startLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .failed, message: "Capture failed."))
+        await waitUntil {
+            controller.snapshot.sessionState.phase == .failed
+        }
+
+        let shouldTerminate = await controller.prepareForApplicationTermination()
+
+        #expect(shouldTerminate)
+        #expect(liveSession.stopCount == 1)
+
+        await tearDown(controller)
+    }
+
+    @Test func repeatedTerminationPreparationDoesNotStopReleasedLiveCaptureAgain() async {
+        let liveSession = FakeLiveSession()
+        let controller = PacketryWindowController(
+            services: PacketryServiceRegistry(core: FakePacketryCore(
+                interfaceInventories: [[makeInterface(id: "en0", displayName: "Wi-Fi")]],
+                liveSession: liveSession
+            ))
+        )
+
+        await controller.refreshInterfaces()
+        await controller.startLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        await waitUntil {
+            controller.snapshot.sessionState.phase == .running
+        }
+
+        let firstPreparation = await controller.prepareForApplicationTermination()
+        let secondPreparation = await controller.prepareForApplicationTermination()
+
+        #expect(firstPreparation)
+        #expect(secondPreparation)
+        #expect(liveSession.stopCount == 1)
+
+        await tearDown(controller)
+    }
+
+    @Test func terminationPreparationCancelsQuitWhenLiveStopFails() async {
+        let liveSession = FakeLiveSession()
+        liveSession.stopError = PacketryCoreError(code: .liveSessionControlFailed, message: "Stop failed.")
+        let controller = PacketryWindowController(
+            services: PacketryServiceRegistry(core: FakePacketryCore(
+                interfaceInventories: [[makeInterface(id: "en0", displayName: "Wi-Fi")]],
+                liveSession: liveSession
+            ))
+        )
+
+        await controller.refreshInterfaces()
+        await controller.startLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        await waitUntil {
+            controller.snapshot.sessionState.phase == .running
+        }
+
+        let shouldTerminate = await controller.prepareForApplicationTermination()
+
+        #expect(!shouldTerminate)
+        #expect(liveSession.stopCount == 1)
+        #expect(controller.snapshot.sessionState.phase == .failed)
+        #expect(controller.snapshot.sessionState.lastError?.code == .liveSessionControlFailed)
+
+        await tearDown(controller)
+    }
+
     @Test func refreshWhileCaptureIsRunningKeepsActiveSelection() async {
         let liveSession = FakeLiveSession()
         let fakeCore = FakePacketryCore(
@@ -804,6 +905,7 @@ private final class FakeLiveSession: LiveCaptureSessionProviding, @unchecked Sen
     private let pipe = EventPipe<PacketIngestEvent>()
 
     var inspections: [PacketSummary.ID: PacketInspection] = [:]
+    var stopError: Error?
     private(set) var startCount = 0
     private(set) var pauseCount = 0
     private(set) var resumeCount = 0
@@ -828,6 +930,9 @@ private final class FakeLiveSession: LiveCaptureSessionProviding, @unchecked Sen
 
     func stop() async throws {
         stopCount += 1
+        if let stopError {
+            throw stopError
+        }
     }
 
     func inspectPacket(id: PacketSummary.ID) async throws -> PacketInspection {

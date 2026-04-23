@@ -364,6 +364,48 @@ private struct PacketryPreferences {
 }
 
 @MainActor
+private final class PacketryWindowControllerRegistry {
+    static let shared = PacketryWindowControllerRegistry()
+
+    private var controllers: [WeakPacketryWindowController] = []
+
+    func register(_ controller: PacketryWindowController) {
+        pruneReleasedControllers()
+        guard !controllers.contains(where: { $0.controller === controller }) else {
+            return
+        }
+
+        controllers.append(WeakPacketryWindowController(controller))
+    }
+
+    func prepareForApplicationTermination() async -> Bool {
+        pruneReleasedControllers()
+        let activeControllers = controllers.compactMap(\.controller)
+        var shouldTerminate = true
+
+        for controller in activeControllers {
+            let didPrepare = await controller.prepareForApplicationTermination()
+            shouldTerminate = shouldTerminate && didPrepare
+        }
+
+        pruneReleasedControllers()
+        return shouldTerminate
+    }
+
+    private func pruneReleasedControllers() {
+        controllers.removeAll { $0.controller == nil }
+    }
+}
+
+private final class WeakPacketryWindowController {
+    weak var controller: PacketryWindowController?
+
+    init(_ controller: PacketryWindowController) {
+        self.controller = controller
+    }
+}
+
+@MainActor
 final class PacketryWindowController: ObservableObject {
     @Published private(set) var snapshot: PacketryWindowSnapshot
 
@@ -394,6 +436,7 @@ final class PacketryWindowController: ObservableObject {
         resolvedSnapshot.filterState.captureFilterText = preferences.captureFilterText
         resolvedSnapshot.filterState.recentCaptureFilters = preferences.recentCaptureFilters
         self.snapshot = resolvedSnapshot
+        PacketryWindowControllerRegistry.shared.register(self)
     }
 
     deinit {
@@ -401,6 +444,10 @@ final class PacketryWindowController: ObservableObject {
         documentEventsTask?.cancel()
         inspectionTask?.cancel()
         filterValidationTask?.cancel()
+    }
+
+    static func prepareAllForApplicationTermination() async -> Bool {
+        await PacketryWindowControllerRegistry.shared.prepareForApplicationTermination()
     }
 
     func performInitialLoadIfNeeded() async {
@@ -896,22 +943,32 @@ final class PacketryWindowController: ObservableObject {
     }
 
     func cancelBackgroundWork() {
-        liveEventsTask?.cancel()
-        liveEventsTask = nil
-        documentEventsTask?.cancel()
-        documentEventsTask = nil
-        inspectionTask?.cancel()
-        inspectionTask = nil
-        filterValidationTask?.cancel()
-        filterValidationTask = nil
+        cancelControllerTasks()
 
+        let currentDocument = document
         Task {
             await backgroundCoordinator.cancelAll()
-            await self.document?.cancelLoading()
+            await currentDocument?.cancelLoading()
         }
 
         snapshot.sessionState.statusMessage = "Cancelled background work."
         snapshot.documentState.statusMessage = "Cancelled background work."
+    }
+
+    func prepareForApplicationTermination() async -> Bool {
+        do {
+            try await stopRetainedLiveSessionIfNeeded()
+        } catch {
+            let packetryError = packetryError(from: error, defaultCode: .liveSessionControlFailed)
+            snapshot.sessionState.phase = .failed
+            snapshot.sessionState.lastError = packetryError
+            snapshot.sessionState.statusMessage = packetryError.message
+            return false
+        }
+
+        releaseLiveSession()
+        await cancelBackgroundWorkForTermination()
+        return true
     }
 
     private func applyInterfaceInventory(_ interfaces: [CaptureInterfaceSummary], previousSelectionID: String?) {
@@ -1202,8 +1259,20 @@ final class PacketryWindowController: ObservableObject {
     }
 
     private func stopLiveCaptureIfNeeded() async throws {
-        guard let liveSession, snapshot.sessionState.canStop else {
-            releaseLiveSession()
+        try await stopRetainedLiveSessionIfNeeded()
+        releaseLiveSession()
+        snapshot.sessionState.phase = snapshot.accessState.isCaptureReady ? .ready : .idle
+        snapshot.sessionState.health = .empty
+        snapshot.loadState = .idle
+    }
+
+    private func resetLiveSession() async throws {
+        try await stopRetainedLiveSessionIfNeeded()
+        releaseLiveSession()
+    }
+
+    private func stopRetainedLiveSessionIfNeeded() async throws {
+        guard let liveSession, snapshot.sessionState.phase != .stopped else {
             return
         }
 
@@ -1212,19 +1281,6 @@ final class PacketryWindowController: ObservableObject {
         } catch {
             throw packetryError(from: error, defaultCode: .liveSessionControlFailed)
         }
-
-        releaseLiveSession()
-        snapshot.sessionState.phase = snapshot.accessState.isCaptureReady ? .ready : .idle
-        snapshot.sessionState.health = .empty
-        snapshot.loadState = .idle
-    }
-
-    private func resetLiveSession() async throws {
-        if let liveSession, snapshot.sessionState.canStop {
-            try await liveSession.stop()
-        }
-
-        releaseLiveSession()
     }
 
     private func releaseLiveSession() {
@@ -1238,6 +1294,25 @@ final class PacketryWindowController: ObservableObject {
         Task {
             await backgroundCoordinator.endOperation("live-events")
         }
+    }
+
+    private func cancelControllerTasks() {
+        liveEventsTask?.cancel()
+        liveEventsTask = nil
+        documentEventsTask?.cancel()
+        documentEventsTask = nil
+        inspectionTask?.cancel()
+        inspectionTask = nil
+        filterValidationTask?.cancel()
+        filterValidationTask = nil
+    }
+
+    private func cancelBackgroundWorkForTermination() async {
+        cancelControllerTasks()
+        let currentDocument = document
+        document = nil
+        await backgroundCoordinator.cancelAll()
+        await currentDocument?.cancelLoading()
     }
 
     private func releaseDocumentContext(resetState: Bool = false) {
