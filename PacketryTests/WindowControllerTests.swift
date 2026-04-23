@@ -17,9 +17,12 @@ struct WindowControllerTests {
         let controller = PacketryWindowController()
         let url = URL(fileURLWithPath: "/tmp/example.pcapng")
 
+        controller.finishDocumentOpen(packetCount: 7)
         controller.beginDocumentOpen(at: url)
+
         #expect(controller.snapshot.documentState.phase == .opening)
         #expect(controller.snapshot.documentState.fileURL == url)
+        #expect(controller.snapshot.visiblePacketCount == 0)
 
         controller.finishDocumentOpen(packetCount: 42)
         #expect(controller.snapshot.documentState.phase == .loaded)
@@ -36,5 +39,16 @@ struct WindowControllerTests {
 
         #expect(controller.snapshot.accessState == .ready)
         #expect(controller.snapshot.sessionState.phase == .ready)
+    }
+
+    @Test func blockedAccessDemotesPreviouslyReadySession() {
+        let controller = PacketryWindowController()
+
+        controller.finishLaunchChecks(with: .ready)
+        controller.finishLaunchChecks(with: .blocked(.helperBroken))
+
+        #expect(controller.snapshot.accessState == .blocked(.helperBroken))
+        #expect(controller.snapshot.sessionState.phase == .idle)
+        #expect(controller.snapshot.sessionState.statusMessage == CaptureAccessState.blocked(.helperBroken).detail)
     }
 }

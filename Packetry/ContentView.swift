@@ -40,10 +40,6 @@ struct ContentView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(24)
-        .onAppear {
-            controller.beginLaunchChecks()
-            controller.finishLaunchChecks(with: .blocked(.firstLaunch))
-        }
     }
 
     @ViewBuilder

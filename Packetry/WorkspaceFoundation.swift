@@ -117,13 +117,13 @@ final class PacketryWindowController: ObservableObject {
     private let backgroundCoordinator: PacketryBackgroundCoordinator
 
     init(
-        services: PacketryServiceRegistry = .foundation,
+        services: PacketryServiceRegistry? = nil,
         backgroundCoordinator: PacketryBackgroundCoordinator = PacketryBackgroundCoordinator(),
-        snapshot: PacketryWindowSnapshot = .foundation
+        snapshot: PacketryWindowSnapshot? = nil
     ) {
-        self.services = services
+        self.services = services ?? .foundation
         self.backgroundCoordinator = backgroundCoordinator
-        self.snapshot = snapshot
+        self.snapshot = snapshot ?? .foundation
     }
 
     func beginLaunchChecks() {
@@ -137,6 +137,9 @@ final class PacketryWindowController: ObservableObject {
         if accessState.isCaptureReady && snapshot.sessionState.phase == .idle {
             snapshot.sessionState.phase = .ready
             snapshot.sessionState.statusMessage = "Live capture can be configured."
+        } else if !accessState.isCaptureReady && snapshot.sessionState.phase == .ready {
+            snapshot.sessionState.phase = .idle
+            snapshot.sessionState.statusMessage = accessState.detail
         }
     }
 
@@ -147,6 +150,8 @@ final class PacketryWindowController: ObservableObject {
             packetCount: 0,
             statusMessage: "Opening \(fileURL.lastPathComponent)..."
         )
+        snapshot.visiblePacketCount = 0
+        snapshot.selectedPacketID = nil
 
         Task {
             await backgroundCoordinator.beginOperation("document-open")
