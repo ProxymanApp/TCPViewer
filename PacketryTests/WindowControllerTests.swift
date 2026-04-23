@@ -113,6 +113,33 @@ struct WindowControllerTests {
         #expect(controller.snapshot.sessionState.phase == .stopped)
     }
 
+    @Test func refreshWhileCaptureIsRunningKeepsActiveSelection() async {
+        let liveSession = FakeLiveSession()
+        let fakeCore = FakePacketryCore(
+            interfaceInventories: [
+                [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                [makeInterface(id: "en0", displayName: "Wi-Fi", availability: .unavailable, reason: "Temporarily unavailable.", canCapture: false)],
+            ],
+            liveSession: liveSession
+        )
+        let controller = PacketryWindowController(
+            services: PacketryServiceRegistry(core: fakeCore)
+        )
+
+        await controller.refreshInterfaces()
+        await controller.startLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        await waitUntil {
+            controller.snapshot.sessionState.phase == .running
+        }
+
+        await controller.refreshInterfaces()
+
+        #expect(controller.snapshot.sessionState.selectedInterfaceID == "en0")
+        #expect(controller.snapshot.sessionState.phase == .running)
+        #expect(controller.snapshot.sessionState.statusMessage.contains("Keeping"))
+    }
+
     @Test func documentOpenReopenSaveAndSaveAsUpdateSnapshot() async {
         let openURL = URL(fileURLWithPath: "/tmp/session.pcapng")
         let saveAsURL = URL(fileURLWithPath: "/tmp/exported.pcap")

@@ -110,6 +110,34 @@ struct PcapPlusPlusCoreTests {
         #expect(isBlank(pcapMetadata.fileComment))
     }
 
+    @Test func failedSaveAsPcapPreservesExistingDestinationFile() async throws {
+        let fixtureURL = CoreFixtureCatalog.captureCategoryURL("macos-metadata").appendingPathComponent("many-interfaces-1.pcapng")
+        let core = NativePacketryCore()
+        let fileManager = FileManager.default
+        let tempDirectory = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try fileManager.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer {
+            try? fileManager.removeItem(at: tempDirectory)
+        }
+
+        let document = try await core.openOfflineCaptureDocument(at: fixtureURL)
+        _ = try await document.open()
+
+        let destinationURL = tempDirectory.appendingPathComponent("existing-output.pcap")
+        let originalContents = Data("existing destination".utf8)
+        try originalContents.write(to: destinationURL)
+
+        var didThrow = false
+        do {
+            try await document.save(to: destinationURL, format: .pcap)
+        } catch {
+            didThrow = true
+        }
+
+        #expect(didThrow)
+        #expect(try Data(contentsOf: destinationURL) == originalContents)
+    }
+
     private func loadSummaryGolden(named fileName: String) throws -> SummaryGolden {
         let url = CoreFixtureCatalog.fixturesRoot
             .appendingPathComponent("goldens", isDirectory: true)

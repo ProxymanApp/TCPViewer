@@ -999,24 +999,41 @@ static void OnLiveStatsUpdate(pcpp::IPcapDevice::PcapStats &stats, void *userCoo
 
 - (BOOL)pauseAndReturnError:(NSError **)error
 {
-    std::lock_guard<std::mutex> lock(_state->mutex);
+    pcpp::PcapLiveDevice *device = nullptr;
 
-    if (_state->device == nullptr || !_state->device->captureActive()) {
-        if (error != nullptr) {
-            *error = MakeError(PacketryNativeErrorCodeCapturePauseFailed, @"Live capture is not currently running.");
+    {
+        std::lock_guard<std::mutex> lock(_state->mutex);
+
+        if (_state->device == nullptr || !_state->device->captureActive()) {
+            if (error != nullptr) {
+                *error = MakeError(PacketryNativeErrorCodeCapturePauseFailed, @"Live capture is not currently running.");
+            }
+            return NO;
         }
-        return NO;
+
+        device = _state->device;
     }
 
-    _state->device->stopCapture();
-    UpdateStats(*_state);
-    _state->phase = PCPPNativeLiveSessionPhasePaused;
-    _state->statusMessage = @"Live capture is paused.";
+    device->stopCapture();
+
+    NSString *statusMessage = nil;
+    PCPPNativeLiveSessionPhase phase = PCPPNativeLiveSessionPhasePaused;
+    PCPPNativeCaptureHealthDescriptor *health = nil;
+    {
+        std::lock_guard<std::mutex> lock(_state->mutex);
+        UpdateStats(*_state);
+        _state->phase = PCPPNativeLiveSessionPhasePaused;
+        _state->statusMessage = @"Live capture is paused.";
+        phase = _state->phase;
+        statusMessage = _state->statusMessage;
+        health = MakeHealthDescriptor(*_state);
+    }
+
     if (self.phaseHandler != nil) {
-        self.phaseHandler(_state->phase, _state->statusMessage);
+        self.phaseHandler(phase, statusMessage);
     }
     if (self.healthHandler != nil) {
-        self.healthHandler(MakeHealthDescriptor(*_state));
+        self.healthHandler(health);
     }
     return YES;
 }
@@ -1051,30 +1068,47 @@ static void OnLiveStatsUpdate(pcpp::IPcapDevice::PcapStats &stats, void *userCoo
 
 - (BOOL)stopAndReturnError:(NSError **)error
 {
-    std::lock_guard<std::mutex> lock(_state->mutex);
+    pcpp::PcapLiveDevice *device = nullptr;
+    bool shouldStopCapture = false;
 
     try {
-        if (_state->device == nullptr) {
-            return YES;
+        {
+            std::lock_guard<std::mutex> lock(_state->mutex);
+            if (_state->device == nullptr) {
+                return YES;
+            }
+
+            device = _state->device;
+            shouldStopCapture = _state->device->captureActive();
         }
 
-        if (_state->device->captureActive()) {
-            _state->device->stopCapture();
+        if (shouldStopCapture) {
+            device->stopCapture();
         }
 
-        UpdateStats(*_state);
-        _state->writer_.finish();
-        if (_state->device->isOpened()) {
-            _state->device->close();
+        NSString *statusMessage = nil;
+        PCPPNativeLiveSessionPhase phase = PCPPNativeLiveSessionPhaseStopped;
+        PCPPNativeCaptureHealthDescriptor *health = nil;
+        {
+            std::lock_guard<std::mutex> lock(_state->mutex);
+            UpdateStats(*_state);
+            _state->writer_.finish();
+            if (_state->device->isOpened()) {
+                _state->device->close();
+            }
+
+            _state->phase = PCPPNativeLiveSessionPhaseStopped;
+            _state->statusMessage = @"Live capture stopped.";
+            phase = _state->phase;
+            statusMessage = _state->statusMessage;
+            health = MakeHealthDescriptor(*_state);
         }
 
-        _state->phase = PCPPNativeLiveSessionPhaseStopped;
-        _state->statusMessage = @"Live capture stopped.";
         if (self.phaseHandler != nil) {
-            self.phaseHandler(_state->phase, _state->statusMessage);
+            self.phaseHandler(phase, statusMessage);
         }
         if (self.healthHandler != nil) {
-            self.healthHandler(MakeHealthDescriptor(*_state));
+            self.healthHandler(health);
         }
         return YES;
     } catch (const std::exception &exception) {
@@ -1125,6 +1159,74 @@ PCPPNativeCaptureDocumentMetadataDescriptor *MakeMetadata(const OfflineDocumentS
                                                                       hardware:NullableNSString(state.hardware)
                                                             captureApplication:NullableNSString(state.captureApplication)
                                                                    fileComment:NullableNSString(state.fileComment)];
+}
+
+NSURL *TemporarySaveURL(NSURL *targetURL)
+{
+    NSURL *directoryURL = [targetURL URLByDeletingLastPathComponent];
+    NSString *temporaryName = [NSString stringWithFormat:@".%@.%@.tmp",
+                                                         targetURL.lastPathComponent,
+                                                         NSUUID.UUID.UUIDString];
+    return [directoryURL URLByAppendingPathComponent:temporaryName];
+}
+
+void RemoveTemporaryItem(NSURL *temporaryURL)
+{
+    if (temporaryURL == nil) {
+        return;
+    }
+
+    [[NSFileManager defaultManager] removeItemAtURL:temporaryURL error:nil];
+}
+
+bool EnsureParentDirectoryExists(NSURL *targetURL, NSError **error)
+{
+    NSError *directoryError = nil;
+    NSURL *directoryURL = [targetURL URLByDeletingLastPathComponent];
+    if ([[NSFileManager defaultManager] createDirectoryAtURL:directoryURL
+                                 withIntermediateDirectories:YES
+                                                  attributes:nil
+                                                       error:&directoryError]) {
+        return true;
+    }
+
+    if (error != nullptr) {
+        *error = MakeError(PacketryNativeErrorCodeFileWriteFailed, @"Packetry could not prepare the destination directory for saving.");
+    }
+    return false;
+}
+
+bool ReplaceSavedFile(NSURL *temporaryURL, NSURL *targetURL, NSError **error)
+{
+    NSFileManager *fileManager = [NSFileManager defaultManager];
+    NSError *replaceError = nil;
+
+    if ([fileManager fileExistsAtPath:targetURL.path]) {
+        if (![fileManager replaceItemAtURL:targetURL
+                             withItemAtURL:temporaryURL
+                            backupItemName:nil
+                                   options:0
+                          resultingItemURL:nil
+                                     error:&replaceError]) {
+            RemoveTemporaryItem(temporaryURL);
+            if (error != nullptr) {
+                *error = MakeError(PacketryNativeErrorCodeFileWriteFailed, @"Packetry could not replace the destination capture file.");
+            }
+            return false;
+        }
+
+        return true;
+    }
+
+    if (![fileManager moveItemAtURL:temporaryURL toURL:targetURL error:&replaceError]) {
+        RemoveTemporaryItem(temporaryURL);
+        if (error != nullptr) {
+            *error = MakeError(PacketryNativeErrorCodeFileWriteFailed, @"Packetry could not move the saved capture into place.");
+        }
+        return false;
+    }
+
+    return true;
 }
 
 NSArray<PCPPNativePacketSummaryDescriptor *> *LoadPacketsFromURL(OfflineDocumentState &state, NSError **error)
@@ -1198,9 +1300,17 @@ bool SavePacketsToURL(const OfflineDocumentState &state, NSURL *targetURL, const
         return false;
     }
 
+    if (!EnsureParentDirectoryExists(targetURL, error)) {
+        return false;
+    }
+
+    NSURL *temporaryURL = TemporarySaveURL(targetURL);
+    RemoveTemporaryItem(temporaryURL);
+
     if (format == "pcapng") {
-        pcpp::PcapNgFileWriterDevice writer(MakeStdString(targetURL.path));
+        pcpp::PcapNgFileWriterDevice writer(MakeStdString(temporaryURL.path));
         if (!writer.open(state.operatingSystem, state.hardware, state.captureApplication, state.fileComment)) {
+            RemoveTemporaryItem(temporaryURL);
             if (error != nullptr) {
                 *error = MakeError(PacketryNativeErrorCodeFileWriteFailed, @"Packetry could not open the pcapng destination for writing.");
             }
@@ -1213,16 +1323,18 @@ bool SavePacketsToURL(const OfflineDocumentState &state, NSURL *targetURL, const
                     *error = MakeError(PacketryNativeErrorCodeFileWriteFailed, @"Packetry could not write all packets into the pcapng destination.");
                 }
                 writer.close();
+                RemoveTemporaryItem(temporaryURL);
                 return false;
             }
         }
 
         writer.close();
-        return true;
+        return ReplaceSavedFile(temporaryURL, targetURL, error);
     }
 
-    pcpp::PcapFileWriterDevice writer(MakeStdString(targetURL.path), state.packets.front().rawPacket->getLinkLayerType());
+    pcpp::PcapFileWriterDevice writer(MakeStdString(temporaryURL.path), state.packets.front().rawPacket->getLinkLayerType());
     if (!writer.open()) {
+        RemoveTemporaryItem(temporaryURL);
         if (error != nullptr) {
             *error = MakeError(PacketryNativeErrorCodeFileWriteFailed, @"Packetry could not open the pcap destination for writing.");
         }
@@ -1235,12 +1347,13 @@ bool SavePacketsToURL(const OfflineDocumentState &state, NSURL *targetURL, const
                 *error = MakeError(PacketryNativeErrorCodeFileWriteFailed, @"Packetry could not write all packets into the pcap destination.");
             }
             writer.close();
+            RemoveTemporaryItem(temporaryURL);
             return false;
         }
     }
 
     writer.close();
-    return true;
+    return ReplaceSavedFile(temporaryURL, targetURL, error);
 }
 
 }  // namespace
@@ -1368,14 +1481,16 @@ bool SavePacketsToURL(const OfflineDocumentState &state, NSURL *targetURL, const
                 availabilityReason = @"Packetry does not support this interface link type yet.";
             } else {
                 try {
-                    pcpp::PcapLiveDevice::DeviceMode mode = loopback ? pcpp::PcapLiveDevice::Normal : pcpp::PcapLiveDevice::Promiscuous;
-                    pcpp::PcapLiveDevice::DeviceConfiguration configuration(mode, 1, 0, pcpp::PcapLiveDevice::PCPP_INOUT, 65535);
-                    if (!device->open(configuration)) {
-                        availability = PCPPNativeInterfaceAvailabilityUnavailable;
-                        availabilityReason = @"Packetry could not open this interface with the current macOS capture access.";
-                        canCapture = false;
-                    } else {
-                        device->close();
+                    if (!device->isOpened()) {
+                        pcpp::PcapLiveDevice::DeviceMode mode = loopback ? pcpp::PcapLiveDevice::Normal : pcpp::PcapLiveDevice::Promiscuous;
+                        pcpp::PcapLiveDevice::DeviceConfiguration configuration(mode, 1, 0, pcpp::PcapLiveDevice::PCPP_INOUT, 65535);
+                        if (!device->open(configuration)) {
+                            availability = PCPPNativeInterfaceAvailabilityUnavailable;
+                            availabilityReason = @"Packetry could not open this interface with the current macOS capture access.";
+                            canCapture = false;
+                        } else {
+                            device->close();
+                        }
                     }
                 } catch (const std::exception &) {
                     availability = PCPPNativeInterfaceAvailabilityUnavailable;
