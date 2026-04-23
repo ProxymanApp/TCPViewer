@@ -146,6 +146,29 @@ struct WindowControllerTests {
         await tearDown(controller)
     }
 
+    @Test func selectingAlternateInterfacePropagatesToLiveCapture() async {
+        let liveSession = FakeLiveSession()
+        let fakeCore = FakePacketryCore(
+            interfaceInventories: [[
+                makeInterface(id: "en0", displayName: "Wi-Fi"),
+                makeInterface(id: "lo0", displayName: "Loopback", isLoopback: true),
+            ]],
+            liveSession: liveSession
+        )
+        let controller = PacketryWindowController(
+            services: PacketryServiceRegistry(core: fakeCore)
+        )
+
+        await controller.refreshInterfaces()
+        controller.selectInterface("lo0")
+        await controller.startLiveCapture()
+
+        #expect(fakeCore.liveSessionRequests.last?.interfaceID == "lo0")
+        #expect(liveSession.startCount == 1)
+
+        await tearDown(controller)
+    }
+
     @Test func documentOpenReopenSaveAndSaveAsUpdateSnapshot() async {
         let openURL = URL(fileURLWithPath: "/tmp/session.pcapng")
         let saveAsURL = URL(fileURLWithPath: "/tmp/exported.pcap")
@@ -217,6 +240,77 @@ struct WindowControllerTests {
         #expect(document.saveAsRequests.count == 1)
         #expect(controller.snapshot.documentState.fileURL == saveAsURL)
         #expect(controller.snapshot.documentState.format == .pcap)
+
+        await tearDown(controller)
+    }
+
+    @Test func openingNewDocumentIgnoresEventsFromPreviousDocumentStream() async {
+        let firstURL = URL(fileURLWithPath: "/tmp/first-stream.pcapng")
+        let secondURL = URL(fileURLWithPath: "/tmp/second-stream.pcapng")
+        let stalePacket = makePacket(packetNumber: 1, source: .offline, transportHint: .udp)
+        let secondPacket = makePacket(packetNumber: 1, source: .offline, transportHint: .dns)
+        let secondOpenGate = AsyncGate()
+
+        let firstDocument = FakeOfflineDocument(
+            url: firstURL,
+            metadata: CaptureDocumentMetadata(format: .pcapng),
+            openPlan: .completed([stalePacket])
+        )
+        let secondDocument = FakeOfflineDocument(
+            url: secondURL,
+            metadata: CaptureDocumentMetadata(format: .pcapng),
+            openPlan: FakeOfflineDocument.LoadPlan(
+                batches: [[secondPacket]],
+                progress: [],
+                error: nil,
+                gate: secondOpenGate
+            ),
+            inspections: [secondPacket.id: makeInspection(for: secondPacket)]
+        )
+        let staleProgress = PacketLoadProgress(
+            phase: .cancelled,
+            loadedPacketCount: 99,
+            isPartialResult: true,
+            message: "Stale load was cancelled."
+        )
+        let fakeCore = FakePacketryCore(
+            interfaceInventories: [[makeInterface(id: "en0", displayName: "Wi-Fi")]],
+            documentFactory: { url in
+                if url == secondURL {
+                    firstDocument.send(.packetBatch([stalePacket], disposition: .append))
+                    firstDocument.send(.loadProgressChanged(staleProgress))
+                    return secondDocument
+                }
+
+                return firstDocument
+            }
+        )
+        let controller = PacketryWindowController(
+            services: PacketryServiceRegistry(core: fakeCore)
+        )
+
+        await controller.openDocument(at: firstURL)
+        await waitUntil {
+            controller.snapshot.documentState.phase == .loaded
+        }
+
+        let openTask = Task {
+            await controller.openDocument(at: secondURL)
+        }
+        await waitUntil {
+            controller.snapshot.documentState.fileURL == secondURL &&
+            controller.snapshot.documentState.phase == .opening
+        }
+        await settleEventLoop()
+
+        #expect(controller.snapshot.packetIngestState.totalPacketCount == 0)
+        #expect(controller.snapshot.documentState.isPartialResult == false)
+
+        await secondOpenGate.open()
+        await openTask.value
+
+        #expect(controller.snapshot.documentState.phase == .loaded)
+        #expect(controller.snapshot.packetIngestState.packets.map(\.transportHint) == [.dns])
 
         await tearDown(controller)
     }
@@ -504,6 +598,22 @@ struct WindowControllerTests {
         await tearDown(controller)
     }
 
+    @Test func packetTableProtocolLabelPrefersTransportHintOverPayloadLayer() {
+        let packet = makePacket(
+            packetNumber: 1,
+            source: .offline,
+            transportHint: .tcp,
+            layers: [
+                PacketLayer(name: "Ethernet"),
+                PacketLayer(name: "IPv4"),
+                PacketLayer(name: "TCP"),
+                PacketLayer(name: "Payload"),
+            ]
+        )
+
+        #expect(PacketTablePane.protocolLabel(for: packet) == "TCP")
+    }
+
     @Test func layoutStateExposesSplitAutosaveHook() async {
         let controller = PacketryWindowController(
             services: PacketryServiceRegistry(core: FakePacketryCore(interfaceInventories: []))
@@ -546,7 +656,8 @@ struct WindowControllerTests {
     private func makePacket(
         packetNumber: UInt64,
         source: CaptureSource,
-        transportHint: TransportProtocolHint
+        transportHint: TransportProtocolHint,
+        layers: [PacketLayer]? = nil
     ) -> PacketSummary {
         PacketSummary(
             packetNumber: packetNumber,
@@ -562,7 +673,7 @@ struct WindowControllerTests {
             capturedLength: 128,
             streamID: 42,
             infoSummary: "Packet \(packetNumber)",
-            layers: [PacketLayer(name: "Ethernet"), PacketLayer(name: source == .live ? "IPv4" : "TCP")],
+            layers: layers ?? [PacketLayer(name: "Ethernet"), PacketLayer(name: source == .live ? "IPv4" : "TCP")],
             decodeStatus: PacketDecodeStatus(kind: .complete),
             captureMetadata: PacketCaptureMetadata(linkType: .ethernet, isTruncated: false)
         )
@@ -745,12 +856,14 @@ private final class FakeOfflineDocument: OfflineCaptureDocumentProviding, @unche
         var batches: [[PacketSummary]]
         var progress: [PacketLoadProgress]
         var error: PacketryCoreError?
+        var gate: AsyncGate? = nil
 
         static func completed(_ packets: [PacketSummary]) -> LoadPlan {
             LoadPlan(
                 batches: packets.isEmpty ? [] : [packets],
                 progress: [],
-                error: nil
+                error: nil,
+                gate: nil
             )
         }
     }
@@ -880,6 +993,9 @@ private final class FakeOfflineDocument: OfflineCaptureDocumentProviding, @unche
 
         pipe.yield(.documentMetadataChanged(metadata))
         pipe.yield(.packetBatch([], disposition: .replace))
+        if let gate = plan.gate {
+            await gate.wait()
+        }
 
         for (index, batch) in plan.batches.enumerated() {
             packets.append(contentsOf: batch)
@@ -916,6 +1032,32 @@ private final class FakeOfflineDocument: OfflineCaptureDocumentProviding, @unche
 
         pipe.yield(.documentStateChanged(phase: .loaded, message: currentProgress.message))
         return packets
+    }
+
+    func send(_ event: PacketIngestEvent) {
+        pipe.yield(event)
+    }
+}
+
+private actor AsyncGate {
+    private var isOpen = false
+    private var continuations: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        if isOpen {
+            return
+        }
+
+        await withCheckedContinuation { continuation in
+            continuations.append(continuation)
+        }
+    }
+
+    func open() {
+        isOpen = true
+        let waitingContinuations = continuations
+        continuations.removeAll()
+        waitingContinuations.forEach { $0.resume() }
     }
 }
 

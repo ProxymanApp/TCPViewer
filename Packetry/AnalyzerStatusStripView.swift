@@ -15,7 +15,11 @@ struct AnalyzerStatusStripView: View {
             Text(controller.snapshot.documentState.phase.rawValue.capitalized)
                 .foregroundStyle(.secondary)
 
-            if controller.snapshot.loadState.progress.phase == .loading {
+            if let jumpErrorMessage = controller.snapshot.navigationState.jumpErrorMessage {
+                Label(jumpErrorMessage, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .lineLimit(1)
+            } else if controller.snapshot.loadState.progress.phase == .loading {
                 ProgressView(value: controller.snapshot.loadState.progress.fractionCompleted ?? 0)
                     .frame(width: 140)
                 Text(controller.snapshot.loadState.progress.message)

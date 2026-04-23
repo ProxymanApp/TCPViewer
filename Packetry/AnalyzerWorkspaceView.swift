@@ -42,6 +42,15 @@ struct AnalyzerWorkspaceView: View {
                 }
                 .packetryToolbarButtonStyle()
 
+                CaptureInterfaceToolbarView(
+                    interfaces: controller.snapshot.sessionState.interfaceInventory,
+                    selectedInterfaceID: controller.snapshot.sessionState.selectedInterfaceID,
+                    isLocked: controller.snapshot.sessionState.canPause ||
+                        controller.snapshot.sessionState.canResume ||
+                        controller.snapshot.sessionState.canStop,
+                    onSelect: { controller.selectInterface($0) }
+                )
+
                 Button {
                     controller.presentOpenCapturePanel()
                 } label: {

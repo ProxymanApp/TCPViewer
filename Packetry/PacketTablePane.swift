@@ -40,7 +40,7 @@ struct PacketTablePane: View {
                 .width(min: 160, ideal: 200)
 
                 TableColumn("Protocol") { packet in
-                    Text(protocolLabel(packet))
+                    Text(Self.protocolLabel(for: packet))
                         .fontWeight(packet.decodeStatus.kind == .complete ? .regular : .semibold)
                 }
                 .width(min: 84, ideal: 100, max: 120)
@@ -102,7 +102,11 @@ struct PacketTablePane: View {
         return address
     }
 
-    private func protocolLabel(_ packet: PacketSummary) -> String {
+    static func protocolLabel(for packet: PacketSummary) -> String {
+        if packet.transportHint != .unknown {
+            return packet.transportHint.rawValue.uppercased()
+        }
+
         if let lastLayer = packet.layers.last?.name, !lastLayer.isEmpty {
             return lastLayer
         }

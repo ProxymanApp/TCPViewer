@@ -382,6 +382,7 @@ final class PacketryWindowController: ObservableObject {
     private var liveEventsTask: Task<Void, Never>?
     private var document: (any OfflineCaptureDocumentProviding)?
     private var documentEventsTask: Task<Void, Never>?
+    private var documentEventGeneration = 0
     private var inspectionTask: Task<Void, Never>?
     private var filterValidationTask: Task<Void, Never>?
 
@@ -697,6 +698,7 @@ final class PacketryWindowController: ObservableObject {
     func openDocument(at fileURL: URL) async {
         do {
             try await stopLiveCaptureIfNeeded()
+            releaseDocumentContext()
 
             resetInspectionState()
             snapshot.selectedPacketID = nil
@@ -720,7 +722,6 @@ final class PacketryWindowController: ObservableObject {
             )
 
             let document = try await services.core.openOfflineCaptureDocument(at: fileURL)
-            releaseDocumentContext()
             self.document = document
             observeDocumentEvents(document)
 
@@ -1030,6 +1031,8 @@ final class PacketryWindowController: ObservableObject {
 
     private func observeDocumentEvents(_ document: any OfflineCaptureDocumentProviding) {
         documentEventsTask?.cancel()
+        documentEventGeneration += 1
+        let generation = documentEventGeneration
 
         let task = Task { [weak self] in
             guard let self else {
@@ -1039,12 +1042,18 @@ final class PacketryWindowController: ObservableObject {
             do {
                 for try await event in document.events() {
                     await MainActor.run {
+                        guard self.documentEventGeneration == generation else {
+                            return
+                        }
                         self.applyPacketIngestEvent(event)
                     }
                 }
             } catch is CancellationError {
             } catch {
                 await MainActor.run {
+                    guard self.documentEventGeneration == generation else {
+                        return
+                    }
                     self.handleStreamFailure(error, context: .document)
                 }
             }
@@ -1238,6 +1247,7 @@ final class PacketryWindowController: ObservableObject {
 
     private func releaseDocumentContext(resetState: Bool = false) {
         let currentDocument = document
+        documentEventGeneration += 1
         documentEventsTask?.cancel()
         documentEventsTask = nil
         inspectionTask?.cancel()
