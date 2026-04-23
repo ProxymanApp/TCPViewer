@@ -33,6 +33,10 @@ public final class NativeLiveCaptureSession: LiveCaptureSessionProviding, @unche
         try await state.stop(reason: nil)
     }
 
+    public func inspectPacket(id: PacketSummary.ID) async throws -> PacketInspection {
+        try await state.inspectPacket(id: id)
+    }
+
     public func healthSnapshot() async -> CaptureHealthSnapshot {
         await state.healthSnapshot()
     }
@@ -165,10 +169,19 @@ actor NativeLiveCaptureSessionState {
         health
     }
 
+    func inspectPacket(id: PacketSummary.ID) throws -> PacketInspection {
+        do {
+            let descriptor = try nativeSession.inspectPacket(withIdentifier: id)
+            return NativeBridgeMapper.packetInspection(descriptor)
+        } catch {
+            throw NativeBridgeMapper.coreError(error, defaultCode: .liveSessionControlFailed)
+        }
+    }
+
     private func handlePacketBatch(_ packets: [PCPPNativePacketSummaryDescriptor]) {
         let batch = NativeBridgeMapper.packetBatch(packets, source: .live)
         activeRunPacketCount += UInt64(batch.count)
-        streamBox.yield(.packetBatch(batch))
+        streamBox.yield(.packetBatch(batch, disposition: .append))
 
         if case .packetCount(let limit) = stopCondition, activeRunPacketCount >= limit {
             do {

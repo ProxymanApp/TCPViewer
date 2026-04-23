@@ -51,6 +51,15 @@ public final class NativePacketryCore: PacketryCoreProviding, @unchecked Sendabl
         }
 
         let validatedOptions = try validateCaptureOptions(options, for: interface)
+        if let expression = validatedOptions.captureFilterExpression {
+            let validation = await validateCaptureFilter(expression)
+            guard validation.disposition == .valid else {
+                throw PacketryCoreError(
+                    code: .invalidCaptureFilter,
+                    message: validation.message ?? "Packetry could not compile this capture filter."
+                )
+            }
+        }
         return try NativeLiveCaptureSession(interfaceID: interfaceID, options: validatedOptions)
     }
 
