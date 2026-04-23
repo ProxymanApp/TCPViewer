@@ -358,8 +358,8 @@ private struct PacketWorkspace: View {
             } else {
                 NetworkPacketTableView(
                     rows: viewModel.snapshot.packetRows,
-                    rowIDs: viewModel.snapshot.packetRowIDs,
                     contentGeneration: viewModel.snapshot.packetTableGeneration,
+                    updatePlan: viewModel.snapshot.packetTableUpdatePlan,
                     density: viewModel.snapshot.tableDensity,
                     selectedRowIndex: viewModel.snapshot.selectedPacketRowIndex,
                     onSelectPacket: { viewModel.selectPacket($0) }

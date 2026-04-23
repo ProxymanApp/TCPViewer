@@ -111,11 +111,9 @@ struct NetworkInspectorViewModelTests {
         #expect(PacketDisplayFilter("error:malformed").matches(malformed))
         #expect(!PacketDisplayFilter("protocol:tcp").matches(malformed))
 
-        #expect(PacketTableUpdatePlanner.plan(previousIDs: [], previousGeneration: 0, currentIDs: [1, 2], currentGeneration: 1) == .append(0..<2))
-        #expect(PacketTableUpdatePlanner.plan(previousIDs: [1], previousGeneration: 1, currentIDs: [1, 2], currentGeneration: 2) == .append(1..<2))
-        #expect(PacketTableUpdatePlanner.plan(previousIDs: [1, 2], previousGeneration: 1, currentIDs: [2, 1], currentGeneration: 2) == .reload)
-        #expect(PacketTableUpdatePlanner.plan(previousIDs: [1, 2], previousGeneration: 1, currentIDs: [1, 2], currentGeneration: 1) == .none)
-        #expect(PacketTableUpdatePlanner.plan(previousIDs: [1, 2], previousGeneration: 1, currentIDs: [1, 2], currentGeneration: 2) == .reload)
+        #expect(PacketTableUpdatePlanner.plan(previousGeneration: 0, currentGeneration: 1, proposedPlan: .append(0..<2)) == .append(0..<2))
+        #expect(PacketTableUpdatePlanner.plan(previousGeneration: 1, currentGeneration: 2, proposedPlan: .reload) == .reload)
+        #expect(PacketTableUpdatePlanner.plan(previousGeneration: 1, currentGeneration: 1, proposedPlan: .reload) == .none)
     }
 
     @Test func packetRowsAreCachedAcrossNonPacketUpdates() async {
@@ -160,6 +158,74 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.packetTableGeneration == generationAfterPackets)
     }
 
+    @Test func packetRowsAppendIncrementallyForMatchingLiveBatches() async {
+        let packets = [
+            makePacket(packetNumber: 1, source: .live, transportHint: .tcp),
+            makePacket(packetNumber: 2, source: .live, transportHint: .udp),
+            makePacket(packetNumber: 3, source: .live, transportHint: .dns),
+        ]
+        let liveSession = InspectorFakeLiveSession()
+        let viewModel = NetworkInspectorViewModel(
+            services: PacketryServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                liveSession: liveSession
+            )),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.performInitialLoadIfNeeded()
+        await viewModel.toggleLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        liveSession.send(.packetBatch([packets[0]], disposition: .append))
+
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == 1
+        }
+
+        liveSession.send(.packetBatch(Array(packets[1...]), disposition: .append))
+
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == 3
+        }
+
+        #expect(viewModel.snapshot.packetRows.map(\.id) == packets.map(\.id))
+        #expect(viewModel.snapshot.packetTableUpdatePlan == .append(1..<3))
+    }
+
+    @Test func packetRowsSkipTableUpdateWhenLiveAppendDoesNotMatchFilter() async {
+        let firstPacket = makePacket(packetNumber: 1, source: .live, transportHint: .udp)
+        let filteredPacket = makePacket(packetNumber: 2, source: .live, transportHint: .tcp)
+        let liveSession = InspectorFakeLiveSession()
+        let viewModel = NetworkInspectorViewModel(
+            services: PacketryServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                liveSession: liveSession
+            )),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.performInitialLoadIfNeeded()
+        await viewModel.toggleLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        liveSession.send(.packetBatch([firstPacket], disposition: .append))
+
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == 1
+        }
+
+        viewModel.updateDisplayFilterText("protocol:udp")
+        let generationAfterFilter = viewModel.snapshot.packetTableGeneration
+        liveSession.send(.packetBatch([filteredPacket], disposition: .append))
+
+        await waitUntil {
+            viewModel.snapshot.totalPacketCount == 2
+        }
+
+        #expect(viewModel.snapshot.visiblePacketCount == 1)
+        #expect(viewModel.snapshot.packetTableGeneration == generationAfterFilter)
+        #expect(viewModel.snapshot.packetTableUpdatePlan == .none)
+    }
+
     @Test func packetRowsRefreshWhenOfflinePacketsReuseIDs() async {
         let openURL = URL(fileURLWithPath: "/tmp/reused-ids.pcapng")
         let firstPacket = makePacket(
@@ -199,6 +265,7 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.packetRows.map(\.id) == [firstPacket.id])
         #expect(viewModel.snapshot.packetRows.first?.destinationText == "10.0.0.2:443")
         #expect(viewModel.snapshot.packetTableGeneration > firstGeneration)
+        #expect(viewModel.snapshot.packetTableUpdatePlan == .reload)
     }
 
     private func isolatedDefaults() -> UserDefaults {

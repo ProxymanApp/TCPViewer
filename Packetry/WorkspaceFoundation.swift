@@ -4,10 +4,19 @@ import Foundation
 import PcapPlusPlusCore
 import UniformTypeIdentifiers
 
+enum PacketIngestMutation: Sendable, Equatable {
+    case none
+    case reset
+    case replace
+    case append(Range<Int>)
+}
+
 struct PacketIngestState: Sendable, Equatable {
     var source: CaptureSource?
     var packets: [PacketSummary]
     var packetRevision: UInt64
+    var packetLineageRevision: UInt64
+    var lastMutation: PacketIngestMutation
     var lastBatchCount: Int
     var truncatedPacketCount: Int
     var decodeIssueCount: Int
@@ -17,6 +26,8 @@ struct PacketIngestState: Sendable, Equatable {
         source: nil,
         packets: [],
         packetRevision: 0,
+        packetLineageRevision: 0,
+        lastMutation: .none,
         lastBatchCount: 0,
         truncatedPacketCount: 0,
         decodeIssueCount: 0,
@@ -31,6 +42,8 @@ struct PacketIngestState: Sendable, Equatable {
         self.source = source
         packets = []
         packetRevision &+= 1
+        packetLineageRevision &+= 1
+        lastMutation = .reset
         lastBatchCount = 0
         truncatedPacketCount = 0
         decodeIssueCount = 0
@@ -41,6 +54,8 @@ struct PacketIngestState: Sendable, Equatable {
         self.source = source
         packets = batch
         packetRevision &+= 1
+        packetLineageRevision &+= 1
+        lastMutation = .replace
         lastBatchCount = batch.count
         recalculateCounters()
         if let message {
@@ -50,14 +65,42 @@ struct PacketIngestState: Sendable, Equatable {
 
     mutating func append(_ batch: [PacketSummary], source: CaptureSource, message: String? = nil) {
         self.source = source
+        let startIndex = packets.count
         packets.append(contentsOf: batch)
         if !batch.isEmpty {
             packetRevision &+= 1
+            lastMutation = .append(startIndex..<packets.count)
+            addCounters(for: batch)
+        } else {
+            lastMutation = .none
         }
         lastBatchCount = batch.count
-        recalculateCounters()
         if let message {
             statusMessage = message
+        }
+    }
+
+    static func == (lhs: PacketIngestState, rhs: PacketIngestState) -> Bool {
+        lhs.source == rhs.source &&
+            lhs.packetRevision == rhs.packetRevision &&
+            lhs.packetLineageRevision == rhs.packetLineageRevision &&
+            lhs.lastMutation == rhs.lastMutation &&
+            lhs.lastBatchCount == rhs.lastBatchCount &&
+            lhs.truncatedPacketCount == rhs.truncatedPacketCount &&
+            lhs.decodeIssueCount == rhs.decodeIssueCount &&
+            lhs.statusMessage == rhs.statusMessage &&
+            lhs.packets.count == rhs.packets.count
+    }
+
+    private mutating func addCounters(for batch: [PacketSummary]) {
+        for packet in batch {
+            if packet.captureMetadata.isTruncated {
+                truncatedPacketCount += 1
+            }
+
+            if packet.decodeStatus.kind != .complete {
+                decodeIssueCount += 1
+            }
         }
     }
 
@@ -289,6 +332,15 @@ struct PacketNavigationState: Sendable, Equatable {
         jumpErrorMessage: nil,
         statusMessage: "No packets available."
     )
+
+    static func == (lhs: PacketNavigationState, rhs: PacketNavigationState) -> Bool {
+        lhs.visiblePackets.count == rhs.visiblePackets.count &&
+            lhs.visiblePackets.first?.id == rhs.visiblePackets.first?.id &&
+            lhs.visiblePackets.last?.id == rhs.visiblePackets.last?.id &&
+            lhs.jumpText == rhs.jumpText &&
+            lhs.jumpErrorMessage == rhs.jumpErrorMessage &&
+            lhs.statusMessage == rhs.statusMessage
+    }
 }
 
 struct PacketLoadState: Sendable, Equatable {
@@ -1336,10 +1388,23 @@ final class PacketryWindowController: ObservableObject {
     }
 
     private func synchronizeVisiblePackets(message: String) {
-        snapshot.navigationState.visiblePackets = snapshot.packetIngestState.packets
+        let mutation = snapshot.packetIngestState.lastMutation
+        var shouldValidateSelection = true
+
+        if case .append(let range) = mutation,
+           snapshot.navigationState.visiblePackets.count == range.lowerBound,
+           range.upperBound <= snapshot.packetIngestState.packets.count {
+            snapshot.navigationState.visiblePackets.append(
+                contentsOf: snapshot.packetIngestState.packets[range]
+            )
+            shouldValidateSelection = false
+        } else {
+            snapshot.navigationState.visiblePackets = snapshot.packetIngestState.packets
+        }
         snapshot.navigationState.statusMessage = message
 
-        if let selectedPacketID = snapshot.selectedPacketID,
+        if shouldValidateSelection,
+           let selectedPacketID = snapshot.selectedPacketID,
            !snapshot.navigationState.visiblePackets.contains(where: { $0.id == selectedPacketID }) {
             resetInspectionState()
         }

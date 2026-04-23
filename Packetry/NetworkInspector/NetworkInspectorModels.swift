@@ -318,7 +318,7 @@ struct PacketDisplayFilter: Sendable, Hashable {
     }
 }
 
-enum PacketTableUpdatePlan: Equatable {
+enum PacketTableUpdatePlan: Equatable, Sendable {
     case none
     case append(Range<Int>)
     case reload
@@ -326,25 +326,11 @@ enum PacketTableUpdatePlan: Equatable {
 
 enum PacketTableUpdatePlanner {
     static func plan(
-        previousIDs: [PacketSummary.ID],
         previousGeneration: UInt64,
-        currentIDs: [PacketSummary.ID],
-        currentGeneration: UInt64
+        currentGeneration: UInt64,
+        proposedPlan: PacketTableUpdatePlan
     ) -> PacketTableUpdatePlan {
-        guard previousIDs != currentIDs else {
-            return previousGeneration == currentGeneration ? .none : .reload
-        }
-
-        guard currentIDs.count > previousIDs.count else {
-            return .reload
-        }
-
-        let unchangedPrefix = zip(previousIDs, currentIDs).allSatisfy(==)
-        guard unchangedPrefix else {
-            return .reload
-        }
-
-        return .append(previousIDs.count..<currentIDs.count)
+        previousGeneration == currentGeneration ? .none : proposedPlan
     }
 }
 
@@ -361,6 +347,7 @@ struct NetworkInspectorSnapshot: Equatable {
     var packetRows: [PacketTableRow]
     var packetRowIDs: [PacketSummary.ID]
     var packetTableGeneration: UInt64
+    var packetTableUpdatePlan: PacketTableUpdatePlan
     var malformedPacketCount: Int
     var selectedPacket: PacketSummary?
     var selectedPacketRowIndex: Int?
@@ -389,10 +376,31 @@ struct NetworkInspectorSnapshot: Equatable {
             packetRows: packetTableContent.rows,
             packetRowIDs: packetTableContent.rowIDs,
             packetTableGeneration: packetTableContent.generation,
+            packetTableUpdatePlan: packetTableContent.updatePlan,
             malformedPacketCount: packetTableContent.malformedPacketCount,
             selectedPacket: packetTableContent.selectedPacket(id: base.selectedPacketID),
             selectedPacketRowIndex: packetTableContent.selectedRowIndex(id: base.selectedPacketID)
         )
+    }
+
+    static func == (lhs: NetworkInspectorSnapshot, rhs: NetworkInspectorSnapshot) -> Bool {
+        lhs.base == rhs.base &&
+            lhs.selectedSidebar == rhs.selectedSidebar &&
+            lhs.workspaceMode == rhs.workspaceMode &&
+            lhs.inspectorTab == rhs.inspectorTab &&
+            lhs.isInspectorVisible == rhs.isInspectorVisible &&
+            lhs.tableDensity == rhs.tableDensity &&
+            lhs.displayFilterText == rhs.displayFilterText &&
+            lhs.displayFilter == rhs.displayFilter &&
+            lhs.displayFilterChips == rhs.displayFilterChips &&
+            lhs.packetRows.count == rhs.packetRows.count &&
+            lhs.packetRows.first?.id == rhs.packetRows.first?.id &&
+            lhs.packetRows.last?.id == rhs.packetRows.last?.id &&
+            lhs.packetTableGeneration == rhs.packetTableGeneration &&
+            lhs.packetTableUpdatePlan == rhs.packetTableUpdatePlan &&
+            lhs.malformedPacketCount == rhs.malformedPacketCount &&
+            lhs.selectedPacket?.id == rhs.selectedPacket?.id &&
+            lhs.selectedPacketRowIndex == rhs.selectedPacketRowIndex
     }
 
     var selectedPacketID: PacketSummary.ID? {
@@ -424,9 +432,10 @@ struct PacketTableContent: Sendable {
     let rows: [PacketTableRow]
     let rowIDs: [PacketSummary.ID]
     let generation: UInt64
+    let updatePlan: PacketTableUpdatePlan
     let malformedPacketCount: Int
-    private let visiblePacketsByID: [PacketSummary.ID: PacketSummary]
-    private let visiblePacketRowIndexByID: [PacketSummary.ID: Int]
+    let visiblePacketsByID: [PacketSummary.ID: PacketSummary]
+    let visiblePacketRowIndexByID: [PacketSummary.ID: Int]
 
     static let empty = PacketTableContent(
         displayFilter: PacketDisplayFilter(""),
@@ -434,6 +443,7 @@ struct PacketTableContent: Sendable {
         rows: [],
         rowIDs: [],
         generation: 0,
+        updatePlan: .none,
         malformedPacketCount: 0,
         visiblePacketsByID: [:],
         visiblePacketRowIndexByID: [:]
@@ -445,6 +455,7 @@ struct PacketTableContent: Sendable {
         rows: [PacketTableRow],
         rowIDs: [PacketSummary.ID],
         generation: UInt64,
+        updatePlan: PacketTableUpdatePlan,
         malformedPacketCount: Int,
         visiblePacketsByID: [PacketSummary.ID: PacketSummary],
         visiblePacketRowIndexByID: [PacketSummary.ID: Int]
@@ -454,6 +465,7 @@ struct PacketTableContent: Sendable {
         self.rows = rows
         self.rowIDs = rowIDs
         self.generation = generation
+        self.updatePlan = updatePlan
         self.malformedPacketCount = malformedPacketCount
         self.visiblePacketsByID = visiblePacketsByID
         self.visiblePacketRowIndexByID = visiblePacketRowIndexByID

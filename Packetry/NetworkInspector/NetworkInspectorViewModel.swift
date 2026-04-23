@@ -53,6 +53,8 @@ private struct NetworkInspectorPreferences {
 
 private struct PacketTableContentCache {
     private var packetRevision: UInt64?
+    private var packetLineageRevision: UInt64?
+    private var sourcePacketCount = 0
     private var displayFilterText: String?
     private var generation: UInt64 = 0
     private var cachedContent = PacketTableContent.empty
@@ -66,6 +68,29 @@ private struct PacketTableContentCache {
         }
 
         let displayFilter = PacketDisplayFilter(displayFilterText)
+        if self.displayFilterText == displayFilterText,
+           packetLineageRevision == ingestState.packetLineageRevision,
+           sourcePacketCount <= ingestState.packets.count {
+            return appendContent(
+                from: ingestState.packets[sourcePacketCount...],
+                ingestState: ingestState,
+                displayFilter: displayFilter,
+                displayFilterText: displayFilterText
+            )
+        }
+
+        return rebuildContent(
+            from: ingestState,
+            displayFilter: displayFilter,
+            displayFilterText: displayFilterText
+        )
+    }
+
+    private mutating func rebuildContent(
+        from ingestState: PacketIngestState,
+        displayFilter: PacketDisplayFilter,
+        displayFilterText: String
+    ) -> PacketTableContent {
         var rows: [PacketTableRow] = []
         var rowIDs: [PacketSummary.ID] = []
         var visiblePacketsByID: [PacketSummary.ID: PacketSummary] = [:]
@@ -93,17 +118,86 @@ private struct PacketTableContentCache {
         }
 
         generation &+= 1
+        let updatePlan: PacketTableUpdatePlan = rows.isEmpty ? .none : .reload
         let content = PacketTableContent(
             displayFilter: displayFilter,
             displayFilterChips: displayFilter.chips,
             rows: rows,
             rowIDs: rowIDs,
             generation: generation,
+            updatePlan: updatePlan,
             malformedPacketCount: malformedPacketCount,
             visiblePacketsByID: visiblePacketsByID,
             visiblePacketRowIndexByID: visiblePacketRowIndexByID
         )
+        return store(content, ingestState: ingestState, displayFilterText: displayFilterText)
+    }
+
+    private mutating func appendContent(
+        from newPackets: ArraySlice<PacketSummary>,
+        ingestState: PacketIngestState,
+        displayFilter: PacketDisplayFilter,
+        displayFilterText: String
+    ) -> PacketTableContent {
+        guard !newPackets.isEmpty else {
+            return store(cachedContent, ingestState: ingestState, displayFilterText: displayFilterText)
+        }
+
+        var rows = cachedContent.rows
+        var rowIDs = cachedContent.rowIDs
+        var visiblePacketsByID = cachedContent.visiblePacketsByID
+        var visiblePacketRowIndexByID = cachedContent.visiblePacketRowIndexByID
+        var malformedPacketCount = cachedContent.malformedPacketCount
+        let appendStartIndex = rows.count
+
+        rows.reserveCapacity(rows.count + newPackets.count)
+        rowIDs.reserveCapacity(rowIDs.count + newPackets.count)
+        visiblePacketsByID.reserveCapacity(visiblePacketsByID.count + newPackets.count)
+        visiblePacketRowIndexByID.reserveCapacity(visiblePacketRowIndexByID.count + newPackets.count)
+
+        for packet in newPackets {
+            if NetworkInspectorFormatters.severity(for: packet) == .malformed {
+                malformedPacketCount += 1
+            }
+
+            guard displayFilter.isEmpty || displayFilter.matches(packet) else {
+                continue
+            }
+
+            let rowIndex = rows.count
+            rows.append(PacketTableRow(packet: packet))
+            rowIDs.append(packet.id)
+            visiblePacketsByID[packet.id] = packet
+            visiblePacketRowIndexByID[packet.id] = rowIndex
+        }
+
+        let didAppendVisibleRows = rows.count > appendStartIndex
+        if didAppendVisibleRows {
+            generation &+= 1
+        }
+
+        let content = PacketTableContent(
+            displayFilter: displayFilter,
+            displayFilterChips: displayFilter.chips,
+            rows: rows,
+            rowIDs: rowIDs,
+            generation: generation,
+            updatePlan: didAppendVisibleRows ? .append(appendStartIndex..<rows.count) : .none,
+            malformedPacketCount: malformedPacketCount,
+            visiblePacketsByID: visiblePacketsByID,
+            visiblePacketRowIndexByID: visiblePacketRowIndexByID
+        )
+        return store(content, ingestState: ingestState, displayFilterText: displayFilterText)
+    }
+
+    private mutating func store(
+        _ content: PacketTableContent,
+        ingestState: PacketIngestState,
+        displayFilterText: String
+    ) -> PacketTableContent {
         packetRevision = ingestState.packetRevision
+        packetLineageRevision = ingestState.packetLineageRevision
+        sourcePacketCount = ingestState.packets.count
         self.displayFilterText = displayFilterText
         cachedContent = content
         return content

@@ -4,8 +4,8 @@ import PcapPlusPlusCore
 
 struct NetworkPacketTableView: NSViewRepresentable {
     let rows: [PacketTableRow]
-    let rowIDs: [PacketSummary.ID]
     let contentGeneration: UInt64
+    let updatePlan: PacketTableUpdatePlan
     let density: PacketTableDensity
     let selectedRowIndex: Int?
     let onSelectPacket: (PacketSummary.ID?) -> Void
@@ -45,7 +45,6 @@ struct NetworkPacketTableView: NSViewRepresentable {
         scrollView.backgroundColor = .controlBackgroundColor
 
         context.coordinator.rows = rows
-        context.coordinator.rowIDs = rowIDs
         context.coordinator.contentGeneration = contentGeneration
         context.coordinator.suppressSelectionCallbacks {
             tableView.reloadData()
@@ -60,28 +59,31 @@ struct NetworkPacketTableView: NSViewRepresentable {
             return
         }
 
-        let updatePlan = PacketTableUpdatePlanner.plan(
-            previousIDs: context.coordinator.rowIDs,
+        let resolvedUpdatePlan = PacketTableUpdatePlanner.plan(
             previousGeneration: context.coordinator.contentGeneration,
-            currentIDs: rowIDs,
-            currentGeneration: contentGeneration
+            currentGeneration: contentGeneration,
+            proposedPlan: updatePlan
         )
+        let previousRowCount = context.coordinator.rows.count
 
         context.coordinator.rows = rows
-        context.coordinator.rowIDs = rowIDs
         context.coordinator.contentGeneration = contentGeneration
         context.coordinator.onSelectPacket = onSelectPacket
         tableView.rowHeight = density.rowHeight
 
         context.coordinator.suppressSelectionCallbacks {
-            switch updatePlan {
+            switch resolvedUpdatePlan {
             case .none:
                 break
             case .append(let range):
-                tableView.insertRows(
-                    at: IndexSet(integersIn: range),
-                    withAnimation: []
-                )
+                if range.lowerBound == previousRowCount, range.upperBound <= rows.count {
+                    tableView.insertRows(
+                        at: IndexSet(integersIn: range),
+                        withAnimation: []
+                    )
+                } else {
+                    tableView.reloadData()
+                }
             case .reload:
                 tableView.reloadData()
             }
@@ -107,7 +109,6 @@ struct NetworkPacketTableView: NSViewRepresentable {
 
     final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         var rows: [PacketTableRow] = []
-        var rowIDs: [PacketSummary.ID] = []
         var contentGeneration: UInt64 = 0
         var onSelectPacket: (PacketSummary.ID?) -> Void
         private var selectionCallbackSuppressionDepth = 0
