@@ -172,8 +172,12 @@ extension PacketmanRootViewController: NetworkInspectorViewModelDelegate {
 }
 
 extension PacketmanRootViewController: SidebarViewControllerDelegate {
-    func sidebarViewController(_ controller: SidebarViewController, didSelect selection: NetworkInspectorSidebarSelection) {
-        viewModel.selectSidebar(selection)
+    func sidebarViewController(_ controller: SidebarViewController, didSelect selection: PacketSourceListSelection?) {
+        viewModel.selectSourceList(selection)
+    }
+
+    func sidebarViewController(_ controller: SidebarViewController, didUpdateFilterText text: String) {
+        viewModel.updateSourceListFilterText(text)
     }
 }
 

@@ -32,6 +32,9 @@ final class PacketInspectorPanelViewModel {
     private(set) var state = PacketInspectorRenderState(snapshot: .make(
         base: .foundation,
         selectedSidebar: .liveCapture,
+        selectedSourceListSelection: .allPackets,
+        sourceListSnapshot: .empty,
+        sourceListFilterText: "",
         workspaceMode: .packets,
         inspectorTab: .overview,
         isInspectorVisible: true,

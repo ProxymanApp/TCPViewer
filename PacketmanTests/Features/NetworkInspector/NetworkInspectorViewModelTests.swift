@@ -558,11 +558,95 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.packetTableUpdatePlan == .reload)
     }
 
+    @Test func sourceListAppAndDomainSelectionsFilterPacketRows() async {
+        let chrome = makeClient(displayName: "Chrome", bundleIdentifier: "com.google.Chrome")
+        let packetman = makeClient(displayName: "Packetman", bundleIdentifier: "com.proxyman.Packetman")
+        let packets = [
+            makePacket(packetNumber: 1, source: .offline, transportHint: .tcp, streamID: nil, sniDomainName: "openai.com", client: chrome),
+            makePacket(packetNumber: 2, source: .offline, transportHint: .udp, streamID: nil, sniDomainName: nil, client: packetman),
+            makePacket(packetNumber: 3, source: .offline, transportHint: .tcp, streamID: nil, sniDomainName: "api.github.com", client: nil),
+        ]
+        let viewModel = makeOfflineViewModel(packets: packets)
+
+        await viewModel.openDocument(at: URL(fileURLWithPath: "/tmp/source-list-selection.pcapng"))
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == 3
+        }
+
+        viewModel.selectSourceList(selection(titled: "Chrome", under: .apps, in: viewModel.snapshot))
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[0].id])
+
+        viewModel.selectSourceList(selection(titled: "IP Addresses", under: .domains, in: viewModel.snapshot))
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[1].id])
+
+        viewModel.selectSourceList(selection(titled: "api.github.com", under: .domains, in: viewModel.snapshot))
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[2].id])
+    }
+
+    @Test func sourceListParentAndFavoriteSelectionsUseExpectedPacketSets() async {
+        let client = makeClient(displayName: "Example", bundleIdentifier: "com.example.app")
+        let packets = [
+            makePacket(packetNumber: 1, source: .offline, transportHint: .tcp, streamID: nil, sniDomainName: "example.com", client: client),
+            makePacket(packetNumber: 2, source: .offline, transportHint: .udp, streamID: nil, sniDomainName: "api.example.com", client: nil),
+        ]
+        let viewModel = makeOfflineViewModel(packets: packets)
+
+        await viewModel.openDocument(at: URL(fileURLWithPath: "/tmp/source-list-parent-selection.pcapng"))
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == 2
+        }
+
+        viewModel.selectSourceList(.apps)
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[0].id])
+
+        viewModel.selectSourceList(.domains)
+        #expect(viewModel.snapshot.packetRows.map(\.id) == packets.map(\.id))
+
+        viewModel.selectSourceList(.pinned)
+        #expect(viewModel.snapshot.packetRows.isEmpty)
+
+        viewModel.selectSourceList(.saved)
+        #expect(viewModel.snapshot.packetRows.isEmpty)
+    }
+
+    @Test func sourceListFilterOnlyNarrowsSidebarAndDisplayFilterStillCombinesWithSelection() async {
+        let client = makeClient(displayName: "Example", bundleIdentifier: "com.example.app")
+        let packets = [
+            makePacket(packetNumber: 1, source: .offline, transportHint: .tcp, streamID: nil, sniDomainName: "example.com", client: client),
+            makePacket(packetNumber: 2, source: .offline, transportHint: .udp, streamID: nil, sniDomainName: "example.com", client: client),
+            makePacket(packetNumber: 3, source: .offline, transportHint: .tcp, streamID: nil, sniDomainName: "api.example.com", client: nil),
+        ]
+        let viewModel = makeOfflineViewModel(packets: packets)
+
+        await viewModel.openDocument(at: URL(fileURLWithPath: "/tmp/source-list-filter.pcapng"))
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == 3
+        }
+
+        viewModel.updateSourceListFilterText("does-not-match-packets")
+        #expect(viewModel.snapshot.packetRows.map(\.id) == packets.map(\.id))
+
+        viewModel.selectSourceList(.apps)
+        viewModel.updateDisplayFilterText("protocol:udp")
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[1].id])
+    }
+
     private func isolatedDefaults() -> UserDefaults {
         let suiteName = "Packetry.NetworkInspectorTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
         return defaults
+    }
+
+    private func makeOfflineViewModel(packets: [PacketSummary]) -> NetworkInspectorViewModel {
+        let openURL = URL(fileURLWithPath: "/tmp/source-list-fixture.pcapng")
+        return NetworkInspectorViewModel(
+            services: PacketryServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                document: InspectorFakeDocument(url: openURL, packets: packets)
+            )),
+            userDefaults: isolatedDefaults()
+        )
     }
 
     private func makeClient() -> PacketClient {
@@ -574,6 +658,29 @@ struct NetworkInspectorViewModelTests {
             bundleIdentifier: "com.example.app",
             bundlePath: "/Applications/Example.app"
         )
+    }
+
+    private func makeClient(displayName: String, bundleIdentifier: String) -> PacketClient {
+        PacketClient(
+            pid: 123,
+            name: displayName,
+            displayName: displayName,
+            executablePath: "/Applications/\(displayName).app/Contents/MacOS/\(displayName)",
+            bundleIdentifier: bundleIdentifier,
+            bundlePath: "/Applications/\(displayName).app"
+        )
+    }
+
+    private func selection(
+        titled title: String,
+        under parentSelection: PacketSourceListSelection,
+        in snapshot: NetworkInspectorSnapshot
+    ) -> PacketSourceListSelection? {
+        snapshot.sourceListSnapshot
+            .item(for: parentSelection)?
+            .children
+            .first { $0.title == title }?
+            .selection
     }
 
     private func makeInterface(id: String, displayName: String) -> CaptureInterfaceSummary {

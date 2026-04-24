@@ -332,6 +332,9 @@ enum PacketTableUpdatePlanner {
 struct NetworkInspectorSnapshot: Equatable {
     var base: PacketryWindowSnapshot
     var selectedSidebar: NetworkInspectorSidebarSelection
+    var selectedSourceListSelection: PacketSourceListSelection
+    var sourceListSnapshot: PacketSourceListSnapshot
+    var sourceListFilterText: String
     var workspaceMode: NetworkInspectorWorkspaceMode
     var inspectorTab: PacketInspectorTab
     var isInspectorVisible: Bool
@@ -349,6 +352,9 @@ struct NetworkInspectorSnapshot: Equatable {
     static func make(
         base: PacketryWindowSnapshot,
         selectedSidebar: NetworkInspectorSidebarSelection,
+        selectedSourceListSelection: PacketSourceListSelection,
+        sourceListSnapshot: PacketSourceListSnapshot,
+        sourceListFilterText: String,
         workspaceMode: NetworkInspectorWorkspaceMode,
         inspectorTab: PacketInspectorTab,
         isInspectorVisible: Bool,
@@ -358,6 +364,9 @@ struct NetworkInspectorSnapshot: Equatable {
         return NetworkInspectorSnapshot(
             base: base,
             selectedSidebar: selectedSidebar,
+            selectedSourceListSelection: selectedSourceListSelection,
+            sourceListSnapshot: sourceListSnapshot,
+            sourceListFilterText: sourceListFilterText,
             workspaceMode: workspaceMode,
             inspectorTab: inspectorTab,
             isInspectorVisible: isInspectorVisible,
@@ -377,6 +386,9 @@ struct NetworkInspectorSnapshot: Equatable {
     static func == (lhs: NetworkInspectorSnapshot, rhs: NetworkInspectorSnapshot) -> Bool {
         lhs.base == rhs.base &&
             lhs.selectedSidebar == rhs.selectedSidebar &&
+            lhs.selectedSourceListSelection == rhs.selectedSourceListSelection &&
+            lhs.sourceListSnapshot == rhs.sourceListSnapshot &&
+            lhs.sourceListFilterText == rhs.sourceListFilterText &&
             lhs.workspaceMode == rhs.workspaceMode &&
             lhs.inspectorTab == rhs.inspectorTab &&
             lhs.isInspectorVisible == rhs.isInspectorVisible &&

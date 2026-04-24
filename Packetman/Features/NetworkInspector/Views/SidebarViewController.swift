@@ -1,189 +1,617 @@
 import AppKit
 
 protocol SidebarViewControllerDelegate: AnyObject {
-    func sidebarViewController(_ controller: SidebarViewController, didSelect selection: NetworkInspectorSidebarSelection)
+    func sidebarViewController(_ controller: SidebarViewController, didSelect selection: PacketSourceListSelection?)
+    func sidebarViewController(_ controller: SidebarViewController, didUpdateFilterText text: String)
 }
 
-enum SidebarRow: Hashable {
-    case group(String)
-    case item(title: String, imageName: String, selection: NetworkInspectorSidebarSelection)
+enum SidebarOutlineReloadTiming: Equatable {
+    case none
+    case immediate
+    case deferred
+}
 
-    var title: String {
-        switch self {
-        case .group(let title):
-            title
-        case .item(let title, _, _):
-            title
-        }
+struct SidebarOutlineReloadState: Equatable {
+    let sourceListSnapshot: PacketSourceListSnapshot
+    let filterText: String
+    let selectedSelection: PacketSourceListSelection
+    let packetMutation: PacketIngestMutation
+
+    init(
+        sourceListSnapshot: PacketSourceListSnapshot,
+        filterText: String,
+        selectedSelection: PacketSourceListSelection,
+        packetMutation: PacketIngestMutation
+    ) {
+        self.sourceListSnapshot = sourceListSnapshot
+        self.filterText = filterText
+        self.selectedSelection = selectedSelection
+        self.packetMutation = packetMutation
     }
 
-    var imageName: String? {
-        switch self {
-        case .group:
-            nil
-        case .item(_, let imageName, _):
-            imageName
-        }
+    init(snapshot: NetworkInspectorSnapshot) {
+        self.init(
+            sourceListSnapshot: snapshot.sourceListSnapshot,
+            filterText: snapshot.sourceListFilterText,
+            selectedSelection: snapshot.selectedSourceListSelection,
+            packetMutation: snapshot.base.packetIngestState.lastMutation
+        )
     }
+}
 
-    var selection: NetworkInspectorSidebarSelection? {
+enum SidebarOutlineReloadPolicy {
+    static func timing(
+        previous: SidebarOutlineReloadState?,
+        next: SidebarOutlineReloadState
+    ) -> SidebarOutlineReloadTiming {
+        guard let previous else {
+            return .immediate
+        }
+
+        guard previous.sourceListSnapshot != next.sourceListSnapshot ||
+                previous.filterText != next.filterText ||
+                previous.selectedSelection != next.selectedSelection else {
+            return .none
+        }
+
+        if previous.filterText != next.filterText ||
+            previous.selectedSelection != next.selectedSelection {
+            return .immediate
+        }
+
+        return next.packetMutation.isBatchableSidebarMutation ? .deferred : .immediate
+    }
+}
+
+private extension PacketIngestMutation {
+    var isBatchableSidebarMutation: Bool {
         switch self {
-        case .group:
-            nil
-        case .item(_, _, let selection):
-            selection
+        case .append, .metadataUpdate:
+            return true
+        case .none, .reset, .replace:
+            return false
         }
     }
 }
 
-final class SidebarViewModel {
-    private(set) var rows: [SidebarRow] = [
-        .group("Capture"),
-        .item(title: "Live Capture", imageName: "dot.radiowaves.left.and.right", selection: .liveCapture),
-        .item(title: "Recent Captures", imageName: "clock", selection: .recentCaptures),
-        .item(title: "Saved Sessions", imageName: "externaldrive", selection: .savedSessions),
-    ]
-    private(set) var selectedSidebar: NetworkInspectorSidebarSelection = .liveCapture
+private final class SidebarOutlineItem: NSObject {
+    let sourceItem: PacketSourceListItem
+    let children: [SidebarOutlineItem]
 
-    // Keep source-list selection in sync with the root snapshot.
-    func render(snapshot: NetworkInspectorSnapshot) {
-        selectedSidebar = snapshot.selectedSidebar
+    init(sourceItem: PacketSourceListItem) {
+        self.sourceItem = sourceItem
+        self.children = sourceItem.children.map(SidebarOutlineItem.init)
+    }
+}
+
+private final class SidebarViewModel {
+    private(set) var roots: [SidebarOutlineItem] = []
+    private(set) var selectedSelection: PacketSourceListSelection = .allPackets
+    private(set) var filterText = ""
+
+    private var itemsByID: [String: SidebarOutlineItem] = [:]
+    private var itemIDBySelection: [PacketSourceListSelection: String] = [:]
+
+    // Convert source-list render data into outline-view objects with no parent references.
+    func render(state: SidebarOutlineReloadState) {
+        selectedSelection = state.selectedSelection
+        filterText = state.filterText
+        let filteredSnapshot = state.sourceListSnapshot.filtered(matching: filterText)
+        roots = filteredSnapshot.roots.map(SidebarOutlineItem.init)
+        rebuildLookupTables()
     }
 
-    func rowIndex(for selection: NetworkInspectorSidebarSelection) -> Int? {
-        rows.firstIndex { $0.selection == selection }
+    func item(for selection: PacketSourceListSelection) -> SidebarOutlineItem? {
+        guard let itemID = itemIDBySelection[selection] else {
+            return nil
+        }
+
+        return itemsByID[itemID]
+    }
+
+    func item(withID itemID: String) -> SidebarOutlineItem? {
+        itemsByID[itemID]
+    }
+
+    func allItems() -> [SidebarOutlineItem] {
+        roots.flatMap(flatten)
+    }
+
+    private func rebuildLookupTables() {
+        itemsByID = [:]
+        itemIDBySelection = [:]
+
+        for item in roots {
+            register(item)
+        }
+    }
+
+    private func register(_ item: SidebarOutlineItem) {
+        itemsByID[item.sourceItem.id] = item
+        if let selection = item.sourceItem.selection {
+            itemIDBySelection[selection] = item.sourceItem.id
+        }
+
+        for child in item.children {
+            register(child)
+        }
+    }
+
+    private func flatten(_ item: SidebarOutlineItem) -> [SidebarOutlineItem] {
+        [item] + item.children.flatMap(flatten)
     }
 }
 
 final class SidebarViewController: NSViewController {
+    private static let batchedReloadInterval: TimeInterval = 0.12
+
     weak var delegate: SidebarViewControllerDelegate?
 
     private let viewModel = SidebarViewModel()
-    private let tableView = NSTableView()
+    private let outlineView = NSOutlineView()
     private let scrollView = NSScrollView()
+    private let searchField = NSSearchField()
     private let effectView = NSVisualEffectView()
+    private let iconCache = SidebarIconCache()
+
+    private var expandedItemIDs = PacketSourceListTreeBuilder.defaultExpandedItemIDs
+    private var hasRenderedOutline = false
+    private var appliedReloadState: SidebarOutlineReloadState?
+    private var pendingReloadState: SidebarOutlineReloadState?
+    private var pendingReloadWorkItem: DispatchWorkItem?
     private var isSyncingSelection = false
+    private var isSyncingFilter = false
+
+    deinit {
+        pendingReloadWorkItem?.cancel()
+    }
 
     override func loadView() {
         view = effectView
-        setupTable()
-        PacketmanUI.pin(scrollView, to: effectView)
+        setupEffectView()
+        setupOutlineView()
+        setupSearchField()
+        setupLayout()
     }
 
     func render(snapshot: NetworkInspectorSnapshot) {
-        viewModel.render(snapshot: snapshot)
-        tableView.reloadData()
-        guard let rowIndex = viewModel.rowIndex(for: snapshot.selectedSidebar) else {
+        let nextReloadState = SidebarOutlineReloadState(snapshot: snapshot)
+        switch SidebarOutlineReloadPolicy.timing(previous: appliedReloadState, next: nextReloadState) {
+        case .none:
+            return
+        case .immediate:
+            cancelPendingReload()
+            apply(state: nextReloadState)
+        case .deferred:
+            scheduleBatchedReload(state: nextReloadState)
+        }
+    }
+
+    private func apply(state: SidebarOutlineReloadState) {
+        if hasRenderedOutline, viewModel.filterText.isEmpty {
+            captureExpandedItemIDs()
+        }
+
+        viewModel.render(state: state)
+        syncSearchField(state.filterText)
+        outlineView.reloadData()
+        restoreExpandedItems(expandAll: !viewModel.filterText.isEmpty)
+        syncSelection()
+        appliedReloadState = state
+        hasRenderedOutline = true
+    }
+
+    private func scheduleBatchedReload(state: SidebarOutlineReloadState) {
+        pendingReloadState = state
+        guard pendingReloadWorkItem == nil else {
             return
         }
 
-        isSyncingSelection = true
-        tableView.selectRowIndexes(IndexSet(integer: rowIndex), byExtendingSelection: false)
-        isSyncingSelection = false
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else {
+                return
+            }
+
+            pendingReloadWorkItem = nil
+            guard let state = pendingReloadState else {
+                return
+            }
+
+            pendingReloadState = nil
+            apply(state: state)
+        }
+        pendingReloadWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.batchedReloadInterval, execute: workItem)
     }
 
-    private func setupTable() {
+    private func cancelPendingReload() {
+        pendingReloadWorkItem?.cancel()
+        pendingReloadWorkItem = nil
+        pendingReloadState = nil
+    }
+
+    private func setupEffectView() {
         effectView.blendingMode = .behindWindow
         effectView.material = .sidebar
         effectView.state = .active
+    }
 
-        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("sidebar"))
+    private func setupOutlineView() {
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("sourceList"))
         column.title = ""
-        tableView.addTableColumn(column)
-        tableView.headerView = nil
-        tableView.delegate = self
-        tableView.dataSource = self
-        tableView.style = .sourceList
-        tableView.allowsEmptySelection = false
-        tableView.allowsMultipleSelection = false
-        tableView.rowHeight = 28
-        tableView.backgroundColor = .clear
+        column.resizingMask = .autoresizingMask
+        outlineView.addTableColumn(column)
+        outlineView.outlineTableColumn = column
+        outlineView.headerView = nil
+        outlineView.delegate = self
+        outlineView.dataSource = self
+        outlineView.style = .sourceList
+        outlineView.allowsEmptySelection = true
+        outlineView.allowsMultipleSelection = false
+        outlineView.rowHeight = 28
+        outlineView.indentationPerLevel = 18
+        outlineView.backgroundColor = .clear
+        outlineView.focusRingType = .none
 
-        scrollView.documentView = tableView
-        scrollView.hasVerticalScroller = false
+        scrollView.documentView = outlineView
+        scrollView.hasVerticalScroller = true
         scrollView.drawsBackground = false
         scrollView.backgroundColor = .clear
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+    }
+
+    private func setupSearchField() {
+        searchField.placeholderString = "Filter"
+        searchField.delegate = self
+        searchField.target = self
+        searchField.action = #selector(searchFieldChanged(_:))
+        searchField.translatesAutoresizingMaskIntoConstraints = false
+    }
+
+    private func setupLayout() {
+        effectView.addSubview(scrollView)
+        effectView.addSubview(searchField)
+
+        NSLayoutConstraint.activate([
+            scrollView.leadingAnchor.constraint(equalTo: effectView.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: effectView.trailingAnchor),
+            scrollView.topAnchor.constraint(equalTo: effectView.topAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: searchField.topAnchor, constant: -6),
+
+            searchField.leadingAnchor.constraint(equalTo: effectView.leadingAnchor, constant: 12),
+            searchField.trailingAnchor.constraint(equalTo: effectView.trailingAnchor, constant: -12),
+            searchField.bottomAnchor.constraint(equalTo: effectView.safeAreaLayoutGuide.bottomAnchor, constant: -8),
+            searchField.heightAnchor.constraint(equalToConstant: 28),
+        ])
+    }
+
+    private func captureExpandedItemIDs() {
+        expandedItemIDs = Set(viewModel.allItems().compactMap { item in
+            outlineView.isItemExpanded(item) ? item.sourceItem.id : nil
+        })
+    }
+
+    private func restoreExpandedItems(expandAll: Bool) {
+        let items = viewModel.allItems()
+        let itemsToExpand = expandAll ? items : items.filter { expandedItemIDs.contains($0.sourceItem.id) }
+
+        for item in itemsToExpand where !item.children.isEmpty {
+            outlineView.expandItem(item)
+        }
+    }
+
+    private func syncSelection() {
+        isSyncingSelection = true
+        defer {
+            isSyncingSelection = false
+        }
+
+        guard viewModel.selectedSelection != .allPackets,
+              let selectedItem = viewModel.item(for: viewModel.selectedSelection) else {
+            outlineView.deselectAll(nil)
+            return
+        }
+
+        let row = outlineView.row(forItem: selectedItem)
+        if row >= 0 {
+            outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        } else {
+            outlineView.deselectAll(nil)
+        }
+    }
+
+    private func syncSearchField(_ filterText: String) {
+        guard searchField.stringValue != filterText else {
+            return
+        }
+
+        isSyncingFilter = true
+        searchField.stringValue = filterText
+        isSyncingFilter = false
+    }
+
+    private func sourceItem(for item: Any?) -> PacketSourceListItem? {
+        (item as? SidebarOutlineItem)?.sourceItem
+    }
+
+    private func outlineItem(for item: Any?) -> SidebarOutlineItem? {
+        item as? SidebarOutlineItem
+    }
+
+    @objc private func searchFieldChanged(_ sender: NSSearchField) {
+        guard !isSyncingFilter else {
+            return
+        }
+
+        delegate?.sidebarViewController(self, didUpdateFilterText: sender.stringValue)
     }
 }
 
-extension SidebarViewController: NSTableViewDataSource, NSTableViewDelegate {
-    func numberOfRows(in tableView: NSTableView) -> Int {
-        viewModel.rows.count
+extension SidebarViewController: NSOutlineViewDataSource, NSOutlineViewDelegate {
+    func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
+        outlineItem(for: item)?.children.count ?? viewModel.roots.count
     }
 
-    func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool {
-        guard viewModel.rows.indices.contains(row) else {
-            return false
-        }
-
-        if case .group = viewModel.rows[row] {
-            return true
-        }
-
-        return false
+    func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
+        let children = outlineItem(for: item)?.children ?? viewModel.roots
+        return children[index]
     }
 
-    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        guard viewModel.rows.indices.contains(row) else {
+    func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
+        outlineItem(for: item)?.children.isEmpty == false
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, isGroupItem item: Any) -> Bool {
+        sourceItem(for: item)?.isGroup == true
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool {
+        sourceItem(for: item)?.selection != nil
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
+        guard let sourceItem = sourceItem(for: item) else {
             return nil
         }
 
-        let item = viewModel.rows[row]
-        let cell = tableView.makeView(withIdentifier: NSUserInterfaceItemIdentifier("SidebarCell"), owner: self) as? NSTableCellView ?? NSTableCellView()
-        cell.identifier = NSUserInterfaceItemIdentifier("SidebarCell")
-        cell.textField?.removeFromSuperview()
-        cell.imageView?.removeFromSuperview()
+        return cell(for: sourceItem, in: outlineView)
+    }
 
-        let imageView = NSImageView()
-        if let imageName = item.imageName {
-            imageView.image = PacketmanUI.image(imageName)
+    private func cell(for item: PacketSourceListItem, in outlineView: NSOutlineView) -> NSTableCellView {
+        switch item.kind {
+        case .group:
+            let cell = reusedCell(
+                identifier: SidebarGroupCell.reuseIdentifier,
+                in: outlineView,
+                make: { SidebarGroupCell(frame: .zero) }
+            )
+            cell.render(item: item)
+            return cell
+        case .favorite:
+            let cell = reusedCell(
+                identifier: SidebarFavoriteCell.reuseIdentifier,
+                in: outlineView,
+                make: { SidebarFavoriteCell(frame: .zero) }
+            )
+            cell.render(item: item, iconCache: iconCache)
+            return cell
+        case .folder:
+            let cell = reusedCell(
+                identifier: SidebarFolderCell.reuseIdentifier,
+                in: outlineView,
+                make: { SidebarFolderCell(frame: .zero) }
+            )
+            cell.render(item: item, iconCache: iconCache)
+            return cell
+        case .app:
+            let cell = reusedCell(
+                identifier: SidebarAppCell.reuseIdentifier,
+                in: outlineView,
+                make: { SidebarAppCell(frame: .zero) }
+            )
+            cell.render(item: item, iconCache: iconCache)
+            return cell
+        case .domain:
+            let cell = reusedCell(
+                identifier: SidebarDomainCell.reuseIdentifier,
+                in: outlineView,
+                make: { SidebarDomainCell(frame: .zero) }
+            )
+            cell.render(item: item, iconCache: iconCache)
+            return cell
         }
-        imageView.contentTintColor = .secondaryLabelColor
-        imageView.translatesAutoresizingMaskIntoConstraints = false
+    }
 
-        let label = PacketmanUI.label(
-            item.title,
-            font: .systemFont(ofSize: NSFont.systemFontSize, weight: item.selection == nil ? .semibold : .regular),
-            color: item.selection == nil ? .secondaryLabelColor : .labelColor
-        )
-        label.translatesAutoresizingMaskIntoConstraints = false
-
-        cell.subviews.forEach { $0.removeFromSuperview() }
-        if item.selection == nil {
-            cell.addSubview(label)
-            NSLayoutConstraint.activate([
-                label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 12),
-                label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8),
-                label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-            ])
-        } else {
-            cell.addSubview(imageView)
-            cell.addSubview(label)
-            NSLayoutConstraint.activate([
-                imageView.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 12),
-                imageView.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-                imageView.widthAnchor.constraint(equalToConstant: 16),
-                imageView.heightAnchor.constraint(equalToConstant: 16),
-                label.leadingAnchor.constraint(equalTo: imageView.trailingAnchor, constant: 8),
-                label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8),
-                label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-            ])
-        }
-
+    private func reusedCell<Cell: NSTableCellView>(
+        identifier: NSUserInterfaceItemIdentifier,
+        in outlineView: NSOutlineView,
+        make: () -> Cell
+    ) -> Cell {
+        let cell = outlineView.makeView(withIdentifier: identifier, owner: self) as? Cell ?? make()
+        cell.identifier = identifier
         return cell
     }
 
-    func tableViewSelectionDidChange(_ notification: Notification) {
+    func outlineViewSelectionDidChange(_ notification: Notification) {
         guard !isSyncingSelection else {
             return
         }
 
-        let row = tableView.selectedRow
-        guard viewModel.rows.indices.contains(row),
-              let selection = viewModel.rows[row].selection else {
+        let selectedRow = outlineView.selectedRow
+        guard selectedRow >= 0,
+              let item = outlineView.item(atRow: selectedRow) as? SidebarOutlineItem else {
+            delegate?.sidebarViewController(self, didSelect: nil)
             return
         }
 
-        delegate?.sidebarViewController(self, didSelect: selection)
+        delegate?.sidebarViewController(self, didSelect: item.sourceItem.selection)
+    }
+
+    func outlineViewItemDidExpand(_ notification: Notification) {
+        guard let item = notification.userInfo?["NSObject"] as? SidebarOutlineItem else {
+            return
+        }
+
+        expandedItemIDs.insert(item.sourceItem.id)
+    }
+
+    func outlineViewItemDidCollapse(_ notification: Notification) {
+        guard let item = notification.userInfo?["NSObject"] as? SidebarOutlineItem else {
+            return
+        }
+
+        expandedItemIDs.remove(item.sourceItem.id)
+    }
+}
+
+extension SidebarViewController: NSSearchFieldDelegate {
+    func controlTextDidChange(_ obj: Notification) {
+        guard !isSyncingFilter else {
+            return
+        }
+
+        delegate?.sidebarViewController(self, didUpdateFilterText: searchField.stringValue)
+    }
+}
+
+private final class SidebarGroupCell: NSTableCellView {
+    static let reuseIdentifier = NSUserInterfaceItemIdentifier("SidebarGroupCell")
+
+    private let titleLabel = PacketmanUI.label(
+        "",
+        font: .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold),
+        color: .secondaryLabelColor
+    )
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setupLayout()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func render(item: PacketSourceListItem) {
+        titleLabel.stringValue = item.title
+    }
+
+    private func setupLayout() {
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(titleLabel)
+
+        NSLayoutConstraint.activate([
+            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8),
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+}
+
+private class SidebarIconCountCell: NSTableCellView {
+    private let iconView = NSImageView()
+    private let titleLabel = PacketmanUI.label(
+        "",
+        font: .systemFont(ofSize: NSFont.systemFontSize),
+        color: .labelColor
+    )
+    private let countLabel = PacketmanUI.label(
+        "",
+        font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold),
+        color: .secondaryLabelColor
+    )
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setupLayout()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func render(item: PacketSourceListItem, iconCache: SidebarIconCache) {
+        iconView.image = iconCache.image(for: item)
+        titleLabel.stringValue = item.title
+        countLabel.stringValue = item.countText ?? ""
+        countLabel.isHidden = item.countText == nil
+    }
+
+    private func setupLayout() {
+        iconView.contentTintColor = .secondaryLabelColor
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        countLabel.alignment = .right
+        countLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(iconView)
+        addSubview(titleLabel)
+        addSubview(countLabel)
+
+        NSLayoutConstraint.activate([
+            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
+            iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: 16),
+            iconView.heightAnchor.constraint(equalToConstant: 16),
+
+            titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 8),
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+
+            countLabel.leadingAnchor.constraint(greaterThanOrEqualTo: titleLabel.trailingAnchor, constant: 8),
+            countLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            countLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            countLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 18),
+        ])
+    }
+}
+
+private final class SidebarFavoriteCell: SidebarIconCountCell {
+    static let reuseIdentifier = NSUserInterfaceItemIdentifier("SidebarFavoriteCell")
+}
+
+private final class SidebarFolderCell: SidebarIconCountCell {
+    static let reuseIdentifier = NSUserInterfaceItemIdentifier("SidebarFolderCell")
+}
+
+private final class SidebarAppCell: SidebarIconCountCell {
+    static let reuseIdentifier = NSUserInterfaceItemIdentifier("SidebarAppCell")
+}
+
+private final class SidebarDomainCell: SidebarIconCountCell {
+    static let reuseIdentifier = NSUserInterfaceItemIdentifier("SidebarDomainCell")
+}
+
+private final class SidebarIconCache {
+    private var imagesByKey: [String: NSImage] = [:]
+
+    // Return one small image per source-list item so row reuse stays cheap.
+    func image(for item: PacketSourceListItem) -> NSImage? {
+        if let iconFilePath = item.iconFilePath {
+            let key = "file:\(iconFilePath)"
+            if let cachedImage = imagesByKey[key] {
+                return cachedImage
+            }
+
+            let image = NSWorkspace.shared.icon(forFile: iconFilePath)
+            image.size = NSSize(width: 16, height: 16)
+            imagesByKey[key] = image
+            return image
+        }
+
+        guard let systemImageName = item.systemImageName else {
+            return nil
+        }
+
+        let key = "system:\(systemImageName)"
+        if let cachedImage = imagesByKey[key] {
+            return cachedImage
+        }
+
+        let image = PacketmanUI.image(systemImageName)
+        image?.size = NSSize(width: 16, height: 16)
+        imagesByKey[key] = image
+        return image
     }
 }

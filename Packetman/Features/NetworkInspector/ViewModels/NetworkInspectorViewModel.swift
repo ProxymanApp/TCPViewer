@@ -53,19 +53,24 @@ private struct PacketTableContentCache {
     private var packetLineageRevision: UInt64?
     private var sourcePacketCount = 0
     private var displayFilterText: String?
+    private var sourceListSelection: PacketSourceListSelection?
     private var generation: UInt64 = 0
     private var cachedContent = PacketTableContent.empty
 
     mutating func content(
         for ingestState: PacketIngestState,
-        displayFilterText: String
+        displayFilterText: String,
+        sourceListSelection: PacketSourceListSelection
     ) -> PacketTableContent {
-        guard packetRevision != ingestState.packetRevision || self.displayFilterText != displayFilterText else {
+        guard packetRevision != ingestState.packetRevision ||
+                self.displayFilterText != displayFilterText ||
+                self.sourceListSelection != sourceListSelection else {
             return cachedContent
         }
 
         let displayFilter = PacketDisplayFilter(displayFilterText)
         if self.displayFilterText == displayFilterText,
+           self.sourceListSelection == sourceListSelection,
            packetLineageRevision == ingestState.packetLineageRevision,
            sourcePacketCount <= ingestState.packets.count,
            case .append = ingestState.lastMutation {
@@ -73,21 +78,24 @@ private struct PacketTableContentCache {
                 from: ingestState.packets[sourcePacketCount...],
                 ingestState: ingestState,
                 displayFilter: displayFilter,
-                displayFilterText: displayFilterText
+                displayFilterText: displayFilterText,
+                sourceListSelection: sourceListSelection
             )
         }
 
         return rebuildContent(
             from: ingestState,
             displayFilter: displayFilter,
-            displayFilterText: displayFilterText
+            displayFilterText: displayFilterText,
+            sourceListSelection: sourceListSelection
         )
     }
 
     private mutating func rebuildContent(
         from ingestState: PacketIngestState,
         displayFilter: PacketDisplayFilter,
-        displayFilterText: String
+        displayFilterText: String,
+        sourceListSelection: PacketSourceListSelection
     ) -> PacketTableContent {
         var rows: [PacketTableRow] = []
         var rowIDs: [PacketSummary.ID] = []
@@ -104,7 +112,8 @@ private struct PacketTableContentCache {
                 malformedPacketCount += 1
             }
 
-            guard displayFilter.isEmpty || displayFilter.matches(packet) else {
+            guard PacketSourceListClassifier.matches(packet, selection: sourceListSelection),
+                  displayFilter.isEmpty || displayFilter.matches(packet) else {
                 continue
             }
 
@@ -128,17 +137,28 @@ private struct PacketTableContentCache {
             visiblePacketsByID: visiblePacketsByID,
             visiblePacketRowIndexByID: visiblePacketRowIndexByID
         )
-        return store(content, ingestState: ingestState, displayFilterText: displayFilterText)
+        return store(
+            content,
+            ingestState: ingestState,
+            displayFilterText: displayFilterText,
+            sourceListSelection: sourceListSelection
+        )
     }
 
     private mutating func appendContent(
         from newPackets: ArraySlice<PacketSummary>,
         ingestState: PacketIngestState,
         displayFilter: PacketDisplayFilter,
-        displayFilterText: String
+        displayFilterText: String,
+        sourceListSelection: PacketSourceListSelection
     ) -> PacketTableContent {
         guard !newPackets.isEmpty else {
-            return store(cachedContent, ingestState: ingestState, displayFilterText: displayFilterText)
+            return store(
+                cachedContent,
+                ingestState: ingestState,
+                displayFilterText: displayFilterText,
+                sourceListSelection: sourceListSelection
+            )
         }
 
         var rows = cachedContent.rows
@@ -158,7 +178,8 @@ private struct PacketTableContentCache {
                 malformedPacketCount += 1
             }
 
-            guard displayFilter.isEmpty || displayFilter.matches(packet) else {
+            guard PacketSourceListClassifier.matches(packet, selection: sourceListSelection),
+                  displayFilter.isEmpty || displayFilter.matches(packet) else {
                 continue
             }
 
@@ -185,18 +206,25 @@ private struct PacketTableContentCache {
             visiblePacketsByID: visiblePacketsByID,
             visiblePacketRowIndexByID: visiblePacketRowIndexByID
         )
-        return store(content, ingestState: ingestState, displayFilterText: displayFilterText)
+        return store(
+            content,
+            ingestState: ingestState,
+            displayFilterText: displayFilterText,
+            sourceListSelection: sourceListSelection
+        )
     }
 
     private mutating func store(
         _ content: PacketTableContent,
         ingestState: PacketIngestState,
-        displayFilterText: String
+        displayFilterText: String,
+        sourceListSelection: PacketSourceListSelection
     ) -> PacketTableContent {
         packetRevision = ingestState.packetRevision
         packetLineageRevision = ingestState.packetLineageRevision
         sourcePacketCount = ingestState.packets.count
         self.displayFilterText = displayFilterText
+        self.sourceListSelection = sourceListSelection
         cachedContent = content
         return content
     }
@@ -217,10 +245,13 @@ final class NetworkInspectorViewModel {
 
     private let controller: PacketryWindowController
     private let preferences: NetworkInspectorPreferences
+    private let sourceListService = PacketSourceListService()
     private var packetTableContentCache = PacketTableContentCache()
     private var hasPerformedInitialLoad = false
 
     private var selectedSidebar: NetworkInspectorSidebarSelection = .liveCapture
+    private var selectedSourceListSelection: PacketSourceListSelection = .allPackets
+    private var sourceListFilterText = ""
     private var workspaceMode: NetworkInspectorWorkspaceMode = .packets
     private var inspectorTab: PacketInspectorTab = .overview
     private var isInspectorVisible: Bool
@@ -239,13 +270,18 @@ final class NetworkInspectorViewModel {
         self.preferences = NetworkInspectorPreferences(defaults: userDefaults)
         self.isInspectorVisible = preferences.isInspectorVisible
         self.displayFilterText = preferences.displayFilterText
+        let sourceListSnapshot = sourceListService.snapshot(for: controller.snapshot.packetIngestState)
         let packetTableContent = packetTableContentCache.content(
             for: controller.snapshot.packetIngestState,
-            displayFilterText: displayFilterText
+            displayFilterText: displayFilterText,
+            sourceListSelection: selectedSourceListSelection
         )
         self.snapshot = NetworkInspectorSnapshot.make(
             base: controller.snapshot,
             selectedSidebar: selectedSidebar,
+            selectedSourceListSelection: selectedSourceListSelection,
+            sourceListSnapshot: sourceListSnapshot,
+            sourceListFilterText: sourceListFilterText,
             workspaceMode: workspaceMode,
             inspectorTab: inspectorTab,
             isInspectorVisible: isInspectorVisible,
@@ -349,6 +385,17 @@ final class NetworkInspectorViewModel {
         rebuildSnapshot()
     }
 
+    func selectSourceList(_ selection: PacketSourceListSelection?) {
+        selectedSourceListSelection = selection ?? .allPackets
+        workspaceMode = .packets
+        rebuildSnapshot()
+    }
+
+    func updateSourceListFilterText(_ text: String) {
+        sourceListFilterText = text
+        rebuildSnapshot()
+    }
+
     func selectWorkspaceMode(_ mode: NetworkInspectorWorkspaceMode) {
         workspaceMode = mode
         selectedSidebar = .view(mode)
@@ -427,6 +474,7 @@ final class NetworkInspectorViewModel {
         controller.openDocument(at: fileURL) { [weak self] in
             self?.workspaceMode = .packets
             self?.selectedSidebar = .liveCapture
+            self?.selectedSourceListSelection = .allPackets
             self?.rebuildSnapshot()
             completion?()
         }
@@ -509,13 +557,22 @@ final class NetworkInspectorViewModel {
     }
 
     private func rebuildSnapshot() {
+        let sourceListSnapshot = sourceListService.snapshot(for: controller.snapshot.packetIngestState)
+        if !sourceListSnapshot.contains(selection: selectedSourceListSelection) {
+            selectedSourceListSelection = .allPackets
+        }
+
         let packetTableContent = packetTableContentCache.content(
             for: controller.snapshot.packetIngestState,
-            displayFilterText: displayFilterText
+            displayFilterText: displayFilterText,
+            sourceListSelection: selectedSourceListSelection
         )
         let updatedSnapshot = NetworkInspectorSnapshot.make(
             base: controller.snapshot,
             selectedSidebar: selectedSidebar,
+            selectedSourceListSelection: selectedSourceListSelection,
+            sourceListSnapshot: sourceListSnapshot,
+            sourceListFilterText: sourceListFilterText,
             workspaceMode: workspaceMode,
             inspectorTab: inspectorTab,
             isInspectorVisible: isInspectorVisible,
