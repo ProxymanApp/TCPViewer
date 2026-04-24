@@ -486,7 +486,7 @@ private final class SidebarGroupCell: NSTableCellView {
 
     private let titleLabel = PacketmanUI.label(
         "",
-        font: .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold),
+        font: .systemFont(ofSize: NSFont.systemFontSize - 2, weight: .semibold),
         color: .secondaryLabelColor
     )
 

@@ -19,16 +19,32 @@ final class PacketmanWindowController: NSWindowController {
         if #available(macOS 11.0, *) {
             window.titlebarSeparatorStyle = .automatic
         }
-        window.setContentSize(NSSize(width: 1180, height: 760))
-        window.minSize = NSSize(width: 1180, height: 760)
+        window.contentMinSize = Self.contentMinSize
+        window.setContentSize(Self.defaultContentSize(for: window))
+        window.center()
         window.isReleasedWhenClosed = false
         super.init(window: window)
         self.rootViewController.delegate = self
         setupToolbar()
+        // Persist size and position across launches. If a saved frame exists
+        // for this name, it overrides the default size/center set above.
+        window.setFrameAutosaveName(Self.frameAutosaveName)
 
         if let initialURL {
             rootViewController.openDocument(at: initialURL)
         }
+    }
+
+    private static let frameAutosaveName = "Packetman.MainWindow"
+    private static let contentMinSize = NSSize(width: 900, height: 600)
+    private static let defaultScreenRatio: CGFloat = 0.85
+
+    private static func defaultContentSize(for window: NSWindow) -> NSSize {
+        let visibleFrame = (window.screen ?? NSScreen.main ?? NSScreen.screens.first)?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let width = max(contentMinSize.width, visibleFrame.width * defaultScreenRatio)
+        let height = max(contentMinSize.height, visibleFrame.height * defaultScreenRatio)
+        return NSSize(width: width, height: height)
     }
 
     @available(*, unavailable)
