@@ -503,6 +503,10 @@ private final class InspectorFakeNetworkHelperTool: PacketryNetworkHelperToolMan
         snapshot
     }
 
+    func uninstall() async -> PacketryNetworkHelperToolSnapshot {
+        snapshot
+    }
+
     func openSystemSettings() {}
 }
 

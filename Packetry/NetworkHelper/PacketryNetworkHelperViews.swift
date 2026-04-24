@@ -61,6 +61,16 @@ struct PacketryNetworkHelperSettingsView: View {
                     }
                 }
 
+                if canUninstallHelper {
+                    Button(role: .destructive) {
+                        Task {
+                            await manager.uninstall()
+                        }
+                    } label: {
+                        Label("Uninstall", systemImage: "trash")
+                    }
+                }
+
                 Spacer()
 
                 primaryAction
@@ -89,6 +99,15 @@ struct PacketryNetworkHelperSettingsView: View {
             }
 
             Spacer()
+        }
+    }
+
+    private var canUninstallHelper: Bool {
+        switch manager.snapshot.status {
+        case .waitingForApproval, .installedNeedsRelaunch, .ready, .broken, .unsupported:
+            true
+        case .notInstalled, .installing:
+            false
         }
     }
 

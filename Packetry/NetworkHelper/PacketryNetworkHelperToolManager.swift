@@ -70,6 +70,7 @@ struct PacketryNetworkHelperBPFInspection: Sendable, Equatable {
 protocol PacketryNetworkHelperServiceControlling {
     var status: PacketryNetworkHelperAuthorizationStatus { get }
     func register() throws
+    func unregister() throws
     func openSystemSettings()
 }
 
@@ -89,6 +90,9 @@ protocol PacketryNetworkHelperToolManaging: AnyObject {
 
     @discardableResult
     func repair() async -> PacketryNetworkHelperToolSnapshot
+
+    @discardableResult
+    func uninstall() async -> PacketryNetworkHelperToolSnapshot
 
     func openSystemSettings()
 }
@@ -155,6 +159,28 @@ final class PacketryNetworkHelperToolManager: ObservableObject, PacketryNetworkH
     @discardableResult
     func repair() async -> PacketryNetworkHelperToolSnapshot {
         await install()
+    }
+
+    @discardableResult
+    func uninstall() async -> PacketryNetworkHelperToolSnapshot {
+        do {
+            try serviceController.unregister()
+            return await refreshStatus()
+        } catch {
+            let refreshedSnapshot = await refreshStatus()
+            guard refreshedSnapshot.status != .notInstalled else {
+                return refreshedSnapshot
+            }
+
+            let failedSnapshot = PacketryNetworkHelperToolSnapshot(
+                status: .broken,
+                authorizationStatus: refreshedSnapshot.authorizationStatus,
+                lastCheckedAt: Date(),
+                message: "Packetry could not uninstall the helper: \(error.localizedDescription)"
+            )
+            snapshot = failedSnapshot
+            return failedSnapshot
+        }
     }
 
     func openSystemSettings() {
@@ -226,6 +252,10 @@ final class ReadyPacketryNetworkHelperToolManager: PacketryNetworkHelperToolMana
         snapshot
     }
 
+    func uninstall() async -> PacketryNetworkHelperToolSnapshot {
+        snapshot
+    }
+
     func openSystemSettings() {}
 }
 
@@ -249,6 +279,10 @@ struct PacketryNetworkHelperSMAppServiceController: PacketryNetworkHelperService
 
     func register() throws {
         try service.register()
+    }
+
+    func unregister() throws {
+        try service.unregister()
     }
 
     func openSystemSettings() {

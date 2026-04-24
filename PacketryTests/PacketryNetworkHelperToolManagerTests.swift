@@ -96,12 +96,28 @@ struct PacketryNetworkHelperToolManagerTests {
         #expect(service.registerCount == 1)
         #expect(snapshot.status == .waitingForApproval)
     }
+
+    @Test func uninstallUnregistersServiceThenRefreshesStatus() async {
+        let service = MockNetworkHelperService(status: .enabled)
+        service.statusAfterUnregister = .notRegistered
+        let manager = PacketryNetworkHelperToolManager(
+            serviceController: service,
+            bpfChecker: MockBPFChecker.ready
+        )
+
+        let snapshot = await manager.uninstall()
+
+        #expect(service.unregisterCount == 1)
+        #expect(snapshot.status == .notInstalled)
+    }
 }
 
 private final class MockNetworkHelperService: PacketryNetworkHelperServiceControlling {
     var status: PacketryNetworkHelperAuthorizationStatus
     var statusAfterRegister: PacketryNetworkHelperAuthorizationStatus?
+    var statusAfterUnregister: PacketryNetworkHelperAuthorizationStatus?
     private(set) var registerCount = 0
+    private(set) var unregisterCount = 0
     private(set) var openSystemSettingsCount = 0
 
     init(status: PacketryNetworkHelperAuthorizationStatus) {
@@ -112,6 +128,13 @@ private final class MockNetworkHelperService: PacketryNetworkHelperServiceContro
         registerCount += 1
         if let statusAfterRegister {
             status = statusAfterRegister
+        }
+    }
+
+    func unregister() throws {
+        unregisterCount += 1
+        if let statusAfterUnregister {
+            status = statusAfterUnregister
         }
     }
 
