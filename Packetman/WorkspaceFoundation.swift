@@ -8,11 +8,13 @@ enum PacketIngestMutation: Sendable, Equatable {
     case reset
     case replace
     case append(Range<Int>)
+    case metadataUpdate
 }
 
 struct PacketIngestState: Sendable, Equatable {
     var source: CaptureSource?
     var packets: [PacketSummary]
+    var packetIndexByID: [PacketSummary.ID: Int]
     var packetRevision: UInt64
     var packetLineageRevision: UInt64
     var lastMutation: PacketIngestMutation
@@ -24,6 +26,7 @@ struct PacketIngestState: Sendable, Equatable {
     static let empty = PacketIngestState(
         source: nil,
         packets: [],
+        packetIndexByID: [:],
         packetRevision: 0,
         packetLineageRevision: 0,
         lastMutation: .none,
@@ -40,6 +43,7 @@ struct PacketIngestState: Sendable, Equatable {
     mutating func reset(source: CaptureSource? = nil, message: String) {
         self.source = source
         packets = []
+        packetIndexByID = [:]
         packetRevision &+= 1
         packetLineageRevision &+= 1
         lastMutation = .reset
@@ -52,6 +56,7 @@ struct PacketIngestState: Sendable, Equatable {
     mutating func replace(with batch: [PacketSummary], source: CaptureSource, message: String? = nil) {
         self.source = source
         packets = batch
+        rebuildPacketIndex()
         packetRevision &+= 1
         packetLineageRevision &+= 1
         lastMutation = .replace
@@ -67,6 +72,9 @@ struct PacketIngestState: Sendable, Equatable {
         let startIndex = packets.count
         packets.append(contentsOf: batch)
         if !batch.isEmpty {
+            for (offset, packet) in batch.enumerated() {
+                packetIndexByID[packet.id] = startIndex + offset
+            }
             packetRevision &+= 1
             lastMutation = .append(startIndex..<packets.count)
             addCounters(for: batch)
@@ -77,6 +85,36 @@ struct PacketIngestState: Sendable, Equatable {
         if let message {
             statusMessage = message
         }
+    }
+
+    mutating func applyMetadataUpdates(_ updates: [PacketMetadataUpdate]) {
+        var didUpdate = false
+        for update in updates {
+            for packetID in update.packetIDs {
+                guard let packetIndex = packetIndexByID[packetID] else {
+                    continue
+                }
+
+                let currentPacket = packets[packetIndex]
+                let updatedPacket = currentPacket.packetryApplying(
+                    sniDomainName: update.sniDomainName,
+                    client: update.client
+                )
+                guard updatedPacket != currentPacket else {
+                    continue
+                }
+
+                packets[packetIndex] = updatedPacket
+                didUpdate = true
+            }
+        }
+
+        guard didUpdate else {
+            return
+        }
+
+        packetRevision &+= 1
+        lastMutation = .metadataUpdate
     }
 
     static func == (lhs: PacketIngestState, rhs: PacketIngestState) -> Bool {
@@ -114,6 +152,12 @@ struct PacketIngestState: Sendable, Equatable {
                 partialResult += 1
             }
         }
+    }
+
+    private mutating func rebuildPacketIndex() {
+        packetIndexByID = Dictionary(uniqueKeysWithValues: packets.enumerated().map { index, packet in
+            (packet.id, index)
+        })
     }
 }
 
@@ -375,25 +419,33 @@ final class PacketryBackgroundCoordinator {
 struct PacketryServiceRegistry {
     let core: any PacketryCoreProviding
     let networkHelperTool: any PacketryNetworkHelperToolManaging
+    let packetMetadataEnricher: any PacketMetadataEnriching
 
     init(
         core: any PacketryCoreProviding,
-        networkHelperTool: any PacketryNetworkHelperToolManaging
+        networkHelperTool: any PacketryNetworkHelperToolManaging,
+        packetMetadataEnricher: any PacketMetadataEnriching = PacketMetadataEnrichmentService()
     ) {
         self.core = core
         self.networkHelperTool = networkHelperTool
+        self.packetMetadataEnricher = packetMetadataEnricher
     }
 
-    init(core: any PacketryCoreProviding) {
+    init(
+        core: any PacketryCoreProviding,
+        packetMetadataEnricher: any PacketMetadataEnriching = PacketMetadataEnrichmentService()
+    ) {
         self.init(
             core: core,
-            networkHelperTool: ReadyPacketryNetworkHelperToolManager()
+            networkHelperTool: ReadyPacketryNetworkHelperToolManager(),
+            packetMetadataEnricher: packetMetadataEnricher
         )
     }
 
     static let foundation = PacketryServiceRegistry(
         core: NativePacketryCore(),
-        networkHelperTool: PacketryNetworkHelperToolManager()
+        networkHelperTool: PacketryNetworkHelperToolManager(),
+        packetMetadataEnricher: PacketMetadataEnrichmentService()
     )
 }
 
@@ -957,6 +1009,7 @@ final class PacketryWindowController {
                     statusMessage: "Opening \(fileURL.lastPathComponent)...",
                     lastError: nil
                 )
+                self.services.packetMetadataEnricher.reset()
                 self.snapshot.packetIngestState.reset(source: .offline, message: "Opening \(fileURL.lastPathComponent)...")
                 self.synchronizeVisiblePackets(message: "Opening \(fileURL.lastPathComponent)...")
                 self.snapshot.loadState.progress = PacketLoadProgress(
@@ -1016,6 +1069,7 @@ final class PacketryWindowController {
         snapshot.documentState.phase = .reopening
         snapshot.documentState.statusMessage = "Reopening \(fileName)..."
         snapshot.documentState.isPartialResult = false
+        services.packetMetadataEnricher.reset()
         snapshot.packetIngestState.reset(source: .offline, message: "Reopening \(fileName)...")
         synchronizeVisiblePackets(message: "Reopening \(fileName)...")
         resetInspectionState()
@@ -1324,6 +1378,7 @@ final class PacketryWindowController {
         snapshot.loadState = .idle
 
         snapshot.selectedPacketID = nil
+        services.packetMetadataEnricher.reset()
         snapshot.packetIngestState.reset(
             source: .live,
             message: "Starting live capture on \(displayName(for: interface))..."
@@ -1427,32 +1482,39 @@ final class PacketryWindowController {
 
             switch disposition {
             case .replace:
+                services.packetMetadataEnricher.reset()
                 snapshot.packetIngestState.reset(
                     source: source,
                     message: source == .live ? "Waiting for live packets…" : "Loading packets from disk…"
                 )
                 if let source, !packets.isEmpty {
+                    let enrichmentResult = services.packetMetadataEnricher.enrich(packets, source: source)
                     snapshot.packetIngestState.replace(
-                        with: packets,
+                        with: enrichmentResult.packets,
                         source: source,
                         message: source == .live
                             ? "Captured \(packets.count) packets."
                             : "Loaded \(packets.count) packets from disk."
                     )
+                    snapshot.packetIngestState.applyMetadataUpdates(enrichmentResult.updates)
                 }
             case .append:
                 if let source {
+                    let enrichmentResult = services.packetMetadataEnricher.enrich(packets, source: source)
                     snapshot.packetIngestState.append(
-                        packets,
+                        enrichmentResult.packets,
                         source: source,
                         message: source == .live
                             ? "Captured \(snapshot.packetIngestState.totalPacketCount + packets.count) packets."
                             : "Loaded \(snapshot.packetIngestState.totalPacketCount + packets.count) packets from disk."
                     )
+                    snapshot.packetIngestState.applyMetadataUpdates(enrichmentResult.updates)
                 }
             @unknown default:
                 if let source {
-                    snapshot.packetIngestState.append(packets, source: source)
+                    let enrichmentResult = services.packetMetadataEnricher.enrich(packets, source: source)
+                    snapshot.packetIngestState.append(enrichmentResult.packets, source: source)
+                    snapshot.packetIngestState.applyMetadataUpdates(enrichmentResult.updates)
                 }
             }
 

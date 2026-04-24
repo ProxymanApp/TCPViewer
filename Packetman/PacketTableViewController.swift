@@ -124,6 +124,8 @@ final class PacketTableViewController: NSViewController {
         addColumn("time", title: "Time", width: 112, minWidth: 96, cell: PacketTextCell())
         addColumn("source", title: "Source", width: 180, minWidth: 130, cell: PacketTextCell())
         addColumn("destination", title: "Destination", width: 180, minWidth: 130, cell: PacketTextCell())
+        addColumn("domain", title: "Domain", width: 180, minWidth: 120, cell: PacketTextCell())
+        addColumn("client", title: "Client", width: 160, minWidth: 120, cell: PacketClientCell())
         addColumn("protocol", title: "Protocol", width: 96, minWidth: 82, cell: PacketProtocolCell())
         addColumn("length", title: "Length", width: 80, minWidth: 68, cell: PacketTextCell())
         addColumn("summary", title: "Summary", width: 320, minWidth: 180, cell: PacketTextCell())
@@ -200,6 +202,10 @@ final class PacketTableViewController: NSViewController {
             row.sourceText
         case "destination":
             row.destinationText
+        case "domain":
+            row.domainText
+        case "client":
+            row.clientText
         case "protocol":
             row.protocolText
         case "length":
@@ -251,6 +257,8 @@ extension PacketTableViewController: NSTableViewDataSource, NSTableViewDelegate 
         let packetRow = rows[row]
         if let cell = cell as? PacketProtocolCell {
             cell.configure(protocolText: packetRow.protocolText, severity: packetRow.severity)
+        } else if let cell = cell as? PacketClientCell {
+            cell.configure(client: packetRow.packet.client)
         } else if let cell = cell as? PacketTextCell {
             cell.configure(
                 style: textStyle(for: column, in: packetRow),
@@ -350,5 +358,81 @@ final class PacketProtocolCell: NSTextFieldCell {
         case .partial, .malformed, .unsupported, .truncated:
             return .systemOrange.withAlphaComponent(0.16)
         }
+    }
+}
+
+final class PacketClientIconCache {
+    private var imagesByKey: [String: NSImage] = [:]
+
+    // Return one shared icon instance per app path so repeated packet rows stay cheap.
+    func image(for client: PacketClient?) -> NSImage? {
+        guard let client else {
+            return nil
+        }
+
+        let key = client.bundlePath ?? client.executablePath ?? client.name
+        if let image = imagesByKey[key] {
+            return image
+        }
+
+        guard let path = client.bundlePath ?? client.executablePath else {
+            return nil
+        }
+
+        let image = NSWorkspace.shared.icon(forFile: path)
+        image.size = NSSize(width: 16, height: 16)
+        imagesByKey[key] = image
+        return image
+    }
+}
+
+final class PacketClientCell: NSTextFieldCell {
+    private static let iconCache = PacketClientIconCache()
+    private var client: PacketClient?
+
+    override init(textCell string: String) {
+        super.init(textCell: string)
+        isEditable = false
+        isBordered = false
+        drawsBackground = false
+        lineBreakMode = .byTruncatingTail
+        truncatesLastVisibleLine = true
+        font = .systemFont(ofSize: NSFont.systemFontSize)
+        textColor = .labelColor
+    }
+
+    convenience init() {
+        self.init(textCell: "")
+    }
+
+    @available(*, unavailable)
+    required init(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    // Configure the reused cell with the current row's client metadata.
+    func configure(client: PacketClient?) {
+        self.client = client
+        stringValue = client?.displayName ?? "-"
+        textColor = client == nil ? .secondaryLabelColor : .labelColor
+    }
+
+    override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
+        guard let icon = Self.iconCache.image(for: client) else {
+            super.drawInterior(withFrame: cellFrame, in: controlView)
+            return
+        }
+
+        let iconSize: CGFloat = 16
+        let iconFrame = NSRect(
+            x: cellFrame.minX + 6,
+            y: cellFrame.midY - iconSize / 2,
+            width: iconSize,
+            height: iconSize
+        )
+        icon.draw(in: iconFrame)
+
+        let textFrame = cellFrame.insetBy(dx: 6, dy: 0).offsetBy(dx: iconSize + 4, dy: 0)
+        super.drawInterior(withFrame: textFrame, in: controlView)
     }
 }

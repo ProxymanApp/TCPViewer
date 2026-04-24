@@ -29,6 +29,7 @@
 #include <pcapplusplus/ProtocolType.h>
 #include <pcapplusplus/RawPacket.h>
 #include <pcapplusplus/SSLCommon.h>
+#include <pcapplusplus/SSLHandshake.h>
 #include <pcapplusplus/SSLLayer.h>
 #include <pcapplusplus/TcpLayer.h>
 #include <pcapplusplus/UdpLayer.h>
@@ -339,6 +340,30 @@ NSString *InfoSummaryForPacket(const pcpp::Packet &packet, const pcpp::RawPacket
     return [NSString stringWithFormat:@"Captured %d bytes", rawPacket.getRawDataLen()];
 }
 
+NSString * _Nullable SniDomainNameForPacket(const pcpp::Packet &packet)
+{
+    for (auto *handshakeLayer = packet.getLayerOfType<pcpp::SSLHandshakeLayer>();
+         handshakeLayer != nullptr;
+         handshakeLayer = packet.getNextLayerOfType<pcpp::SSLHandshakeLayer>(handshakeLayer)) {
+        auto *clientHelloMessage = handshakeLayer->getHandshakeMessageOfType<pcpp::SSLClientHelloMessage>();
+        if (clientHelloMessage == nullptr) {
+            continue;
+        }
+
+        auto *sniExtension = clientHelloMessage->getExtensionOfType<pcpp::SSLServerNameIndicationExtension>();
+        if (sniExtension == nullptr) {
+            continue;
+        }
+
+        auto hostName = sniExtension->getHostName();
+        if (!hostName.empty()) {
+            return MakeNSString(hostName);
+        }
+    }
+
+    return nil;
+}
+
 PCPPNativePacketSummaryDescriptor *MakePacketSummary(const pcpp::RawPacket &rawPacket,
                                                      unsigned long long identifier,
                                                      NSString * _Nullable interfaceIdentifier,
@@ -375,7 +400,8 @@ PCPPNativePacketSummaryDescriptor *MakePacketSummary(const pcpp::RawPacket &rawP
                                                                   infoSummary:InfoSummaryForPacket(packet, rawPacket)
                                                                        layers:MapLayers(packet)
                                                                  decodeStatus:decodeDescriptor
-                                                              captureMetadata:captureMetadata];
+                                                              captureMetadata:captureMetadata
+                                                                sniDomainName:SniDomainNameForPacket(packet)];
     } catch (const std::exception &exception) {
         auto *captureMetadata = [[PCPPNativePacketCaptureMetadataDescriptor alloc] initWithLinkType:MapLinkType(rawPacket.getLinkLayerType())
                                                                                            truncated:rawPacket.getRawDataLen() < rawPacket.getFrameLength()
@@ -396,7 +422,8 @@ PCPPNativePacketSummaryDescriptor *MakePacketSummary(const pcpp::RawPacket &rawP
                                                                   infoSummary:@"Packet decoding failed."
                                                                        layers:@[]
                                                                  decodeStatus:decodeDescriptor
-                                                              captureMetadata:captureMetadata];
+                                                              captureMetadata:captureMetadata
+                                                                sniDomainName:nil];
     }
 }
 
@@ -1135,6 +1162,7 @@ PCPPNativeCaptureHealthDescriptor *MakeHealthDescriptor(const LiveCaptureState &
                              layers:(NSArray<PCPPNativePacketLayerDescriptor *> *)layers
                        decodeStatus:(PCPPNativeDecodeStatusDescriptor *)decodeStatus
                     captureMetadata:(PCPPNativePacketCaptureMetadataDescriptor *)captureMetadata
+                       sniDomainName:(NSString *)sniDomainName
 {
     self = [super init];
     if (self) {
@@ -1152,6 +1180,7 @@ PCPPNativeCaptureHealthDescriptor *MakeHealthDescriptor(const LiveCaptureState &
         _layers = [layers copy];
         _decodeStatus = decodeStatus;
         _captureMetadata = captureMetadata;
+        _sniDomainName = [sniDomainName copy];
     }
     return self;
 }
