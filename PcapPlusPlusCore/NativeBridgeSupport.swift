@@ -1,38 +1,40 @@
 import Foundation
 @_implementationOnly import PacketryNativeBridge
 
-final class EventStreamBox<Element>: @unchecked Sendable {
-    let stream: AsyncThrowingStream<Element, Error>
-
+final class EventCallbackBox<Element>: @unchecked Sendable {
     private let lock = NSLock()
-    private var continuation: AsyncThrowingStream<Element, Error>.Continuation?
+    private var eventHandler: ((Result<Element, Error>) -> Void)?
 
-    init() {
-        var capturedContinuation: AsyncThrowingStream<Element, Error>.Continuation?
-        self.stream = AsyncThrowingStream { continuation in
-            capturedContinuation = continuation
+    var handler: ((Result<Element, Error>) -> Void)? {
+        get {
+            lock.lock()
+            let handler = eventHandler
+            lock.unlock()
+            return handler
         }
-        self.continuation = capturedContinuation
+        set {
+            lock.lock()
+            eventHandler = newValue
+            lock.unlock()
+        }
     }
 
     func yield(_ element: Element) {
         lock.lock()
-        let continuation = continuation
+        let handler = eventHandler
         lock.unlock()
 
-        continuation?.yield(element)
+        handler?(.success(element))
     }
 
     func finish(throwing error: Error? = nil) {
         lock.lock()
-        let continuation = continuation
-        self.continuation = nil
+        let handler = eventHandler
+        eventHandler = nil
         lock.unlock()
 
         if let error {
-            continuation?.finish(throwing: error)
-        } else {
-            continuation?.finish()
+            handler?(.failure(error))
         }
     }
 }

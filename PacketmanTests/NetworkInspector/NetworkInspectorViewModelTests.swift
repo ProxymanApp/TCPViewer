@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 import PcapPlusPlusCore
-@testable import Packetry
+@testable import Packetman
 
 @Suite(.serialized)
 @MainActor
@@ -450,40 +450,46 @@ private final class InspectorFakeCore: PacketryCoreProviding, @unchecked Sendabl
         self.document = document
     }
 
-    func listInterfaces() async throws -> [CaptureInterfaceSummary] {
-        interfaces
+    func listInterfaces(completion: @escaping PacketryCompletion<[CaptureInterfaceSummary]>) {
+        completion(.success(interfaces))
     }
 
-    func validateCaptureFilter(_ expression: String) async -> CaptureFilterValidation {
-        CaptureFilterValidation(
+    func validateCaptureFilter(_ expression: String, completion: @escaping (CaptureFilterValidation) -> Void) {
+        completion(CaptureFilterValidation(
             disposition: expression.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .invalid : .valid,
             normalizedExpression: expression.trimmingCharacters(in: .whitespacesAndNewlines),
             message: nil
-        )
+        ))
     }
 
     func validateCaptureOptions(_ options: CaptureOptions, for interface: CaptureInterfaceSummary?) throws -> CaptureOptions {
         try options.validated(for: interface)
     }
 
-    func makeLiveCaptureSession(interfaceID: String, options: CaptureOptions) async throws -> any LiveCaptureSessionProviding {
-        liveSession
+    func makeLiveCaptureSession(
+        interfaceID: String,
+        options: CaptureOptions,
+        completion: @escaping PacketryCompletion<any LiveCaptureSessionProviding>
+    ) {
+        completion(.success(liveSession))
     }
 
     func supportedOfflineFormats() -> [CaptureFileFormat] {
         [.pcap, .pcapng]
     }
 
-    func openOfflineCaptureDocument(at fileURL: URL) async throws -> any OfflineCaptureDocumentProviding {
-        document
+    func openOfflineCaptureDocument(
+        at fileURL: URL,
+        completion: @escaping PacketryCompletion<any OfflineCaptureDocumentProviding>
+    ) {
+        completion(.success(document))
     }
 
-    func loadPacketSummaries(from fileURL: URL) async throws -> [PacketSummary] {
-        try await document.open()
+    func loadPacketSummaries(from fileURL: URL, completion: @escaping PacketryCompletion<[PacketSummary]>) {
+        document.open(completion: completion)
     }
 }
 
-@MainActor
 private final class InspectorFakeNetworkHelperTool: PacketryNetworkHelperToolManaging {
     private(set) var snapshot: PacketryNetworkHelperToolSnapshot
 
@@ -491,66 +497,73 @@ private final class InspectorFakeNetworkHelperTool: PacketryNetworkHelperToolMan
         self.snapshot = snapshot
     }
 
-    func refreshStatus() async -> PacketryNetworkHelperToolSnapshot {
-        snapshot
+    func refreshStatus(completion: @escaping (PacketryNetworkHelperToolSnapshot) -> Void) -> PacketryNetworkHelperToolSnapshot {
+        completion(snapshot)
+        return snapshot
     }
 
-    func install() async -> PacketryNetworkHelperToolSnapshot {
-        snapshot
+    func install(completion: @escaping (PacketryNetworkHelperToolSnapshot) -> Void) -> PacketryNetworkHelperToolSnapshot {
+        completion(snapshot)
+        return snapshot
     }
 
-    func repair() async -> PacketryNetworkHelperToolSnapshot {
-        snapshot
+    func repair(completion: @escaping (PacketryNetworkHelperToolSnapshot) -> Void) -> PacketryNetworkHelperToolSnapshot {
+        completion(snapshot)
+        return snapshot
     }
 
-    func uninstall() async -> PacketryNetworkHelperToolSnapshot {
-        snapshot
+    func uninstall(completion: @escaping (PacketryNetworkHelperToolSnapshot) -> Void) -> PacketryNetworkHelperToolSnapshot {
+        completion(snapshot)
+        return snapshot
     }
 
     func openSystemSettings() {}
 }
 
 private final class InspectorFakeLiveSession: LiveCaptureSessionProviding, @unchecked Sendable {
-    private let pipe = InspectorEventPipe<PacketIngestEvent>()
+    var eventHandler: PacketIngestEventHandler?
     var inspections: [PacketSummary.ID: PacketInspection] = [:]
     private(set) var startCount = 0
     private(set) var stopCount = 0
 
-    func events() -> AsyncThrowingStream<PacketIngestEvent, Error> {
-        pipe.stream
-    }
-
-    func start() async throws {
+    func start(completion: @escaping PacketryVoidCompletion) {
         startCount += 1
+        completion(.success(()))
     }
 
-    func pause() async throws {}
+    func pause(completion: @escaping PacketryVoidCompletion) {
+        completion(.success(()))
+    }
 
-    func resume() async throws {}
+    func resume(completion: @escaping PacketryVoidCompletion) {
+        completion(.success(()))
+    }
 
-    func stop() async throws {
+    func stop(completion: @escaping PacketryVoidCompletion) {
         stopCount += 1
+        completion(.success(()))
     }
 
-    func inspectPacket(id: PacketSummary.ID) async throws -> PacketInspection {
+    func inspectPacket(id: PacketSummary.ID, completion: @escaping PacketryCompletion<PacketInspection>) {
         guard let inspection = inspections[id] else {
-            throw PacketryCoreError(code: .liveSessionControlFailed, message: "Missing inspection.")
+            completion(.failure(PacketryCoreError(code: .liveSessionControlFailed, message: "Missing inspection.")))
+            return
         }
 
-        return inspection
+        completion(.success(inspection))
     }
 
-    func healthSnapshot() async -> CaptureHealthSnapshot {
-        .empty
+    func healthSnapshot(completion: @escaping (CaptureHealthSnapshot) -> Void) {
+        completion(.empty)
     }
 
     func send(_ event: PacketIngestEvent) {
-        pipe.yield(event)
+        eventHandler?(.success(event))
     }
 }
 
 private final class InspectorFakeDocument: OfflineCaptureDocumentProviding, @unchecked Sendable {
-    private let pipe = InspectorEventPipe<PacketIngestEvent>()
+    var eventHandler: PacketIngestEventHandler?
     private(set) var url: URL
     private(set) var packets: [PacketSummary]
     private(set) var metadata: CaptureDocumentMetadata
@@ -568,87 +581,71 @@ private final class InspectorFakeDocument: OfflineCaptureDocumentProviding, @unc
         self.packets = packets
     }
 
-    func events() -> AsyncThrowingStream<PacketIngestEvent, Error> {
-        pipe.stream
-    }
-
-    func open() async throws -> [PacketSummary] {
+    func open(completion: @escaping PacketryCompletion<[PacketSummary]>) {
         progress = PacketLoadProgress(
             phase: .completed,
             loadedPacketCount: packets.count,
             message: "Loaded \(packets.count) packets."
         )
-        pipe.yield(.documentMetadataChanged(metadata))
-        pipe.yield(.packetBatch(packets, disposition: .append))
-        pipe.yield(.loadProgressChanged(progress))
-        pipe.yield(.documentStateChanged(phase: .loaded, message: progress.message))
-        return packets
+        send(.documentMetadataChanged(metadata))
+        send(.packetBatch(packets, disposition: .append))
+        send(.loadProgressChanged(progress))
+        send(.documentStateChanged(phase: .loaded, message: progress.message))
+        completion(.success(packets))
     }
 
-    func reopen() async throws -> [PacketSummary] {
-        try await open()
+    func reopen(completion: @escaping PacketryCompletion<[PacketSummary]>) {
+        open(completion: completion)
     }
 
-    func cancelLoading() async {}
+    func cancelLoading(completion: (() -> Void)?) {
+        completion?()
+    }
 
-    func inspectPacket(id: PacketSummary.ID) async throws -> PacketInspection {
+    func inspectPacket(id: PacketSummary.ID, completion: @escaping PacketryCompletion<PacketInspection>) {
         guard let packet = packets.first(where: { $0.id == id }) else {
-            throw PacketryCoreError(code: .offlineFileOpenFailed, message: "Missing packet.")
+            completion(.failure(PacketryCoreError(code: .offlineFileOpenFailed, message: "Missing packet.")))
+            return
         }
 
-        return PacketInspection(
+        completion(.success(PacketInspection(
             packetID: packet.id,
             packetNumber: packet.packetNumber,
             rawBytes: Data(repeating: 0, count: 8),
             detailNodes: [],
             decodeStatus: packet.decodeStatus
-        )
+        )))
     }
 
-    func save() async throws {
+    func save(completion: @escaping PacketryVoidCompletion) {
         saveCount += 1
+        completion(.success(()))
     }
 
-    func save(to url: URL, format: CaptureFileFormat) async throws {
+    func save(to url: URL, format: CaptureFileFormat, completion: @escaping PacketryVoidCompletion) {
         saveAsRequests.append((url, format))
         self.url = url
         metadata = CaptureDocumentMetadata(format: format)
+        completion(.success(()))
     }
 
-    func currentURL() async -> URL {
+    func currentURL() -> URL {
         url
     }
 
-    func currentMetadata() async -> CaptureDocumentMetadata {
+    func currentMetadata() -> CaptureDocumentMetadata {
         metadata
     }
 
-    func packetSummaries() async -> [PacketSummary] {
+    func packetSummaries() -> [PacketSummary] {
         packets
     }
 
-    func loadProgress() async -> PacketLoadProgress {
+    func loadProgress() -> PacketLoadProgress {
         progress
     }
-}
 
-private final class InspectorEventPipe<Element> {
-    let stream: AsyncThrowingStream<Element, Error>
-    private let continuation: AsyncThrowingStream<Element, Error>.Continuation
-
-    init() {
-        var capturedContinuation: AsyncThrowingStream<Element, Error>.Continuation?
-        stream = AsyncThrowingStream { continuation in
-            capturedContinuation = continuation
-        }
-        continuation = capturedContinuation!
-    }
-
-    deinit {
-        continuation.finish()
-    }
-
-    func yield(_ element: Element) {
-        continuation.yield(element)
+    func send(_ event: PacketIngestEvent) {
+        eventHandler?(.success(event))
     }
 }

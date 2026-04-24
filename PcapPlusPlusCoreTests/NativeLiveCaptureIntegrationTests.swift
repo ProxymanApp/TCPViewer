@@ -27,9 +27,10 @@ final class NativeLiveCaptureIntegrationTests {
             options: CaptureOptions.defaults(for: captureInterface)
         )
         let probe = LiveCaptureProbe()
+        let events = session.events()
         let collector = Task {
             do {
-                for try await event in session.events() {
+                for try await event in events {
                     await probe.record(event)
                 }
             } catch is CancellationError {

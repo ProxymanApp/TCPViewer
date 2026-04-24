@@ -6,24 +6,69 @@
 //
 
 import Cocoa
+import SwiftUI
 
 @main
 class AppDelegate: NSObject, NSApplicationDelegate {
+    let networkHelperToolManager = PacketryNetworkHelperToolManager()
 
+    private var settingsWindowController: NSWindowController?
+    private var isHandlingTermination = false
 
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
-        // Insert code here to initialize your application
+        wirePreferencesMenu()
     }
 
     func applicationWillTerminate(_ aNotification: Notification) {
-        // Insert code here to tear down your application
     }
 
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
-        return true
+        true
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !isHandlingTermination else {
+            return .terminateLater
+        }
 
+        isHandlingTermination = true
+        PacketryWindowController.prepareAllForApplicationTermination { [weak self] shouldTerminate in
+            self?.isHandlingTermination = false
+            sender.reply(toApplicationShouldTerminate: shouldTerminate)
+        }
+
+        return .terminateLater
+    }
+
+    @IBAction func showSettings(_ sender: Any?) {
+        if let settingsWindowController {
+            settingsWindowController.showWindow(sender)
+            settingsWindowController.window?.makeKeyAndOrderFront(sender)
+            return
+        }
+
+        let hostingController = NSHostingController(
+            rootView: PacketrySettingsView(networkHelperToolManager: networkHelperToolManager)
+        )
+        let window = NSWindow(contentViewController: hostingController)
+        window.title = "Packetman Settings"
+        window.styleMask = [.titled, .closable, .miniaturizable]
+        window.setContentSize(NSSize(width: 640, height: 460))
+        let controller = NSWindowController(window: window)
+        settingsWindowController = controller
+        controller.showWindow(sender)
+    }
+
+    private func wirePreferencesMenu() {
+        guard let appMenu = NSApp.mainMenu?.items.first?.submenu else {
+            return
+        }
+
+        for item in appMenu.items where item.keyEquivalent == "," || item.title == "Preferences…" || item.title == "Settings…" {
+            item.target = self
+            item.action = #selector(showSettings(_:))
+            item.title = "Settings…"
+        }
+    }
 }
-

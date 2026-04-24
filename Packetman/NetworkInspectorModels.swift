@@ -352,7 +352,6 @@ struct NetworkInspectorSnapshot: Equatable {
     var selectedPacket: PacketSummary?
     var selectedPacketRowIndex: Int?
 
-    @MainActor
     static func make(
         base: PacketryWindowSnapshot,
         selectedSidebar: NetworkInspectorSidebarSelection,

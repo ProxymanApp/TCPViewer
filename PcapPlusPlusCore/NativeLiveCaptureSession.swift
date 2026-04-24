@@ -2,43 +2,44 @@ import Foundation
 @_implementationOnly import PacketryNativeBridge
 
 public final class NativeLiveCaptureSession: LiveCaptureSessionProviding, @unchecked Sendable {
-    private let streamBox = EventStreamBox<PacketIngestEvent>()
+    private let eventBox = EventCallbackBox<PacketIngestEvent>()
     private let state: NativeLiveCaptureSessionState
+
+    public var eventHandler: PacketIngestEventHandler? {
+        get { eventBox.handler }
+        set { eventBox.handler = newValue }
+    }
 
     init(interfaceID: String, options: CaptureOptions) throws {
         self.state = try NativeLiveCaptureSessionState(
             interfaceID: interfaceID,
             options: options,
-            streamBox: streamBox
+            eventBox: eventBox
         )
     }
 
-    public func events() -> AsyncThrowingStream<PacketIngestEvent, Error> {
-        streamBox.stream
+    public func start(completion: @escaping PacketryVoidCompletion) {
+        state.start(completion: completion)
     }
 
-    public func start() async throws {
-        try await state.start()
+    public func pause(completion: @escaping PacketryVoidCompletion) {
+        state.pause(completion: completion)
     }
 
-    public func pause() async throws {
-        try await state.pause()
+    public func resume(completion: @escaping PacketryVoidCompletion) {
+        state.resume(completion: completion)
     }
 
-    public func resume() async throws {
-        try await state.resume()
+    public func stop(completion: @escaping PacketryVoidCompletion) {
+        state.stop(completion: completion)
     }
 
-    public func stop() async throws {
-        try await state.stop(reason: nil)
+    public func inspectPacket(id: PacketSummary.ID, completion: @escaping PacketryCompletion<PacketInspection>) {
+        state.inspectPacket(id: id, completion: completion)
     }
 
-    public func inspectPacket(id: PacketSummary.ID) async throws -> PacketInspection {
-        try await state.inspectPacket(id: id)
-    }
-
-    public func healthSnapshot() async -> CaptureHealthSnapshot {
-        await state.healthSnapshot()
+    public func healthSnapshot(completion: @escaping (CaptureHealthSnapshot) -> Void) {
+        state.healthSnapshot(completion: completion)
     }
 }
 
@@ -78,12 +79,13 @@ struct LivePacketBatchBuffer<Element: Sendable>: Sendable {
     }
 }
 
-actor NativeLiveCaptureSessionState {
+private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     private static let maxLivePacketBatchSize = 256
-    private static let livePacketBatchInterval: Duration = .milliseconds(100)
+    private static let livePacketBatchInterval: DispatchTimeInterval = .milliseconds(100)
 
+    private let queue = DispatchQueue(label: "com.proxyman.Packetry.PcapPlusPlusCore.NativeLiveCaptureSession", qos: .userInitiated)
     private let nativeSession: PCPPNativeLiveSession
-    private let streamBox: EventStreamBox<PacketIngestEvent>
+    private let eventBox: EventCallbackBox<PacketIngestEvent>
     private let stopCondition: CaptureStopCondition
 
     private var phase: LiveCaptureSessionPhase = .ready
@@ -91,11 +93,11 @@ actor NativeLiveCaptureSessionState {
     private var startedAt: Date?
     private var activeRunPacketCount: UInt64 = 0
     private var packetBatchBuffer = LivePacketBatchBuffer<PacketSummary>(maxBatchSize: maxLivePacketBatchSize)
-    private var packetBatchFlushTask: Task<Void, Never>?
-    private var durationStopTask: Task<Void, Never>?
+    private var packetBatchFlushWorkItem: DispatchWorkItem?
+    private var durationStopWorkItem: DispatchWorkItem?
 
-    init(interfaceID: String, options: CaptureOptions, streamBox: EventStreamBox<PacketIngestEvent>) throws {
-        self.streamBox = streamBox
+    init(interfaceID: String, options: CaptureOptions, eventBox: EventCallbackBox<PacketIngestEvent>) throws {
+        self.eventBox = eventBox
         self.stopCondition = options.stopCondition
         var nativeError: NSError?
         self.nativeSession = PCPPNativeLiveSession(
@@ -113,52 +115,82 @@ actor NativeLiveCaptureSessionState {
 
         self.health = NativeBridgeMapper.healthSnapshot(nativeSession.healthSnapshot)
         nativeSession.packetHandler = { [weak self] packets in
-            guard let self else {
-                return
-            }
-
-            Task {
-                await self.handlePacketBatch(packets)
+            self?.queue.async {
+                self?.handlePacketBatch(packets)
             }
         }
 
         nativeSession.phaseHandler = { [weak self] phase, message in
-            guard let self else {
-                return
-            }
-
-            Task {
-                await self.handlePhaseChange(phase, message: message)
+            self?.queue.async {
+                self?.handlePhaseChange(phase, message: message)
             }
         }
 
         nativeSession.healthHandler = { [weak self] health in
-            guard let self else {
-                return
-            }
-
-            Task {
-                await self.handleHealthChange(health)
+            self?.queue.async {
+                self?.handleHealthChange(health)
             }
         }
 
         nativeSession.errorHandler = { [weak self] error in
-            guard let self else {
-                return
-            }
-
-            Task {
-                await self.handleError(error)
+            self?.queue.async {
+                self?.handleError(error)
             }
         }
     }
 
-    func start() throws {
-        cancelDurationStopTask()
+    func start(completion: @escaping PacketryVoidCompletion) {
+        queue.async {
+            completion(Result {
+                try self.startOnQueue()
+            })
+        }
+    }
+
+    func pause(completion: @escaping PacketryVoidCompletion) {
+        queue.async {
+            completion(Result {
+                try self.pauseOnQueue()
+            })
+        }
+    }
+
+    func resume(completion: @escaping PacketryVoidCompletion) {
+        queue.async {
+            completion(Result {
+                try self.resumeOnQueue()
+            })
+        }
+    }
+
+    func stop(completion: @escaping PacketryVoidCompletion) {
+        queue.async {
+            completion(Result {
+                try self.stopOnQueue(reason: nil)
+            })
+        }
+    }
+
+    func healthSnapshot(completion: @escaping (CaptureHealthSnapshot) -> Void) {
+        queue.async {
+            completion(self.health)
+        }
+    }
+
+    func inspectPacket(id: PacketSummary.ID, completion: @escaping PacketryCompletion<PacketInspection>) {
+        queue.async {
+            completion(Result {
+                try self.inspectPacketOnQueue(id: id)
+            })
+        }
+    }
+
+    private func startOnQueue() throws {
+        cancelDurationStopWorkItem()
         if phase == .stopped || phase == .failed || phase == .ready {
             activeRunPacketCount = 0
             startedAt = Date()
-            cancelPacketBatchFlushTask()
+            cancelPacketBatchFlushWorkItem()
             _ = packetBatchBuffer.flush()
         }
 
@@ -171,13 +203,13 @@ actor NativeLiveCaptureSessionState {
         } catch {
             let packetryError = NativeBridgeMapper.coreError(error, defaultCode: .liveSessionStartFailed)
             phase = .failed
-            streamBox.yield(.liveStateChanged(phase: .failed, message: packetryError.message))
+            eventBox.yield(.liveStateChanged(phase: .failed, message: packetryError.message))
             throw packetryError
         }
     }
 
-    func pause() throws {
-        cancelDurationStopTask()
+    private func pauseOnQueue() throws {
+        cancelDurationStopWorkItem()
         flushPendingPacketBatch()
 
         do {
@@ -188,7 +220,7 @@ actor NativeLiveCaptureSessionState {
         }
     }
 
-    func resume() throws {
+    private func resumeOnQueue() throws {
         do {
             try nativeSession.resume()
             scheduleDurationStopIfNeeded()
@@ -197,26 +229,22 @@ actor NativeLiveCaptureSessionState {
         }
     }
 
-    func stop(reason: String?) throws {
-        cancelDurationStopTask()
+    private func stopOnQueue(reason: String?) throws {
+        cancelDurationStopWorkItem()
         flushPendingPacketBatch()
 
         do {
             try nativeSession.stop()
             flushPendingPacketBatch()
             if let reason {
-                streamBox.yield(.liveStateChanged(phase: .stopped, message: reason))
+                eventBox.yield(.liveStateChanged(phase: .stopped, message: reason))
             }
         } catch {
             throw NativeBridgeMapper.coreError(error, defaultCode: .liveSessionControlFailed)
         }
     }
 
-    func healthSnapshot() -> CaptureHealthSnapshot {
-        health
-    }
-
-    func inspectPacket(id: PacketSummary.ID) throws -> PacketInspection {
+    private func inspectPacketOnQueue(id: PacketSummary.ID) throws -> PacketInspection {
         do {
             let descriptor = try nativeSession.inspectPacket(withIdentifier: id)
             return NativeBridgeMapper.packetInspection(descriptor)
@@ -229,7 +257,7 @@ actor NativeLiveCaptureSessionState {
         let batch = NativeBridgeMapper.packetBatch(packets, source: .live)
         activeRunPacketCount += UInt64(batch.count)
         if let readyBatch = packetBatchBuffer.append(batch) {
-            cancelPacketBatchFlushTask()
+            cancelPacketBatchFlushWorkItem()
             yieldPacketBatch(readyBatch)
         } else if phase == .running || phase == .starting {
             schedulePacketBatchFlushIfNeeded()
@@ -240,9 +268,9 @@ actor NativeLiveCaptureSessionState {
         if case .packetCount(let limit) = stopCondition, activeRunPacketCount >= limit {
             do {
                 flushPendingPacketBatch()
-                try stop(reason: "Capture stopped after reaching \(limit) packets.")
+                try stopOnQueue(reason: "Capture stopped after reaching \(limit) packets.")
             } catch {
-                streamBox.finish(throwing: NativeBridgeMapper.coreError(error, defaultCode: .liveSessionControlFailed))
+                eventBox.finish(throwing: NativeBridgeMapper.coreError(error, defaultCode: .liveSessionControlFailed))
             }
         }
     }
@@ -253,26 +281,26 @@ actor NativeLiveCaptureSessionState {
             flushPendingPacketBatch()
         }
         self.phase = mappedPhase
-        streamBox.yield(.liveStateChanged(phase: mappedPhase, message: message))
+        eventBox.yield(.liveStateChanged(phase: mappedPhase, message: message))
 
         if mappedPhase == .stopped {
-            cancelDurationStopTask()
+            cancelDurationStopWorkItem()
         }
     }
 
     private func handleHealthChange(_ descriptor: PCPPNativeCaptureHealthDescriptor) {
         let snapshot = NativeBridgeMapper.healthSnapshot(descriptor)
         health = snapshot
-        streamBox.yield(.healthChanged(snapshot))
+        eventBox.yield(.healthChanged(snapshot))
     }
 
     private func handleError(_ error: Error) {
         let packetryError = NativeBridgeMapper.coreError(error, defaultCode: .liveSessionControlFailed)
         phase = .failed
-        cancelDurationStopTask()
+        cancelDurationStopWorkItem()
         flushPendingPacketBatch()
-        streamBox.yield(.liveStateChanged(phase: .failed, message: packetryError.message))
-        streamBox.finish(throwing: packetryError)
+        eventBox.yield(.liveStateChanged(phase: .failed, message: packetryError.message))
+        eventBox.finish(throwing: packetryError)
     }
 
     private func yieldPacketBatch(_ batch: [PacketSummary]) {
@@ -280,42 +308,36 @@ actor NativeLiveCaptureSessionState {
             return
         }
 
-        streamBox.yield(.packetBatch(batch, disposition: .append))
+        eventBox.yield(.packetBatch(batch, disposition: .append))
     }
 
     private func schedulePacketBatchFlushIfNeeded() {
-        guard packetBatchFlushTask == nil, !packetBatchBuffer.isEmpty else {
+        guard packetBatchFlushWorkItem == nil, !packetBatchBuffer.isEmpty else {
             return
         }
 
-        packetBatchFlushTask = Task { [weak self] in
-            do {
-                try await Task.sleep(for: Self.livePacketBatchInterval)
-                guard !Task.isCancelled, let self else {
-                    return
-                }
-
-                await self.flushPendingPacketBatchFromTimer()
-            } catch {
-            }
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.flushPendingPacketBatchFromTimer()
         }
+        packetBatchFlushWorkItem = workItem
+        queue.asyncAfter(deadline: .now() + Self.livePacketBatchInterval, execute: workItem)
     }
 
     private func flushPendingPacketBatchFromTimer() {
-        packetBatchFlushTask = nil
+        packetBatchFlushWorkItem = nil
         flushPendingPacketBatch()
     }
 
     private func flushPendingPacketBatch() {
-        cancelPacketBatchFlushTask()
+        cancelPacketBatchFlushWorkItem()
         if let batch = packetBatchBuffer.flush() {
             yieldPacketBatch(batch)
         }
     }
 
-    private func cancelPacketBatchFlushTask() {
-        packetBatchFlushTask?.cancel()
-        packetBatchFlushTask = nil
+    private func cancelPacketBatchFlushWorkItem() {
+        packetBatchFlushWorkItem?.cancel()
+        packetBatchFlushWorkItem = nil
     }
 
     private func scheduleDurationStopIfNeeded() {
@@ -323,18 +345,12 @@ actor NativeLiveCaptureSessionState {
             return
         }
 
-        cancelDurationStopTask()
-        durationStopTask = Task { [weak self] in
-            do {
-                try await Task.sleep(for: .milliseconds(duration))
-                guard !Task.isCancelled, let self else {
-                    return
-                }
-
-                await self.stopAfterDuration(duration)
-            } catch {
-            }
+        cancelDurationStopWorkItem()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.stopAfterDuration(duration)
         }
+        durationStopWorkItem = workItem
+        queue.asyncAfter(deadline: .now() + .milliseconds(Int(min(duration, UInt64(Int.max)))), execute: workItem)
     }
 
     private func stopAfterDuration(_ duration: UInt64) {
@@ -343,14 +359,14 @@ actor NativeLiveCaptureSessionState {
         }
 
         do {
-            try stop(reason: "Capture stopped after \(duration) ms.")
+            try stopOnQueue(reason: "Capture stopped after \(duration) ms.")
         } catch {
-            streamBox.finish(throwing: NativeBridgeMapper.coreError(error, defaultCode: .liveSessionControlFailed))
+            eventBox.finish(throwing: NativeBridgeMapper.coreError(error, defaultCode: .liveSessionControlFailed))
         }
     }
 
-    private func cancelDurationStopTask() {
-        durationStopTask?.cancel()
-        durationStopTask = nil
+    private func cancelDurationStopWorkItem() {
+        durationStopWorkItem?.cancel()
+        durationStopWorkItem = nil
     }
 }

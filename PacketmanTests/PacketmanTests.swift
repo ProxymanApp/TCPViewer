@@ -1,19 +1,60 @@
-//
-//  PacketmanTests.swift
-//  PacketmanTests
-//
-//  Created by nghiatran on 24/4/26.
-//
-
 import Testing
+import Foundation
+import PcapPlusPlusCore
 @testable import Packetman
 
+@MainActor
 struct PacketmanTests {
+    @Test func windowControllerNotifiesDelegateOnStateChange() {
+        let userDefaults = Self.makeUserDefaults()
+        let controller = PacketryWindowController(
+            services: PacketryServiceRegistry(core: UnconfiguredPacketryCore()),
+            userDefaults: userDefaults
+        )
+        let delegate = WindowControllerDelegateSpy()
+        controller.delegate = delegate
 
-    @Test func example() async throws {
-        // Write your test here and use APIs like `#expect(...)` to check expected conditions.
-        // Swift Testing Documentation
-        // https://developer.apple.com/documentation/testing
+        controller.updateCaptureFilterText("tcp port 443")
+
+        #expect(delegate.changeCount > 0)
+        #expect(controller.snapshot.filterState.captureFilterText == "tcp port 443")
     }
 
+    @Test func inspectorViewModelNotifiesDelegateOnLocalRenderChange() {
+        let userDefaults = Self.makeUserDefaults()
+        let viewModel = NetworkInspectorViewModel(
+            services: PacketryServiceRegistry(core: UnconfiguredPacketryCore()),
+            userDefaults: userDefaults
+        )
+        let delegate = InspectorViewModelDelegateSpy()
+        viewModel.delegate = delegate
+
+        viewModel.updateDisplayFilterText("protocol:tcp")
+
+        #expect(delegate.changeCount > 0)
+        #expect(viewModel.snapshot.displayFilterText == "protocol:tcp")
+    }
+
+    private static func makeUserDefaults() -> UserDefaults {
+        let suiteName = "PacketmanTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        return defaults
+    }
+}
+
+private final class WindowControllerDelegateSpy: PacketryWindowControllerDelegate {
+    private(set) var changeCount = 0
+
+    func packetryWindowControllerDidChange(_ controller: PacketryWindowController) {
+        changeCount += 1
+    }
+}
+
+private final class InspectorViewModelDelegateSpy: NetworkInspectorViewModelDelegate {
+    private(set) var changeCount = 0
+
+    func networkInspectorViewModelDidChange(_ viewModel: NetworkInspectorViewModel) {
+        changeCount += 1
+    }
 }
