@@ -142,9 +142,10 @@ struct InspectorPipelineTests {
 
         let document = try await NativePacketryCore().openOfflineCaptureDocument(at: captureURL)
         let probe = LoadEventProbe()
+        let events = document.events()
         let collector = Task {
             do {
-                for try await event in document.events() {
+                for try await event in events {
                     await probe.record(event)
                 }
             } catch is CancellationError {
@@ -179,9 +180,10 @@ struct InspectorPipelineTests {
 
         let document = try await NativePacketryCore().openOfflineCaptureDocument(at: captureURL)
         let probe = LoadEventProbe()
+        let events = document.events()
         let collector = Task {
             do {
-                for try await event in document.events() {
+                for try await event in events {
                     await probe.record(event)
                 }
             } catch is CancellationError {

@@ -8,23 +8,17 @@
 
 /* Begin PBXBuildFile section */
 		BA4D26BD2F9A2F770070BE17 /* PcapPlusPlusCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BA4D26B42F9A2F760070BE17 /* PcapPlusPlusCore.framework */; };
-		BA4D26C72F9A2F770070BE17 /* PcapPlusPlusCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BA4D26B42F9A2F760070BE17 /* PcapPlusPlusCore.framework */; };
-		BA4D26C82F9A2F770070BE17 /* PcapPlusPlusCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = BA4D26B42F9A2F760070BE17 /* PcapPlusPlusCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
-		BA7A10002F9B00000070BE17 /* HexFiend.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BA7A10022F9B00000070BE17 /* HexFiend.framework */; };
-		BA7A10012F9B00000070BE17 /* HexFiend.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = BA7A10022F9B00000070BE17 /* HexFiend.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
-		BACE00012F9C00000070BE17 /* PacketryNetworkHelper in Copy Network Helper Executable */ = {isa = PBXBuildFile; fileRef = BACE00022F9C00000070BE17 /* PacketryNetworkHelper */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
-		BACE00032F9C00000070BE17 /* com.proxyman.Packetry.NetworkHelper.plist in Copy Network Helper LaunchDaemon */ = {isa = PBXBuildFile; fileRef = BACE00042F9C00000070BE17 /* com.proxyman.Packetry.NetworkHelper.plist */; };
-		BACE00052F9C00000070BE17 /* PacketryNetworkHelperCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BACE00062F9C00000070BE17 /* PacketryNetworkHelperCore.swift */; };
+		BAPM00012F9D00000070BE17 /* PcapPlusPlusCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BA4D26B42F9A2F760070BE17 /* PcapPlusPlusCore.framework */; };
+		BAPM00022F9D00000070BE17 /* HexFiend.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BA7A10022F9B00000070BE17 /* HexFiend.framework */; };
+		BAPM00032F9D00000070BE17 /* PcapPlusPlusCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = BA4D26B42F9A2F760070BE17 /* PcapPlusPlusCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		BAPM00042F9D00000070BE17 /* HexFiend.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = BA7A10022F9B00000070BE17 /* HexFiend.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		BAPM00052F9D00000070BE17 /* PacketryNetworkHelper in Copy Network Helper Executable */ = {isa = PBXBuildFile; fileRef = BACE00022F9C00000070BE17 /* PacketryNetworkHelper */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+		BAPM00062F9D00000070BE17 /* NetworkHelperLaunchDaemons/com.proxyman.Packetry.NetworkHelper.plist in Copy Network Helper LaunchDaemon */ = {isa = PBXBuildFile; fileRef = BACE00042F9C00000070BE17 /* NetworkHelperLaunchDaemons/com.proxyman.Packetry.NetworkHelper.plist */; };
+		BAPM00072F9D00000070BE17 /* PcapPlusPlusCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BA4D26B42F9A2F760070BE17 /* PcapPlusPlusCore.framework */; };
+		BAPM00082F9D00000070BE17 /* HexFiend.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BA7A10022F9B00000070BE17 /* HexFiend.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
-		BA4D26932F9A2F4B0070BE17 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = BA4D267D2F9A2F490070BE17 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = BA4D26842F9A2F490070BE17;
-			remoteInfo = Packetry;
-		};
 		BA4D26BE2F9A2F770070BE17 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = BA4D267D2F9A2F490070BE17 /* Project object */;
@@ -32,60 +26,67 @@
 			remoteGlobalIDString = BA4D26B32F9A2F760070BE17;
 			remoteInfo = PcapPlusPlusCore;
 		};
-		BA4D26C02F9A2F770070BE17 /* PBXContainerItemProxy */ = {
+		BAAE97702F9B816000C52A7C /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = BA4D267D2F9A2F490070BE17 /* Project object */;
 			proxyType = 1;
-			remoteGlobalIDString = BA4D26842F9A2F490070BE17;
-			remoteInfo = Packetry;
+			remoteGlobalIDString = BAAE975C2F9B815F00C52A7C;
+			remoteInfo = Packetman;
 		};
-		BA4D26C52F9A2F770070BE17 /* PBXContainerItemProxy */ = {
+		BAPM00102F9D00000070BE17 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = BA4D267D2F9A2F490070BE17 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = BA4D26B32F9A2F760070BE17;
 			remoteInfo = PcapPlusPlusCore;
 		};
-		BACE00072F9C00000070BE17 /* PBXContainerItemProxy */ = {
+		BAPM00112F9D00000070BE17 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = BA4D267D2F9A2F490070BE17 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = BACE00082F9C00000070BE17;
 			remoteInfo = PacketryNetworkHelper;
 		};
+		BAPM00122F9D00000070BE17 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = BA4D267D2F9A2F490070BE17 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = BA4D26B32F9A2F760070BE17;
+			remoteInfo = PcapPlusPlusCore;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
-		BA4D26CC2F9A2F770070BE17 /* Embed Frameworks */ = {
+		BAPM00202F9D00000070BE17 /* Embed Frameworks */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
 			dstPath = "";
 			dstSubfolderSpec = 10;
 			files = (
-				BA4D26C82F9A2F770070BE17 /* PcapPlusPlusCore.framework in Embed Frameworks */,
-				BA7A10012F9B00000070BE17 /* HexFiend.framework in Embed Frameworks */,
+				BAPM00032F9D00000070BE17 /* PcapPlusPlusCore.framework in Embed Frameworks */,
+				BAPM00042F9D00000070BE17 /* HexFiend.framework in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		BACE00092F9C00000070BE17 /* Copy Network Helper Executable */ = {
+		BAPM00212F9D00000070BE17 /* Copy Network Helper Executable */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
 			dstPath = "";
 			dstSubfolderSpec = 6;
 			files = (
-				BACE00012F9C00000070BE17 /* PacketryNetworkHelper in Copy Network Helper Executable */,
+				BAPM00052F9D00000070BE17 /* PacketryNetworkHelper in Copy Network Helper Executable */,
 			);
 			name = "Copy Network Helper Executable";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		BACE000A2F9C00000070BE17 /* Copy Network Helper LaunchDaemon */ = {
+		BAPM00222F9D00000070BE17 /* Copy Network Helper LaunchDaemon */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
 			dstPath = Contents/Library/LaunchDaemons;
 			dstSubfolderSpec = 1;
 			files = (
-				BACE00032F9C00000070BE17 /* com.proxyman.Packetry.NetworkHelper.plist in Copy Network Helper LaunchDaemon */,
+				BAPM00062F9D00000070BE17 /* NetworkHelperLaunchDaemons/com.proxyman.Packetry.NetworkHelper.plist in Copy Network Helper LaunchDaemon */,
 			);
 			name = "Copy Network Helper LaunchDaemon";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -93,28 +94,28 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		BA4D26852F9A2F490070BE17 /* Packetry.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Packetry.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		BA4D26922F9A2F4B0070BE17 /* PacketryTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PacketryTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		BA4D26B42F9A2F760070BE17 /* PcapPlusPlusCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = PcapPlusPlusCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		BA4D26BC2F9A2F770070BE17 /* PcapPlusPlusCoreTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PcapPlusPlusCoreTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		BA4D2DD82F9B3EF50070BE17 /* PcapPlusPlusCore.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; path = PcapPlusPlusCore.xctestplan; sourceTree = "<group>"; };
 		BA7A10022F9B00000070BE17 /* HexFiend.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = HexFiend.framework; path = Vendor/HexFiend/HexFiend.framework; sourceTree = "<group>"; };
+		BAAE975D2F9B815F00C52A7C /* Packetman.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Packetman.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		BAAE976F2F9B816000C52A7C /* PacketmanTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PacketmanTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		BACE00022F9C00000070BE17 /* PacketryNetworkHelper */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = PacketryNetworkHelper; sourceTree = BUILT_PRODUCTS_DIR; };
-		BACE00042F9C00000070BE17 /* com.proxyman.Packetry.NetworkHelper.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = NetworkHelperLaunchDaemons/com.proxyman.Packetry.NetworkHelper.plist; sourceTree = "<group>"; };
-		BACE00062F9C00000070BE17 /* PacketryNetworkHelperCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketryNetworkHelper/PacketryNetworkHelperCore.swift; sourceTree = "<group>"; };
+		BACE00042F9C00000070BE17 /* NetworkHelperLaunchDaemons/com.proxyman.Packetry.NetworkHelper.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = NetworkHelperLaunchDaemons/com.proxyman.Packetry.NetworkHelper.plist; sourceTree = "<group>"; };
+		BACE00062F9C00000070BE17 /* PacketryNetworkHelper/PacketryNetworkHelperCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketryNetworkHelper/PacketryNetworkHelperCore.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		BAAE97872F9B816000C52A7C /* Exceptions for "Packetman" folder in "Packetman" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = BAAE975C2F9B815F00C52A7C /* Packetman */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		BA4D26872F9A2F490070BE17 /* Packetry */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = Packetry;
-			sourceTree = "<group>";
-		};
-		BA4D26952F9A2F4B0070BE17 /* PacketryTests */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = PacketryTests;
-			sourceTree = "<group>";
-		};
 		BA4D26B52F9A2F760070BE17 /* PcapPlusPlusCore */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = PcapPlusPlusCore;
@@ -125,6 +126,19 @@
 			path = PcapPlusPlusCoreTests;
 			sourceTree = "<group>";
 		};
+		BAAE975E2F9B815F00C52A7C /* Packetman */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				BAAE97872F9B816000C52A7C /* Exceptions for "Packetman" folder in "Packetman" target */,
+			);
+			path = Packetman;
+			sourceTree = "<group>";
+		};
+		BAAE97722F9B816000C52A7C /* PacketmanTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = PacketmanTests;
+			sourceTree = "<group>";
+		};
 		BACE000B2F9C00000070BE17 /* PacketryNetworkHelper */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = PacketryNetworkHelper;
@@ -133,22 +147,6 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		BA4D26822F9A2F490070BE17 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				BA4D26C72F9A2F770070BE17 /* PcapPlusPlusCore.framework in Frameworks */,
-				BA7A10002F9B00000070BE17 /* HexFiend.framework in Frameworks */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		BA4D268F2F9A2F4B0070BE17 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		BA4D26B12F9A2F760070BE17 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -161,6 +159,24 @@
 			buildActionMask = 2147483647;
 			files = (
 				BA4D26BD2F9A2F770070BE17 /* PcapPlusPlusCore.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BAAE975A2F9B815F00C52A7C /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BAPM00012F9D00000070BE17 /* PcapPlusPlusCore.framework in Frameworks */,
+				BAPM00022F9D00000070BE17 /* HexFiend.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BAAE976C2F9B816000C52A7C /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BAPM00072F9D00000070BE17 /* PcapPlusPlusCore.framework in Frameworks */,
+				BAPM00082F9D00000070BE17 /* HexFiend.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -178,35 +194,28 @@
 			isa = PBXGroup;
 			children = (
 				BA4D2DD82F9B3EF50070BE17 /* PcapPlusPlusCore.xctestplan */,
-				BA4D26872F9A2F490070BE17 /* Packetry */,
-				BA4D26952F9A2F4B0070BE17 /* PacketryTests */,
+				BAAE975E2F9B815F00C52A7C /* Packetman */,
+				BAAE97722F9B816000C52A7C /* PacketmanTests */,
 				BA4D26B52F9A2F760070BE17 /* PcapPlusPlusCore */,
 				BA4D26C22F9A2F770070BE17 /* PcapPlusPlusCoreTests */,
 				BACE000B2F9C00000070BE17 /* PacketryNetworkHelper */,
 				BACE000D2F9C00000070BE17 /* NetworkHelperLaunchDaemons */,
 				BA7A10032F9B00000070BE17 /* Vendor */,
 				BA4D26862F9A2F490070BE17 /* Products */,
+				BAAE97052F9B810400C52A7C /* Recovered References */,
 			);
 			sourceTree = "<group>";
 		};
 		BA4D26862F9A2F490070BE17 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				BA4D26852F9A2F490070BE17 /* Packetry.app */,
-				BA4D26922F9A2F4B0070BE17 /* PacketryTests.xctest */,
 				BA4D26B42F9A2F760070BE17 /* PcapPlusPlusCore.framework */,
 				BA4D26BC2F9A2F770070BE17 /* PcapPlusPlusCoreTests.xctest */,
 				BACE00022F9C00000070BE17 /* PacketryNetworkHelper */,
+				BAAE975D2F9B815F00C52A7C /* Packetman.app */,
+				BAAE976F2F9B816000C52A7C /* PacketmanTests.xctest */,
 			);
 			name = Products;
-			sourceTree = "<group>";
-		};
-		BACE000D2F9C00000070BE17 /* NetworkHelperLaunchDaemons */ = {
-			isa = PBXGroup;
-			children = (
-				BACE00042F9C00000070BE17 /* com.proxyman.Packetry.NetworkHelper.plist */,
-			);
-			name = NetworkHelperLaunchDaemons;
 			sourceTree = "<group>";
 		};
 		BA7A10032F9B00000070BE17 /* Vendor */ = {
@@ -215,6 +224,22 @@
 				BA7A10022F9B00000070BE17 /* HexFiend.framework */,
 			);
 			name = Vendor;
+			sourceTree = "<group>";
+		};
+		BAAE97052F9B810400C52A7C /* Recovered References */ = {
+			isa = PBXGroup;
+			children = (
+				BACE00062F9C00000070BE17 /* PacketryNetworkHelper/PacketryNetworkHelperCore.swift */,
+			);
+			name = "Recovered References";
+			sourceTree = "<group>";
+		};
+		BACE000D2F9C00000070BE17 /* NetworkHelperLaunchDaemons */ = {
+			isa = PBXGroup;
+			children = (
+				BACE00042F9C00000070BE17 /* NetworkHelperLaunchDaemons/com.proxyman.Packetry.NetworkHelper.plist */,
+			);
+			name = NetworkHelperLaunchDaemons;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -230,56 +255,6 @@
 /* End PBXHeadersBuildPhase section */
 
 /* Begin PBXNativeTarget section */
-		BA4D26842F9A2F490070BE17 /* Packetry */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = BA4D26A62F9A2F4B0070BE17 /* Build configuration list for PBXNativeTarget "Packetry" */;
-			buildPhases = (
-				BA4D26812F9A2F490070BE17 /* Sources */,
-				BA4D26822F9A2F490070BE17 /* Frameworks */,
-				BA4D26832F9A2F490070BE17 /* Resources */,
-				BA4D26CC2F9A2F770070BE17 /* Embed Frameworks */,
-				BACE00092F9C00000070BE17 /* Copy Network Helper Executable */,
-				BACE000A2F9C00000070BE17 /* Copy Network Helper LaunchDaemon */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-				BA4D26C62F9A2F770070BE17 /* PBXTargetDependency */,
-				BACE000E2F9C00000070BE17 /* PBXTargetDependency */,
-			);
-			fileSystemSynchronizedGroups = (
-				BA4D26872F9A2F490070BE17 /* Packetry */,
-			);
-			name = Packetry;
-			packageProductDependencies = (
-			);
-			productName = Packetry;
-			productReference = BA4D26852F9A2F490070BE17 /* Packetry.app */;
-			productType = "com.apple.product-type.application";
-		};
-		BA4D26912F9A2F4B0070BE17 /* PacketryTests */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = BA4D26A92F9A2F4B0070BE17 /* Build configuration list for PBXNativeTarget "PacketryTests" */;
-			buildPhases = (
-				BA4D268E2F9A2F4B0070BE17 /* Sources */,
-				BA4D268F2F9A2F4B0070BE17 /* Frameworks */,
-				BA4D26902F9A2F4B0070BE17 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-				BA4D26942F9A2F4B0070BE17 /* PBXTargetDependency */,
-			);
-			fileSystemSynchronizedGroups = (
-				BA4D26952F9A2F4B0070BE17 /* PacketryTests */,
-			);
-			name = PacketryTests;
-			packageProductDependencies = (
-			);
-			productName = PacketryTests;
-			productReference = BA4D26922F9A2F4B0070BE17 /* PacketryTests.xctest */;
-			productType = "com.apple.product-type.bundle.unit-test";
-		};
 		BA4D26B32F9A2F760070BE17 /* PcapPlusPlusCore */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = BA4D26C92F9A2F770070BE17 /* Build configuration list for PBXNativeTarget "PcapPlusPlusCore" */;
@@ -298,8 +273,6 @@
 				BA4D26B52F9A2F760070BE17 /* PcapPlusPlusCore */,
 			);
 			name = PcapPlusPlusCore;
-			packageProductDependencies = (
-			);
 			productName = PcapPlusPlusCore;
 			productReference = BA4D26B42F9A2F760070BE17 /* PcapPlusPlusCore.framework */;
 			productType = "com.apple.product-type.framework";
@@ -316,16 +289,60 @@
 			);
 			dependencies = (
 				BA4D26BF2F9A2F770070BE17 /* PBXTargetDependency */,
-				BA4D26C12F9A2F770070BE17 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				BA4D26C22F9A2F770070BE17 /* PcapPlusPlusCoreTests */,
 			);
 			name = PcapPlusPlusCoreTests;
-			packageProductDependencies = (
-			);
 			productName = PcapPlusPlusCoreTests;
 			productReference = BA4D26BC2F9A2F770070BE17 /* PcapPlusPlusCoreTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		BAAE975C2F9B815F00C52A7C /* Packetman */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BAAE97882F9B816000C52A7C /* Build configuration list for PBXNativeTarget "Packetman" */;
+			buildPhases = (
+				BAAE97592F9B815F00C52A7C /* Sources */,
+				BAAE975A2F9B815F00C52A7C /* Frameworks */,
+				BAAE975B2F9B815F00C52A7C /* Resources */,
+				BAPM00202F9D00000070BE17 /* Embed Frameworks */,
+				BAPM00212F9D00000070BE17 /* Copy Network Helper Executable */,
+				BAPM00222F9D00000070BE17 /* Copy Network Helper LaunchDaemon */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				BAPM00302F9D00000070BE17 /* PBXTargetDependency */,
+				BAPM00312F9D00000070BE17 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				BAAE975E2F9B815F00C52A7C /* Packetman */,
+			);
+			name = Packetman;
+			productName = Packetman;
+			productReference = BAAE975D2F9B815F00C52A7C /* Packetman.app */;
+			productType = "com.apple.product-type.application";
+		};
+		BAAE976E2F9B816000C52A7C /* PacketmanTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BAAE97892F9B816000C52A7C /* Build configuration list for PBXNativeTarget "PacketmanTests" */;
+			buildPhases = (
+				BAAE976B2F9B816000C52A7C /* Sources */,
+				BAAE976C2F9B816000C52A7C /* Frameworks */,
+				BAAE976D2F9B816000C52A7C /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				BAAE97712F9B816000C52A7C /* PBXTargetDependency */,
+				BAPM00322F9D00000070BE17 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				BAAE97722F9B816000C52A7C /* PacketmanTests */,
+			);
+			name = PacketmanTests;
+			productName = PacketmanTests;
+			productReference = BAAE976F2F9B816000C52A7C /* PacketmanTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
 		BACE00082F9C00000070BE17 /* PacketryNetworkHelper */ = {
@@ -344,8 +361,6 @@
 				BACE000B2F9C00000070BE17 /* PacketryNetworkHelper */,
 			);
 			name = PacketryNetworkHelper;
-			packageProductDependencies = (
-			);
 			productName = PacketryNetworkHelper;
 			productReference = BACE00022F9C00000070BE17 /* PacketryNetworkHelper */;
 			productType = "com.apple.product-type.tool";
@@ -360,19 +375,18 @@
 				LastSwiftUpdateCheck = 2640;
 				LastUpgradeCheck = 2640;
 				TargetAttributes = {
-					BA4D26842F9A2F490070BE17 = {
-						CreatedOnToolsVersion = 26.4.1;
-					};
-					BA4D26912F9A2F4B0070BE17 = {
-						CreatedOnToolsVersion = 26.4.1;
-						TestTargetID = BA4D26842F9A2F490070BE17;
-					};
 					BA4D26B32F9A2F760070BE17 = {
 						CreatedOnToolsVersion = 26.4.1;
 					};
 					BA4D26BB2F9A2F770070BE17 = {
 						CreatedOnToolsVersion = 26.4.1;
-						TestTargetID = BA4D26842F9A2F490070BE17;
+					};
+					BAAE975C2F9B815F00C52A7C = {
+						CreatedOnToolsVersion = 26.4.1;
+					};
+					BAAE976E2F9B816000C52A7C = {
+						CreatedOnToolsVersion = 26.4.1;
+						TestTargetID = BAAE975C2F9B815F00C52A7C;
 					};
 					BACE00082F9C00000070BE17 = {
 						CreatedOnToolsVersion = 26.4.1;
@@ -393,30 +407,16 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				BA4D26842F9A2F490070BE17 /* Packetry */,
-				BA4D26912F9A2F4B0070BE17 /* PacketryTests */,
 				BA4D26B32F9A2F760070BE17 /* PcapPlusPlusCore */,
 				BA4D26BB2F9A2F770070BE17 /* PcapPlusPlusCoreTests */,
 				BACE00082F9C00000070BE17 /* PacketryNetworkHelper */,
+				BAAE975C2F9B815F00C52A7C /* Packetman */,
+				BAAE976E2F9B816000C52A7C /* PacketmanTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		BA4D26832F9A2F490070BE17 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		BA4D26902F9A2F4B0070BE17 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		BA4D26B22F9A2F760070BE17 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -425,6 +425,20 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		BA4D26BA2F9A2F770070BE17 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BAAE975B2F9B815F00C52A7C /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BAAE976D2F9B816000C52A7C /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -464,21 +478,6 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		BA4D26812F9A2F490070BE17 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				BACE00052F9C00000070BE17 /* PacketryNetworkHelperCore.swift in Sources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		BA4D268E2F9A2F4B0070BE17 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		BA4D26B02F9A2F760070BE17 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -487,6 +486,20 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		BA4D26B82F9A2F770070BE17 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BAAE97592F9B815F00C52A7C /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BAAE976B2F9B816000C52A7C /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -503,30 +516,30 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
-		BA4D26942F9A2F4B0070BE17 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = BA4D26842F9A2F490070BE17 /* Packetry */;
-			targetProxy = BA4D26932F9A2F4B0070BE17 /* PBXContainerItemProxy */;
-		};
 		BA4D26BF2F9A2F770070BE17 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = BA4D26B32F9A2F760070BE17 /* PcapPlusPlusCore */;
 			targetProxy = BA4D26BE2F9A2F770070BE17 /* PBXContainerItemProxy */;
 		};
-		BA4D26C12F9A2F770070BE17 /* PBXTargetDependency */ = {
+		BAAE97712F9B816000C52A7C /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = BA4D26842F9A2F490070BE17 /* Packetry */;
-			targetProxy = BA4D26C02F9A2F770070BE17 /* PBXContainerItemProxy */;
+			target = BAAE975C2F9B815F00C52A7C /* Packetman */;
+			targetProxy = BAAE97702F9B816000C52A7C /* PBXContainerItemProxy */;
 		};
-		BA4D26C62F9A2F770070BE17 /* PBXTargetDependency */ = {
+		BAPM00302F9D00000070BE17 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = BA4D26B32F9A2F760070BE17 /* PcapPlusPlusCore */;
-			targetProxy = BA4D26C52F9A2F770070BE17 /* PBXContainerItemProxy */;
+			targetProxy = BAPM00102F9D00000070BE17 /* PBXContainerItemProxy */;
 		};
-		BACE000E2F9C00000070BE17 /* PBXTargetDependency */ = {
+		BAPM00312F9D00000070BE17 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = BACE00082F9C00000070BE17 /* PacketryNetworkHelper */;
-			targetProxy = BACE00072F9C00000070BE17 /* PBXContainerItemProxy */;
+			targetProxy = BAPM00112F9D00000070BE17 /* PBXContainerItemProxy */;
+		};
+		BAPM00322F9D00000070BE17 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = BA4D26B32F9A2F760070BE17 /* PcapPlusPlusCore */;
+			targetProxy = BAPM00122F9D00000070BE17 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -648,126 +661,6 @@
 				MTL_FAST_MATH = YES;
 				SDKROOT = macosx;
 				SWIFT_COMPILATION_MODE = wholemodule;
-			};
-			name = Release;
-		};
-		BA4D26A72F9A2F4B0070BE17 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_STYLE = Automatic;
-				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 57SKMSUCY8;
-				ENABLE_APP_SANDBOX = NO;
-				ENABLE_HARDENED_RUNTIME = YES;
-				ENABLE_PREVIEWS = YES;
-				FRAMEWORK_SEARCH_PATHS = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/Vendor/HexFiend",
-				);
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-				);
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.proxyman.Packetry;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				REGISTER_APP_GROUPS = YES;
-				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
-			};
-			name = Debug;
-		};
-		BA4D26A82F9A2F4B0070BE17 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_STYLE = Automatic;
-				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 57SKMSUCY8;
-				ENABLE_APP_SANDBOX = NO;
-				ENABLE_HARDENED_RUNTIME = YES;
-				ENABLE_PREVIEWS = YES;
-				FRAMEWORK_SEARCH_PATHS = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/Vendor/HexFiend",
-				);
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-				);
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.proxyman.Packetry;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				REGISTER_APP_GROUPS = YES;
-				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
-			};
-			name = Release;
-		};
-		BA4D26AA2F9A2F4B0070BE17 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 57SKMSUCY8;
-				FRAMEWORK_SEARCH_PATHS = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/Vendor/HexFiend",
-				);
-				GENERATE_INFOPLIST_FILE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.proxyman.PacketryTests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				STRING_CATALOG_GENERATE_SYMBOLS = NO;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Packetry.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Packetry";
-			};
-			name = Debug;
-		};
-		BA4D26AB2F9A2F4B0070BE17 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 57SKMSUCY8;
-				FRAMEWORK_SEARCH_PATHS = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/Vendor/HexFiend",
-				);
-				GENERATE_INFOPLIST_FILE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.proxyman.PacketryTests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				STRING_CATALOG_GENERATE_SYMBOLS = NO;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Packetry.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Packetry";
 			};
 			name = Release;
 		};
@@ -906,7 +799,6 @@
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Packetry.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Packetry";
 			};
 			name = Debug;
 		};
@@ -925,7 +817,132 @@
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Packetry.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Packetry";
+			};
+			name = Release;
+		};
+		BAAE97812F9B816000C52A7C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 57SKMSUCY8;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_USER_SELECTED_FILES = readwrite;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Vendor/HexFiend",
+				);
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Packetman/Info.plist;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSMainStoryboardFile = Main;
+				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 15.6;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.proxyman.Packetman;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		BAAE97822F9B816000C52A7C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 57SKMSUCY8;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_USER_SELECTED_FILES = readwrite;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Vendor/HexFiend",
+				);
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Packetman/Info.plist;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSMainStoryboardFile = Main;
+				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 15.6;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.proxyman.Packetman;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		BAAE97832F9B816000C52A7C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 57SKMSUCY8;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Vendor/HexFiend",
+				);
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.4;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.proxyman.PacketmanTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Packetman.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Packetman";
+			};
+			name = Debug;
+		};
+		BAAE97842F9B816000C52A7C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 57SKMSUCY8;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Vendor/HexFiend",
+				);
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.4;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.proxyman.PacketmanTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Packetman.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Packetman";
 			};
 			name = Release;
 		};
@@ -981,24 +998,6 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		BA4D26A62F9A2F4B0070BE17 /* Build configuration list for PBXNativeTarget "Packetry" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				BA4D26A72F9A2F4B0070BE17 /* Debug */,
-				BA4D26A82F9A2F4B0070BE17 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
-		BA4D26A92F9A2F4B0070BE17 /* Build configuration list for PBXNativeTarget "PacketryTests" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				BA4D26AA2F9A2F4B0070BE17 /* Debug */,
-				BA4D26AB2F9A2F4B0070BE17 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
 		BA4D26C92F9A2F770070BE17 /* Build configuration list for PBXNativeTarget "PcapPlusPlusCore" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -1013,6 +1012,24 @@
 			buildConfigurations = (
 				BA4D26CE2F9A2F770070BE17 /* Debug */,
 				BA4D26CF2F9A2F770070BE17 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		BAAE97882F9B816000C52A7C /* Build configuration list for PBXNativeTarget "Packetman" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BAAE97812F9B816000C52A7C /* Debug */,
+				BAAE97822F9B816000C52A7C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		BAAE97892F9B816000C52A7C /* Build configuration list for PBXNativeTarget "PacketmanTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BAAE97832F9B816000C52A7C /* Debug */,
+				BAAE97842F9B816000C52A7C /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

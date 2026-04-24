@@ -1,5 +1,4 @@
 import Darwin
-import Combine
 import Foundation
 import ServiceManagement
 
@@ -78,31 +77,30 @@ protocol PacketryNetworkHelperBPFChecking {
     func inspect() -> PacketryNetworkHelperBPFInspection
 }
 
-@MainActor
 protocol PacketryNetworkHelperToolManaging: AnyObject {
     var snapshot: PacketryNetworkHelperToolSnapshot { get }
 
     @discardableResult
-    func refreshStatus() async -> PacketryNetworkHelperToolSnapshot
+    func refreshStatus(completion: @escaping (PacketryNetworkHelperToolSnapshot) -> Void) -> PacketryNetworkHelperToolSnapshot
 
     @discardableResult
-    func install() async -> PacketryNetworkHelperToolSnapshot
+    func install(completion: @escaping (PacketryNetworkHelperToolSnapshot) -> Void) -> PacketryNetworkHelperToolSnapshot
 
     @discardableResult
-    func repair() async -> PacketryNetworkHelperToolSnapshot
+    func repair(completion: @escaping (PacketryNetworkHelperToolSnapshot) -> Void) -> PacketryNetworkHelperToolSnapshot
 
     @discardableResult
-    func uninstall() async -> PacketryNetworkHelperToolSnapshot
+    func uninstall(completion: @escaping (PacketryNetworkHelperToolSnapshot) -> Void) -> PacketryNetworkHelperToolSnapshot
 
     func openSystemSettings()
 }
 
-@MainActor
-final class PacketryNetworkHelperToolManager: ObservableObject, PacketryNetworkHelperToolManaging {
-    @Published private(set) var snapshot: PacketryNetworkHelperToolSnapshot
+final class PacketryNetworkHelperToolManager: PacketryNetworkHelperToolManaging {
+    private(set) var snapshot: PacketryNetworkHelperToolSnapshot
 
     private let serviceController: any PacketryNetworkHelperServiceControlling
     private let bpfChecker: any PacketryNetworkHelperBPFChecking
+    private let workerQueue = DispatchQueue(label: "com.proxyman.Packetman.NetworkHelperToolManager", qos: .userInitiated)
 
     convenience init() {
         self.init(
@@ -121,66 +119,78 @@ final class PacketryNetworkHelperToolManager: ObservableObject, PacketryNetworkH
     }
 
     @discardableResult
-    func refreshStatus() async -> PacketryNetworkHelperToolSnapshot {
-        let updatedSnapshot = makeSnapshot()
-        snapshot = updatedSnapshot
-        return updatedSnapshot
+    func refreshStatus(completion: @escaping (PacketryNetworkHelperToolSnapshot) -> Void = { _ in }) -> PacketryNetworkHelperToolSnapshot {
+        let currentSnapshot = snapshot
+        workerQueue.async {
+            let updatedSnapshot = self.makeSnapshot()
+            self.publish(updatedSnapshot, completion: completion)
+        }
+        return currentSnapshot
     }
 
     @discardableResult
-    func install() async -> PacketryNetworkHelperToolSnapshot {
-        snapshot = PacketryNetworkHelperToolSnapshot(
+    func install(completion: @escaping (PacketryNetworkHelperToolSnapshot) -> Void = { _ in }) -> PacketryNetworkHelperToolSnapshot {
+        let installingSnapshot = PacketryNetworkHelperToolSnapshot(
             status: .installing,
             authorizationStatus: serviceController.status,
             lastCheckedAt: Date(),
             message: "Registering Packetry Network Helper Tool with macOS."
         )
+        snapshot = installingSnapshot
+        workerQueue.async {
+            do {
+                try self.serviceController.register()
+                let updatedSnapshot = self.makeSnapshot()
+                self.publish(updatedSnapshot, completion: completion)
+            } catch {
+                let refreshedSnapshot = self.makeSnapshot()
+                guard refreshedSnapshot.status == .notInstalled else {
+                    self.publish(refreshedSnapshot, completion: completion)
+                    return
+                }
 
-        do {
-            try serviceController.register()
-            return await refreshStatus()
-        } catch {
-            let refreshedSnapshot = await refreshStatus()
-            guard refreshedSnapshot.status == .notInstalled else {
-                return refreshedSnapshot
+                let failedSnapshot = PacketryNetworkHelperToolSnapshot(
+                    status: .broken,
+                    authorizationStatus: refreshedSnapshot.authorizationStatus,
+                    lastCheckedAt: Date(),
+                    message: "Packetry could not register the helper: \(error.localizedDescription)"
+                )
+                self.publish(failedSnapshot, completion: completion)
             }
-
-            let failedSnapshot = PacketryNetworkHelperToolSnapshot(
-                status: .broken,
-                authorizationStatus: refreshedSnapshot.authorizationStatus,
-                lastCheckedAt: Date(),
-                message: "Packetry could not register the helper: \(error.localizedDescription)"
-            )
-            snapshot = failedSnapshot
-            return failedSnapshot
         }
+        return installingSnapshot
     }
 
     @discardableResult
-    func repair() async -> PacketryNetworkHelperToolSnapshot {
-        await install()
+    func repair(completion: @escaping (PacketryNetworkHelperToolSnapshot) -> Void = { _ in }) -> PacketryNetworkHelperToolSnapshot {
+        install(completion: completion)
     }
 
     @discardableResult
-    func uninstall() async -> PacketryNetworkHelperToolSnapshot {
-        do {
-            try serviceController.unregister()
-            return await refreshStatus()
-        } catch {
-            let refreshedSnapshot = await refreshStatus()
-            guard refreshedSnapshot.status != .notInstalled else {
-                return refreshedSnapshot
-            }
+    func uninstall(completion: @escaping (PacketryNetworkHelperToolSnapshot) -> Void = { _ in }) -> PacketryNetworkHelperToolSnapshot {
+        let currentSnapshot = snapshot
+        workerQueue.async {
+            do {
+                try self.serviceController.unregister()
+                let updatedSnapshot = self.makeSnapshot()
+                self.publish(updatedSnapshot, completion: completion)
+            } catch {
+                let refreshedSnapshot = self.makeSnapshot()
+                guard refreshedSnapshot.status != .notInstalled else {
+                    self.publish(refreshedSnapshot, completion: completion)
+                    return
+                }
 
-            let failedSnapshot = PacketryNetworkHelperToolSnapshot(
-                status: .broken,
-                authorizationStatus: refreshedSnapshot.authorizationStatus,
-                lastCheckedAt: Date(),
-                message: "Packetry could not uninstall the helper: \(error.localizedDescription)"
-            )
-            snapshot = failedSnapshot
-            return failedSnapshot
+                let failedSnapshot = PacketryNetworkHelperToolSnapshot(
+                    status: .broken,
+                    authorizationStatus: refreshedSnapshot.authorizationStatus,
+                    lastCheckedAt: Date(),
+                    message: "Packetry could not uninstall the helper: \(error.localizedDescription)"
+                )
+                self.publish(failedSnapshot, completion: completion)
+            }
         }
+        return currentSnapshot
     }
 
     func openSystemSettings() {
@@ -229,9 +239,18 @@ final class PacketryNetworkHelperToolManager: ObservableObject, PacketryNetworkH
             message: message
         )
     }
+
+    private func publish(
+        _ updatedSnapshot: PacketryNetworkHelperToolSnapshot,
+        completion: @escaping (PacketryNetworkHelperToolSnapshot) -> Void
+    ) {
+        DispatchQueue.main.async {
+            self.snapshot = updatedSnapshot
+            completion(updatedSnapshot)
+        }
+    }
 }
 
-@MainActor
 final class ReadyPacketryNetworkHelperToolManager: PacketryNetworkHelperToolManaging {
     private(set) var snapshot = PacketryNetworkHelperToolSnapshot(
         status: .ready,
@@ -240,20 +259,24 @@ final class ReadyPacketryNetworkHelperToolManager: PacketryNetworkHelperToolMana
         message: "Packetry Network Helper Tool is ready."
     )
 
-    func refreshStatus() async -> PacketryNetworkHelperToolSnapshot {
-        snapshot
+    func refreshStatus(completion: @escaping (PacketryNetworkHelperToolSnapshot) -> Void = { _ in }) -> PacketryNetworkHelperToolSnapshot {
+        completion(snapshot)
+        return snapshot
     }
 
-    func install() async -> PacketryNetworkHelperToolSnapshot {
-        snapshot
+    func install(completion: @escaping (PacketryNetworkHelperToolSnapshot) -> Void = { _ in }) -> PacketryNetworkHelperToolSnapshot {
+        completion(snapshot)
+        return snapshot
     }
 
-    func repair() async -> PacketryNetworkHelperToolSnapshot {
-        snapshot
+    func repair(completion: @escaping (PacketryNetworkHelperToolSnapshot) -> Void = { _ in }) -> PacketryNetworkHelperToolSnapshot {
+        completion(snapshot)
+        return snapshot
     }
 
-    func uninstall() async -> PacketryNetworkHelperToolSnapshot {
-        snapshot
+    func uninstall(completion: @escaping (PacketryNetworkHelperToolSnapshot) -> Void = { _ in }) -> PacketryNetworkHelperToolSnapshot {
+        completion(snapshot)
+        return snapshot
     }
 
     func openSystemSettings() {}

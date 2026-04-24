@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 struct PacketrySettingsView: View {
-    @ObservedObject var networkHelperToolManager: PacketryNetworkHelperToolManager
+    let networkHelperToolManager: PacketryNetworkHelperToolManager
 
     var body: some View {
         TabView {
@@ -16,7 +16,13 @@ struct PacketrySettingsView: View {
 }
 
 struct PacketryNetworkHelperSettingsView: View {
-    @ObservedObject var manager: PacketryNetworkHelperToolManager
+    let manager: PacketryNetworkHelperToolManager
+    @State private var snapshot: PacketryNetworkHelperToolSnapshot
+
+    init(manager: PacketryNetworkHelperToolManager) {
+        self.manager = manager
+        self._snapshot = State(initialValue: manager.snapshot)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -34,7 +40,7 @@ struct PacketryNetworkHelperSettingsView: View {
             Spacer()
 
             HStack {
-                Text(manager.snapshot.message)
+                Text(snapshot.message)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .lineLimit(3)
@@ -46,14 +52,12 @@ struct PacketryNetworkHelperSettingsView: View {
 
             HStack {
                 Button {
-                    Task {
-                        await manager.refreshStatus()
-                    }
+                    manager.refreshStatus { snapshot = $0 }
                 } label: {
                     Label("Retry", systemImage: "arrow.clockwise")
                 }
 
-                if manager.snapshot.status == .waitingForApproval {
+                if snapshot.status == .waitingForApproval {
                     Button {
                         manager.openSystemSettings()
                     } label: {
@@ -63,9 +67,7 @@ struct PacketryNetworkHelperSettingsView: View {
 
                 if canUninstallHelper {
                     Button(role: .destructive) {
-                        Task {
-                            await manager.uninstall()
-                        }
+                        snapshot = manager.uninstall { snapshot = $0 }
                     } label: {
                         Label("Uninstall", systemImage: "trash")
                     }
@@ -77,8 +79,8 @@ struct PacketryNetworkHelperSettingsView: View {
             }
         }
         .padding(24)
-        .task {
-            await manager.refreshStatus()
+        .onAppear {
+            manager.refreshStatus { snapshot = $0 }
         }
     }
 
@@ -94,7 +96,7 @@ struct PacketryNetworkHelperSettingsView: View {
                 Text(PacketryNetworkHelperConstants.displayName)
                     .font(.title3.weight(.semibold))
 
-                Text(manager.snapshot.title)
+                Text(snapshot.title)
                     .foregroundStyle(.secondary)
             }
 
@@ -103,7 +105,7 @@ struct PacketryNetworkHelperSettingsView: View {
     }
 
     private var canUninstallHelper: Bool {
-        switch manager.snapshot.status {
+        switch snapshot.status {
         case .waitingForApproval, .installedNeedsRelaunch, .ready, .broken, .unsupported:
             true
         case .notInstalled, .installing:
@@ -113,12 +115,10 @@ struct PacketryNetworkHelperSettingsView: View {
 
     @ViewBuilder
     private var primaryAction: some View {
-        switch manager.snapshot.status {
+        switch snapshot.status {
         case .notInstalled, .unsupported:
             Button {
-                Task {
-                    await manager.install()
-                }
+                snapshot = manager.install { snapshot = $0 }
             } label: {
                 Label("Install", systemImage: "arrow.down.circle")
             }
@@ -139,9 +139,7 @@ struct PacketryNetworkHelperSettingsView: View {
             .buttonStyle(.borderedProminent)
         case .broken:
             Button {
-                Task {
-                    await manager.repair()
-                }
+                snapshot = manager.repair { snapshot = $0 }
             } label: {
                 Label("Repair", systemImage: "wrench.and.screwdriver")
             }
@@ -156,7 +154,7 @@ struct PacketryNetworkHelperSettingsView: View {
     }
 
     private var statusImage: String {
-        switch manager.snapshot.status {
+        switch snapshot.status {
         case .ready:
             "checkmark.shield.fill"
         case .installedNeedsRelaunch:
@@ -169,7 +167,7 @@ struct PacketryNetworkHelperSettingsView: View {
     }
 
     private var statusTint: Color {
-        switch manager.snapshot.status {
+        switch snapshot.status {
         case .ready:
             .green
         case .installedNeedsRelaunch, .waitingForApproval, .installing:

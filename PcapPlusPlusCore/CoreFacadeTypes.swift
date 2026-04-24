@@ -691,47 +691,53 @@ public enum PacketIngestEvent: Sendable, Equatable {
     case documentMetadataChanged(CaptureDocumentMetadata)
 }
 
-public protocol CaptureInterfaceProviding: Sendable {
-    func listInterfaces() async throws -> [CaptureInterfaceSummary]
+public typealias PacketryCompletion<Value> = (Result<Value, Error>) -> Void
+public typealias PacketryVoidCompletion = (Result<Void, Error>) -> Void
+public typealias PacketIngestEventHandler = (Result<PacketIngestEvent, Error>) -> Void
+
+public protocol CaptureInterfaceProviding {
+    func listInterfaces(completion: @escaping PacketryCompletion<[CaptureInterfaceSummary]>)
 }
 
-public protocol CaptureFilterValidating: Sendable {
-    func validateCaptureFilter(_ expression: String) async -> CaptureFilterValidation
+public protocol CaptureFilterValidating {
+    func validateCaptureFilter(_ expression: String, completion: @escaping (CaptureFilterValidation) -> Void)
 }
 
-public protocol LiveCaptureSessionProviding: Sendable {
-    func events() -> AsyncThrowingStream<PacketIngestEvent, Error>
-    func start() async throws
-    func pause() async throws
-    func resume() async throws
-    func stop() async throws
-    func inspectPacket(id: PacketSummary.ID) async throws -> PacketInspection
-    func healthSnapshot() async -> CaptureHealthSnapshot
+public protocol LiveCaptureSessionProviding: AnyObject {
+    var eventHandler: PacketIngestEventHandler? { get set }
+
+    func start(completion: @escaping PacketryVoidCompletion)
+    func pause(completion: @escaping PacketryVoidCompletion)
+    func resume(completion: @escaping PacketryVoidCompletion)
+    func stop(completion: @escaping PacketryVoidCompletion)
+    func inspectPacket(id: PacketSummary.ID, completion: @escaping PacketryCompletion<PacketInspection>)
+    func healthSnapshot(completion: @escaping (CaptureHealthSnapshot) -> Void)
 }
 
-public protocol OfflineCaptureDocumentProviding: Sendable {
-    func events() -> AsyncThrowingStream<PacketIngestEvent, Error>
-    func open() async throws -> [PacketSummary]
-    func reopen() async throws -> [PacketSummary]
-    func cancelLoading() async
-    func inspectPacket(id: PacketSummary.ID) async throws -> PacketInspection
-    func save() async throws
-    func save(to url: URL, format: CaptureFileFormat) async throws
-    func currentURL() async -> URL
-    func currentMetadata() async -> CaptureDocumentMetadata
-    func packetSummaries() async -> [PacketSummary]
-    func loadProgress() async -> PacketLoadProgress
+public protocol OfflineCaptureDocumentProviding: AnyObject {
+    var eventHandler: PacketIngestEventHandler? { get set }
+
+    func open(completion: @escaping PacketryCompletion<[PacketSummary]>)
+    func reopen(completion: @escaping PacketryCompletion<[PacketSummary]>)
+    func cancelLoading(completion: (() -> Void)?)
+    func inspectPacket(id: PacketSummary.ID, completion: @escaping PacketryCompletion<PacketInspection>)
+    func save(completion: @escaping PacketryVoidCompletion)
+    func save(to url: URL, format: CaptureFileFormat, completion: @escaping PacketryVoidCompletion)
+    func currentURL() -> URL
+    func currentMetadata() -> CaptureDocumentMetadata
+    func packetSummaries() -> [PacketSummary]
+    func loadProgress() -> PacketLoadProgress
 }
 
-public protocol LiveCaptureProviding: Sendable {
+public protocol LiveCaptureProviding {
     func validateCaptureOptions(_ options: CaptureOptions, for interface: CaptureInterfaceSummary?) throws -> CaptureOptions
-    func makeLiveCaptureSession(interfaceID: String, options: CaptureOptions) async throws -> any LiveCaptureSessionProviding
+    func makeLiveCaptureSession(interfaceID: String, options: CaptureOptions, completion: @escaping PacketryCompletion<any LiveCaptureSessionProviding>)
 }
 
-public protocol OfflineCaptureProviding: Sendable {
+public protocol OfflineCaptureProviding {
     func supportedOfflineFormats() -> [CaptureFileFormat]
-    func openOfflineCaptureDocument(at fileURL: URL) async throws -> any OfflineCaptureDocumentProviding
-    func loadPacketSummaries(from fileURL: URL) async throws -> [PacketSummary]
+    func openOfflineCaptureDocument(at fileURL: URL, completion: @escaping PacketryCompletion<any OfflineCaptureDocumentProviding>)
+    func loadPacketSummaries(from fileURL: URL, completion: @escaping PacketryCompletion<[PacketSummary]>)
 }
 
 public protocol PacketryCoreProviding:
@@ -743,147 +749,150 @@ public protocol PacketryCoreProviding:
 public struct UnconfiguredPacketryCore: PacketryCoreProviding {
     public init() {}
 
-    public func listInterfaces() async throws -> [CaptureInterfaceSummary] {
-        throw PacketryCoreError(
+    public func listInterfaces(completion: @escaping PacketryCompletion<[CaptureInterfaceSummary]>) {
+        completion(.failure(PacketryCoreError(
             code: .integrationMisconfigured,
             message: "Native interface discovery is not wired into PcapPlusPlusCore yet."
-        )
+        )))
     }
 
-    public func validateCaptureFilter(_ expression: String) async -> CaptureFilterValidation {
+    public func validateCaptureFilter(_ expression: String, completion: @escaping (CaptureFilterValidation) -> Void) {
         let trimmed = expression.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !trimmed.isEmpty else {
-            return CaptureFilterValidation(
+            completion(CaptureFilterValidation(
                 disposition: .invalid,
                 normalizedExpression: nil,
                 message: "Capture filters cannot be empty."
-            )
+            ))
+            return
         }
 
-        return CaptureFilterValidation(
+        completion(CaptureFilterValidation(
             disposition: .unavailable,
             normalizedExpression: trimmed,
             message: "Native capture-filter validation is not available in the unconfigured core."
-        )
+        ))
     }
 
     public func validateCaptureOptions(_ options: CaptureOptions, for interface: CaptureInterfaceSummary?) throws -> CaptureOptions {
         try options.validated(for: interface)
     }
 
-    public func makeLiveCaptureSession(interfaceID: String, options: CaptureOptions) async throws -> any LiveCaptureSessionProviding {
-        _ = try validateCaptureOptions(options, for: nil)
-        throw PacketryCoreError(
-            code: .integrationMisconfigured,
-            message: "Native live capture sessions are not wired into PcapPlusPlusCore yet."
-        )
+    public func makeLiveCaptureSession(interfaceID: String, options: CaptureOptions, completion: @escaping PacketryCompletion<any LiveCaptureSessionProviding>) {
+        do {
+            _ = try validateCaptureOptions(options, for: nil)
+            completion(.failure(PacketryCoreError(
+                code: .integrationMisconfigured,
+                message: "Native live capture sessions are not wired into PcapPlusPlusCore yet."
+            )))
+        } catch {
+            completion(.failure(error))
+        }
     }
 
     public func supportedOfflineFormats() -> [CaptureFileFormat] {
         CaptureFileFormat.allCases
     }
 
-    public func openOfflineCaptureDocument(at fileURL: URL) async throws -> any OfflineCaptureDocumentProviding {
-        throw PacketryCoreError(
+    public func openOfflineCaptureDocument(at fileURL: URL, completion: @escaping PacketryCompletion<any OfflineCaptureDocumentProviding>) {
+        completion(.failure(PacketryCoreError(
             code: .integrationMisconfigured,
             message: "Native offline capture documents are not wired into PcapPlusPlusCore yet for \(fileURL.lastPathComponent)."
-        )
+        )))
     }
 
-    public func loadPacketSummaries(from fileURL: URL) async throws -> [PacketSummary] {
-        let document = try await openOfflineCaptureDocument(at: fileURL)
-        return try await document.open()
-    }
-}
-
-public struct UnconfiguredLiveCaptureSession: LiveCaptureSessionProviding {
-    public init() {}
-
-    public func events() -> AsyncThrowingStream<PacketIngestEvent, Error> {
-        AsyncThrowingStream { continuation in
-            continuation.finish()
+    public func loadPacketSummaries(from fileURL: URL, completion: @escaping PacketryCompletion<[PacketSummary]>) {
+        openOfflineCaptureDocument(at: fileURL) { result in
+            switch result {
+            case .success(let document):
+                document.open(completion: completion)
+            case .failure(let error):
+                completion(.failure(error))
+            }
         }
     }
+}
 
-    public func start() async throws {
-        throw PacketryCoreError(code: .integrationMisconfigured, message: "Native live capture sessions are not wired into PcapPlusPlusCore yet.")
+public final class UnconfiguredLiveCaptureSession: LiveCaptureSessionProviding {
+    public var eventHandler: PacketIngestEventHandler?
+
+    public init() {}
+
+    public func start(completion: @escaping PacketryVoidCompletion) {
+        completion(.failure(PacketryCoreError(code: .integrationMisconfigured, message: "Native live capture sessions are not wired into PcapPlusPlusCore yet.")))
     }
 
-    public func pause() async throws {
-        throw PacketryCoreError(code: .integrationMisconfigured, message: "Native live capture sessions are not wired into PcapPlusPlusCore yet.")
+    public func pause(completion: @escaping PacketryVoidCompletion) {
+        completion(.failure(PacketryCoreError(code: .integrationMisconfigured, message: "Native live capture sessions are not wired into PcapPlusPlusCore yet.")))
     }
 
-    public func resume() async throws {
-        throw PacketryCoreError(code: .integrationMisconfigured, message: "Native live capture sessions are not wired into PcapPlusPlusCore yet.")
+    public func resume(completion: @escaping PacketryVoidCompletion) {
+        completion(.failure(PacketryCoreError(code: .integrationMisconfigured, message: "Native live capture sessions are not wired into PcapPlusPlusCore yet.")))
     }
 
-    public func stop() async throws {
-        throw PacketryCoreError(code: .integrationMisconfigured, message: "Native live capture sessions are not wired into PcapPlusPlusCore yet.")
+    public func stop(completion: @escaping PacketryVoidCompletion) {
+        completion(.failure(PacketryCoreError(code: .integrationMisconfigured, message: "Native live capture sessions are not wired into PcapPlusPlusCore yet.")))
     }
 
-    public func inspectPacket(id: PacketSummary.ID) async throws -> PacketInspection {
+    public func inspectPacket(id: PacketSummary.ID, completion: @escaping PacketryCompletion<PacketInspection>) {
         _ = id
-        throw PacketryCoreError(code: .integrationMisconfigured, message: "Packet inspection is not wired into PcapPlusPlusCore yet.")
+        completion(.failure(PacketryCoreError(code: .integrationMisconfigured, message: "Packet inspection is not wired into PcapPlusPlusCore yet.")))
     }
 
-    public func healthSnapshot() async -> CaptureHealthSnapshot {
-        .empty
+    public func healthSnapshot(completion: @escaping (CaptureHealthSnapshot) -> Void) {
+        completion(.empty)
     }
 }
 
-public struct UnconfiguredOfflineCaptureDocument: OfflineCaptureDocumentProviding {
+public final class UnconfiguredOfflineCaptureDocument: OfflineCaptureDocumentProviding {
+    public var eventHandler: PacketIngestEventHandler?
     public let fileURL: URL
 
     public init(fileURL: URL) {
         self.fileURL = fileURL
     }
 
-    public func events() -> AsyncThrowingStream<PacketIngestEvent, Error> {
-        AsyncThrowingStream { continuation in
-            continuation.finish()
-        }
+    public func open(completion: @escaping PacketryCompletion<[PacketSummary]>) {
+        completion(.failure(PacketryCoreError(code: .integrationMisconfigured, message: "Native offline capture documents are not wired into PcapPlusPlusCore yet for \(fileURL.lastPathComponent).")))
     }
 
-    public func open() async throws -> [PacketSummary] {
-        throw PacketryCoreError(code: .integrationMisconfigured, message: "Native offline capture documents are not wired into PcapPlusPlusCore yet for \(fileURL.lastPathComponent).")
+    public func reopen(completion: @escaping PacketryCompletion<[PacketSummary]>) {
+        open(completion: completion)
     }
 
-    public func reopen() async throws -> [PacketSummary] {
-        try await open()
+    public func cancelLoading(completion: (() -> Void)?) {
+        completion?()
     }
 
-    public func cancelLoading() async {
-    }
-
-    public func inspectPacket(id: PacketSummary.ID) async throws -> PacketInspection {
+    public func inspectPacket(id: PacketSummary.ID, completion: @escaping PacketryCompletion<PacketInspection>) {
         _ = id
-        throw PacketryCoreError(code: .integrationMisconfigured, message: "Packet inspection is not wired into PcapPlusPlusCore yet.")
+        completion(.failure(PacketryCoreError(code: .integrationMisconfigured, message: "Packet inspection is not wired into PcapPlusPlusCore yet.")))
     }
 
-    public func save() async throws {
-        throw PacketryCoreError(code: .integrationMisconfigured, message: "Native offline capture documents are not wired into PcapPlusPlusCore yet for \(fileURL.lastPathComponent).")
+    public func save(completion: @escaping PacketryVoidCompletion) {
+        completion(.failure(PacketryCoreError(code: .integrationMisconfigured, message: "Native offline capture documents are not wired into PcapPlusPlusCore yet for \(fileURL.lastPathComponent).")))
     }
 
-    public func save(to url: URL, format: CaptureFileFormat) async throws {
+    public func save(to url: URL, format: CaptureFileFormat, completion: @escaping PacketryVoidCompletion) {
         _ = url
         _ = format
-        throw PacketryCoreError(code: .integrationMisconfigured, message: "Native offline capture documents are not wired into PcapPlusPlusCore yet for \(fileURL.lastPathComponent).")
+        completion(.failure(PacketryCoreError(code: .integrationMisconfigured, message: "Native offline capture documents are not wired into PcapPlusPlusCore yet for \(fileURL.lastPathComponent).")))
     }
 
-    public func currentURL() async -> URL {
+    public func currentURL() -> URL {
         fileURL
     }
 
-    public func currentMetadata() async -> CaptureDocumentMetadata {
+    public func currentMetadata() -> CaptureDocumentMetadata {
         CaptureDocumentMetadata(format: .pcapng)
     }
 
-    public func packetSummaries() async -> [PacketSummary] {
+    public func packetSummaries() -> [PacketSummary] {
         []
     }
 
-    public func loadProgress() async -> PacketLoadProgress {
+    public func loadProgress() -> PacketLoadProgress {
         .idle
     }
 }

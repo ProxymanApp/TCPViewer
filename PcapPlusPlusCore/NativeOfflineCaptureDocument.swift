@@ -2,55 +2,56 @@ import Foundation
 @_implementationOnly import PacketryNativeBridge
 
 public final class NativeOfflineCaptureDocument: OfflineCaptureDocumentProviding, @unchecked Sendable {
-    private let streamBox = EventStreamBox<PacketIngestEvent>()
+    private let eventBox = EventCallbackBox<PacketIngestEvent>()
     private let state: NativeOfflineCaptureDocumentState
 
+    public var eventHandler: PacketIngestEventHandler? {
+        get { eventBox.handler }
+        set { eventBox.handler = newValue }
+    }
+
     init(fileURL: URL) throws {
-        self.state = try NativeOfflineCaptureDocumentState(fileURL: fileURL, streamBox: streamBox)
+        self.state = try NativeOfflineCaptureDocumentState(fileURL: fileURL, eventBox: eventBox)
     }
 
-    public func events() -> AsyncThrowingStream<PacketIngestEvent, Error> {
-        streamBox.stream
+    public func open(completion: @escaping PacketryCompletion<[PacketSummary]>) {
+        state.open(completion: completion)
     }
 
-    public func open() async throws -> [PacketSummary] {
-        try await state.open()
+    public func reopen(completion: @escaping PacketryCompletion<[PacketSummary]>) {
+        state.reopen(completion: completion)
     }
 
-    public func reopen() async throws -> [PacketSummary] {
-        try await state.reopen()
+    public func cancelLoading(completion: (() -> Void)?) {
+        state.cancelLoading(completion: completion)
     }
 
-    public func cancelLoading() async {
-        await state.cancelLoading()
+    public func inspectPacket(id: PacketSummary.ID, completion: @escaping PacketryCompletion<PacketInspection>) {
+        state.inspectPacket(id: id, completion: completion)
     }
 
-    public func inspectPacket(id: PacketSummary.ID) async throws -> PacketInspection {
-        try await state.inspectPacket(id: id)
+    public func save(completion: @escaping PacketryVoidCompletion) {
+        state.save(completion: completion)
     }
 
-    public func save() async throws {
-        try await state.save()
+    public func save(to url: URL, format: CaptureFileFormat, completion: @escaping PacketryVoidCompletion) {
+        state.save(to: url, format: format, completion: completion)
     }
 
-    public func save(to url: URL, format: CaptureFileFormat) async throws {
-        try await state.save(to: url, format: format)
+    public func currentURL() -> URL {
+        state.currentURL()
     }
 
-    public func currentURL() async -> URL {
-        await state.currentURL()
+    public func currentMetadata() -> CaptureDocumentMetadata {
+        state.currentMetadata()
     }
 
-    public func currentMetadata() async -> CaptureDocumentMetadata {
-        await state.currentMetadata()
+    public func packetSummaries() -> [PacketSummary] {
+        state.packetSummaries()
     }
 
-    public func packetSummaries() async -> [PacketSummary] {
-        await state.packetSummaries()
-    }
-
-    public func loadProgress() async -> PacketLoadProgress {
-        await state.loadProgress()
+    public func loadProgress() -> PacketLoadProgress {
+        state.loadProgress()
     }
 }
 
@@ -100,7 +101,7 @@ private final class CancellationFlag: @unchecked Sendable {
     }
 }
 
-actor NativeOfflineCaptureDocumentState {
+private final class NativeOfflineCaptureDocumentState: @unchecked Sendable {
     private enum LoadOperation {
         case open
         case reopen
@@ -124,20 +125,31 @@ actor NativeOfflineCaptureDocumentState {
         }
     }
 
-    private struct ActiveLoad {
-        let task: Task<[PacketSummary], Error>
+    private final class ActiveLoad {
         let cancellationFlag: CancellationFlag
+        var completions: [PacketryCompletion<[PacketSummary]>]
+
+        init(
+            cancellationFlag: CancellationFlag,
+            completions: [PacketryCompletion<[PacketSummary]>]
+        ) {
+            self.cancellationFlag = cancellationFlag
+            self.completions = completions
+        }
     }
 
+    private let stateQueue = DispatchQueue(label: "com.proxyman.Packetry.PcapPlusPlusCore.NativeOfflineCaptureDocument.state", qos: .userInitiated)
+    private let loadQueue = DispatchQueue(label: "com.proxyman.Packetry.PcapPlusPlusCore.NativeOfflineCaptureDocument.load", qos: .userInitiated)
     private let nativeDocument: PCPPNativeOfflineDocument
-    private let streamBox: EventStreamBox<PacketIngestEvent>
+    private let eventBox: EventCallbackBox<PacketIngestEvent>
     private let packetCache = LockedValueBox<[PacketSummary]>([])
     private let loadProgressBox = LockedValueBox<PacketLoadProgress>(.idle)
 
     private var activeLoad: ActiveLoad?
+    private var queuedReopenCompletions: [PacketryCompletion<[PacketSummary]>] = []
 
-    init(fileURL: URL, streamBox: EventStreamBox<PacketIngestEvent>) throws {
-        self.streamBox = streamBox
+    init(fileURL: URL, eventBox: EventCallbackBox<PacketIngestEvent>) throws {
+        self.eventBox = eventBox
         var nativeError: NSError?
         self.nativeDocument = PCPPNativeOfflineDocument(url: fileURL, error: &nativeError)
 
@@ -149,62 +161,82 @@ actor NativeOfflineCaptureDocumentState {
         }
     }
 
-    func open() async throws -> [PacketSummary] {
-        if let activeLoad {
-            return try await activeLoad.task.value
-        }
+    func open(completion: @escaping PacketryCompletion<[PacketSummary]>) {
+        stateQueue.async {
+            if let activeLoad = self.activeLoad {
+                activeLoad.completions.append(completion)
+                return
+            }
 
-        return try await performLoad(.open)
-    }
-
-    func reopen() async throws -> [PacketSummary] {
-        if let activeLoad {
-            activeLoad.cancellationFlag.cancel()
-            _ = try? await activeLoad.task.value
-            self.activeLoad = nil
-        }
-
-        return try await performLoad(.reopen)
-    }
-
-    func cancelLoading() {
-        activeLoad?.cancellationFlag.cancel()
-    }
-
-    func inspectPacket(id: PacketSummary.ID) throws -> PacketInspection {
-        do {
-            let descriptor = try nativeDocument.inspectPacket(withIdentifier: id)
-            return NativeBridgeMapper.packetInspection(descriptor)
-        } catch {
-            throw NativeBridgeMapper.coreError(error, defaultCode: .offlineFileOpenFailed)
+            self.performLoad(.open, completions: [completion])
         }
     }
 
-    func save() throws {
-        try ensureDocumentCanSave()
-        streamBox.yield(.documentStateChanged(phase: .saving, message: "Saving \(nativeDocument.currentURL.lastPathComponent)..."))
+    func reopen(completion: @escaping PacketryCompletion<[PacketSummary]>) {
+        stateQueue.async {
+            if let activeLoad = self.activeLoad {
+                activeLoad.cancellationFlag.cancel()
+                self.queuedReopenCompletions.append(completion)
+                return
+            }
 
-        do {
-            try nativeDocument.save()
-            let metadata = NativeBridgeMapper.documentMetadata(nativeDocument.documentMetadata)
-            streamBox.yield(.documentMetadataChanged(metadata))
-            streamBox.yield(.documentStateChanged(phase: .saved, message: "Saved \(nativeDocument.currentURL.lastPathComponent)."))
-        } catch {
-            throw handleFailure(error, code: .offlineFileSaveFailed)
+            self.performLoad(.reopen, completions: [completion])
         }
     }
 
-    func save(to url: URL, format: CaptureFileFormat) throws {
-        try ensureDocumentCanSave()
-        streamBox.yield(.documentStateChanged(phase: .saving, message: "Saving as \(url.lastPathComponent)..."))
+    func cancelLoading(completion: (() -> Void)?) {
+        stateQueue.async {
+            self.activeLoad?.cancellationFlag.cancel()
+            completion?()
+        }
+    }
 
-        do {
-            try nativeDocument.save(to: url, format: format.rawValue)
-            let metadata = NativeBridgeMapper.documentMetadata(nativeDocument.documentMetadata)
-            streamBox.yield(.documentMetadataChanged(metadata))
-            streamBox.yield(.documentStateChanged(phase: .saved, message: "Saved as \(url.lastPathComponent)."))
-        } catch {
-            throw handleFailure(error, code: .offlineFileSaveFailed)
+    func inspectPacket(id: PacketSummary.ID, completion: @escaping PacketryCompletion<PacketInspection>) {
+        stateQueue.async {
+            completion(Result {
+                do {
+                    let descriptor = try self.nativeDocument.inspectPacket(withIdentifier: id)
+                    return NativeBridgeMapper.packetInspection(descriptor)
+                } catch {
+                    throw NativeBridgeMapper.coreError(error, defaultCode: .offlineFileOpenFailed)
+                }
+            })
+        }
+    }
+
+    func save(completion: @escaping PacketryVoidCompletion) {
+        stateQueue.async {
+            completion(Result {
+                try self.ensureDocumentCanSave()
+                self.eventBox.yield(.documentStateChanged(phase: .saving, message: "Saving \(self.nativeDocument.currentURL.lastPathComponent)..."))
+
+                do {
+                    try self.nativeDocument.save()
+                    let metadata = NativeBridgeMapper.documentMetadata(self.nativeDocument.documentMetadata)
+                    self.eventBox.yield(.documentMetadataChanged(metadata))
+                    self.eventBox.yield(.documentStateChanged(phase: .saved, message: "Saved \(self.nativeDocument.currentURL.lastPathComponent)."))
+                } catch {
+                    throw self.handleFailure(error, code: .offlineFileSaveFailed)
+                }
+            })
+        }
+    }
+
+    func save(to url: URL, format: CaptureFileFormat, completion: @escaping PacketryVoidCompletion) {
+        stateQueue.async {
+            completion(Result {
+                try self.ensureDocumentCanSave()
+                self.eventBox.yield(.documentStateChanged(phase: .saving, message: "Saving as \(url.lastPathComponent)..."))
+
+                do {
+                    try self.nativeDocument.save(to: url, format: format.rawValue)
+                    let metadata = NativeBridgeMapper.documentMetadata(self.nativeDocument.documentMetadata)
+                    self.eventBox.yield(.documentMetadataChanged(metadata))
+                    self.eventBox.yield(.documentStateChanged(phase: .saved, message: "Saved as \(url.lastPathComponent)."))
+                } catch {
+                    throw self.handleFailure(error, code: .offlineFileSaveFailed)
+                }
+            })
         }
     }
 
@@ -224,7 +256,7 @@ actor NativeOfflineCaptureDocumentState {
         loadProgressBox.get()
     }
 
-    private func performLoad(_ operation: LoadOperation) async throws -> [PacketSummary] {
+    private func performLoad(_ operation: LoadOperation, completions: [PacketryCompletion<[PacketSummary]>]) {
         let fileName = nativeDocument.currentURL.lastPathComponent
         packetCache.set([])
         loadProgressBox.set(
@@ -238,28 +270,100 @@ actor NativeOfflineCaptureDocumentState {
             )
         )
 
-        streamBox.yield(.packetBatch([], disposition: .replace))
-        streamBox.yield(.documentStateChanged(phase: operation.initialPhase, message: operation.initialMessage(for: fileName)))
+        eventBox.yield(.packetBatch([], disposition: .replace))
+        eventBox.yield(.documentStateChanged(phase: operation.initialPhase, message: operation.initialMessage(for: fileName)))
 
-        let loadTask = makeLoadTask(for: operation)
-        activeLoad = loadTask
+        let activeLoad = ActiveLoad(cancellationFlag: CancellationFlag(), completions: completions)
+        self.activeLoad = activeLoad
+        let nativeDocument = self.nativeDocument
+        let eventBox = self.eventBox
+        let packetCache = self.packetCache
+        let loadProgressBox = self.loadProgressBox
 
-        do {
-            let packets = try await loadTask.task.value
-            activeLoad = nil
+        loadQueue.async { [weak self] in
+            let result: Result<[PacketSummary], Error> = Result {
+                var nativeError: NSError?
 
+                let batchHandler: ([PCPPNativePacketSummaryDescriptor]) -> Void = { descriptors in
+                    let batch = NativeBridgeMapper.packetBatch(descriptors, source: .offline)
+                    packetCache.withValue { packets in
+                        packets.append(contentsOf: batch)
+                    }
+                    eventBox.yield(.packetBatch(batch, disposition: .append))
+                }
+
+                let progressHandler: (PCPPNativePacketLoadProgressDescriptor) -> Void = { descriptor in
+                    let progress = NativeBridgeMapper.loadProgress(descriptor)
+                    loadProgressBox.set(progress)
+                    eventBox.yield(.loadProgressChanged(progress))
+                }
+
+                let descriptors: [PCPPNativePacketSummaryDescriptor]
+                switch operation {
+                case .open:
+                    descriptors = nativeDocument.openIncrementally(
+                        withBatchSize: 128,
+                        batchHandler: batchHandler,
+                        progressHandler: progressHandler,
+                        cancellationCheck: { activeLoad.cancellationFlag.isCancelled },
+                        error: &nativeError
+                    )
+                case .reopen:
+                    descriptors = nativeDocument.reopenIncrementally(
+                        withBatchSize: 128,
+                        batchHandler: batchHandler,
+                        progressHandler: progressHandler,
+                        cancellationCheck: { activeLoad.cancellationFlag.isCancelled },
+                        error: &nativeError
+                    )
+                }
+
+                if let nativeError {
+                    throw nativeError
+                }
+
+                let packets = NativeBridgeMapper.packetBatch(descriptors, source: .offline)
+                packetCache.set(packets)
+                return packets
+            }
+
+            self?.stateQueue.async {
+                self?.finishLoad(activeLoad, result: result)
+            }
+        }
+    }
+
+    private func finishLoad(_ activeLoad: ActiveLoad, result: Result<[PacketSummary], Error>) {
+        guard self.activeLoad === activeLoad else {
+            return
+        }
+
+        self.activeLoad = nil
+        let finalResult = finalizeLoadResult(result)
+        let completions = activeLoad.completions
+        completions.forEach { $0(finalResult) }
+
+        if !queuedReopenCompletions.isEmpty {
+            let completions = queuedReopenCompletions
+            queuedReopenCompletions = []
+            performLoad(.reopen, completions: completions)
+        }
+    }
+
+    private func finalizeLoadResult(_ result: Result<[PacketSummary], Error>) -> Result<[PacketSummary], Error> {
+        switch result {
+        case .success(let packets):
             let metadata = NativeBridgeMapper.documentMetadata(nativeDocument.documentMetadata)
-            streamBox.yield(.documentMetadataChanged(metadata))
-            streamBox.yield(.documentStateChanged(phase: .loaded, message: loadProgressBox.get().message))
-            return packets
-        } catch {
-            activeLoad = nil
+            eventBox.yield(.documentMetadataChanged(metadata))
+            eventBox.yield(.documentStateChanged(phase: .loaded, message: loadProgressBox.get().message))
+            return .success(packets)
+        case .failure(let error):
             let packetryError = NativeBridgeMapper.coreError(error, defaultCode: .offlineFileOpenFailed)
             let metadata = NativeBridgeMapper.documentMetadata(nativeDocument.documentMetadata)
-            streamBox.yield(.documentMetadataChanged(metadata))
+            eventBox.yield(.documentMetadataChanged(metadata))
 
             if packetryError.code == .operationCancelled {
-                streamBox.yield(.documentStateChanged(phase: .loaded, message: loadProgressBox.get().message))
+                eventBox.yield(.documentStateChanged(phase: .loaded, message: loadProgressBox.get().message))
             } else {
                 let latestProgress = loadProgressBox.get()
                 if latestProgress.phase != .failed {
@@ -272,69 +376,13 @@ actor NativeOfflineCaptureDocumentState {
                         message: packetryError.message
                     )
                     loadProgressBox.set(failureProgress)
-                    streamBox.yield(.loadProgressChanged(failureProgress))
+                    eventBox.yield(.loadProgressChanged(failureProgress))
                 }
-                streamBox.yield(.documentStateChanged(phase: .failed, message: packetryError.message))
+                eventBox.yield(.documentStateChanged(phase: .failed, message: packetryError.message))
             }
 
-            throw packetryError
+            return .failure(packetryError)
         }
-    }
-
-    private func makeLoadTask(for operation: LoadOperation) -> ActiveLoad {
-        let cancellationFlag = CancellationFlag()
-        let nativeDocument = self.nativeDocument
-        let streamBox = self.streamBox
-        let packetCache = self.packetCache
-        let loadProgressBox = self.loadProgressBox
-
-        let task = Task.detached(priority: .userInitiated) { () throws -> [PacketSummary] in
-            var nativeError: NSError?
-
-            let batchHandler: ([PCPPNativePacketSummaryDescriptor]) -> Void = { descriptors in
-                let batch = NativeBridgeMapper.packetBatch(descriptors, source: .offline)
-                packetCache.withValue { packets in
-                    packets.append(contentsOf: batch)
-                }
-                streamBox.yield(.packetBatch(batch, disposition: .append))
-            }
-
-            let progressHandler: (PCPPNativePacketLoadProgressDescriptor) -> Void = { descriptor in
-                let progress = NativeBridgeMapper.loadProgress(descriptor)
-                loadProgressBox.set(progress)
-                streamBox.yield(.loadProgressChanged(progress))
-            }
-
-            let descriptors: [PCPPNativePacketSummaryDescriptor]
-            switch operation {
-            case .open:
-                descriptors = nativeDocument.openIncrementally(
-                    withBatchSize: 128,
-                    batchHandler: batchHandler,
-                    progressHandler: progressHandler,
-                    cancellationCheck: { cancellationFlag.isCancelled },
-                    error: &nativeError
-                )
-            case .reopen:
-                descriptors = nativeDocument.reopenIncrementally(
-                    withBatchSize: 128,
-                    batchHandler: batchHandler,
-                    progressHandler: progressHandler,
-                    cancellationCheck: { cancellationFlag.isCancelled },
-                    error: &nativeError
-                )
-            }
-
-            if let nativeError {
-                throw nativeError
-            }
-
-            let packets = NativeBridgeMapper.packetBatch(descriptors, source: .offline)
-            packetCache.set(packets)
-            return packets
-        }
-
-        return ActiveLoad(task: task, cancellationFlag: cancellationFlag)
     }
 
     private func ensureDocumentCanSave() throws {
@@ -356,7 +404,7 @@ actor NativeOfflineCaptureDocumentState {
 
     private func handleFailure(_ error: Error, code: PacketryCoreError.Code) -> PacketryCoreError {
         let packetryError = NativeBridgeMapper.coreError(error, defaultCode: code)
-        streamBox.yield(.documentStateChanged(phase: .failed, message: packetryError.message))
+        eventBox.yield(.documentStateChanged(phase: .failed, message: packetryError.message))
         return packetryError
     }
 }

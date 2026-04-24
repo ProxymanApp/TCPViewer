@@ -9,6 +9,15 @@
 - Make sure to build the project if you change code, to verify all syntax are correct and works
 - Run Unit Tests that you've made a change or created or entire test suit if it's possible
 - For tiny change, no need to run project, because it can slows the development process
-- Always use macOS 26 SwiftUI for modern UI
+- Packetman is the main macOS app; do not reintroduce the deleted Packetry SwiftUI app or PacketryTests target
+- Packetman main window and inspector must be 100% AppKit: NSViewController, NSSplitViewController/NSSplitView, NSTableView, NSScrollView, NSStackView, NSToolbar, NSSegmentedControl
+- SwiftUI is allowed only for helper onboarding and settings views through NSHostingController
+- Packetman and PcapPlusPlusCore production code must not use Task, async/await, actors, Combine, Publisher, ObservableObject, @Published, or SwiftUI bindings
+- Use dedicated DispatchQueue instances for background work in Packetman/core, and manually return results through callbacks
+- Use simple weak delegate protocols for view-model/controller signals; child controllers receive explicit render models and call delegate methods for user actions
+- Keep Packetman view models controller-specific and testable; do not add broad global state or automatic observation
+- Keep PcapPlusPlusCore public APIs callback-based unless a future ticket explicitly changes this architecture
+- After Packetman or core changes, verify with `xcodebuild -project Packetry.xcodeproj -scheme Packetman build`
+- Run `xcodebuild test -project Packetry.xcodeproj -scheme Packetman -destination 'platform=macOS'` and relevant `PcapPlusPlusCore` tests when app/core behavior changes
 - Try adding 1 line and concise short comment to explain a group of logic if the func is big
 - Add 1 line concise comment to explain a func in the top of func

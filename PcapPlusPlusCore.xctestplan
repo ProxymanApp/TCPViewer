@@ -23,8 +23,8 @@
     {
       "target" : {
         "containerPath" : "container:Packetry.xcodeproj",
-        "identifier" : "BA4D26912F9A2F4B0070BE17",
-        "name" : "PacketryTests"
+        "identifier" : "BAAE976E2F9B816000C52A7C",
+        "name" : "PacketmanTests"
       }
     }
   ],

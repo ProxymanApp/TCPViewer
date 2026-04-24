@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 import Foundation
 import PcapPlusPlusCore
 import UniformTypeIdentifiers
@@ -7,7 +6,6 @@ import UniformTypeIdentifiers
 private struct NetworkInspectorPreferences {
     private enum Key {
         static let displayFilterText = "Packetry.displayFilterText"
-        static let tableDensity = "Packetry.tableDensity"
         static let inspectorVisible = "Packetry.inspectorVisible"
     }
 
@@ -21,15 +19,6 @@ private struct NetworkInspectorPreferences {
         defaults.string(forKey: Key.displayFilterText) ?? ""
     }
 
-    var tableDensity: PacketTableDensity {
-        guard let rawValue = defaults.string(forKey: Key.tableDensity),
-              let density = PacketTableDensity(rawValue: rawValue) else {
-            return .comfortable
-        }
-
-        return density
-    }
-
     var isInspectorVisible: Bool {
         guard defaults.object(forKey: Key.inspectorVisible) != nil else {
             return true
@@ -40,10 +29,6 @@ private struct NetworkInspectorPreferences {
 
     func persistDisplayFilter(_ text: String) {
         defaults.set(text, forKey: Key.displayFilterText)
-    }
-
-    func persistTableDensity(_ density: PacketTableDensity) {
-        defaults.set(density.rawValue, forKey: Key.tableDensity)
     }
 
     func persistInspectorVisible(_ isVisible: Bool) {
@@ -216,13 +201,21 @@ private struct PacketTableContentCache {
     }
 }
 
-@MainActor
-final class NetworkInspectorViewModel: ObservableObject {
-    @Published private(set) var snapshot: NetworkInspectorSnapshot
+protocol NetworkInspectorViewModelDelegate: AnyObject {
+    func networkInspectorViewModelDidChange(_ viewModel: NetworkInspectorViewModel)
+}
+
+final class NetworkInspectorViewModel {
+    weak var delegate: NetworkInspectorViewModelDelegate?
+
+    private(set) var snapshot: NetworkInspectorSnapshot {
+        didSet {
+            delegate?.networkInspectorViewModelDidChange(self)
+        }
+    }
 
     private let controller: PacketryWindowController
     private let preferences: NetworkInspectorPreferences
-    private var cancellables: Set<AnyCancellable> = []
     private var packetTableContentCache = PacketTableContentCache()
     private var hasPerformedInitialLoad = false
 
@@ -230,7 +223,6 @@ final class NetworkInspectorViewModel: ObservableObject {
     private var workspaceMode: NetworkInspectorWorkspaceMode = .packets
     private var inspectorTab: PacketInspectorTab = .overview
     private var isInspectorVisible: Bool
-    private var tableDensity: PacketTableDensity
     private var displayFilterText: String
     private var helperOnboardingDismissed = false
 
@@ -245,7 +237,6 @@ final class NetworkInspectorViewModel: ObservableObject {
         )
         self.preferences = NetworkInspectorPreferences(defaults: userDefaults)
         self.isInspectorVisible = preferences.isInspectorVisible
-        self.tableDensity = preferences.tableDensity
         self.displayFilterText = preferences.displayFilterText
         let packetTableContent = packetTableContentCache.content(
             for: controller.snapshot.packetIngestState,
@@ -257,34 +248,32 @@ final class NetworkInspectorViewModel: ObservableObject {
             workspaceMode: workspaceMode,
             inspectorTab: inspectorTab,
             isInspectorVisible: isInspectorVisible,
-            tableDensity: tableDensity,
             displayFilterText: displayFilterText,
             packetTableContent: packetTableContent
         )
 
-        controller.objectWillChange
-            .sink { [weak self] _ in
-                DispatchQueue.main.async {
-                    self?.rebuildSnapshot()
-                }
-            }
-            .store(in: &cancellables)
+        controller.delegate = self
     }
 
-    func performInitialLoadIfNeeded() async {
+    func performInitialLoadIfNeeded(completion: (() -> Void)? = nil) {
         guard !hasPerformedInitialLoad else {
+            completion?()
             return
         }
 
         hasPerformedInitialLoad = true
-        await controller.performInitialLoadIfNeeded()
-        rebuildSnapshot()
+        controller.performInitialLoadIfNeeded { [weak self] in
+            self?.rebuildSnapshot()
+            completion?()
+        }
     }
 
-    func refreshInterfaces() async {
-        await controller.refreshInterfaces()
-        helperOnboardingDismissed = false
-        rebuildSnapshot()
+    func refreshInterfaces(completion: (() -> Void)? = nil) {
+        controller.refreshInterfaces { [weak self] in
+            self?.helperOnboardingDismissed = false
+            self?.rebuildSnapshot()
+            completion?()
+        }
     }
 
     var shouldPresentNetworkHelperOnboarding: Bool {
@@ -303,22 +292,28 @@ final class NetworkInspectorViewModel: ObservableObject {
         rebuildSnapshot()
     }
 
-    func installNetworkHelperTool() async {
-        await controller.installNetworkHelperTool()
-        helperOnboardingDismissed = false
-        rebuildSnapshot()
+    func installNetworkHelperTool(completion: (() -> Void)? = nil) {
+        controller.installNetworkHelperTool { [weak self] in
+            self?.helperOnboardingDismissed = false
+            self?.rebuildSnapshot()
+            completion?()
+        }
     }
 
-    func repairNetworkHelperTool() async {
-        await controller.repairNetworkHelperTool()
-        helperOnboardingDismissed = false
-        rebuildSnapshot()
+    func repairNetworkHelperTool(completion: (() -> Void)? = nil) {
+        controller.repairNetworkHelperTool { [weak self] in
+            self?.helperOnboardingDismissed = false
+            self?.rebuildSnapshot()
+            completion?()
+        }
     }
 
-    func retryNetworkHelperToolStatus() async {
-        await controller.refreshNetworkHelperToolStatus()
-        helperOnboardingDismissed = false
-        rebuildSnapshot()
+    func retryNetworkHelperToolStatus(completion: (() -> Void)? = nil) {
+        controller.refreshNetworkHelperToolStatus { [weak self] in
+            self?.helperOnboardingDismissed = false
+            self?.rebuildSnapshot()
+            completion?()
+        }
     }
 
     func openNetworkHelperSystemSettings() {
@@ -385,41 +380,55 @@ final class NetworkInspectorViewModel: ObservableObject {
         rebuildSnapshot()
     }
 
-    func validateCaptureFilter() async {
-        await controller.validateCaptureFilter()
-        rebuildSnapshot()
-    }
-
-    func toggleLiveCapture() async {
-        if snapshot.base.sessionState.canStop {
-            await controller.stopLiveCapture()
-        } else {
-            await controller.startLiveCapture()
+    func validateCaptureFilter(completion: (() -> Void)? = nil) {
+        controller.validateCaptureFilter { [weak self] in
+            self?.rebuildSnapshot()
+            completion?()
         }
-
-        rebuildSnapshot()
     }
 
-    func pauseLiveCapture() async {
-        await controller.pauseLiveCapture()
-        rebuildSnapshot()
+    func toggleLiveCapture(completion: (() -> Void)? = nil) {
+        if snapshot.base.sessionState.canStop {
+            controller.stopLiveCapture { [weak self] in
+                self?.rebuildSnapshot()
+                completion?()
+            }
+        } else {
+            controller.startLiveCapture { [weak self] in
+                self?.rebuildSnapshot()
+                completion?()
+            }
+        }
     }
 
-    func resumeLiveCapture() async {
-        await controller.resumeLiveCapture()
-        rebuildSnapshot()
+    func pauseLiveCapture(completion: (() -> Void)? = nil) {
+        controller.pauseLiveCapture { [weak self] in
+            self?.rebuildSnapshot()
+            completion?()
+        }
     }
 
-    func stopLiveCapture() async {
-        await controller.stopLiveCapture()
-        rebuildSnapshot()
+    func resumeLiveCapture(completion: (() -> Void)? = nil) {
+        controller.resumeLiveCapture { [weak self] in
+            self?.rebuildSnapshot()
+            completion?()
+        }
     }
 
-    func openDocument(at fileURL: URL) async {
-        await controller.openDocument(at: fileURL)
-        workspaceMode = .packets
-        selectedSidebar = .liveCapture
-        rebuildSnapshot()
+    func stopLiveCapture(completion: (() -> Void)? = nil) {
+        controller.stopLiveCapture { [weak self] in
+            self?.rebuildSnapshot()
+            completion?()
+        }
+    }
+
+    func openDocument(at fileURL: URL, completion: (() -> Void)? = nil) {
+        controller.openDocument(at: fileURL) { [weak self] in
+            self?.workspaceMode = .packets
+            self?.selectedSidebar = .liveCapture
+            self?.rebuildSnapshot()
+            completion?()
+        }
     }
 
     func presentOpenCapturePanel() {
@@ -427,14 +436,18 @@ final class NetworkInspectorViewModel: ObservableObject {
         rebuildSnapshot()
     }
 
-    func saveDocument() async {
-        await controller.saveDocument()
-        rebuildSnapshot()
+    func saveDocument(completion: (() -> Void)? = nil) {
+        controller.saveDocument { [weak self] in
+            self?.rebuildSnapshot()
+            completion?()
+        }
     }
 
-    func saveDocument(to url: URL, format: CaptureFileFormat) async {
-        await controller.saveDocument(to: url, format: format)
-        rebuildSnapshot()
+    func saveDocument(to url: URL, format: CaptureFileFormat, completion: (() -> Void)? = nil) {
+        controller.saveDocument(to: url, format: format) { [weak self] in
+            self?.rebuildSnapshot()
+            completion?()
+        }
     }
 
     func presentSaveCapturePanel(format: CaptureFileFormat) {
@@ -442,9 +455,11 @@ final class NetworkInspectorViewModel: ObservableObject {
         rebuildSnapshot()
     }
 
-    func cancelDocumentLoading() async {
-        await controller.cancelDocumentLoading()
-        rebuildSnapshot()
+    func cancelDocumentLoading(completion: (() -> Void)? = nil) {
+        controller.cancelDocumentLoading { [weak self] in
+            self?.rebuildSnapshot()
+            completion?()
+        }
     }
 
     func selectPacket(_ identifier: PacketSummary.ID?) {
@@ -476,12 +491,6 @@ final class NetworkInspectorViewModel: ObservableObject {
         setInspectorVisible(!isInspectorVisible)
     }
 
-    func setTableDensity(_ density: PacketTableDensity) {
-        tableDensity = density
-        preferences.persistTableDensity(density)
-        rebuildSnapshot()
-    }
-
     func selectedInterfaceTitle() -> String {
         guard let selectedInterface = snapshot.base.sessionState.selectedInterface else {
             return "Interface"
@@ -509,7 +518,6 @@ final class NetworkInspectorViewModel: ObservableObject {
             workspaceMode: workspaceMode,
             inspectorTab: inspectorTab,
             isInspectorVisible: isInspectorVisible,
-            tableDensity: tableDensity,
             displayFilterText: displayFilterText,
             packetTableContent: packetTableContent
         )
@@ -518,5 +526,11 @@ final class NetworkInspectorViewModel: ObservableObject {
         }
 
         snapshot = updatedSnapshot
+    }
+}
+
+extension NetworkInspectorViewModel: PacketryWindowControllerDelegate {
+    func packetryWindowControllerDidChange(_ controller: PacketryWindowController) {
+        rebuildSnapshot()
     }
 }
