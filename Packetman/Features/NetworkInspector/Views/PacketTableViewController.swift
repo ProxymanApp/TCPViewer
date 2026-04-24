@@ -121,16 +121,16 @@ final class PacketTableViewController: NSViewController {
         tableView.style = .fullWidth
         tableView.focusRingType = .none
         
-        addColumn("number", title: "No.", width: 68, minWidth: 52, cell: PacketTextCell())
-        addColumn("time", title: "Time", width: 112, minWidth: 96, cell: PacketTextCell())
-        addColumn("source", title: "Source", width: 180, minWidth: 130, cell: PacketTextCell())
-        addColumn("destination", title: "Destination", width: 180, minWidth: 130, cell: PacketTextCell())
-        addColumn("domain", title: "Domain", width: 180, minWidth: 120, cell: PacketTextCell())
-        addColumn("client", title: "Client", width: 160, minWidth: 120, cell: PacketClientCell())
-        addColumn("protocol", title: "Protocol", width: 96, minWidth: 82, cell: PacketProtocolCell())
-        addColumn("length", title: "Length", width: 80, minWidth: 68, cell: PacketTextCell())
-        addColumn("summary", title: "Summary", width: 320, minWidth: 180, cell: PacketTextCell())
-        addColumn("tags", title: "Tags", width: 140, minWidth: 90, cell: PacketTextCell())
+        addColumn("number", title: " No.", width: 68, minWidth: 52, cell: PacketTextCell())
+        addColumn("time", title: " Time", width: 112, minWidth: 96, cell: PacketTextCell())
+        addColumn("source", title: " Source", width: 180, minWidth: 130, cell: PacketTextCell())
+        addColumn("destination", title: " Destination", width: 180, minWidth: 130, cell: PacketTextCell())
+        addColumn("domain", title: " Domain", width: 180, minWidth: 120, cell: PacketTextCell())
+        addColumn("client", title: " Client", width: 160, minWidth: 120, cell: PacketClientCell())
+        addColumn("protocol", title: " Protocol", width: 96, minWidth: 82, cell: PacketProtocolCell())
+        addColumn("length", title: " Length", width: 80, minWidth: 68, cell: PacketTextCell())
+        addColumn("summary", title: " Summary", width: 320, minWidth: 180, cell: PacketTextCell())
+        addColumn("tags", title: " Tags", width: 140, minWidth: 90, cell: PacketTextCell())
 
         scrollView.documentView = tableView
         scrollView.hasVerticalScroller = true
@@ -505,9 +505,26 @@ final class PacketClientCell: NSTextFieldCell {
         textColor = client == nil ? .secondaryLabelColor : .labelColor
     }
 
+    override func drawingRect(forBounds rect: NSRect) -> NSRect {
+        verticallyCenteredRect(forBounds: rect)
+    }
+
+    override func titleRect(forBounds rect: NSRect) -> NSRect {
+        verticallyCenteredRect(forBounds: rect)
+    }
+
+    private func verticallyCenteredRect(forBounds rect: NSRect) -> NSRect {
+        var drawingRect = super.drawingRect(forBounds: rect)
+        let textHeight = cellSize(forBounds: drawingRect).height
+        drawingRect.origin.y += floor((drawingRect.height - textHeight) / 2)
+        drawingRect.size.height = textHeight
+        return drawingRect
+    }
+
     override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
         guard let icon = Self.iconCache.image(for: client) else {
-            super.drawInterior(withFrame: cellFrame, in: controlView)
+            let textFrame = cellFrame.insetBy(dx: 6, dy: 0)
+            super.drawInterior(withFrame: textFrame, in: controlView)
             return
         }
 

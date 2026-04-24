@@ -74,6 +74,12 @@ private extension PacketIngestMutation {
     }
 }
 
+private extension PacketSourceListItem {
+    var reservesDisclosureSpace: Bool {
+        kind == .folder || !children.isEmpty
+    }
+}
+
 private final class SidebarOutlineItem: NSObject {
     let sourceItem: PacketSourceListItem
     let children: [SidebarOutlineItem]
@@ -250,6 +256,7 @@ final class SidebarViewController: NSViewController {
         outlineView.allowsMultipleSelection = false
         outlineView.rowHeight = 28
         outlineView.indentationPerLevel = 18
+        outlineView.indentationMarkerFollowsCell = false
         outlineView.backgroundColor = .clear
         outlineView.focusRingType = .none
 
@@ -295,7 +302,7 @@ final class SidebarViewController: NSViewController {
         let items = viewModel.allItems()
         let itemsToExpand = expandAll ? items : items.filter { expandedItemIDs.contains($0.sourceItem.id) }
 
-        for item in itemsToExpand where !item.children.isEmpty {
+        for item in itemsToExpand where item.sourceItem.reservesDisclosureSpace {
             outlineView.expandItem(item)
         }
     }
@@ -358,7 +365,7 @@ extension SidebarViewController: NSOutlineViewDataSource, NSOutlineViewDelegate 
     }
 
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
-        outlineItem(for: item)?.children.isEmpty == false
+        outlineItem(for: item)?.sourceItem.reservesDisclosureSpace == true
     }
 
     func outlineView(_ outlineView: NSOutlineView, isGroupItem item: Any) -> Bool {
