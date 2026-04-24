@@ -969,7 +969,7 @@ public:
 void UpdateStats(LiveCaptureState &state)
 {
     pcpp::IPcapDevice::PcapStats stats{};
-    if (state.device != nullptr) {
+    if (state.device != nullptr && state.device->isOpened()) {
         state.device->getStatistics(stats);
         state.packetsReceived = stats.packetsRecv;
         state.packetsDropped = stats.packetsDrop;

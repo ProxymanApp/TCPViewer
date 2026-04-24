@@ -10,3 +10,5 @@
 - Run Unit Tests that you've made a change or created or entire test suit if it's possible
 - For tiny change, no need to run project, because it can slows the development process
 - Always use macOS 26 SwiftUI for modern UI
+- Try adding 1 line and concise short comment to explain a group of logic if the func is big
+- Add 1 line concise comment to explain a func in the top of func

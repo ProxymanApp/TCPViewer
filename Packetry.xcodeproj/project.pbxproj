@@ -65,6 +65,7 @@
 		BA4D26922F9A2F4B0070BE17 /* PacketryTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PacketryTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		BA4D26B42F9A2F760070BE17 /* PcapPlusPlusCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = PcapPlusPlusCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		BA4D26BC2F9A2F770070BE17 /* PcapPlusPlusCoreTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PcapPlusPlusCoreTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		BA4D2DD82F9B3EF50070BE17 /* PcapPlusPlusCore.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; path = PcapPlusPlusCore.xctestplan; sourceTree = "<group>"; };
 		BA7A10022F9B00000070BE17 /* HexFiend.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = HexFiend.framework; path = Vendor/HexFiend/HexFiend.framework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -129,6 +130,7 @@
 		BA4D267C2F9A2F490070BE17 = {
 			isa = PBXGroup;
 			children = (
+				BA4D2DD82F9B3EF50070BE17 /* PcapPlusPlusCore.xctestplan */,
 				BA4D26872F9A2F490070BE17 /* Packetry */,
 				BA4D26952F9A2F4B0070BE17 /* PacketryTests */,
 				BA4D26B52F9A2F760070BE17 /* PcapPlusPlusCore */,
