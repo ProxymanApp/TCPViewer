@@ -407,11 +407,11 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
+				BAAE975C2F9B815F00C52A7C /* Packetman */,
+				BAAE976E2F9B816000C52A7C /* PacketmanTests */,
 				BA4D26B32F9A2F760070BE17 /* PcapPlusPlusCore */,
 				BA4D26BB2F9A2F770070BE17 /* PcapPlusPlusCoreTests */,
 				BACE00082F9C00000070BE17 /* PacketryNetworkHelper */,
-				BAAE975C2F9B815F00C52A7C /* Packetman */,
-				BAAE976E2F9B816000C52A7C /* PacketmanTests */,
 			);
 		};
 /* End PBXProject section */
@@ -838,6 +838,7 @@
 				);
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Packetman/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "TCP Viewer";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSMainStoryboardFile = Main;
 				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
@@ -876,6 +877,7 @@
 				);
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Packetman/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "TCP Viewer";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSMainStoryboardFile = Main;
 				INFOPLIST_KEY_NSPrincipalClass = NSApplication;

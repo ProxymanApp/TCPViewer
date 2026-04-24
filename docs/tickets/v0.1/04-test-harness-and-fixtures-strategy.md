@@ -8,8 +8,8 @@ Status: COMPLETE
 - [Fixtures/manifest.json](../../../Fixtures/manifest.json)
 - [PacketryTests/FixtureLocator.swift](../../../PacketryTests/FixtureLocator.swift)
 - [PacketryTests/CaptureAccessModelTests.swift](../../../PacketryTests/CaptureAccessModelTests.swift)
-- [PcapPlusPlusCoreTests/FixtureLocator.swift](../../../PcapPlusPlusCoreTests/FixtureLocator.swift)
-- [PcapPlusPlusCoreTests/CoreFacadeTypesTests.swift](../../../PcapPlusPlusCoreTests/CoreFacadeTypesTests.swift)
+- [PcapPlusPlusCoreTests/Support/FixtureLocator.swift](../../../PcapPlusPlusCoreTests/Support/FixtureLocator.swift)
+- [PcapPlusPlusCoreTests/Models/CoreFacadeTypesTests.swift](../../../PcapPlusPlusCoreTests/Models/CoreFacadeTypesTests.swift)
 
 ## Definition Of Done
 - Create a shared fixture layout under `Fixtures/` with starter category directories and a manifest.

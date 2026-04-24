@@ -17,8 +17,8 @@ Define how Packetry opens, reopens, saves, and saves-as capture files so offline
 - The file layer must support future metadata-rich `pcapng` workflows.
 
 ## Delivered Artifacts
-- `PcapPlusPlusCore/CoreFacadeTypes.swift` adds `OfflineCaptureDocumentProviding`, document metadata types, supported offline formats, and explicit open/save/reopen phases.
-- `PcapPlusPlusCore/NativeOfflineCaptureDocument.swift` replaces the one-shot loader with an actor-backed document handle that streams packet batches and metadata changes during open, save, and reopen.
+- `PcapPlusPlusCore/Models/CoreProtocols.swift` adds `OfflineCaptureDocumentProviding`, while `PcapPlusPlusCore/Models/CaptureModels.swift` owns document metadata and explicit open/save/reopen phases.
+- `PcapPlusPlusCore/Services/OfflineCapture/NativeOfflineCaptureDocument.swift` replaces the one-shot loader with an actor-backed document handle that streams packet batches and metadata changes during open, save, and reopen.
 - `PcapPlusPlusCore/NativeBridge/PacketryNativeBridge.mm` reads real `pcap` and `pcapng` files, persists packet order and timestamps, preserves `pcapng` metadata on `pcapng` round-trips, and intentionally drops unsupported metadata when saving to `pcap`.
 - `Packetry/WorkspaceFoundation.swift` wires save, save-as, and reopen flows into the window snapshot and keeps background work cancelable per window.
 

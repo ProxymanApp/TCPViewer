@@ -6,8 +6,8 @@ Status: COMPLETE
 - [docs/architecture/pcappluspluscore-integration.md](../../architecture/pcappluspluscore-integration.md)
 - [Vendor/README.md](../../../Vendor/README.md)
 - `Vendor/PcapPlusPlus` git submodule pinned to `v25.05`
-- [PcapPlusPlusCore/PcapPlusPlusCore.swift](../../../PcapPlusPlusCore/PcapPlusPlusCore.swift)
-- [PcapPlusPlusCore/CoreFacadeTypes.swift](../../../PcapPlusPlusCore/CoreFacadeTypes.swift)
+- [PcapPlusPlusCore/Public/PcapPlusPlusCore.swift](../../../PcapPlusPlusCore/Public/PcapPlusPlusCore.swift)
+- [PcapPlusPlusCore/Models/CaptureModels.swift](../../../PcapPlusPlusCore/Models/CaptureModels.swift), [PacketModels.swift](../../../PcapPlusPlusCore/Models/PacketModels.swift), and [CoreProtocols.swift](../../../PcapPlusPlusCore/Models/CoreProtocols.swift)
 
 ## Definition Of Done
 - Document the vendored source layout, native-wrapper shape, and public Swift boundary.

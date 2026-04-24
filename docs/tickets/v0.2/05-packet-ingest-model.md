@@ -17,7 +17,7 @@ Define the normalized packet summary model that turns raw capture input into sta
 - The model must support later features such as filters, graphs, follow stream, and expert events.
 
 ## Delivered Artifacts
-- `PcapPlusPlusCore/CoreFacadeTypes.swift` expands `PacketSummary` with stream IDs, info summaries, capture metadata, decode status, and protocol-neutral endpoint addresses.
+- `PcapPlusPlusCore/Models/PacketModels.swift` expands `PacketSummary` with stream IDs, info summaries, capture metadata, decode status, and protocol-neutral endpoint addresses.
 - `PcapPlusPlusCore/NativeBridge/PacketryNativeBridge.mm` maps one normalized packet-summary pipeline for both live and offline ingest, flags truncation, computes stream IDs when possible, and keeps raw packets inside core-owned state.
 - `Packetry/WorkspaceFoundation.swift` adds `PacketIngestState` so the app only stores stable summary batches plus derived counters for visible packets, truncation, and decode issues.
 - `Packetry/ContentView.swift` keeps the UI intentionally thin while verifying that live and offline packet rows, summary text, and health counters surface correctly.

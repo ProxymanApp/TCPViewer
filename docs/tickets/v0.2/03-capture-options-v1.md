@@ -17,10 +17,10 @@ Define the first capture-options set Packetry supports so live capture behavior 
 - Ring/rotating file expectations must be compatible with later save/open workflows.
 
 ## Delivered Artifacts
-- `PcapPlusPlusCore/CoreFacadeTypes.swift` defines `CaptureOptions`, `CaptureStopCondition`, and `CaptureFileWriting` as `Codable` value types.
+- `PcapPlusPlusCore/Models/CaptureOptionsModels.swift` defines `CaptureOptions`, `CaptureStopCondition`, and `CaptureFileWriting` as `Codable` value types.
 - Defaults now land at promiscuous-on except for loopback, `65535` snaplen, `4 MiB` kernel buffer, `250 ms` read timeout, manual stop, and disabled file writing.
 - Validation runs before session creation and covers loopback promiscuous mode, invalid stop conditions, single/rotating/ring output requirements, and ring file count limits.
-- `PcapPlusPlusCore/NativeBridgeSupport.swift` normalizes rotating and ring writers to `pcapng` when the caller omits a format.
+- `PcapPlusPlusCore/NativeBridge/NativeBridgeSupport.swift` normalizes rotating and ring writers to `pcapng` when the caller omits a format.
 
 ## Verification
 - `CoreFacadeTypesTests.captureDefaultsDisablePromiscuousModeForLoopback()`

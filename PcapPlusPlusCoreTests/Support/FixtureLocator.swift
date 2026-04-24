@@ -17,6 +17,7 @@ enum CoreFixtureCatalog {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
+            .deletingLastPathComponent()
     }()
 
     static let fixturesRoot = repositoryRoot.appendingPathComponent("Fixtures", isDirectory: true)

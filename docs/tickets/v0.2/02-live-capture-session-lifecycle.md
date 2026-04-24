@@ -17,8 +17,8 @@ Define the live capture engine contract for starting, stopping, pausing, resumin
 - The contract must not assume a single-window or single-document future.
 
 ## Delivered Artifacts
-- `PcapPlusPlusCore/CoreFacadeTypes.swift` adds `LiveCaptureSessionProviding`, `PacketIngestEvent`, `CaptureHealthSnapshot`, and the public lifecycle phase model.
-- `PcapPlusPlusCore/NativeLiveCaptureSession.swift` wraps one native session inside an actor-backed Swift handle, exposes an `AsyncThrowingStream`, and supports `start`, `pause`, `resume`, and `stop`.
+- `PcapPlusPlusCore/Models/CoreProtocols.swift` adds `LiveCaptureSessionProviding`, while `PcapPlusPlusCore/Models/PacketModels.swift` owns `PacketIngestEvent` and `PcapPlusPlusCore/Models/CaptureModels.swift` owns health and lifecycle models.
+- `PcapPlusPlusCore/Services/LiveCapture/NativeLiveCaptureSession.swift` wraps one native session inside an actor-backed Swift handle, exposes an `AsyncThrowingStream`, and supports `start`, `pause`, `resume`, and `stop`.
 - `PcapPlusPlusCore/NativeBridge/PacketryNativeBridge.mm` owns the actual live device, translates native phase and drop counters, and keeps packet ownership on the core side.
 - `Packetry/WorkspaceFoundation.swift` consumes live session events per window and keeps packet counts, drop counters, and lifecycle state cancelable at the controller layer.
 

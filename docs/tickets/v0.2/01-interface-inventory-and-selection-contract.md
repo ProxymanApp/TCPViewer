@@ -17,9 +17,9 @@ Define how Packetry discovers network interfaces and presents them to the app wi
 - The contract must support future macOS-specific metadata and wireless-facing quirks without redesign.
 
 ## Delivered Artifacts
-- `PcapPlusPlusCore/CoreFacadeTypes.swift` expands `CaptureInterfaceSummary` with technical name, description, loopback state, availability reason, activity preview, addresses, and capability flags.
+- `PcapPlusPlusCore/Models/CaptureModels.swift` expands `CaptureInterfaceSummary` with technical name, description, loopback state, availability reason, activity preview, addresses, and capability flags.
 - `PcapPlusPlusCore/NativeBridge/PacketryNativeBridge.mm` performs real interface discovery through `PcapPlusPlus` and maps macOS-facing capability and availability metadata into stable descriptors.
-- `PcapPlusPlusCore/NativeBridgeSupport.swift` adds deterministic sorting so selectable non-loopback interfaces appear first, loopback follows, and disabled/hidden/unavailable interfaces fall to the end.
+- `PcapPlusPlusCore/NativeBridge/NativeBridgeSupport.swift` adds deterministic sorting so selectable non-loopback interfaces appear first, loopback follows, and disabled/hidden/unavailable interfaces fall to the end.
 - `Packetry/WorkspaceFoundation.swift` recomputes selection validity on refresh and clears stale selections with an explicit user-facing reason instead of silently failing start.
 
 ## Verification
