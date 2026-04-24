@@ -402,6 +402,86 @@ struct NetworkInspectorViewModelTests {
         #expect(clientResolver.clientLookupCount == 0)
     }
 
+    @Test func metadataEnrichmentExpiresIdleFlowBeforeReusingStreamID() {
+        let service = PacketMetadataEnrichmentService(
+            flowIdleTimeout: 1,
+            clientResolver: InspectorFakePacketClientResolver(defaultClient: nil)
+        )
+        let originalPacket = makePacket(
+            packetNumber: 1,
+            source: .offline,
+            transportHint: .tcp,
+            streamID: 77,
+            sniDomainName: "old.example.com"
+        )
+        let reusedStreamPacket = makePacket(
+            packetNumber: 3,
+            source: .offline,
+            transportHint: .tcp,
+            streamID: 77
+        )
+
+        _ = service.enrich([originalPacket], source: .offline)
+        let result = service.enrich([reusedStreamPacket], source: .offline)
+
+        #expect(result.packets.first?.sniDomainName == nil)
+        #expect(result.updates.isEmpty)
+    }
+
+    @Test func metadataEnrichmentClearsFlowAfterTCPTeardown() {
+        let service = PacketMetadataEnrichmentService(clientResolver: InspectorFakePacketClientResolver(defaultClient: nil))
+        let originalPacket = makePacket(
+            packetNumber: 1,
+            source: .offline,
+            transportHint: .tcp,
+            streamID: 88,
+            sniDomainName: "closed.example.com"
+        )
+        let finishPacket = makePacket(
+            packetNumber: 2,
+            source: .offline,
+            transportHint: .tcp,
+            streamID: 88,
+            transportDetailSummary: "TCP flags: FIN"
+        )
+        let reusedStreamPacket = makePacket(
+            packetNumber: 3,
+            source: .offline,
+            transportHint: .tcp,
+            streamID: 88
+        )
+
+        _ = service.enrich([originalPacket], source: .offline)
+        _ = service.enrich([finishPacket], source: .offline)
+        let result = service.enrich([reusedStreamPacket], source: .offline)
+
+        #expect(result.packets.first?.sniDomainName == nil)
+        #expect(result.updates.isEmpty)
+    }
+
+    @Test func metadataEnrichmentCapsPendingBackfillPacketIDs() {
+        let service = PacketMetadataEnrichmentService(
+            maxPendingPacketIDsPerFlow: 2,
+            clientResolver: InspectorFakePacketClientResolver(defaultClient: nil)
+        )
+        let firstPacket = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp, streamID: 55)
+        let secondPacket = makePacket(packetNumber: 2, source: .offline, transportHint: .tcp, streamID: 55)
+        let thirdPacket = makePacket(packetNumber: 3, source: .offline, transportHint: .tcp, streamID: 55)
+        let sniPacket = makePacket(
+            packetNumber: 4,
+            source: .offline,
+            transportHint: .tcp,
+            streamID: 55,
+            sniDomainName: "late.example.com"
+        )
+
+        _ = service.enrich([firstPacket, secondPacket, thirdPacket], source: .offline)
+        let result = service.enrich([sniPacket], source: .offline)
+
+        #expect(result.packets.first?.sniDomainName == "late.example.com")
+        #expect(result.updates.map(\.packetIDs) == [[secondPacket.id, thirdPacket.id]])
+    }
+
     @Test func packetRowsSkipTableUpdateWhenLiveAppendDoesNotMatchFilter() async {
         let firstPacket = makePacket(packetNumber: 1, source: .live, transportHint: .udp)
         let filteredPacket = makePacket(packetNumber: 2, source: .live, transportHint: .tcp)
@@ -525,7 +605,8 @@ struct NetworkInspectorViewModelTests {
         streamID: UInt32? = 7,
         decodeStatus: PacketDecodeStatus = PacketDecodeStatus(kind: .complete),
         sniDomainName: String? = nil,
-        client: PacketClient? = nil
+        client: PacketClient? = nil,
+        transportDetailSummary: String? = nil
     ) -> PacketSummary {
         PacketSummary(
             packetNumber: packetNumber,
@@ -541,7 +622,10 @@ struct NetworkInspectorViewModelTests {
             capturedLength: 128,
             streamID: streamID,
             infoSummary: "Packet \(packetNumber)",
-            layers: [PacketLayer(name: "Ethernet"), PacketLayer(name: transportHint.rawValue.uppercased())],
+            layers: [
+                PacketLayer(name: "Ethernet"),
+                PacketLayer(name: transportHint.rawValue.uppercased(), detailSummary: transportDetailSummary),
+            ],
             decodeStatus: decodeStatus,
             captureMetadata: PacketCaptureMetadata(linkType: .ethernet, isTruncated: false),
             sniDomainName: sniDomainName,

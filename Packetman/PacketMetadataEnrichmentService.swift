@@ -28,19 +28,26 @@ final class PacketMetadataEnrichmentService: PacketMetadataEnriching {
     private struct FlowMetadata {
         var sniDomainName: String?
         var client: PacketClient?
-        var packetIDs: [PacketSummary.ID] = []
+        var pendingPacketIDs: [PacketSummary.ID] = []
+        var lastSeen: Date
     }
 
     private let maxCachedFlows: Int
+    private let flowIdleTimeout: TimeInterval
+    private let maxPendingPacketIDsPerFlow: Int
     private let clientResolver: any PacketClientResolving
     private var flowMetadataByStreamID: [UInt32: FlowMetadata] = [:]
     private var flowOrder: [UInt32] = []
 
     init(
         maxCachedFlows: Int = 100_000,
+        flowIdleTimeout: TimeInterval = 600,
+        maxPendingPacketIDsPerFlow: Int = 128,
         clientResolver: any PacketClientResolving = MacOSPacketClientResolver()
     ) {
         self.maxCachedFlows = max(maxCachedFlows, 1)
+        self.flowIdleTimeout = max(flowIdleTimeout, 0)
+        self.maxPendingPacketIDsPerFlow = max(maxPendingPacketIDsPerFlow, 1)
         self.clientResolver = clientResolver
     }
 
@@ -64,7 +71,7 @@ final class PacketMetadataEnrichmentService: PacketMetadataEnriching {
                 continue
             }
 
-            var metadata = metadataForFlow(streamID)
+            var metadata = metadataForFlow(streamID, packet: packet)
             var shouldBackfill = false
 
             if let sniDomainName = packet.sniDomainName, !sniDomainName.isEmpty, metadata.sniDomainName != sniDomainName {
@@ -77,9 +84,9 @@ final class PacketMetadataEnrichmentService: PacketMetadataEnriching {
                 shouldBackfill = true
             }
 
-            if shouldBackfill, !metadata.packetIDs.isEmpty {
+            if shouldBackfill, !metadata.pendingPacketIDs.isEmpty {
                 updates.append(PacketMetadataUpdate(
-                    packetIDs: metadata.packetIDs,
+                    packetIDs: metadata.pendingPacketIDs,
                     sniDomainName: metadata.sniDomainName,
                     client: metadata.client
                 ))
@@ -89,16 +96,23 @@ final class PacketMetadataEnrichmentService: PacketMetadataEnriching {
                 sniDomainName: metadata.sniDomainName ?? packet.sniDomainName,
                 client: metadata.client
             )
-            metadata.packetIDs.append(packet.id)
-            flowMetadataByStreamID[streamID] = metadata
+            rememberPendingBackfillIfNeeded(packet.id, packet: packet, source: source, metadata: &metadata)
+            metadata.lastSeen = packet.timestamp
+            flowMetadataByStreamID[streamID] = packet.packetryEndsTCPConnection
+                ? FlowMetadata(lastSeen: packet.timestamp)
+                : metadata
             enrichedPackets.append(enrichedPacket)
         }
 
         return PacketMetadataEnrichmentResult(packets: enrichedPackets, updates: updates)
     }
 
-    private func metadataForFlow(_ streamID: UInt32) -> FlowMetadata {
+    private func metadataForFlow(_ streamID: UInt32, packet: PacketSummary) -> FlowMetadata {
         if let metadata = flowMetadataByStreamID[streamID] {
+            if shouldStartNewFlow(packet: packet, existingMetadata: metadata) {
+                return FlowMetadata(lastSeen: packet.timestamp)
+            }
+
             return metadata
         }
 
@@ -108,9 +122,33 @@ final class PacketMetadataEnrichmentService: PacketMetadataEnriching {
             flowMetadataByStreamID.removeValue(forKey: removedStreamID)
         }
 
-        let metadata = FlowMetadata()
+        let metadata = FlowMetadata(lastSeen: packet.timestamp)
         flowMetadataByStreamID[streamID] = metadata
         return metadata
+    }
+
+    private func shouldStartNewFlow(packet: PacketSummary, existingMetadata: FlowMetadata) -> Bool {
+        packet.packetryStartsNewTCPConnection ||
+            packet.timestamp.timeIntervalSince(existingMetadata.lastSeen) > flowIdleTimeout
+    }
+
+    private func rememberPendingBackfillIfNeeded(
+        _ packetID: PacketSummary.ID,
+        packet: PacketSummary,
+        source: CaptureSource,
+        metadata: inout FlowMetadata
+    ) {
+        let waitsForSNI = packet.packetryUsesTCP && metadata.sniDomainName == nil
+        let waitsForClient = source == .live && metadata.client == nil
+        guard waitsForSNI || waitsForClient else {
+            metadata.pendingPacketIDs.removeAll(keepingCapacity: true)
+            return
+        }
+
+        metadata.pendingPacketIDs.append(packetID)
+        if metadata.pendingPacketIDs.count > maxPendingPacketIDsPerFlow {
+            metadata.pendingPacketIDs.removeFirst(metadata.pendingPacketIDs.count - maxPendingPacketIDsPerFlow)
+        }
     }
 }
 
@@ -161,6 +199,7 @@ final class MacOSPacketClientResolver: PacketClientResolving {
 
     private let snapshotTTL: TimeInterval
     private let negativeTTL: TimeInterval
+    private let maxNegativeLookups: Int
     private var snapshotDate: Date?
     private var clientsBySocketKey: [SocketKey: PacketClient] = [:]
     private var clientsByLocalEndpointKey: [LocalEndpointKey: PacketClient] = [:]
@@ -168,9 +207,10 @@ final class MacOSPacketClientResolver: PacketClientResolving {
     private var clientsByPID: [pid_t: PacketClient] = [:]
     private var negativeLookups: [PacketLookupKey: Date] = [:]
 
-    init(snapshotTTL: TimeInterval = 0.5, negativeTTL: TimeInterval = 0.5) {
+    init(snapshotTTL: TimeInterval = 0.5, negativeTTL: TimeInterval = 0.5, maxNegativeLookups: Int = 10_000) {
         self.snapshotTTL = snapshotTTL
         self.negativeTTL = negativeTTL
+        self.maxNegativeLookups = max(maxNegativeLookups, 1)
     }
 
     // Clear process snapshots between live capture sessions.
@@ -201,7 +241,7 @@ final class MacOSPacketClientResolver: PacketClientResolving {
             return client
         }
 
-        negativeLookups[lookupKey] = now
+        rememberNegativeLookup(lookupKey, now: now)
         return nil
     }
 
@@ -243,6 +283,8 @@ final class MacOSPacketClientResolver: PacketClientResolving {
         clientsBySocketKey.removeAll(keepingCapacity: true)
         clientsByLocalEndpointKey.removeAll(keepingCapacity: true)
         clientsByLocalPortKey.removeAll(keepingCapacity: true)
+        clientsByPID.removeAll(keepingCapacity: true)
+        pruneNegativeLookups(now: now)
 
         let pidBufferSize = proc_listpids(UInt32(PROC_ALL_PIDS), 0, nil, 0)
         guard pidBufferSize > 0 else {
@@ -257,6 +299,23 @@ final class MacOSPacketClientResolver: PacketClientResolving {
 
         for pid in pids.prefix(pidCount) where pid > 0 {
             registerSockets(for: pid)
+        }
+    }
+
+    private func rememberNegativeLookup(_ lookupKey: PacketLookupKey, now: Date) {
+        if negativeLookups.count >= maxNegativeLookups {
+            pruneNegativeLookups(now: now)
+            if negativeLookups.count >= maxNegativeLookups {
+                negativeLookups.removeAll(keepingCapacity: true)
+            }
+        }
+
+        negativeLookups[lookupKey] = now
+    }
+
+    private func pruneNegativeLookups(now: Date) {
+        negativeLookups = negativeLookups.filter { _, date in
+            now.timeIntervalSince(date) < negativeTTL
         }
     }
 
@@ -494,5 +553,34 @@ extension PacketSummary {
             sniDomainName: sniDomainName ?? self.sniDomainName,
             client: client ?? self.client
         )
+    }
+}
+
+private extension PacketSummary {
+    var packetryUsesTCP: Bool {
+        MacOSPacketClientResolver.SocketTransport(packet: self) == .tcp
+    }
+
+    var packetryStartsNewTCPConnection: Bool {
+        guard packetryUsesTCP else {
+            return false
+        }
+
+        return packetryTCPSummariesContainFlag("SYN")
+    }
+
+    var packetryEndsTCPConnection: Bool {
+        guard packetryUsesTCP else {
+            return false
+        }
+
+        return packetryTCPSummariesContainFlag("FIN") || packetryTCPSummariesContainFlag("RST")
+    }
+
+    func packetryTCPSummariesContainFlag(_ flag: String) -> Bool {
+        let summaries = layers.compactMap(\.detailSummary) + [infoSummary]
+        return summaries.contains { summary in
+            summary.localizedCaseInsensitiveContains(flag)
+        }
     }
 }
