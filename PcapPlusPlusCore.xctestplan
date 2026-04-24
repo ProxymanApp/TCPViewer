@@ -19,6 +19,13 @@
         "identifier" : "BA4D26BB2F9A2F770070BE17",
         "name" : "PcapPlusPlusCoreTests"
       }
+    },
+    {
+      "target" : {
+        "containerPath" : "container:Packetry.xcodeproj",
+        "identifier" : "BAAE976E2F9B816000C52A7C",
+        "name" : "PacketmanTests"
+      }
     }
   ],
   "version" : 1

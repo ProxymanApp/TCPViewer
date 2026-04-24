@@ -8,8 +8,6 @@
 
 /* Begin PBXBuildFile section */
 		BA4D26BD2F9A2F770070BE17 /* PcapPlusPlusCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BA4D26B42F9A2F760070BE17 /* PcapPlusPlusCore.framework */; };
-		BAAEA1682F9C100000C52A7C /* PcapPlusPlusCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BA4D26B42F9A2F760070BE17 /* PcapPlusPlusCore.framework */; };
-		BAAEA1692F9C100000C52A7C /* PcapPlusPlusCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = BA4D26B42F9A2F760070BE17 /* PcapPlusPlusCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -27,28 +25,7 @@
 			remoteGlobalIDString = BAAEA1402F9B99D000C52A7C;
 			remoteInfo = TCPApp;
 		};
-		BAAEA16A2F9C100000C52A7C /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = BA4D267D2F9A2F490070BE17 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = BA4D26B32F9A2F760070BE17;
-			remoteInfo = PcapPlusPlusCore;
-		};
 /* End PBXContainerItemProxy section */
-
-/* Begin PBXCopyFilesBuildPhase section */
-		BAAEA16B2F9C100000C52A7C /* Embed Frameworks */ = {
-			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 2147483647;
-			dstPath = "";
-			dstSubfolderSpec = 10;
-			files = (
-				BAAEA1692F9C100000C52A7C /* PcapPlusPlusCore.framework in Embed Frameworks */,
-			);
-			name = "Embed Frameworks";
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		BA4D26B42F9A2F760070BE17 /* PcapPlusPlusCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = PcapPlusPlusCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -110,7 +87,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				BAAEA1682F9C100000C52A7C /* PcapPlusPlusCore.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -245,13 +221,11 @@
 			buildPhases = (
 				BAAEA13D2F9B99D000C52A7C /* Sources */,
 				BAAEA13E2F9B99D000C52A7C /* Frameworks */,
-				BAAEA16B2F9C100000C52A7C /* Embed Frameworks */,
 				BAAEA13F2F9B99D000C52A7C /* Resources */,
 			);
 			buildRules = (
 			);
 			dependencies = (
-				BAAEA16C2F9C100000C52A7C /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				BAAEA1422F9B99D100C52A7C /* TCPApp */,
@@ -348,11 +322,11 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				BAAEA1402F9B99D000C52A7C /* TCPApp */,
-				BAAEA14F2F9B99D100C52A7C /* TCPAppTests */,
 				BA4D26B32F9A2F760070BE17 /* PcapPlusPlusCore */,
 				BA4D26BB2F9A2F770070BE17 /* PcapPlusPlusCoreTests */,
 				BACE00082F9C00000070BE17 /* PacketryNetworkHelper */,
+				BAAEA1402F9B99D000C52A7C /* TCPApp */,
+				BAAEA14F2F9B99D100C52A7C /* TCPAppTests */,
 			);
 		};
 /* End PBXProject section */
@@ -466,11 +440,6 @@
 			isa = PBXTargetDependency;
 			target = BAAEA1402F9B99D000C52A7C /* TCPApp */;
 			targetProxy = BAAEA1512F9B99D100C52A7C /* PBXContainerItemProxy */;
-		};
-		BAAEA16C2F9C100000C52A7C /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = BA4D26B32F9A2F760070BE17 /* PcapPlusPlusCore */;
-			targetProxy = BAAEA16A2F9C100000C52A7C /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -760,8 +729,9 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 57SKMSUCY8;
-				ENABLE_APP_SANDBOX = NO;
+				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSMainStoryboardFile = Main;
@@ -793,8 +763,9 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 57SKMSUCY8;
-				ENABLE_APP_SANDBOX = NO;
+				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSMainStoryboardFile = Main;
