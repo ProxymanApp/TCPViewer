@@ -32,18 +32,23 @@ final class PacketmanToolbarDataSource: NSObject {
     weak var delegate: PacketmanToolbarDataSourceDelegate?
 
     private let viewModel = PacketmanToolbarViewModel()
-    private let interfacePopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 190, height: 30), pullsDown: false)
-    private let captureButton = NSButton(frame: NSRect(x: 0, y: 0, width: 32, height: 32))
-    private let statusView = PacketmanToolbarStatusView(frame: NSRect(x: 0, y: 0, width: 420, height: 26))
-    private let sharePopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 98, height: 30), pullsDown: true)
+    private let interfacePopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 60, height: 30), pullsDown: false)
+    private let captureButton = NSButton(frame: NSRect(x: 0, y: 0, width: 34, height: 30))
+    private let statusView = PacketmanToolbarStatusView(frame: NSRect(x: 0, y: 0, width: 360, height: 28))
+    private let sharePopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 42, height: 30), pullsDown: true)
     private let inspectorButton = NSButton(frame: NSRect(x: 0, y: 0, width: 34, height: 30))
 
     private var allowedItemIdentifiers: [NSToolbarItem.Identifier] {
-        PacketmanToolbarItemMetadata.allCases.map(\.identifier)
+        PacketmanToolbarItemMetadata.allCases.map(\.identifier) + [
+            .toggleSidebar,
+            .sidebarTrackingSeparator,
+        ]
     }
 
     private var defaultItemIdentifiers: [NSToolbarItem.Identifier] {
         [
+            .toggleSidebar,
+            .sidebarTrackingSeparator,
             PacketmanToolbarItemMetadata.captureSource.identifier,
             PacketmanToolbarItemMetadata.captureToggle.identifier,
             PacketmanToolbarItemMetadata.flexibleSpace.identifier,
@@ -55,7 +60,7 @@ final class PacketmanToolbarDataSource: NSObject {
     }
 
     override init() {
-        self.toolbar = NSToolbar(identifier: "Packetman.MainToolbar")
+        self.toolbar = NSToolbar(identifier: "Packetman.MainToolbar.v2")
         super.init()
         configureToolbar()
         configureToolbarViews()
@@ -86,22 +91,34 @@ final class PacketmanToolbarDataSource: NSObject {
     }
 
     private func configureToolbarViews() {
+        constrainToolbarView(interfacePopup, width: 60, height: 30)
+        constrainToolbarView(captureButton, width: 34, height: 30)
+        constrainToolbarView(statusView, width: 360, height: 28)
+        constrainToolbarView(sharePopup, width: 42, height: 30)
+        constrainToolbarView(inspectorButton, width: 34, height: 30)
+
         interfacePopup.target = self
         interfacePopup.action = #selector(interfaceChanged(_:))
         interfacePopup.controlSize = .regular
 
         captureButton.target = self
         captureButton.action = #selector(captureButtonPressed(_:))
-        captureButton.bezelStyle = .circular
-        captureButton.isBordered = false
+        captureButton.bezelStyle = .texturedRounded
+        captureButton.controlSize = .regular
+        captureButton.imagePosition = .imageOnly
+        captureButton.title = ""
+        captureButton.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .medium)
 
         sharePopup.controlSize = .regular
-        sharePopup.addItem(withTitle: "Share")
+        sharePopup.addItem(withTitle: "")
+        sharePopup.item(at: 0)?.image = PacketmanUI.image("square.and.arrow.up")
         sharePopup.addItem(withTitle: "Save")
         sharePopup.addItem(withTitle: "Export as pcap")
         sharePopup.addItem(withTitle: "Export as pcapng")
+        sharePopup.imagePosition = .imageOnly
         sharePopup.target = self
         sharePopup.action = #selector(shareActionSelected(_:))
+        sharePopup.toolTip = "Share"
 
         inspectorButton.target = self
         inspectorButton.action = #selector(inspectorButtonPressed(_:))
@@ -109,6 +126,14 @@ final class PacketmanToolbarDataSource: NSObject {
         inspectorButton.image = PacketmanUI.image("sidebar.trailing")
         inspectorButton.imagePosition = .imageOnly
         inspectorButton.toolTip = "Toggle Inspector View"
+    }
+
+    private func constrainToolbarView(_ view: NSView, width: CGFloat, height: CGFloat) {
+        view.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            view.widthAnchor.constraint(equalToConstant: width),
+            view.heightAnchor.constraint(equalToConstant: height),
+        ])
     }
 
     private func renderInterfacePopup() {
@@ -136,13 +161,10 @@ final class PacketmanToolbarDataSource: NSObject {
 
     private func renderCaptureButton() {
         captureButton.image = PacketmanUI.image(viewModel.captureButtonImageName)
-        captureButton.contentTintColor = .white
+        captureButton.contentTintColor = viewModel.captureButtonTint
         captureButton.toolTip = viewModel.captureButtonTitle
         captureButton.isEnabled = viewModel.canUseCaptureButton
         captureButton.alphaValue = viewModel.canUseCaptureButton ? 1 : 0.45
-        captureButton.wantsLayer = true
-        captureButton.layer?.cornerRadius = 16
-        captureButton.layer?.backgroundColor = viewModel.captureButtonTint.cgColor
     }
 
     private func renderSharePopup() {
@@ -364,13 +386,11 @@ private final class PacketmanToolbarStatusView: NSView {
     }
 
     private func setupLayout() {
-        wantsLayer = true
-        layer?.cornerRadius = 13
-        layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.9).cgColor
-
         dot.wantsLayer = true
         dot.layer?.cornerRadius = 4
         dot.translatesAutoresizingMaskIntoConstraints = false
+        statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        emphasizedLabel.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
 
         let stack = NSStackView(views: [dot, statusLabel, emphasizedLabel])
         stack.orientation = .horizontal
@@ -380,12 +400,12 @@ private final class PacketmanToolbarStatusView: NSView {
         addSubview(stack)
 
         NSLayoutConstraint.activate([
-            widthAnchor.constraint(greaterThanOrEqualToConstant: 320),
-            heightAnchor.constraint(equalToConstant: 26),
+            widthAnchor.constraint(greaterThanOrEqualToConstant: 300),
+            heightAnchor.constraint(equalToConstant: 28),
             dot.widthAnchor.constraint(equalToConstant: 8),
             dot.heightAnchor.constraint(equalToConstant: 8),
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 11),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -11),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             stack.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }

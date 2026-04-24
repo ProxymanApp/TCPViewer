@@ -57,6 +57,7 @@ final class PacketTableViewModel {
 
 final class PacketTableViewController: NSViewController {
     private static let compactRowHeight: CGFloat = 24
+    fileprivate static let tableFontSize: CGFloat = 12
 
     weak var delegate: PacketTableViewControllerDelegate?
 
@@ -231,9 +232,6 @@ final class PacketTableViewController: NSViewController {
         return .primary
     }
 
-    private func usesMonospacedFont(_ column: String) -> Bool {
-        column == "number" || column == "time" || column == "length"
-    }
 }
 
 extension PacketTableViewController: NSTableViewDataSource, NSTableViewDelegate {
@@ -260,10 +258,7 @@ extension PacketTableViewController: NSTableViewDataSource, NSTableViewDelegate 
         } else if let cell = cell as? PacketClientCell {
             cell.configure(client: packetRow.packet.client)
         } else if let cell = cell as? PacketTextCell {
-            cell.configure(
-                style: textStyle(for: column, in: packetRow),
-                monospaced: usesMonospacedFont(column)
-            )
+            cell.configure(style: textStyle(for: column, in: packetRow))
         }
     }
 
@@ -308,10 +303,8 @@ final class PacketTextCell: NSTextFieldCell {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func configure(style: Style, monospaced: Bool) {
-        font = monospaced
-            ? .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-            : .systemFont(ofSize: NSFont.systemFontSize)
+    func configure(style: Style) {
+        font = .monospacedSystemFont(ofSize: PacketTableViewController.tableFontSize, weight: .regular)
 
         switch style {
         case .primary:
@@ -322,18 +315,38 @@ final class PacketTextCell: NSTextFieldCell {
             textColor = .systemOrange
         }
     }
+
+    override func drawingRect(forBounds rect: NSRect) -> NSRect {
+        verticallyCenteredRect(forBounds: rect)
+    }
+
+    override func titleRect(forBounds rect: NSRect) -> NSRect {
+        verticallyCenteredRect(forBounds: rect)
+    }
+
+    private func verticallyCenteredRect(forBounds rect: NSRect) -> NSRect {
+        // Center text in compact rows so AppKit's default baseline does not sit high.
+        var drawingRect = super.drawingRect(forBounds: rect).insetBy(dx: 6, dy: 0)
+        let textHeight = cellSize(forBounds: drawingRect).height
+        drawingRect.origin.y += floor((drawingRect.height - textHeight) / 2)
+        drawingRect.size.height = textHeight
+        return drawingRect
+    }
 }
 
 final class PacketProtocolCell: NSTextFieldCell {
+    private var protocolText = ""
+    private var severity: PacketSeverity = .normal
+
     override init(textCell string: String) {
         super.init(textCell: string)
         alignment = .center
         isEditable = false
         isBordered = false
-        drawsBackground = true
+        drawsBackground = false
         lineBreakMode = .byTruncatingTail
         truncatesLastVisibleLine = true
-        font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
+        font = .monospacedSystemFont(ofSize: PacketTableViewController.tableFontSize, weight: .semibold)
     }
 
     convenience init() {
@@ -346,17 +359,92 @@ final class PacketProtocolCell: NSTextFieldCell {
     }
 
     func configure(protocolText: String, severity: PacketSeverity) {
+        self.protocolText = protocolText
+        self.severity = severity
         stringValue = protocolText
-        textColor = severity == .normal ? .labelColor : .systemOrange
-        backgroundColor = backgroundColor(for: severity)
+        textColor = textColor(for: protocolText, severity: severity)
     }
 
-    private func backgroundColor(for severity: PacketSeverity) -> NSColor {
-        switch severity {
-        case .normal:
-            return .controlAccentColor.withAlphaComponent(0.14)
-        case .partial, .malformed, .unsupported, .truncated:
+    override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
+        // Draw protocol values as compact colored pills instead of plain table text.
+        let label = protocolText.isEmpty ? stringValue : protocolText
+        guard !label.isEmpty else {
+            return
+        }
+
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font ?? .monospacedSystemFont(ofSize: PacketTableViewController.tableFontSize, weight: .semibold),
+            .foregroundColor: textColor ?? .labelColor,
+        ]
+        let textSize = label.size(withAttributes: attributes)
+        let pillWidth = min(max(textSize.width + 16, 42), cellFrame.width - 12)
+        let pillHeight: CGFloat = 18
+        let pillRect = NSRect(
+            x: cellFrame.midX - pillWidth / 2,
+            y: cellFrame.midY - pillHeight / 2,
+            width: pillWidth,
+            height: pillHeight
+        )
+
+        backgroundColor(for: label, severity: severity).setFill()
+        NSBezierPath(roundedRect: pillRect, xRadius: 9, yRadius: 9).fill()
+
+        let textRect = NSRect(
+            x: pillRect.midX - textSize.width / 2,
+            y: pillRect.midY - textSize.height / 2 - 0.5,
+            width: textSize.width,
+            height: textSize.height
+        )
+        label.draw(in: textRect, withAttributes: attributes)
+    }
+
+    private func backgroundColor(for protocolText: String, severity: PacketSeverity) -> NSColor {
+        if severity != .normal {
+            return .systemOrange.withAlphaComponent(0.18)
+        }
+
+        switch protocolText.uppercased() {
+        case "TCP":
             return .systemOrange.withAlphaComponent(0.16)
+        case "UDP":
+            return .systemBlue.withAlphaComponent(0.16)
+        case "TLS", "SSL", "HTTPS":
+            return .systemGreen.withAlphaComponent(0.16)
+        case "HTTP":
+            return .systemPink.withAlphaComponent(0.16)
+        case "DNS":
+            return .systemPurple.withAlphaComponent(0.16)
+        case "ICMP":
+            return .systemRed.withAlphaComponent(0.14)
+        case "ARP":
+            return .systemTeal.withAlphaComponent(0.16)
+        default:
+            return .controlAccentColor.withAlphaComponent(0.14)
+        }
+    }
+
+    private func textColor(for protocolText: String, severity: PacketSeverity) -> NSColor {
+        if severity != .normal {
+            return .systemOrange
+        }
+
+        switch protocolText.uppercased() {
+        case "TCP":
+            return .systemOrange
+        case "UDP":
+            return .systemBlue
+        case "TLS", "SSL", "HTTPS":
+            return .systemGreen
+        case "HTTP":
+            return .systemPink
+        case "DNS":
+            return .systemPurple
+        case "ICMP":
+            return .systemRed
+        case "ARP":
+            return .systemTeal
+        default:
+            return .controlAccentColor
         }
     }
 }
