@@ -3,7 +3,12 @@ import SwiftUI
 struct ContentView: View {
     private let services: PacketryServiceRegistry
 
-    init(services: PacketryServiceRegistry = .foundation) {
+    @MainActor
+    init() {
+        self.init(services: .foundation)
+    }
+
+    init(services: PacketryServiceRegistry) {
         self.services = services
     }
 

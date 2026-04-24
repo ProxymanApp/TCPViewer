@@ -232,6 +232,7 @@ final class NetworkInspectorViewModel: ObservableObject {
     private var isInspectorVisible: Bool
     private var tableDensity: PacketTableDensity
     private var displayFilterText: String
+    private var helperOnboardingDismissed = false
 
     convenience init(userDefaults: UserDefaults = .standard) {
         self.init(services: .foundation, userDefaults: userDefaults)
@@ -282,7 +283,53 @@ final class NetworkInspectorViewModel: ObservableObject {
 
     func refreshInterfaces() async {
         await controller.refreshInterfaces()
+        helperOnboardingDismissed = false
         rebuildSnapshot()
+    }
+
+    var shouldPresentNetworkHelperOnboarding: Bool {
+        snapshot.base.accessState.requiresGuidance &&
+            !snapshot.base.accessState.isCaptureReady &&
+            snapshot.base.sessionState.lastError?.code == .capturePermissionDenied &&
+            !helperOnboardingDismissed
+    }
+
+    var networkHelperToolSnapshot: PacketryNetworkHelperToolSnapshot {
+        controller.networkHelperToolSnapshot
+    }
+
+    func dismissNetworkHelperOnboarding() {
+        helperOnboardingDismissed = true
+        rebuildSnapshot()
+    }
+
+    func installNetworkHelperTool() async {
+        await controller.installNetworkHelperTool()
+        helperOnboardingDismissed = false
+        rebuildSnapshot()
+    }
+
+    func repairNetworkHelperTool() async {
+        await controller.repairNetworkHelperTool()
+        helperOnboardingDismissed = false
+        rebuildSnapshot()
+    }
+
+    func retryNetworkHelperToolStatus() async {
+        await controller.refreshNetworkHelperToolStatus()
+        helperOnboardingDismissed = false
+        rebuildSnapshot()
+    }
+
+    func openNetworkHelperSystemSettings() {
+        controller.openNetworkHelperSystemSettings()
+    }
+
+    func relaunchPacketry() {
+        let configuration = NSWorkspace.OpenConfiguration()
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, _ in
+            NSApp.terminate(nil)
+        }
     }
 
     func selectSidebar(_ selection: NetworkInspectorSidebarSelection?) {

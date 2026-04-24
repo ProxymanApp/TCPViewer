@@ -376,14 +376,30 @@ actor PacketryBackgroundCoordinator {
     }
 }
 
+@MainActor
 struct PacketryServiceRegistry {
     let core: any PacketryCoreProviding
+    let networkHelperTool: any PacketryNetworkHelperToolManaging
 
-    init(core: any PacketryCoreProviding = NativePacketryCore()) {
+    init(
+        core: any PacketryCoreProviding,
+        networkHelperTool: any PacketryNetworkHelperToolManaging
+    ) {
         self.core = core
+        self.networkHelperTool = networkHelperTool
     }
 
-    static let foundation = PacketryServiceRegistry()
+    init(core: any PacketryCoreProviding) {
+        self.init(
+            core: core,
+            networkHelperTool: ReadyPacketryNetworkHelperToolManager()
+        )
+    }
+
+    static let foundation = PacketryServiceRegistry(
+        core: NativePacketryCore(),
+        networkHelperTool: PacketryNetworkHelperToolManager()
+    )
 }
 
 private struct PacketryPreferences {
@@ -517,6 +533,11 @@ final class PacketryWindowController: ObservableObject {
         snapshot.sessionState.statusMessage = "Refreshing interface inventory..."
 
         let previousSelectionID = snapshot.sessionState.selectedInterfaceID
+        let helperSnapshot = await services.networkHelperTool.refreshStatus()
+        guard helperSnapshot.status.allowsLiveCapture else {
+            applyNetworkHelperBlocker(helperSnapshot)
+            return
+        }
 
         do {
             let interfaces = try await services.core.listInterfaces()
@@ -533,6 +554,41 @@ final class PacketryWindowController: ObservableObject {
             snapshot.sessionState.lastError = packetryError
             snapshot.sessionState.statusMessage = packetryError.message
         }
+    }
+
+    func refreshNetworkHelperToolStatus() async {
+        let helperSnapshot = await services.networkHelperTool.refreshStatus()
+        if helperSnapshot.status.allowsLiveCapture {
+            await refreshInterfaces()
+        } else {
+            applyNetworkHelperBlocker(helperSnapshot)
+        }
+    }
+
+    func installNetworkHelperTool() async {
+        let helperSnapshot = await services.networkHelperTool.install()
+        if helperSnapshot.status.allowsLiveCapture {
+            await refreshInterfaces()
+        } else {
+            applyNetworkHelperBlocker(helperSnapshot)
+        }
+    }
+
+    func repairNetworkHelperTool() async {
+        let helperSnapshot = await services.networkHelperTool.repair()
+        if helperSnapshot.status.allowsLiveCapture {
+            await refreshInterfaces()
+        } else {
+            applyNetworkHelperBlocker(helperSnapshot)
+        }
+    }
+
+    func openNetworkHelperSystemSettings() {
+        services.networkHelperTool.openSystemSettings()
+    }
+
+    var networkHelperToolSnapshot: PacketryNetworkHelperToolSnapshot {
+        services.networkHelperTool.snapshot
     }
 
     func selectInterface(_ identifier: String?) {
@@ -1565,6 +1621,33 @@ final class PacketryWindowController: ObservableObject {
         }
 
         return PacketryCoreError(code: defaultCode, message: error.localizedDescription)
+    }
+
+    private func applyNetworkHelperBlocker(_ helperSnapshot: PacketryNetworkHelperToolSnapshot) {
+        snapshot.accessState = .blocked(captureAccessBlocker(for: helperSnapshot.status))
+        snapshot.sessionState.interfaceInventory = []
+        snapshot.sessionState.selectedInterfaceID = nil
+        snapshot.sessionState.phase = .idle
+        snapshot.sessionState.lastError = PacketryCoreError(
+            code: .capturePermissionDenied,
+            message: helperSnapshot.message
+        )
+        snapshot.sessionState.statusMessage = helperSnapshot.message
+    }
+
+    private func captureAccessBlocker(for status: PacketryNetworkHelperToolStatus) -> CaptureAccessBlocker {
+        switch status {
+        case .notInstalled, .waitingForApproval, .installing:
+            .helperMissing
+        case .installedNeedsRelaunch:
+            .helperNeedsRelaunch
+        case .broken:
+            .helperBroken
+        case .unsupported:
+            .accessDenied
+        case .ready:
+            .upgradeRevalidation
+        }
     }
 
     private func displayName(for interface: CaptureInterfaceSummary) -> String {
