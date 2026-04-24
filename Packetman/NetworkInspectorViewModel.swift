@@ -67,7 +67,8 @@ private struct PacketTableContentCache {
         let displayFilter = PacketDisplayFilter(displayFilterText)
         if self.displayFilterText == displayFilterText,
            packetLineageRevision == ingestState.packetLineageRevision,
-           sourcePacketCount <= ingestState.packets.count {
+           sourcePacketCount <= ingestState.packets.count,
+           case .append = ingestState.lastMutation {
             return appendContent(
                 from: ingestState.packets[sourcePacketCount...],
                 ingestState: ingestState,

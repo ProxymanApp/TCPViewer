@@ -131,6 +131,8 @@ struct PacketTableRow: Identifiable, Sendable, Hashable {
     let timeText: String
     let sourceText: String
     let destinationText: String
+    let domainText: String
+    let clientText: String
     let protocolText: String
     let lengthText: String
     let summaryText: String
@@ -144,6 +146,8 @@ struct PacketTableRow: Identifiable, Sendable, Hashable {
         self.timeText = NetworkInspectorFormatters.packetTime.string(from: packet.timestamp)
         self.sourceText = NetworkInspectorFormatters.endpointLabel(packet.endpoints.source)
         self.destinationText = NetworkInspectorFormatters.endpointLabel(packet.endpoints.destination)
+        self.domainText = packet.sniDomainName ?? "-"
+        self.clientText = packet.client?.displayName ?? "-"
         self.protocolText = NetworkInspectorFormatters.protocolLabel(for: packet)
         self.lengthText = NetworkInspectorFormatters.byteCount(packet.capturedLength)
         self.summaryText = packet.infoSummary
@@ -274,11 +278,28 @@ struct PacketDisplayFilter: Sendable, Hashable {
             "\(packet.packetNumber)",
             NetworkInspectorFormatters.protocolLabel(for: packet),
             endpointText(for: packet),
+            packet.sniDomainName ?? "",
+            clientText(for: packet),
             "\(packet.capturedLength)",
             packet.infoSummary,
             packet.layers.map(\.name).joined(separator: " "),
             packet.decodeStatus.reason ?? "",
             packet.captureMetadata.interfaceName ?? "",
+        ]
+        .joined(separator: " ")
+    }
+
+    private func clientText(for packet: PacketSummary) -> String {
+        guard let client = packet.client else {
+            return ""
+        }
+
+        return [
+            client.displayName,
+            client.name,
+            client.bundleIdentifier ?? "",
+            client.bundlePath ?? "",
+            client.executablePath ?? "",
         ]
         .joined(separator: " ")
     }

@@ -130,7 +130,15 @@ struct NetworkInspectorViewModelTests {
     }
 
     @Test func packetFormattingFilteringAndTableUpdatePlansAreStable() {
-        let healthy = makePacket(packetNumber: 1, source: .offline, transportHint: .http1, destinationPort: 80)
+        let client = makeClient()
+        let healthy = makePacket(
+            packetNumber: 1,
+            source: .offline,
+            transportHint: .http1,
+            destinationPort: 80,
+            sniDomainName: "api.example.com",
+            client: client
+        )
         let malformed = makePacket(
             packetNumber: 2,
             source: .offline,
@@ -143,10 +151,14 @@ struct NetworkInspectorViewModelTests {
 
         #expect(healthyRow.protocolText == "HTTP1")
         #expect(healthyRow.lengthText == "128 B")
+        #expect(healthyRow.domainText == "api.example.com")
+        #expect(healthyRow.clientText == "Example")
         #expect(malformedRow.severity == .malformed)
         #expect(malformedRow.tags.map(\.label) == ["Malformed"])
 
         #expect(PacketDisplayFilter("protocol:http port:80").matches(healthy))
+        #expect(PacketDisplayFilter("api.example.com").matches(healthy))
+        #expect(PacketDisplayFilter("com.example.app").matches(healthy))
         #expect(PacketDisplayFilter("error:malformed").matches(malformed))
         #expect(!PacketDisplayFilter("protocol:tcp").matches(malformed))
 
@@ -274,6 +286,202 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.packetTableUpdatePlan == .append(1..<3))
     }
 
+    @Test func metadataEnrichmentBackfillsSNIAndCachesLiveClient() async {
+        let client = makeClient()
+        let clientResolver = InspectorFakePacketClientResolver(defaultClient: client)
+        let liveSession = InspectorFakeLiveSession()
+        let firstPacket = makePacket(
+            packetNumber: 1,
+            source: .live,
+            transportHint: .tcp,
+            destinationPort: 80,
+            streamID: 99
+        )
+        let secondPacket = makePacket(
+            packetNumber: 2,
+            source: .live,
+            transportHint: .tcp,
+            destinationPort: 443,
+            streamID: 99,
+            sniDomainName: "api.example.com"
+        )
+        let viewModel = NetworkInspectorViewModel(
+            services: PacketryServiceRegistry(
+                core: InspectorFakeCore(
+                    interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                    liveSession: liveSession
+                ),
+                packetMetadataEnricher: PacketMetadataEnrichmentService(clientResolver: clientResolver)
+            ),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.performInitialLoadIfNeeded()
+        await viewModel.toggleLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        liveSession.send(.packetBatch([firstPacket], disposition: .append))
+
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == 1
+        }
+
+        #expect(viewModel.snapshot.packetRows.first?.domainText == "-")
+        #expect(viewModel.snapshot.packetRows.first?.clientText == "Example")
+
+        liveSession.send(.packetBatch([secondPacket], disposition: .append))
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == 2 &&
+                viewModel.snapshot.packetRows.first?.domainText == "api.example.com"
+        }
+
+        #expect(viewModel.snapshot.packetRows.map(\.domainText) == ["api.example.com", "api.example.com"])
+        #expect(viewModel.snapshot.packetRows.map(\.clientText) == ["Example", "Example"])
+        #expect(clientResolver.clientLookupCount == 1)
+    }
+
+    @Test func metadataUpdateRebuildsRowsWhenVisibleRowCountDoesNotChange() async {
+        let clientResolver = InspectorFakePacketClientResolver(defaultClient: makeClient())
+        let liveSession = InspectorFakeLiveSession()
+        let firstPacket = makePacket(
+            packetNumber: 1,
+            source: .live,
+            transportHint: .tcp,
+            destinationPort: 80,
+            streamID: 42
+        )
+        let filteredPacket = makePacket(
+            packetNumber: 2,
+            source: .live,
+            transportHint: .tcp,
+            destinationPort: 443,
+            streamID: 42,
+            sniDomainName: "api.example.com"
+        )
+        let viewModel = NetworkInspectorViewModel(
+            services: PacketryServiceRegistry(
+                core: InspectorFakeCore(
+                    interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                    liveSession: liveSession
+                ),
+                packetMetadataEnricher: PacketMetadataEnrichmentService(clientResolver: clientResolver)
+            ),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.performInitialLoadIfNeeded()
+        await viewModel.toggleLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        liveSession.send(.packetBatch([firstPacket], disposition: .append))
+
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == 1
+        }
+
+        viewModel.updateDisplayFilterText("port:80")
+        let generationAfterFilter = viewModel.snapshot.packetTableGeneration
+        liveSession.send(.packetBatch([filteredPacket], disposition: .append))
+
+        await waitUntil {
+            viewModel.snapshot.visiblePacketCount == 1 &&
+                viewModel.snapshot.packetRows.first?.domainText == "api.example.com"
+        }
+
+        #expect(viewModel.snapshot.totalPacketCount == 2)
+        #expect(viewModel.snapshot.packetTableGeneration > generationAfterFilter)
+        #expect(viewModel.snapshot.packetTableUpdatePlan == .reload)
+    }
+
+    @Test func metadataEnrichmentDoesNotResolveClientsForOfflinePackets() {
+        let clientResolver = InspectorFakePacketClientResolver(defaultClient: makeClient())
+        let service = PacketMetadataEnrichmentService(clientResolver: clientResolver)
+        let packet = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp)
+
+        let result = service.enrich([packet], source: .offline)
+
+        #expect(result.packets.first?.client == nil)
+        #expect(clientResolver.clientLookupCount == 0)
+    }
+
+    @Test func metadataEnrichmentExpiresIdleFlowBeforeReusingStreamID() {
+        let service = PacketMetadataEnrichmentService(
+            flowIdleTimeout: 1,
+            clientResolver: InspectorFakePacketClientResolver(defaultClient: nil)
+        )
+        let originalPacket = makePacket(
+            packetNumber: 1,
+            source: .offline,
+            transportHint: .tcp,
+            streamID: 77,
+            sniDomainName: "old.example.com"
+        )
+        let reusedStreamPacket = makePacket(
+            packetNumber: 3,
+            source: .offline,
+            transportHint: .tcp,
+            streamID: 77
+        )
+
+        _ = service.enrich([originalPacket], source: .offline)
+        let result = service.enrich([reusedStreamPacket], source: .offline)
+
+        #expect(result.packets.first?.sniDomainName == nil)
+        #expect(result.updates.isEmpty)
+    }
+
+    @Test func metadataEnrichmentClearsFlowAfterTCPTeardown() {
+        let service = PacketMetadataEnrichmentService(clientResolver: InspectorFakePacketClientResolver(defaultClient: nil))
+        let originalPacket = makePacket(
+            packetNumber: 1,
+            source: .offline,
+            transportHint: .tcp,
+            streamID: 88,
+            sniDomainName: "closed.example.com"
+        )
+        let finishPacket = makePacket(
+            packetNumber: 2,
+            source: .offline,
+            transportHint: .tcp,
+            streamID: 88,
+            transportDetailSummary: "TCP flags: FIN"
+        )
+        let reusedStreamPacket = makePacket(
+            packetNumber: 3,
+            source: .offline,
+            transportHint: .tcp,
+            streamID: 88
+        )
+
+        _ = service.enrich([originalPacket], source: .offline)
+        _ = service.enrich([finishPacket], source: .offline)
+        let result = service.enrich([reusedStreamPacket], source: .offline)
+
+        #expect(result.packets.first?.sniDomainName == nil)
+        #expect(result.updates.isEmpty)
+    }
+
+    @Test func metadataEnrichmentCapsPendingBackfillPacketIDs() {
+        let service = PacketMetadataEnrichmentService(
+            maxPendingPacketIDsPerFlow: 2,
+            clientResolver: InspectorFakePacketClientResolver(defaultClient: nil)
+        )
+        let firstPacket = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp, streamID: 55)
+        let secondPacket = makePacket(packetNumber: 2, source: .offline, transportHint: .tcp, streamID: 55)
+        let thirdPacket = makePacket(packetNumber: 3, source: .offline, transportHint: .tcp, streamID: 55)
+        let sniPacket = makePacket(
+            packetNumber: 4,
+            source: .offline,
+            transportHint: .tcp,
+            streamID: 55,
+            sniDomainName: "late.example.com"
+        )
+
+        _ = service.enrich([firstPacket, secondPacket, thirdPacket], source: .offline)
+        let result = service.enrich([sniPacket], source: .offline)
+
+        #expect(result.packets.first?.sniDomainName == "late.example.com")
+        #expect(result.updates.map(\.packetIDs) == [[secondPacket.id, thirdPacket.id]])
+    }
+
     @Test func packetRowsSkipTableUpdateWhenLiveAppendDoesNotMatchFilter() async {
         let firstPacket = makePacket(packetNumber: 1, source: .live, transportHint: .udp)
         let filteredPacket = makePacket(packetNumber: 2, source: .live, transportHint: .tcp)
@@ -357,6 +565,17 @@ struct NetworkInspectorViewModelTests {
         return defaults
     }
 
+    private func makeClient() -> PacketClient {
+        PacketClient(
+            pid: 123,
+            name: "Example",
+            displayName: "Example",
+            executablePath: "/Applications/Example.app/Contents/MacOS/Example",
+            bundleIdentifier: "com.example.app",
+            bundlePath: "/Applications/Example.app"
+        )
+    }
+
     private func makeInterface(id: String, displayName: String) -> CaptureInterfaceSummary {
         CaptureInterfaceSummary(
             id: id,
@@ -383,7 +602,11 @@ struct NetworkInspectorViewModelTests {
         transportHint: TransportProtocolHint,
         sourcePort: UInt16 = 1234,
         destinationPort: UInt16 = 80,
-        decodeStatus: PacketDecodeStatus = PacketDecodeStatus(kind: .complete)
+        streamID: UInt32? = 7,
+        decodeStatus: PacketDecodeStatus = PacketDecodeStatus(kind: .complete),
+        sniDomainName: String? = nil,
+        client: PacketClient? = nil,
+        transportDetailSummary: String? = nil
     ) -> PacketSummary {
         PacketSummary(
             packetNumber: packetNumber,
@@ -397,11 +620,16 @@ struct NetworkInspectorViewModelTests {
             ),
             originalLength: 128,
             capturedLength: 128,
-            streamID: 7,
+            streamID: streamID,
             infoSummary: "Packet \(packetNumber)",
-            layers: [PacketLayer(name: "Ethernet"), PacketLayer(name: transportHint.rawValue.uppercased())],
+            layers: [
+                PacketLayer(name: "Ethernet"),
+                PacketLayer(name: transportHint.rawValue.uppercased(), detailSummary: transportDetailSummary),
+            ],
             decodeStatus: decodeStatus,
-            captureMetadata: PacketCaptureMetadata(linkType: .ethernet, isTruncated: false)
+            captureMetadata: PacketCaptureMetadata(linkType: .ethernet, isTruncated: false),
+            sniDomainName: sniDomainName,
+            client: client
         )
     }
 
@@ -517,6 +745,25 @@ private final class InspectorFakeNetworkHelperTool: PacketryNetworkHelperToolMan
     }
 
     func openSystemSettings() {}
+}
+
+private final class InspectorFakePacketClientResolver: PacketClientResolving {
+    private let defaultClient: PacketClient?
+    private(set) var clientLookupCount = 0
+    private(set) var resetCount = 0
+
+    init(defaultClient: PacketClient?) {
+        self.defaultClient = defaultClient
+    }
+
+    func reset() {
+        resetCount += 1
+    }
+
+    func client(for packet: PacketSummary) -> PacketClient? {
+        clientLookupCount += 1
+        return defaultClient
+    }
 }
 
 private final class InspectorFakeLiveSession: LiveCaptureSessionProviding, @unchecked Sendable {

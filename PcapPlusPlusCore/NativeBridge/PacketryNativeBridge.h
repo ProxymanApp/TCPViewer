@@ -174,6 +174,7 @@ typedef NS_ENUM(NSInteger, PCPPNativeLiveSessionPhase) {
 @property (nonatomic, copy, readonly) NSArray<PCPPNativePacketLayerDescriptor *> *layers;
 @property (nonatomic, strong, readonly) PCPPNativeDecodeStatusDescriptor *decodeStatus;
 @property (nonatomic, strong, readonly) PCPPNativePacketCaptureMetadataDescriptor *captureMetadata;
+@property (nonatomic, copy, readonly, nullable) NSString *sniDomainName;
 
 - (instancetype)initWithIdentifier:(unsigned long long)identifier
                        packetNumber:(unsigned long long)packetNumber
@@ -188,7 +189,8 @@ typedef NS_ENUM(NSInteger, PCPPNativeLiveSessionPhase) {
                         infoSummary:(NSString *)infoSummary
                              layers:(NSArray<PCPPNativePacketLayerDescriptor *> *)layers
                        decodeStatus:(PCPPNativeDecodeStatusDescriptor *)decodeStatus
-                    captureMetadata:(PCPPNativePacketCaptureMetadataDescriptor *)captureMetadata NS_DESIGNATED_INITIALIZER;
+                    captureMetadata:(PCPPNativePacketCaptureMetadataDescriptor *)captureMetadata
+                       sniDomainName:(nullable NSString *)sniDomainName NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
 
 @end
