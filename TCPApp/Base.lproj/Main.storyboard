@@ -1,7 +1,9 @@
-<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<document type="com.apple.InterfaceBuilder3.Cocoa.Storyboard.XIB" version="3.0" toolsVersion="11134" targetRuntime="MacOSX.Cocoa" propertyAccessControl="none" useAutolayout="YES">
+<?xml version="1.0" encoding="UTF-8"?>
+<document type="com.apple.InterfaceBuilder3.Cocoa.Storyboard.XIB" version="3.0" toolsVersion="24765" targetRuntime="MacOSX.Cocoa" propertyAccessControl="none" useAutolayout="YES" initialViewController="Wgo-J8-nML">
     <dependencies>
-        <plugIn identifier="com.apple.InterfaceBuilder.CocoaPlugin" version="11134"/>
+        <plugIn identifier="com.apple.InterfaceBuilder.CocoaPlugin" version="24765"/>
+        <capability name="NSView safe area layout guides" minToolsVersion="12.0"/>
+        <capability name="documents saved in the Xcode 8 format" minToolsVersion="8.0"/>
     </dependencies>
     <scenes>
         <!--Application-->
@@ -10,11 +12,11 @@
                 <application id="hnw-xV-0zn" sceneMemberID="viewController">
                     <menu key="mainMenu" title="Main Menu" systemMenu="main" id="AYu-sK-qS6">
                         <items>
-                            <menuItem title="Packetman" id="1Xt-HY-uBw">
+                            <menuItem title="TCPApp" id="1Xt-HY-uBw">
                                 <modifierMask key="keyEquivalentModifierMask"/>
-                                <menu key="submenu" title="Packetman" systemMenu="apple" id="uQy-DD-JDr">
+                                <menu key="submenu" title="TCPApp" systemMenu="apple" id="uQy-DD-JDr">
                                     <items>
-                                        <menuItem title="About Packetman" id="5kV-Vb-QxS">
+                                        <menuItem title="About TCPApp" id="5kV-Vb-QxS">
                                             <modifierMask key="keyEquivalentModifierMask"/>
                                             <connections>
                                                 <action selector="orderFrontStandardAboutPanel:" target="Ady-hI-5gd" id="Exp-CZ-Vem"/>
@@ -28,7 +30,7 @@
                                             <menu key="submenu" title="Services" systemMenu="services" id="hz9-B4-Xy5"/>
                                         </menuItem>
                                         <menuItem isSeparatorItem="YES" id="4je-JR-u6R"/>
-                                        <menuItem title="Hide Packetman" keyEquivalent="h" id="Olw-nP-bQN">
+                                        <menuItem title="Hide TCPApp" keyEquivalent="h" id="Olw-nP-bQN">
                                             <connections>
                                                 <action selector="hide:" target="Ady-hI-5gd" id="PnN-Uc-m68"/>
                                             </connections>
@@ -46,7 +48,7 @@
                                             </connections>
                                         </menuItem>
                                         <menuItem isSeparatorItem="YES" id="kCx-OE-vgT"/>
-                                        <menuItem title="Quit Packetman" keyEquivalent="q" id="4sb-4s-VLi">
+                                        <menuItem title="Quit TCPApp" keyEquivalent="q" id="4sb-4s-VLi">
                                             <connections>
                                                 <action selector="terminate:" target="Ady-hI-5gd" id="Te7-pn-YzF"/>
                                             </connections>
@@ -111,7 +113,7 @@
                                         </menuItem>
                                         <menuItem title="Print…" keyEquivalent="p" id="aTl-1u-JFS">
                                             <connections>
-                                                <action selector="printDocument:" target="Ady-hI-5gd" id="qaZ-4w-aoO"/>
+                                                <action selector="print:" target="Ady-hI-5gd" id="qaZ-4w-aoO"/>
                                             </connections>
                                         </menuItem>
                                     </items>
@@ -659,7 +661,7 @@
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <menu key="submenu" title="Help" systemMenu="help" id="F2S-fz-NVQ">
                                     <items>
-                                        <menuItem title="Packetman Help" keyEquivalent="?" id="FKE-Sm-Kum">
+                                        <menuItem title="TCPApp Help" keyEquivalent="?" id="FKE-Sm-Kum">
                                             <connections>
                                                 <action selector="showHelp:" target="Ady-hI-5gd" id="y7X-2Q-9no"/>
                                             </connections>
@@ -673,59 +675,117 @@
                         <outlet property="delegate" destination="Voe-Tx-rLC" id="PrD-fu-P6m"/>
                     </connections>
                 </application>
-                <customObject id="Voe-Tx-rLC" customClass="AppDelegate" customModuleProvider="target"/>
+                <customObject id="Voe-Tx-rLC" customClass="AppDelegate" customModule="TCPApp" customModuleProvider="target"/>
                 <customObject id="YLy-65-1bz" customClass="NSFontManager"/>
                 <customObject id="Ady-hI-5gd" userLabel="First Responder" customClass="NSResponder" sceneMemberID="firstResponder"/>
             </objects>
-            <point key="canvasLocation" x="75" y="0.0"/>
+            <point key="canvasLocation" x="252" y="644"/>
         </scene>
         <!--Window Controller-->
-        <scene sceneID="R2V-B0-nI4">
+        <scene sceneID="8QZ-aa-0tT">
             <objects>
-                <windowController storyboardIdentifier="Document Window Controller" id="jGA-0Y-lOj" sceneMemberID="viewController">
-                    <window key="window" title="Window" allowsToolTipsWhenApplicationIsInactive="NO" autorecalculatesKeyViewLoop="NO" releasedWhenClosed="NO" visibleAtLaunch="NO" animationBehavior="default" id="Ckk-yw-fiv">
-                        <windowStyleMask key="styleMask" titled="YES" closable="YES" miniaturizable="YES" resizable="YES"/>
+                <windowController id="Wgo-J8-nML" sceneMemberID="viewController">
+                    <window key="window" title="Window" allowsToolTipsWhenApplicationIsInactive="NO" autorecalculatesKeyViewLoop="NO" releasedWhenClosed="NO" visibleAtLaunch="NO" frameAutosaveName="" animationBehavior="default" id="A2i-wJ-zWt">
+                        <windowStyleMask key="styleMask" titled="YES" closable="YES" miniaturizable="YES" resizable="YES" fullSizeContentView="YES"/>
                         <windowPositionMask key="initialPositionMask" leftStrut="YES" rightStrut="YES" topStrut="YES" bottomStrut="YES"/>
-                        <rect key="contentRect" x="196" y="240" width="480" height="270"/>
-                        <rect key="screenRect" x="0.0" y="0.0" width="1680" height="1027"/>
+                        <rect key="contentRect" x="425" y="462" width="480" height="270"/>
+                        <rect key="screenRect" x="0.0" y="0.0" width="2560" height="1410"/>
+                        <view key="contentView" id="r4V-3p-YOV">
+                            <rect key="frame" x="0.0" y="0.0" width="480" height="270"/>
+                            <autoresizingMask key="autoresizingMask"/>
+                        </view>
+                        <toolbar key="toolbar" implicitIdentifier="09D11707-F4A3-4FD5-970E-AC5832E91C2B" autosavesConfiguration="NO" showsBaselineSeparator="NO" displayMode="iconOnly" sizeMode="regular" id="3Gy-fj-sUD">
+                            <allowedToolbarItems>
+                                <toolbarItem implicitItemIdentifier="NSToolbarShowColorsItem" id="H4M-Ht-sLa"/>
+                                <toolbarItem implicitItemIdentifier="NSToolbarShowFontsItem" id="rrh-km-tro"/>
+                                <toolbarItem implicitItemIdentifier="NSToolbarPrintItem" id="K7u-Of-9NT"/>
+                                <toolbarItem implicitItemIdentifier="NSToolbarSpaceItem" id="q9q-5R-f3W"/>
+                                <toolbarItem implicitItemIdentifier="NSToolbarFlexibleSpaceItem" id="t9f-FR-Bhb"/>
+                            </allowedToolbarItems>
+                            <defaultToolbarItems>
+                                <toolbarItem reference="H4M-Ht-sLa"/>
+                                <toolbarItem reference="rrh-km-tro"/>
+                                <toolbarItem reference="t9f-FR-Bhb"/>
+                                <toolbarItem reference="K7u-Of-9NT"/>
+                            </defaultToolbarItems>
+                        </toolbar>
                         <connections>
-                            <outlet property="delegate" destination="jGA-0Y-lOj" id="98r-iN-zZc"/>
+                            <outlet property="delegate" destination="Wgo-J8-nML" id="7hh-lL-pk3"/>
                         </connections>
                     </window>
                     <connections>
-                        <segue destination="5gI-5U-AMq" kind="relationship" relationship="window.shadowedContentViewController" id="nsd-lR-9xd"/>
+                        <segue destination="3GA-NN-cFJ" kind="relationship" relationship="window.shadowedContentViewController" id="rNj-KB-ked"/>
                     </connections>
                 </windowController>
-                <customObject id="6f7-a7-6o1" userLabel="First Responder" customClass="NSResponder" sceneMemberID="firstResponder"/>
+                <customObject id="4nP-7j-00k" userLabel="First Responder" customClass="NSResponder" sceneMemberID="firstResponder"/>
             </objects>
-            <point key="canvasLocation" x="75" y="250"/>
+            <point key="canvasLocation" x="145" y="1172"/>
+        </scene>
+        <!--Split View Controller-->
+        <scene sceneID="BpA-10-sse">
+            <objects>
+                <splitViewController id="3GA-NN-cFJ" sceneMemberID="viewController">
+                    <splitViewItems>
+                        <splitViewItem canCollapse="YES" holdingPriority="260" behavior="sidebar" id="btc-xd-RcN"/>
+                        <splitViewItem id="trv-Hg-3Do"/>
+                        <splitViewItem canCollapse="YES" holdingPriority="261" behavior="inspector" id="mB7-1z-jXn"/>
+                    </splitViewItems>
+                    <splitView key="splitView" dividerStyle="thin" vertical="YES" id="5oB-kn-Lib">
+                        <rect key="frame" x="0.0" y="0.0" width="450" height="300"/>
+                        <autoresizingMask key="autoresizingMask"/>
+                    </splitView>
+                    <connections>
+                        <segue destination="hLz-EB-5J3" kind="relationship" relationship="splitItems" id="YtD-hn-eTF"/>
+                        <segue destination="7xL-dE-ECu" kind="relationship" relationship="splitItems" id="EQz-Q8-nVN"/>
+                        <segue destination="NbU-xo-F9O" kind="relationship" relationship="splitItems" id="13B-l7-j2d"/>
+                    </connections>
+                </splitViewController>
+                <customObject id="6IK-3N-NbS" userLabel="First Responder" customClass="NSResponder" sceneMemberID="firstResponder"/>
+            </objects>
+            <point key="canvasLocation" x="837" y="1176"/>
         </scene>
         <!--View Controller-->
-        <scene sceneID="hIz-AP-VOD">
+        <scene sceneID="jpg-ro-E8J">
             <objects>
-                <viewController id="5gI-5U-AMq" customClass="ViewController" customModuleProvider="target" sceneMemberID="viewController">
-                    <view key="view" id="ERx-hH-rdd">
-                        <rect key="frame" x="0.0" y="0.0" width="480" height="270"/>
+                <viewController id="hLz-EB-5J3" sceneMemberID="viewController">
+                    <view key="view" id="Ioo-hy-OB8">
+                        <rect key="frame" x="0.0" y="0.0" width="149" height="300"/>
                         <autoresizingMask key="autoresizingMask"/>
-                        <subviews>
-                            <textField verticalHuggingPriority="750" horizontalCompressionResistancePriority="250" preferredMaxLayoutWidth="246" translatesAutoresizingMaskIntoConstraints="NO" id="TyV-c9-G0C">
-                                <rect key="frame" x="115" y="124" width="250" height="22"/>
-                                <textFieldCell key="cell" sendsActionOnEndEditing="YES" alignment="center" title="Your document contents here" id="Cc7-nU-5Mv">
-                                    <font key="font" metaFont="system" size="18"/>
-                                    <color key="textColor" name="controlTextColor" catalog="System" colorSpace="catalog"/>
-                                    <color key="backgroundColor" name="controlColor" catalog="System" colorSpace="catalog"/>
-                                </textFieldCell>
-                            </textField>
-                        </subviews>
-                        <constraints>
-                            <constraint firstAttribute="centerY" secondItem="TyV-c9-G0C" secondAttribute="centerY" id="Rxv-Yd-F43"/>
-                            <constraint firstAttribute="centerX" secondItem="TyV-c9-G0C" secondAttribute="centerX" id="Zn4-Y4-lbg"/>
-                        </constraints>
+                        <viewLayoutGuide key="safeArea" id="pa6-CQ-Vs5"/>
+                        <viewLayoutGuide key="layoutMargins" id="mGv-vC-ySK"/>
                     </view>
                 </viewController>
-                <customObject id="2Tp-Fl-jBw" userLabel="First Responder" customClass="NSResponder" sceneMemberID="firstResponder"/>
+                <customObject id="WAx-lc-mVB" userLabel="First Responder" customClass="NSResponder" sceneMemberID="firstResponder"/>
             </objects>
-            <point key="canvasLocation" x="75" y="655"/>
+            <point key="canvasLocation" x="1357" y="990"/>
+        </scene>
+        <!--View Controller-->
+        <scene sceneID="NU5-VY-Ghp">
+            <objects>
+                <viewController id="7xL-dE-ECu" sceneMemberID="viewController">
+                    <view key="view" id="4Uh-nK-xph">
+                        <rect key="frame" x="0.0" y="0.0" width="302" height="300"/>
+                        <autoresizingMask key="autoresizingMask"/>
+                        <viewLayoutGuide key="safeArea" id="CbG-5V-gCy"/>
+                        <viewLayoutGuide key="layoutMargins" id="YLu-J6-EJz"/>
+                    </view>
+                </viewController>
+                <customObject id="6xx-3Q-vhz" userLabel="First Responder" customClass="NSResponder" sceneMemberID="firstResponder"/>
+            </objects>
+            <point key="canvasLocation" x="1433" y="1362"/>
+        </scene>
+        <!--Packet Inspector View Controller-->
+        <scene sceneID="eg4-y4-6p5">
+            <objects>
+                <viewController id="NbU-xo-F9O" customClass="PacketInspectorViewController" customModule="TCPApp" customModuleProvider="target" sceneMemberID="viewController">
+                    <view key="view" id="ejZ-qe-1Xt">
+                        <rect key="frame" x="0.0" y="0.0" width="157" height="300"/>
+                        <autoresizingMask key="autoresizingMask"/>
+                    </view>
+                </viewController>
+                <customObject id="Fck-zE-tT4" userLabel="First Responder" customClass="NSResponder" sceneMemberID="firstResponder"/>
+            </objects>
+            <point key="canvasLocation" x="1360.5" y="1753"/>
         </scene>
     </scenes>
 </document>

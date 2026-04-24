@@ -1,6 +1,6 @@
 //
 //  ViewController.swift
-//  Packetman
+//  TCPApp
 //
 //  Created by nghiatran on 24/4/26.
 //
