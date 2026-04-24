@@ -173,7 +173,12 @@ final class PacketInspectorViewController: NSViewController {
 
     private func makeOverviewView(state: PacketInspectorRenderState) -> NSView {
         guard let packet = state.selectedPacket else {
-            return PacketmanUI.placeholder(title: "No Packet Selected", imageName: "sidebar.trailing", message: state.statusMessage)
+            return PacketmanUI.placeholder(
+                title: "No Packet Selected",
+                imageName: "sidebar.trailing",
+                message: state.statusMessage,
+                placement: .top
+            )
         }
 
         return scrollView(for: sectionStack([
@@ -215,7 +220,12 @@ final class PacketInspectorViewController: NSViewController {
         }
 
         guard let inspection = state.inspection else {
-            return PacketmanUI.placeholder(title: "Layers", imageName: "point.3.connected.trianglepath.dotted", message: state.statusMessage)
+            return PacketmanUI.placeholder(
+                title: "Layers",
+                imageName: "point.3.connected.trianglepath.dotted",
+                message: state.statusMessage,
+                placement: .top
+            )
         }
 
         let rows = inspection.detailNodes.map { detailRow($0, depth: 0, selectedNodeID: state.selectedDetailNodeID) }
@@ -225,7 +235,12 @@ final class PacketInspectorViewController: NSViewController {
     private func makeHexView(state: PacketInspectorRenderState) -> NSView {
         guard let inspection = state.inspection else {
             hexView = nil
-            return PacketmanUI.placeholder(title: "Hex", imageName: "binary", message: "Select a packet to inspect raw bytes.")
+            return PacketmanUI.placeholder(
+                title: "Hex",
+                imageName: "binary",
+                message: "Select a packet to inspect raw bytes.",
+                placement: .top
+            )
         }
 
         let hexView = self.hexView ?? PacketHexFiendView()
@@ -236,7 +251,12 @@ final class PacketInspectorViewController: NSViewController {
 
     private func makeStreamView(state: PacketInspectorRenderState) -> NSView {
         guard let packet = state.selectedPacket else {
-            return PacketmanUI.placeholder(title: "Stream", imageName: "arrow.left.arrow.right", message: "Select a packet to inspect stream context.")
+            return PacketmanUI.placeholder(
+                title: "Stream",
+                imageName: "arrow.left.arrow.right",
+                message: "Select a packet to inspect stream context.",
+                placement: .top
+            )
         }
 
         return scrollView(for: sectionStack([
@@ -250,7 +270,12 @@ final class PacketInspectorViewController: NSViewController {
 
     private func makeNotesView(state: PacketInspectorRenderState) -> NSView {
         guard let packet = state.selectedPacket else {
-            return PacketmanUI.placeholder(title: "Notes", imageName: "note.text", message: "Select a packet to view capture comments.")
+            return PacketmanUI.placeholder(
+                title: "Notes",
+                imageName: "note.text",
+                message: "Select a packet to view capture comments.",
+                placement: .top
+            )
         }
 
         return scrollView(for: sectionStack([
@@ -268,7 +293,11 @@ final class PacketInspectorViewController: NSViewController {
         scrollView.drawsBackground = false
         scrollView.documentView = documentView
         documentView.translatesAutoresizingMaskIntoConstraints = false
-        documentView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor).isActive = true
+        NSLayoutConstraint.activate([
+            documentView.topAnchor.constraint(equalTo: scrollView.contentView.topAnchor),
+            documentView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
+            documentView.heightAnchor.constraint(greaterThanOrEqualTo: scrollView.contentView.heightAnchor),
+        ])
         return scrollView
     }
 

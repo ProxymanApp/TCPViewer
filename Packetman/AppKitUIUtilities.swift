@@ -1,6 +1,11 @@
 import AppKit
 
 enum PacketmanUI {
+    enum PlaceholderPlacement {
+        case center
+        case top
+    }
+
     static func image(_ systemName: String) -> NSImage? {
         NSImage(systemSymbolName: systemName, accessibilityDescription: nil)
     }
@@ -21,7 +26,12 @@ enum PacketmanUI {
         return box
     }
 
-    static func placeholder(title: String, imageName: String, message: String) -> NSView {
+    static func placeholder(
+        title: String,
+        imageName: String,
+        message: String,
+        placement: PlaceholderPlacement = .center
+    ) -> NSView {
         let imageView = NSImageView(image: image(imageName) ?? NSImage())
         imageView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 42, weight: .regular)
         imageView.contentTintColor = .secondaryLabelColor
@@ -41,13 +51,19 @@ enum PacketmanUI {
 
         let container = NSView()
         container.addSubview(stack)
-        NSLayoutConstraint.activate([
+        var constraints = [
             stack.centerXAnchor.constraint(equalTo: container.centerXAnchor),
-            stack.centerYAnchor.constraint(equalTo: container.centerYAnchor),
             stack.leadingAnchor.constraint(greaterThanOrEqualTo: container.leadingAnchor, constant: 24),
             stack.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -24),
             messageLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 420),
-        ])
+        ]
+        switch placement {
+        case .center:
+            constraints.append(stack.centerYAnchor.constraint(equalTo: container.centerYAnchor))
+        case .top:
+            constraints.append(stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 36))
+        }
+        NSLayoutConstraint.activate(constraints)
         return container
     }
 

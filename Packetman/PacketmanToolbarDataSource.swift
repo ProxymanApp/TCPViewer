@@ -32,9 +32,9 @@ final class PacketmanToolbarDataSource: NSObject {
     weak var delegate: PacketmanToolbarDataSourceDelegate?
 
     private let viewModel = PacketmanToolbarViewModel()
-    private let interfacePopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 190, height: 30), pullsDown: false)
-    private let captureButton = NSButton(frame: NSRect(x: 0, y: 0, width: 32, height: 32))
-    private let statusView = PacketmanToolbarStatusView(frame: NSRect(x: 0, y: 0, width: 420, height: 26))
+    private let interfacePopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 150, height: 30), pullsDown: false)
+    private let captureButton = NSButton(frame: NSRect(x: 0, y: 0, width: 86, height: 30))
+    private let statusView = PacketmanToolbarStatusView(frame: NSRect(x: 0, y: 0, width: 360, height: 28))
     private let sharePopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 98, height: 30), pullsDown: true)
     private let inspectorButton = NSButton(frame: NSRect(x: 0, y: 0, width: 34, height: 30))
 
@@ -86,14 +86,22 @@ final class PacketmanToolbarDataSource: NSObject {
     }
 
     private func configureToolbarViews() {
+        constrainToolbarView(interfacePopup, width: 150, height: 30)
+        constrainToolbarView(captureButton, width: 86, height: 30)
+        constrainToolbarView(statusView, width: 360, height: 28)
+        constrainToolbarView(sharePopup, width: 98, height: 30)
+        constrainToolbarView(inspectorButton, width: 34, height: 30)
+
         interfacePopup.target = self
         interfacePopup.action = #selector(interfaceChanged(_:))
         interfacePopup.controlSize = .regular
 
         captureButton.target = self
         captureButton.action = #selector(captureButtonPressed(_:))
-        captureButton.bezelStyle = .circular
-        captureButton.isBordered = false
+        captureButton.bezelStyle = .texturedRounded
+        captureButton.controlSize = .regular
+        captureButton.imagePosition = .imageLeading
+        captureButton.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .medium)
 
         sharePopup.controlSize = .regular
         sharePopup.addItem(withTitle: "Share")
@@ -109,6 +117,14 @@ final class PacketmanToolbarDataSource: NSObject {
         inspectorButton.image = PacketmanUI.image("sidebar.trailing")
         inspectorButton.imagePosition = .imageOnly
         inspectorButton.toolTip = "Toggle Inspector View"
+    }
+
+    private func constrainToolbarView(_ view: NSView, width: CGFloat, height: CGFloat) {
+        view.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            view.widthAnchor.constraint(equalToConstant: width),
+            view.heightAnchor.constraint(equalToConstant: height),
+        ])
     }
 
     private func renderInterfacePopup() {
@@ -136,13 +152,11 @@ final class PacketmanToolbarDataSource: NSObject {
 
     private func renderCaptureButton() {
         captureButton.image = PacketmanUI.image(viewModel.captureButtonImageName)
-        captureButton.contentTintColor = .white
+        captureButton.title = viewModel.captureButtonTitle
+        captureButton.contentTintColor = viewModel.captureButtonTint
         captureButton.toolTip = viewModel.captureButtonTitle
         captureButton.isEnabled = viewModel.canUseCaptureButton
         captureButton.alphaValue = viewModel.canUseCaptureButton ? 1 : 0.45
-        captureButton.wantsLayer = true
-        captureButton.layer?.cornerRadius = 16
-        captureButton.layer?.backgroundColor = viewModel.captureButtonTint.cgColor
     }
 
     private func renderSharePopup() {
@@ -371,6 +385,8 @@ private final class PacketmanToolbarStatusView: NSView {
         dot.wantsLayer = true
         dot.layer?.cornerRadius = 4
         dot.translatesAutoresizingMaskIntoConstraints = false
+        statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        emphasizedLabel.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
 
         let stack = NSStackView(views: [dot, statusLabel, emphasizedLabel])
         stack.orientation = .horizontal
@@ -380,12 +396,12 @@ private final class PacketmanToolbarStatusView: NSView {
         addSubview(stack)
 
         NSLayoutConstraint.activate([
-            widthAnchor.constraint(greaterThanOrEqualToConstant: 320),
-            heightAnchor.constraint(equalToConstant: 26),
+            widthAnchor.constraint(greaterThanOrEqualToConstant: 300),
+            heightAnchor.constraint(equalToConstant: 28),
             dot.widthAnchor.constraint(equalToConstant: 8),
             dot.heightAnchor.constraint(equalToConstant: 8),
             stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 11),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -11),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -11),
             stack.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }

@@ -14,7 +14,11 @@ final class PacketmanWindowController: NSWindowController {
         self.rootViewController = PacketmanRootViewController(viewModel: viewModel)
         let window = NSWindow(contentViewController: rootViewController)
         window.title = initialURL?.lastPathComponent ?? "Packetman"
-        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
+        window.titlebarAppearsTransparent = true
+        if #available(macOS 11.0, *) {
+            window.titlebarSeparatorStyle = .none
+        }
         window.setContentSize(NSSize(width: 1180, height: 760))
         window.minSize = NSSize(width: 1180, height: 760)
         window.isReleasedWhenClosed = false

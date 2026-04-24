@@ -61,11 +61,13 @@ final class SidebarViewController: NSViewController {
     private let viewModel = SidebarViewModel()
     private let tableView = NSTableView()
     private let scrollView = NSScrollView()
+    private let effectView = NSVisualEffectView()
     private var isSyncingSelection = false
 
     override func loadView() {
+        view = effectView
         setupTable()
-        view = scrollView
+        PacketmanUI.pin(scrollView, to: effectView)
     }
 
     func render(snapshot: NetworkInspectorSnapshot) {
@@ -81,6 +83,10 @@ final class SidebarViewController: NSViewController {
     }
 
     private func setupTable() {
+        effectView.blendingMode = .behindWindow
+        effectView.material = .sidebar
+        effectView.state = .active
+
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("sidebar"))
         column.title = ""
         tableView.addTableColumn(column)
@@ -91,11 +97,12 @@ final class SidebarViewController: NSViewController {
         tableView.allowsEmptySelection = false
         tableView.allowsMultipleSelection = false
         tableView.rowHeight = 28
+        tableView.backgroundColor = .clear
 
         scrollView.documentView = tableView
         scrollView.hasVerticalScroller = false
-        scrollView.drawsBackground = true
-        scrollView.backgroundColor = .windowBackgroundColor
+        scrollView.drawsBackground = false
+        scrollView.backgroundColor = .clear
     }
 }
 
