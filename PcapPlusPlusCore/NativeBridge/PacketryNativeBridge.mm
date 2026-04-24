@@ -4,11 +4,14 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <pcapplusplus/ArpLayer.h>
@@ -31,6 +34,7 @@
 #include <pcapplusplus/SSLCommon.h>
 #include <pcapplusplus/SSLHandshake.h>
 #include <pcapplusplus/SSLLayer.h>
+#include <pcapplusplus/TcpReassembly.h>
 #include <pcapplusplus/TcpLayer.h>
 #include <pcapplusplus/UdpLayer.h>
 
@@ -364,11 +368,190 @@ NSString * _Nullable SniDomainNameForPacket(const pcpp::Packet &packet)
     return nil;
 }
 
+std::optional<std::string> SniDomainNameForTLSRecordBytes(const uint8_t *data, size_t dataLength)
+{
+    // Parses buffered TLS records until a complete ClientHello exposes SNI.
+    static constexpr size_t kTLSRecordHeaderLength = 5;
+    static constexpr size_t kMaxTLSRecordLength = 18 * 1024;
+
+    size_t offset = 0;
+    while (offset + kTLSRecordHeaderLength <= dataLength) {
+        const uint8_t contentType = data[offset];
+        const uint16_t recordVersion = (static_cast<uint16_t>(data[offset + 1]) << 8) | data[offset + 2];
+        const uint16_t recordLength = (static_cast<uint16_t>(data[offset + 3]) << 8) | data[offset + 4];
+
+        if ((recordVersion & 0xff00) != 0x0300 || recordLength == 0 || recordLength > kMaxTLSRecordLength) {
+            return std::nullopt;
+        }
+
+        const size_t totalRecordLength = kTLSRecordHeaderLength + recordLength;
+        if (offset + totalRecordLength > dataLength) {
+            return std::nullopt;
+        }
+
+        if (contentType == 22) {
+            auto record = std::make_unique<uint8_t[]>(totalRecordLength);
+            std::memcpy(record.get(), data + offset, totalRecordLength);
+            pcpp::SSLHandshakeLayer handshakeLayer(record.release(), totalRecordLength, nullptr, nullptr);
+            auto *clientHelloMessage = handshakeLayer.getHandshakeMessageOfType<pcpp::SSLClientHelloMessage>();
+            if (clientHelloMessage != nullptr) {
+                auto *sniExtension = clientHelloMessage->getExtensionOfType<pcpp::SSLServerNameIndicationExtension>();
+                if (sniExtension != nullptr) {
+                    auto hostName = sniExtension->getHostName();
+                    if (!hostName.empty()) {
+                        return hostName;
+                    }
+                }
+            }
+        }
+
+        offset += totalRecordLength;
+    }
+
+    return std::nullopt;
+}
+
+class SniReassemblyState {
+public:
+    SniReassemblyState()
+        : tcpReassembly_(HandleTcpData,
+                         this,
+                         nullptr,
+                         HandleConnectionEnd,
+                         pcpp::TcpReassemblyConfiguration(true, 5, 30, 32)) {}
+
+    std::optional<std::string> domainNameForPacket(const pcpp::RawPacket &rawPacket, uint32_t streamIdentifier)
+    {
+        // Reassembles the current TCP flow only until a bounded ClientHello SNI is found.
+        if (streamIdentifier != 0) {
+            if (auto domain = domainByStreamID_.find(streamIdentifier); domain != domainByStreamID_.end()) {
+                return domain->second;
+            }
+        }
+
+        lastDomainName_.reset();
+        tcpReassembly_.reassemblePacket(const_cast<pcpp::RawPacket *>(&rawPacket));
+        if (!lastDomainName_.has_value()) {
+            return std::nullopt;
+        }
+
+        if (streamIdentifier != 0) {
+            rememberDomain(streamIdentifier, *lastDomainName_);
+        }
+        return lastDomainName_;
+    }
+
+private:
+    struct SideKey {
+        uint32_t flowKey;
+        int8_t side;
+
+        bool operator==(const SideKey &other) const
+        {
+            return flowKey == other.flowKey && side == other.side;
+        }
+    };
+
+    struct SideKeyHash {
+        size_t operator()(const SideKey &key) const
+        {
+            return (static_cast<size_t>(key.flowKey) << 8) ^ static_cast<uint8_t>(key.side);
+        }
+    };
+
+    static constexpr size_t kMaxBufferedClientHelloBytes = 64 * 1024;
+    static constexpr size_t kMaxRememberedDomains = 100'000;
+
+    pcpp::TcpReassembly tcpReassembly_;
+    std::optional<std::string> lastDomainName_;
+    std::unordered_map<SideKey, std::vector<uint8_t>, SideKeyHash> bufferedBytesBySide_;
+    std::unordered_set<SideKey, SideKeyHash> rejectedSides_;
+    std::unordered_set<uint32_t> completedFlowKeys_;
+    std::unordered_map<uint32_t, std::string> domainByStreamID_;
+    std::deque<uint32_t> domainStreamOrder_;
+
+    static void HandleTcpData(int8_t side, const pcpp::TcpStreamData &tcpData, void *userCookie)
+    {
+        auto *state = static_cast<SniReassemblyState *>(userCookie);
+        if (state != nullptr) {
+            state->handleTcpData(side, tcpData);
+        }
+    }
+
+    static void HandleConnectionEnd(const pcpp::ConnectionData &connectionData,
+                                    pcpp::TcpReassembly::ConnectionEndReason,
+                                    void *userCookie)
+    {
+        auto *state = static_cast<SniReassemblyState *>(userCookie);
+        if (state != nullptr) {
+            state->removeBuffers(connectionData.flowKey);
+            state->completedFlowKeys_.erase(connectionData.flowKey);
+        }
+    }
+
+    void handleTcpData(int8_t side, const pcpp::TcpStreamData &tcpData)
+    {
+        const uint32_t flowKey = tcpData.getConnectionData().flowKey;
+        if (completedFlowKeys_.find(flowKey) != completedFlowKeys_.end() || tcpData.getDataLength() == 0 || tcpData.isBytesMissing()) {
+            return;
+        }
+
+        SideKey key{flowKey, side};
+        if (rejectedSides_.find(key) != rejectedSides_.end()) {
+            return;
+        }
+
+        auto &buffer = bufferedBytesBySide_[key];
+        if (buffer.empty() && tcpData.getData()[0] != 22) {
+            rejectedSides_.insert(key);
+            bufferedBytesBySide_.erase(key);
+            return;
+        }
+
+        if (buffer.size() + tcpData.getDataLength() > kMaxBufferedClientHelloBytes) {
+            rejectedSides_.insert(key);
+            bufferedBytesBySide_.erase(key);
+            return;
+        }
+
+        buffer.insert(buffer.end(), tcpData.getData(), tcpData.getData() + tcpData.getDataLength());
+        if (auto domainName = SniDomainNameForTLSRecordBytes(buffer.data(), buffer.size())) {
+            lastDomainName_ = *domainName;
+            completedFlowKeys_.insert(flowKey);
+            removeBuffers(flowKey);
+        }
+    }
+
+    void rememberDomain(uint32_t streamIdentifier, const std::string &domainName)
+    {
+        if (domainByStreamID_.find(streamIdentifier) == domainByStreamID_.end()) {
+            domainStreamOrder_.push_back(streamIdentifier);
+            if (domainStreamOrder_.size() > kMaxRememberedDomains) {
+                uint32_t removedStreamID = domainStreamOrder_.front();
+                domainStreamOrder_.pop_front();
+                domainByStreamID_.erase(removedStreamID);
+            }
+        }
+
+        domainByStreamID_[streamIdentifier] = domainName;
+    }
+
+    void removeBuffers(uint32_t flowKey)
+    {
+        for (int8_t side = 0; side < 2; side++) {
+            SideKey key{flowKey, side};
+            bufferedBytesBySide_.erase(key);
+            rejectedSides_.erase(key);
+        }
+    }
+};
+
 PCPPNativePacketSummaryDescriptor *MakePacketSummary(const pcpp::RawPacket &rawPacket,
                                                      unsigned long long identifier,
                                                      NSString * _Nullable interfaceIdentifier,
                                                      NSString * _Nullable interfaceName,
-                                                     NSString * _Nullable packetComment)
+                                                     NSString * _Nullable packetComment,
+                                                     SniReassemblyState *sniReassembly = nullptr)
 {
     try {
         pcpp::Packet packet(const_cast<pcpp::RawPacket *>(&rawPacket), false);
@@ -386,6 +569,12 @@ PCPPNativePacketSummaryDescriptor *MakePacketSummary(const pcpp::RawPacket &rawP
 
         auto *decodeDescriptor = [[PCPPNativeDecodeStatusDescriptor alloc] initWithKind:decodeStatus.first
                                                                                   reason:decodeStatus.second];
+        NSString *sniDomainName = SniDomainNameForPacket(packet);
+        if (sniDomainName == nil && sniReassembly != nullptr && packet.isPacketOfType(pcpp::TCP)) {
+            if (auto reassembledDomainName = sniReassembly->domainNameForPacket(rawPacket, streamHash)) {
+                sniDomainName = MakeNSString(*reassembledDomainName);
+            }
+        }
 
         return [[PCPPNativePacketSummaryDescriptor alloc] initWithIdentifier:identifier
                                                                  packetNumber:identifier
@@ -398,10 +587,10 @@ PCPPNativePacketSummaryDescriptor *MakePacketSummary(const pcpp::RawPacket &rawP
                                                                capturedLength:rawPacket.getRawDataLen()
                                                              streamIdentifier:streamIdentifier
                                                                   infoSummary:InfoSummaryForPacket(packet, rawPacket)
-                                                                       layers:MapLayers(packet)
+                                                                      layers:MapLayers(packet)
                                                                  decodeStatus:decodeDescriptor
                                                               captureMetadata:captureMetadata
-                                                                sniDomainName:SniDomainNameForPacket(packet)];
+                                                                sniDomainName:sniDomainName];
     } catch (const std::exception &exception) {
         auto *captureMetadata = [[PCPPNativePacketCaptureMetadataDescriptor alloc] initWithLinkType:MapLinkType(rawPacket.getLinkLayerType())
                                                                                            truncated:rawPacket.getRawDataLen() < rawPacket.getFrameLength()
@@ -991,6 +1180,7 @@ public:
     NSString *statusMessage = @"Live capture is ready.";
     PCPPNativeLiveSessionPhase phase = PCPPNativeLiveSessionPhaseReady;
     CaptureFileWriter writer_;
+    std::unique_ptr<SniReassemblyState> sniReassembly = std::make_unique<SniReassemblyState>();
 };
 
 void UpdateStats(LiveCaptureState &state)
@@ -1390,7 +1580,8 @@ static void OnLivePacketArrives(pcpp::RawPacket *rawPacket, pcpp::PcapLiveDevice
                                       session->_state->nextPacketIdentifier,
                                       session->_state->interfaceIdentifier_,
                                       session->_state->device == nullptr ? nil : MakeNSString(session->_state->device->getName()),
-                                      nil);
+                                      nil,
+                                      session->_state->sniReassembly.get());
 //    NSLog(@"Packetry captured live packet #%llu on %@ (%d/%d bytes, observed=%llu)",
 //          summary.packetNumber,
 //          summary.captureMetadata.interfaceName ?: session->_state->interfaceIdentifier_,
@@ -1486,6 +1677,7 @@ static void OnLiveStatsUpdate(pcpp::IPcapDevice::PcapStats &stats, void *userCoo
             _state->packetsDropped = 0;
             _state->packetsDroppedByInterface = 0;
             _state->nextPacketIdentifier = 1;
+            _state->sniReassembly = std::make_unique<SniReassemblyState>();
         }
 
         pcpp::PcapLiveDevice::DeviceMode deviceMode = _state->options_.promiscuousMode ? pcpp::PcapLiveDevice::Promiscuous : pcpp::PcapLiveDevice::Normal;
@@ -1970,6 +2162,7 @@ NSArray<PCPPNativePacketSummaryDescriptor *> *LoadPacketsFromURLIncrementally(Of
     uint64_t processedBytes = 0;
     bool wasCancelled = false;
     NSError *caughtError = nil;
+    SniReassemblyState sniReassembly;
 
     auto flushPendingBatch = [&]() {
         if (pendingBatch.count == 0) {
@@ -2007,7 +2200,8 @@ NSArray<PCPPNativePacketSummaryDescriptor *> *LoadPacketsFromURLIncrementally(Of
                                               identifier,
                                               nil,
                                               nil,
-                                              NullableNSString(packetComment));
+                                              NullableNSString(packetComment),
+                                              &sniReassembly);
             {
                 std::lock_guard<std::mutex> lock(state.mutex);
                 state.packets.push_back({std::make_unique<pcpp::RawPacket>(rawPacket), packetComment});
