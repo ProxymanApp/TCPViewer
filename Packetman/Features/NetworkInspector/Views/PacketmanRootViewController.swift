@@ -11,7 +11,9 @@ final class PacketmanRootViewController: NSViewController {
 
     let viewModel: NetworkInspectorViewModel
 
-    private let splitViewController = NSSplitViewController()
+    private let outerSplitViewController = NSSplitViewController()
+    private let innerSplitViewController = NSSplitViewController()
+    private let rightPaneViewController = NSViewController()
     private let sidebarViewController = SidebarViewController()
     private let workspaceViewController = PacketWorkspaceViewController()
     private let inspectorViewController = PacketInspectorViewController()
@@ -67,7 +69,7 @@ final class PacketmanRootViewController: NSViewController {
     }
 
     func toggleInspector() {
-        splitViewController.toggleInspector(nil)
+        innerSplitViewController.toggleInspector(nil)
         if let inspectorItem {
             viewModel.setInspectorVisible(!inspectorItem.isCollapsed)
         } else {
@@ -110,42 +112,62 @@ final class PacketmanRootViewController: NSViewController {
         inspectorViewController.delegate = self
         statusStripViewController.delegate = self
 
-        addChild(splitViewController)
-        addChild(statusStripViewController)
-
-        let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarViewController)
-        sidebarItem.minimumThickness = 220
-        sidebarItem.maximumThickness = 320
-        sidebarItem.canCollapse = true
-        splitViewController.addSplitViewItem(sidebarItem)
-
+        // Inner split (workspace | inspector) lives inside the right pane so the
+        // bottom status strip only spans content + inspector, not the sidebar.
         let workspaceItem = NSSplitViewItem(viewController: workspaceViewController)
         workspaceItem.minimumThickness = 620
-        splitViewController.addSplitViewItem(workspaceItem)
+        innerSplitViewController.addSplitViewItem(workspaceItem)
 
         let inspectorItem = NSSplitViewItem(inspectorWithViewController: inspectorViewController)
         inspectorItem.minimumThickness = 320
         inspectorItem.maximumThickness = 460
         inspectorItem.canCollapse = true
-        splitViewController.addSplitViewItem(inspectorItem)
+        innerSplitViewController.addSplitViewItem(inspectorItem)
         self.inspectorItem = inspectorItem
+
+        rightPaneViewController.view = NSView()
+        rightPaneViewController.addChild(innerSplitViewController)
+        rightPaneViewController.addChild(statusStripViewController)
+
+        let rightPane = rightPaneViewController.view
+        innerSplitViewController.view.translatesAutoresizingMaskIntoConstraints = false
+        statusStripViewController.view.translatesAutoresizingMaskIntoConstraints = false
+        rightPane.addSubview(innerSplitViewController.view)
+        rightPane.addSubview(statusStripViewController.view)
+
+        NSLayoutConstraint.activate([
+            innerSplitViewController.view.leadingAnchor.constraint(equalTo: rightPane.leadingAnchor),
+            innerSplitViewController.view.trailingAnchor.constraint(equalTo: rightPane.trailingAnchor),
+            innerSplitViewController.view.topAnchor.constraint(equalTo: rightPane.topAnchor),
+            innerSplitViewController.view.bottomAnchor.constraint(equalTo: statusStripViewController.view.topAnchor),
+
+            statusStripViewController.view.leadingAnchor.constraint(equalTo: rightPane.leadingAnchor),
+            statusStripViewController.view.trailingAnchor.constraint(equalTo: rightPane.trailingAnchor),
+            statusStripViewController.view.bottomAnchor.constraint(equalTo: rightPane.bottomAnchor),
+        ])
+
+        addChild(outerSplitViewController)
+
+        let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarViewController)
+        sidebarItem.minimumThickness = 220
+        sidebarItem.maximumThickness = 320
+        sidebarItem.canCollapse = true
+        outerSplitViewController.addSplitViewItem(sidebarItem)
+
+        let rightPaneItem = NSSplitViewItem(viewController: rightPaneViewController)
+        rightPaneItem.minimumThickness = 620
+        outerSplitViewController.addSplitViewItem(rightPaneItem)
     }
 
     private func setupLayout() {
-        splitViewController.view.translatesAutoresizingMaskIntoConstraints = false
-        statusStripViewController.view.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(splitViewController.view)
-        view.addSubview(statusStripViewController.view)
+        outerSplitViewController.view.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(outerSplitViewController.view)
 
         NSLayoutConstraint.activate([
-            splitViewController.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            splitViewController.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            splitViewController.view.topAnchor.constraint(equalTo: view.topAnchor),
-            splitViewController.view.bottomAnchor.constraint(equalTo: statusStripViewController.view.topAnchor),
-
-            statusStripViewController.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            statusStripViewController.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            statusStripViewController.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            outerSplitViewController.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            outerSplitViewController.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            outerSplitViewController.view.topAnchor.constraint(equalTo: view.topAnchor),
+            outerSplitViewController.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
     }
 
@@ -198,7 +220,7 @@ extension PacketmanRootViewController: PacketInspectorViewControllerDelegate {
 }
 
 extension PacketmanRootViewController: StatusStripViewControllerDelegate {
-    func statusStripViewControllerDidRequestCancelLoad(_ controller: StatusStripViewController) {
-        cancelDocumentLoading()
+    func statusStripViewControllerDidRequestClearPackets(_ controller: StatusStripViewController) {
+        viewModel.clearPackets()
     }
 }

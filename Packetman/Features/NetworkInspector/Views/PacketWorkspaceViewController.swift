@@ -13,6 +13,7 @@ final class PacketWorkspaceViewModel {
     private(set) var isEmpty = true
     private(set) var emptyTitle = "No Packets"
     private(set) var emptyMessage = "Start a live capture or open a pcap/pcapng file."
+    private(set) var emptyImageName = "list.bullet.rectangle"
 
     // Convert the root snapshot into packet-workspace-only render data.
     func render(snapshot: NetworkInspectorSnapshot) {
@@ -20,10 +21,23 @@ final class PacketWorkspaceViewModel {
         totalText = snapshot.visiblePacketCount == snapshot.totalPacketCount ? nil : "of \(snapshot.totalPacketCount)"
         chips = snapshot.displayFilterChips
         isEmpty = snapshot.packetRows.isEmpty
-        emptyTitle = snapshot.totalPacketCount == 0 ? "No Packets" : "No Matching Packets"
-        emptyMessage = snapshot.totalPacketCount == 0
-            ? "Start a live capture or open a pcap/pcapng file."
-            : "Adjust the packet filter to show packets again."
+
+        switch snapshot.selectedSourceListSelection {
+        case .pinned:
+            emptyTitle = "Pinned Packets"
+            emptyMessage = "Pinning packets is coming soon."
+            emptyImageName = "pin.fill"
+        case .saved:
+            emptyTitle = "Saved Packets"
+            emptyMessage = "Saving packets is coming soon."
+            emptyImageName = "tray.and.arrow.down"
+        default:
+            emptyTitle = snapshot.totalPacketCount == 0 ? "No Packets" : "No Matching Packets"
+            emptyMessage = snapshot.totalPacketCount == 0
+                ? "Start a live capture or open a pcap/pcapng file."
+                : "Adjust the packet filter to show packets again."
+            emptyImageName = "list.bullet.rectangle"
+        }
     }
 }
 
@@ -52,7 +66,7 @@ final class PacketWorkspaceViewController: NSViewController {
         viewModel.render(snapshot: snapshot)
 
         if viewModel.isEmpty {
-            showPlaceholder(title: viewModel.emptyTitle, message: viewModel.emptyMessage)
+            showPlaceholder(title: viewModel.emptyTitle, message: viewModel.emptyMessage, imageName: viewModel.emptyImageName)
         } else {
             showTable()
             tableController.render(snapshot: snapshot)
@@ -73,13 +87,13 @@ final class PacketWorkspaceViewController: NSViewController {
         ])
     }
 
-    private func showPlaceholder(title: String, message: String) {
+    private func showPlaceholder(title: String, message: String, imageName: String) {
         if tableController.view.superview != nil {
             tableController.view.removeFromSuperview()
         }
 
         placeholderView?.removeFromSuperview()
-        let placeholder = PacketmanUI.placeholder(title: title, imageName: "list.bullet.rectangle", message: message)
+        let placeholder = PacketmanUI.placeholder(title: title, imageName: imageName, message: message)
         PacketmanUI.pin(placeholder, to: contentContainer)
         placeholderView = placeholder
     }

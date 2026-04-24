@@ -1178,6 +1178,12 @@ final class PacketryWindowController {
         document.cancelLoading(completion: completion)
     }
 
+    func clearPackets() {
+        let source = snapshot.packetIngestState.source
+        snapshot.packetIngestState.reset(source: source, message: "Cleared.")
+        snapshot.documentState.packetCount = 0
+    }
+
     func presentOpenCapturePanel() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true

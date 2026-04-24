@@ -418,6 +418,11 @@ final class NetworkInspectorViewModel {
         updateDisplayFilterText("")
     }
 
+    func clearPackets() {
+        controller.clearPackets()
+        rebuildSnapshot()
+    }
+
     func updateCaptureFilterText(_ text: String) {
         controller.updateCaptureFilterText(text)
         rebuildSnapshot()
