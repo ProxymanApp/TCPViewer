@@ -6,7 +6,6 @@ import UniformTypeIdentifiers
 private struct NetworkInspectorPreferences {
     private enum Key {
         static let displayFilterText = "Packetry.displayFilterText"
-        static let tableDensity = "Packetry.tableDensity"
         static let inspectorVisible = "Packetry.inspectorVisible"
     }
 
@@ -20,15 +19,6 @@ private struct NetworkInspectorPreferences {
         defaults.string(forKey: Key.displayFilterText) ?? ""
     }
 
-    var tableDensity: PacketTableDensity {
-        guard let rawValue = defaults.string(forKey: Key.tableDensity),
-              let density = PacketTableDensity(rawValue: rawValue) else {
-            return .comfortable
-        }
-
-        return density
-    }
-
     var isInspectorVisible: Bool {
         guard defaults.object(forKey: Key.inspectorVisible) != nil else {
             return true
@@ -39,10 +29,6 @@ private struct NetworkInspectorPreferences {
 
     func persistDisplayFilter(_ text: String) {
         defaults.set(text, forKey: Key.displayFilterText)
-    }
-
-    func persistTableDensity(_ density: PacketTableDensity) {
-        defaults.set(density.rawValue, forKey: Key.tableDensity)
     }
 
     func persistInspectorVisible(_ isVisible: Bool) {
@@ -237,7 +223,6 @@ final class NetworkInspectorViewModel {
     private var workspaceMode: NetworkInspectorWorkspaceMode = .packets
     private var inspectorTab: PacketInspectorTab = .overview
     private var isInspectorVisible: Bool
-    private var tableDensity: PacketTableDensity
     private var displayFilterText: String
     private var helperOnboardingDismissed = false
 
@@ -252,7 +237,6 @@ final class NetworkInspectorViewModel {
         )
         self.preferences = NetworkInspectorPreferences(defaults: userDefaults)
         self.isInspectorVisible = preferences.isInspectorVisible
-        self.tableDensity = preferences.tableDensity
         self.displayFilterText = preferences.displayFilterText
         let packetTableContent = packetTableContentCache.content(
             for: controller.snapshot.packetIngestState,
@@ -264,7 +248,6 @@ final class NetworkInspectorViewModel {
             workspaceMode: workspaceMode,
             inspectorTab: inspectorTab,
             isInspectorVisible: isInspectorVisible,
-            tableDensity: tableDensity,
             displayFilterText: displayFilterText,
             packetTableContent: packetTableContent
         )
@@ -508,12 +491,6 @@ final class NetworkInspectorViewModel {
         setInspectorVisible(!isInspectorVisible)
     }
 
-    func setTableDensity(_ density: PacketTableDensity) {
-        tableDensity = density
-        preferences.persistTableDensity(density)
-        rebuildSnapshot()
-    }
-
     func selectedInterfaceTitle() -> String {
         guard let selectedInterface = snapshot.base.sessionState.selectedInterface else {
             return "Interface"
@@ -541,7 +518,6 @@ final class NetworkInspectorViewModel {
             workspaceMode: workspaceMode,
             inspectorTab: inspectorTab,
             isInspectorVisible: isInspectorVisible,
-            tableDensity: tableDensity,
             displayFilterText: displayFilterText,
             packetTableContent: packetTableContent
         )

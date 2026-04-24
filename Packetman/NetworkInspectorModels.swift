@@ -1,5 +1,4 @@
 import Foundation
-import CoreGraphics
 import PcapPlusPlusCore
 
 enum NetworkInspectorWorkspaceMode: String, CaseIterable, Identifiable, Sendable, Hashable {
@@ -86,31 +85,6 @@ enum PacketInspectorTab: String, CaseIterable, Identifiable, Sendable, Hashable 
             "Stream"
         case .notes:
             "Notes"
-        }
-    }
-}
-
-enum PacketTableDensity: String, CaseIterable, Identifiable, Sendable, Hashable {
-    case compact
-    case comfortable
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .compact:
-            "Compact"
-        case .comfortable:
-            "Comfortable"
-        }
-    }
-
-    var rowHeight: CGFloat {
-        switch self {
-        case .compact:
-            24
-        case .comfortable:
-            30
         }
     }
 }
@@ -340,7 +314,6 @@ struct NetworkInspectorSnapshot: Equatable {
     var workspaceMode: NetworkInspectorWorkspaceMode
     var inspectorTab: PacketInspectorTab
     var isInspectorVisible: Bool
-    var tableDensity: PacketTableDensity
     var displayFilterText: String
     var displayFilter: PacketDisplayFilter
     var displayFilterChips: [PacketFilterChip]
@@ -358,7 +331,6 @@ struct NetworkInspectorSnapshot: Equatable {
         workspaceMode: NetworkInspectorWorkspaceMode,
         inspectorTab: PacketInspectorTab,
         isInspectorVisible: Bool,
-        tableDensity: PacketTableDensity,
         displayFilterText: String,
         packetTableContent: PacketTableContent
     ) -> NetworkInspectorSnapshot {
@@ -368,7 +340,6 @@ struct NetworkInspectorSnapshot: Equatable {
             workspaceMode: workspaceMode,
             inspectorTab: inspectorTab,
             isInspectorVisible: isInspectorVisible,
-            tableDensity: tableDensity,
             displayFilterText: displayFilterText,
             displayFilter: packetTableContent.displayFilter,
             displayFilterChips: packetTableContent.displayFilterChips,
@@ -388,7 +359,6 @@ struct NetworkInspectorSnapshot: Equatable {
             lhs.workspaceMode == rhs.workspaceMode &&
             lhs.inspectorTab == rhs.inspectorTab &&
             lhs.isInspectorVisible == rhs.isInspectorVisible &&
-            lhs.tableDensity == rhs.tableDensity &&
             lhs.displayFilterText == rhs.displayFilterText &&
             lhs.displayFilter == rhs.displayFilter &&
             lhs.displayFilterChips == rhs.displayFilterChips &&

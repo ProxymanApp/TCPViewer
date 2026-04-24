@@ -39,7 +39,6 @@ final class PacketTableViewModel {
     private(set) var contentGeneration: UInt64 = 0
     private(set) var selectedPacketID: PacketSummary.ID?
     private(set) var selectedRowIndex: Int?
-    private(set) var density: PacketTableDensity = .comfortable
 
     // Store the latest render state so the controller can apply incremental table updates.
     func render(snapshot: NetworkInspectorSnapshot) -> PacketTableUpdatePlan {
@@ -52,12 +51,13 @@ final class PacketTableViewModel {
         contentGeneration = snapshot.packetTableGeneration
         selectedPacketID = snapshot.selectedPacketID
         selectedRowIndex = snapshot.selectedPacketRowIndex
-        density = snapshot.tableDensity
         return updatePlan
     }
 }
 
 final class PacketTableViewController: NSViewController {
+    private static let compactRowHeight: CGFloat = 24
+
     weak var delegate: PacketTableViewControllerDelegate?
 
     private let tableView = NSTableView()
@@ -83,7 +83,7 @@ final class PacketTableViewController: NSViewController {
     func render(snapshot: NetworkInspectorSnapshot) {
         let previousRowCount = rows.count
         let updatePlan = viewModel.render(snapshot: snapshot)
-        tableView.rowHeight = viewModel.density.rowHeight
+        tableView.rowHeight = Self.compactRowHeight
 
         suppressSelectionCallbacks {
             switch updatePlan {
@@ -113,12 +113,13 @@ final class PacketTableViewController: NSViewController {
         tableView.usesAlternatingRowBackgroundColors = true
         tableView.allowsEmptySelection = true
         tableView.allowsMultipleSelection = false
-        tableView.rowHeight = PacketTableDensity.comfortable.rowHeight
+        tableView.rowHeight = Self.compactRowHeight
         tableView.intercellSpacing = NSSize(width: 0, height: 0)
         tableView.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         tableView.selectionHighlightStyle = .regular
-        tableView.style = .inset
-
+        tableView.style = .fullWidth
+        tableView.focusRingType = .none
+        
         addColumn("number", title: "No.", width: 68, minWidth: 52, cell: PacketTextCell())
         addColumn("time", title: "Time", width: 112, minWidth: 96, cell: PacketTextCell())
         addColumn("source", title: "Source", width: 180, minWidth: 130, cell: PacketTextCell())

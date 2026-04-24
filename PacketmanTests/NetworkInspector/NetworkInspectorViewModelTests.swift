@@ -222,7 +222,6 @@ struct NetworkInspectorViewModelTests {
         let generationAfterPackets = viewModel.snapshot.packetTableGeneration
 
         viewModel.selectInspectorTab(.hex)
-        viewModel.setTableDensity(.compact)
         #expect(viewModel.snapshot.packetTableGeneration == generationAfterPackets)
 
         liveSession.send(.healthChanged(CaptureHealthSnapshot(

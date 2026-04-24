@@ -35,7 +35,6 @@ final class PacketInspectorPanelViewModel {
         workspaceMode: .packets,
         inspectorTab: .overview,
         isInspectorVisible: true,
-        tableDensity: .comfortable,
         displayFilterText: "",
         packetTableContent: .empty
     ))
