@@ -373,6 +373,31 @@ public struct PacketCaptureMetadata: Sendable, Codable, Hashable {
     }
 }
 
+public struct PacketClient: Sendable, Codable, Hashable {
+    public let pid: Int32
+    public let name: String
+    public let displayName: String
+    public let executablePath: String?
+    public let bundleIdentifier: String?
+    public let bundlePath: String?
+
+    public init(
+        pid: Int32,
+        name: String,
+        displayName: String,
+        executablePath: String? = nil,
+        bundleIdentifier: String? = nil,
+        bundlePath: String? = nil
+    ) {
+        self.pid = pid
+        self.name = name
+        self.displayName = displayName
+        self.executablePath = executablePath
+        self.bundleIdentifier = bundleIdentifier
+        self.bundlePath = bundlePath
+    }
+}
+
 public struct PacketSummary: Identifiable, Sendable, Codable, Hashable {
     public let id: UInt64
     public let packetNumber: UInt64
@@ -388,6 +413,8 @@ public struct PacketSummary: Identifiable, Sendable, Codable, Hashable {
     public let layers: [PacketLayer]
     public let decodeStatus: PacketDecodeStatus
     public let captureMetadata: PacketCaptureMetadata
+    public let sniDomainName: String?
+    public let client: PacketClient?
 
     public init(
         id: UInt64? = nil,
@@ -403,7 +430,9 @@ public struct PacketSummary: Identifiable, Sendable, Codable, Hashable {
         infoSummary: String,
         layers: [PacketLayer],
         decodeStatus: PacketDecodeStatus,
-        captureMetadata: PacketCaptureMetadata
+        captureMetadata: PacketCaptureMetadata,
+        sniDomainName: String? = nil,
+        client: PacketClient? = nil
     ) {
         self.id = id ?? packetNumber
         self.packetNumber = packetNumber
@@ -419,6 +448,8 @@ public struct PacketSummary: Identifiable, Sendable, Codable, Hashable {
         self.layers = layers
         self.decodeStatus = decodeStatus
         self.captureMetadata = captureMetadata
+        self.sniDomainName = sniDomainName
+        self.client = client
     }
 }
 

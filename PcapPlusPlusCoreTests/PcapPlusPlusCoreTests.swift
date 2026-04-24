@@ -31,6 +31,20 @@ struct PcapPlusPlusCoreTests {
         #expect(packets.contains { $0.endpoints.source.port != nil })
     }
 
+    @Test func nativeCoreMapsTlsClientHelloSNIOnlyWhenPresent() async throws {
+        let tlsFixtureURL = CoreFixtureCatalog.captureCategoryURL("tls").appendingPathComponent("SSL-ClientHello1.pcap")
+        let splitTLSFixtureURL = CoreFixtureCatalog.captureCategoryURL("tls").appendingPathComponent("SSL-ClientHello1-split.pcap")
+        let udpFixtureURL = CoreFixtureCatalog.captureCategoryURL("udp").appendingPathComponent("someip-sd.pcapng")
+
+        let tlsPackets = try await NativePacketryCore().loadPacketSummaries(from: tlsFixtureURL)
+        let splitTLSPackets = try await NativePacketryCore().loadPacketSummaries(from: splitTLSFixtureURL)
+        let udpPackets = try await NativePacketryCore().loadPacketSummaries(from: udpFixtureURL)
+
+        #expect(tlsPackets.contains { $0.sniDomainName == "www.google.com" })
+        #expect(splitTLSPackets.contains { $0.sniDomainName == "www.google.com" })
+        #expect(udpPackets.allSatisfy { $0.sniDomainName == nil })
+    }
+
     @Test func malformedFixtureSurfacesDecodeIssuesExplicitly() async throws {
         let fixtureURL = CoreFixtureCatalog.captureCategoryURL("malformed").appendingPathComponent("partial-http-request.pcap")
         let golden = try loadMalformedGolden(named: "ipv4-malformed.summary.json")
