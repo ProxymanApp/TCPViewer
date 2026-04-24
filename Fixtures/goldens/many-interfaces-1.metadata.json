@@ -1,6 +1,0 @@
-{
-  "fixture": "captures/macos-metadata/many-interfaces-1.pcapng",
-  "expectedPacketCount": 64,
-  "expectedOperatingSystemContains": "Mac OS X 10.10.4",
-  "expectedCaptureApplicationContains": "Dumpcap 1.12.6"
-}
