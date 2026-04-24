@@ -26,17 +26,11 @@ Define one reproducible way to bring `PcapPlusPlus` into Packetry so the app tar
 - Local bootstrap:
 
 ```bash
-git submodule update --init --recursive Vendor/PcapPlusPlus
-cmake -S Vendor/PcapPlusPlus -B Vendor/.build/pcapplusplus \
-  -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-  -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
-  -DCMAKE_INSTALL_PREFIX="$PWD/Vendor/.install/pcapplusplus"
-cmake --build Vendor/.build/pcapplusplus --config RelWithDebInfo
-cmake --install Vendor/.build/pcapplusplus --config RelWithDebInfo
+./scripts/bootstrap-pcapplusplus.sh
 ```
 
 - CI uses the same source path, build directory, and install prefix so local and CI failures happen against the same layout.
-- Generated artifacts stay out of git; reproducibility comes from the submodule pin plus deterministic build commands.
+- Generated artifacts stay out of git; reproducibility comes from the submodule pin plus the bootstrap script validating `v25.05` at `a49a79e0b67b402ad75ffa96c1795def36df75c8`.
 - The initial `v0.1` scaffold does not yet link these outputs into Xcode. That wiring lands in later runtime tickets once the native bridge is implemented.
 
 ## Toolchain And Platform Expectations

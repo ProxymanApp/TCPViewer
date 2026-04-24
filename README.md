@@ -22,7 +22,7 @@ open Packetry.xcodeproj
 If you already cloned the repo:
 
 ```bash
-git submodule update --init --recursive Vendor/PcapPlusPlus
+./scripts/bootstrap-pcapplusplus.sh
 ```
 
 ## Run
@@ -50,7 +50,7 @@ xcodebuild test \
 Missing submodule:
 
 ```bash
-git submodule update --init --recursive Vendor/PcapPlusPlus
+./scripts/bootstrap-pcapplusplus.sh
 ```
 
 Missing CMake:
