@@ -116,7 +116,7 @@ final class PacketmanRootViewController: NSViewController {
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarViewController)
         sidebarItem.minimumThickness = 220
         sidebarItem.maximumThickness = 320
-        sidebarItem.canCollapse = false
+        sidebarItem.canCollapse = true
         splitViewController.addSplitViewItem(sidebarItem)
 
         let workspaceItem = NSSplitViewItem(viewController: workspaceViewController)
