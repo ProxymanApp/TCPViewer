@@ -90,6 +90,45 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.base.documentState.fileURL == saveURL)
     }
 
+    @Test func missingNetworkHelperShowsOnboardingButOfflineOpenStillWorks() async {
+        let openURL = URL(fileURLWithPath: "/tmp/offline-while-helper-missing.pcapng")
+        let packets = [makePacket(packetNumber: 1, source: .offline, transportHint: .udp)]
+        let document = InspectorFakeDocument(url: openURL, packets: packets)
+        let helper = InspectorFakeNetworkHelperTool(
+            snapshot: PacketryNetworkHelperToolSnapshot(
+                status: .notInstalled,
+                authorizationStatus: .notRegistered,
+                lastCheckedAt: nil,
+                message: "Packetry Network Helper Tool is not installed."
+            )
+        )
+        let viewModel = NetworkInspectorViewModel(
+            services: PacketryServiceRegistry(
+                core: InspectorFakeCore(
+                    interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                    document: document
+                ),
+                networkHelperTool: helper
+            ),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.performInitialLoadIfNeeded()
+
+        #expect(viewModel.shouldPresentNetworkHelperOnboarding)
+        #expect(viewModel.snapshot.base.accessState == .blocked(.helperMissing))
+        #expect(viewModel.snapshot.base.sessionState.interfaceInventory.isEmpty)
+        #expect(!viewModel.snapshot.base.sessionState.canStart)
+
+        await viewModel.openDocument(at: openURL)
+        await waitUntil {
+            viewModel.snapshot.base.documentState.phase == .loaded &&
+                viewModel.snapshot.packetRows.count == 1
+        }
+
+        #expect(viewModel.snapshot.totalPacketCount == 1)
+    }
+
     @Test func packetFormattingFilteringAndTableUpdatePlansAreStable() {
         let healthy = makePacket(packetNumber: 1, source: .offline, transportHint: .http1, destinationPort: 80)
         let malformed = makePacket(
@@ -442,6 +481,33 @@ private final class InspectorFakeCore: PacketryCoreProviding, @unchecked Sendabl
     func loadPacketSummaries(from fileURL: URL) async throws -> [PacketSummary] {
         try await document.open()
     }
+}
+
+@MainActor
+private final class InspectorFakeNetworkHelperTool: PacketryNetworkHelperToolManaging {
+    private(set) var snapshot: PacketryNetworkHelperToolSnapshot
+
+    init(snapshot: PacketryNetworkHelperToolSnapshot) {
+        self.snapshot = snapshot
+    }
+
+    func refreshStatus() async -> PacketryNetworkHelperToolSnapshot {
+        snapshot
+    }
+
+    func install() async -> PacketryNetworkHelperToolSnapshot {
+        snapshot
+    }
+
+    func repair() async -> PacketryNetworkHelperToolSnapshot {
+        snapshot
+    }
+
+    func uninstall() async -> PacketryNetworkHelperToolSnapshot {
+        snapshot
+    }
+
+    func openSystemSettings() {}
 }
 
 private final class InspectorFakeLiveSession: LiveCaptureSessionProviding, @unchecked Sendable {

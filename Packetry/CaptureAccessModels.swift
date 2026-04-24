@@ -4,6 +4,7 @@ enum CaptureAccessBlocker: String, CaseIterable, Sendable, Equatable {
     case firstLaunch
     case helperMissing
     case helperBroken
+    case helperNeedsRelaunch
     case accessDenied
     case noEligibleInterfaces
     case unsupportedInterface
@@ -17,6 +18,8 @@ enum CaptureAccessBlocker: String, CaseIterable, Sendable, Equatable {
             "Install Capture Access Helper"
         case .helperBroken:
             "Repair Capture Access Helper"
+        case .helperNeedsRelaunch:
+            "Relaunch Packetry"
         case .accessDenied:
             "Capture Access Denied"
         case .noEligibleInterfaces:
@@ -36,6 +39,8 @@ enum CaptureAccessBlocker: String, CaseIterable, Sendable, Equatable {
             "The boot-time helper that prepares /dev/bpf* access is not installed on this Mac."
         case .helperBroken:
             "Packetry found the helper contract, but /dev/bpf* is not in the expected state for capture."
+        case .helperNeedsRelaunch:
+            "Packetry Network Helper Tool is installed, but Packetry needs to relaunch before live capture can start."
         case .accessDenied:
             "This account still cannot access the macOS packet-capture devices after setup."
         case .noEligibleInterfaces:
@@ -74,13 +79,21 @@ enum CaptureAccessBlocker: String, CaseIterable, Sendable, Equatable {
             [
                 CaptureOnboardingStep(
                     title: "Repair helper",
-                    detail: "Reinstall or repair the helper package so macOS recreates /dev/bpf* with the expected permissions.",
+                    detail: "Repair Packetry Network Helper Tool so macOS recreates /dev/bpf* with the expected permissions.",
                     actionLabel: "Repair"
                 ),
                 CaptureOnboardingStep(
                     title: "Retry capture check",
                     detail: "Ask Packetry to verify the helper and BPF devices again without restarting the entire app.",
                     actionLabel: "Retry"
+                ),
+            ]
+        case .helperNeedsRelaunch:
+            [
+                CaptureOnboardingStep(
+                    title: "Relaunch Packetry",
+                    detail: "Quit and reopen Packetry so macOS refreshes the app's packet-capture group membership.",
+                    actionLabel: "Relaunch"
                 ),
             ]
         case .accessDenied:

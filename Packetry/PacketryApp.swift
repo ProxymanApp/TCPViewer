@@ -6,15 +6,26 @@
 //
 
 import AppKit
+import PcapPlusPlusCore
 import SwiftUI
 
 @main
 struct PacketryApp: App {
     @NSApplicationDelegateAdaptor(PacketryApplicationDelegate.self) private var appDelegate
+    @StateObject private var networkHelperToolManager = PacketryNetworkHelperToolManager()
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ContentView(
+                services: PacketryServiceRegistry(
+                    core: NativePacketryCore(),
+                    networkHelperTool: networkHelperToolManager
+                )
+            )
+        }
+
+        Settings {
+            PacketrySettingsView(networkHelperToolManager: networkHelperToolManager)
         }
     }
 }

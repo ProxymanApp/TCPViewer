@@ -24,4 +24,12 @@ struct CaptureAccessModelTests {
         #expect(state.recommendedSteps.count == 1)
         #expect(state.recommendedSteps.first?.actionLabel == "Retry")
     }
+
+    @Test func helperNeedsRelaunchExplainsRestartStep() {
+        let state = CaptureAccessState.blocked(.helperNeedsRelaunch)
+
+        #expect(state.requiresGuidance)
+        #expect(state.title == "Relaunch Packetry")
+        #expect(state.recommendedSteps.first?.actionLabel == "Relaunch")
+    }
 }

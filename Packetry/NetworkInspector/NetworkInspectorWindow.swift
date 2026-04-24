@@ -4,7 +4,12 @@ import SwiftUI
 struct NetworkInspectorWindow: View {
     @StateObject private var viewModel: NetworkInspectorViewModel
 
-    init(services: PacketryServiceRegistry = .foundation) {
+    @MainActor
+    init() {
+        self.init(services: .foundation)
+    }
+
+    init(services: PacketryServiceRegistry) {
         _viewModel = StateObject(wrappedValue: NetworkInspectorViewModel(services: services))
     }
 
@@ -104,6 +109,44 @@ struct NetworkInspectorWindow: View {
         }
         .task {
             await viewModel.performInitialLoadIfNeeded()
+        }
+        .sheet(
+            isPresented: Binding(
+                get: { viewModel.shouldPresentNetworkHelperOnboarding },
+                set: { isPresented in
+                    if !isPresented {
+                        viewModel.dismissNetworkHelperOnboarding()
+                    }
+                }
+            )
+        ) {
+            PacketryNetworkHelperOnboardingSheet(
+                snapshot: viewModel.networkHelperToolSnapshot,
+                onInstall: {
+                    Task {
+                        await viewModel.installNetworkHelperTool()
+                    }
+                },
+                onRepair: {
+                    Task {
+                        await viewModel.repairNetworkHelperTool()
+                    }
+                },
+                onRetry: {
+                    Task {
+                        await viewModel.retryNetworkHelperToolStatus()
+                    }
+                },
+                onOpenSystemSettings: {
+                    viewModel.openNetworkHelperSystemSettings()
+                },
+                onRelaunch: {
+                    viewModel.relaunchPacketry()
+                },
+                onContinueOffline: {
+                    viewModel.dismissNetworkHelperOnboarding()
+                }
+            )
         }
     }
 
