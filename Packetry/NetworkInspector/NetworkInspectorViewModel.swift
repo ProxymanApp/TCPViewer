@@ -401,7 +401,7 @@ final class NetworkInspectorViewModel: ObservableObject {
     }
 
     func selectPacket(_ identifier: PacketSummary.ID?) {
-        print("[Packetry] \(NetworkInspectorDebugLog.timestamp()) Packet row selected: \(identifier?.description ?? "nil")")
+        print("[Packetry] \(NetworkInspectorDebugLog.timestamp()) 🎯 Packet row selected: \(identifier?.description ?? "nil")")
         controller.selectPacket(identifier)
         if identifier != nil {
             inspectorTab = .overview

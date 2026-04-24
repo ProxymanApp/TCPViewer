@@ -477,7 +477,7 @@ private struct PacketInspectorPane: View, Equatable {
     private func logInspectorRender() {
         let selectedPacketID = state.selectedPacketID?.description ?? "nil"
         let inspectionPacketID = state.inspection?.packetID.description ?? "nil"
-        print("[Packetry] \(NetworkInspectorDebugLog.timestamp()) Inspector detail render: tab=\(state.inspectorTab.title), selectedPacketID=\(selectedPacketID), inspectionPacketID=\(inspectionPacketID)")
+        print("[Packetry] \(NetworkInspectorDebugLog.timestamp()) 🧩 Inspector detail render: tab=\(state.inspectorTab.title), selectedPacketID=\(selectedPacketID), inspectionPacketID=\(inspectionPacketID)")
     }
 
     private var inspectorHeader: some View {

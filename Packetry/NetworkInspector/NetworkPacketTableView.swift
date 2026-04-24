@@ -82,7 +82,7 @@ struct NetworkPacketTableView: NSViewRepresentable {
                 break
             case .append(let range):
                 if range.lowerBound == previousRowCount, range.upperBound <= rows.count {
-                    print("[Packetry] \(NetworkInspectorDebugLog.timestamp()) Packet table inserting rows: \(range.lowerBound)..<\(range.upperBound), totalRows=\(rows.count)")
+                    print("[Packetry] \(NetworkInspectorDebugLog.timestamp()) ➕ Packet table inserting rows: \(range.lowerBound)..<\(range.upperBound), totalRows=\(rows.count)")
                     tableView.noteNumberOfRowsChanged()
                 } else {
                     Self.preserveScrollPosition(in: scrollView) {
@@ -208,6 +208,7 @@ struct NetworkPacketTableView: NSViewRepresentable {
                 return
             }
 
+            print("[Packetry] \(NetworkInspectorDebugLog.timestamp()) 🖱️ NSTableView selection changed: row=\(selectedRow), packetID=\(selectedID?.description ?? "nil")")
             lastAppliedSelectedPacketID = selectedID
             let onSelectPacket = onSelectPacket
             DispatchQueue.main.async {
