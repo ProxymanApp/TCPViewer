@@ -138,6 +138,20 @@ struct PcapPlusPlusCoreTests {
         #expect(try Data(contentsOf: destinationURL) == originalContents)
     }
 
+    @Test func nativeLiveSessionCanStopBeforeStart() async throws {
+        let core = NativePacketryCore()
+        guard let captureInterface = try await core.listInterfaces().first(where: \.isSelectable) else {
+            return
+        }
+
+        let session = try await core.makeLiveCaptureSession(
+            interfaceID: captureInterface.id,
+            options: CaptureOptions.defaults(for: captureInterface)
+        )
+
+        try await session.stop()
+    }
+
     private func loadSummaryGolden(named fileName: String) throws -> SummaryGolden {
         let url = CoreFixtureCatalog.fixturesRoot
             .appendingPathComponent("goldens", isDirectory: true)

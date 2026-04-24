@@ -569,7 +569,7 @@ public struct CaptureOptions: Sendable, Codable, Hashable {
 
     public static func defaults(for interface: CaptureInterfaceSummary? = nil) -> CaptureOptions {
         CaptureOptions(
-            promiscuousMode: !(interface?.isLoopback ?? false),
+            promiscuousMode: defaultPromiscuousMode(for: interface),
             snapshotLength: 65_535,
             kernelBufferSizeBytes: 4 * 1024 * 1024,
             readTimeoutMilliseconds: 250,
@@ -649,12 +649,36 @@ public struct CaptureOptions: Sendable, Codable, Hashable {
             }
         }
 
-        let defaultPromiscuous = !(interface?.isLoopback ?? false)
-        if interface?.isLoopback == true && promiscuousMode != defaultPromiscuous {
-            throw PacketryCoreError(code: .invalidCaptureOptions, message: "Loopback interfaces do not support promiscuous mode in Packetry.")
+        let validatedPromiscuousMode = Self.validatedPromiscuousMode(promiscuousMode, for: interface)
+        if validatedPromiscuousMode != promiscuousMode {
+            return CaptureOptions(
+                promiscuousMode: validatedPromiscuousMode,
+                snapshotLength: snapshotLength,
+                kernelBufferSizeBytes: kernelBufferSizeBytes,
+                readTimeoutMilliseconds: readTimeoutMilliseconds,
+                captureFilterExpression: captureFilterExpression,
+                stopCondition: stopCondition,
+                fileWriting: fileWriting
+            )
         }
 
         return self
+    }
+
+    private static func defaultPromiscuousMode(for interface: CaptureInterfaceSummary?) -> Bool {
+        guard let interface else {
+            return false
+        }
+
+        return !interface.isLoopback && interface.capabilities.supportsPromiscuousMode
+    }
+
+    private static func validatedPromiscuousMode(_ requestedMode: Bool, for interface: CaptureInterfaceSummary?) -> Bool {
+        guard requestedMode, let interface else {
+            return false
+        }
+
+        return !interface.isLoopback && interface.capabilities.supportsPromiscuousMode
     }
 }
 

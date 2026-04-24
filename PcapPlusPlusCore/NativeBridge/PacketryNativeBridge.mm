@@ -969,7 +969,7 @@ public:
 void UpdateStats(LiveCaptureState &state)
 {
     pcpp::IPcapDevice::PcapStats stats{};
-    if (state.device != nullptr) {
+    if (state.device != nullptr && state.device->isOpened()) {
         state.device->getStatistics(stats);
         state.packetsReceived = stats.packetsRecv;
         state.packetsDropped = stats.packetsDrop;
@@ -1362,6 +1362,12 @@ static void OnLivePacketArrives(pcpp::RawPacket *rawPacket, pcpp::PcapLiveDevice
                                       session->_state->interfaceIdentifier_,
                                       session->_state->device == nullptr ? nil : MakeNSString(session->_state->device->getName()),
                                       nil);
+//    NSLog(@"Packetry captured live packet #%llu on %@ (%d/%d bytes, observed=%llu)",
+//          summary.packetNumber,
+//          summary.captureMetadata.interfaceName ?: session->_state->interfaceIdentifier_,
+//          rawPacket->getRawDataLen(),
+//          rawPacket->getFrameLength(),
+//          session->_state->packetsObserved);
     session->_state->nextPacketIdentifier += 1;
 
     try {
@@ -2331,8 +2337,11 @@ bool SavePacketsToURL(const OfflineDocumentSaveSnapshot &state, NSURL *targetURL
             } else {
                 try {
                     if (!device->isOpened()) {
-                        pcpp::PcapLiveDevice::DeviceMode mode = loopback ? pcpp::PcapLiveDevice::Normal : pcpp::PcapLiveDevice::Promiscuous;
-                        pcpp::PcapLiveDevice::DeviceConfiguration configuration(mode, 1, 0, pcpp::PcapLiveDevice::PCPP_INOUT, 65535);
+                        pcpp::PcapLiveDevice::DeviceConfiguration configuration(pcpp::PcapLiveDevice::Normal,
+                                                                                1,
+                                                                                0,
+                                                                                pcpp::PcapLiveDevice::PCPP_INOUT,
+                                                                                65535);
                         if (!device->open(configuration)) {
                             availability = PCPPNativeInterfaceAvailabilityUnavailable;
                             availabilityReason = @"Packetry could not open this interface with the current macOS capture access.";
@@ -2362,7 +2371,7 @@ bool SavePacketsToURL(const OfflineDocumentSaveSnapshot &state, NSURL *targetURL
                                                                                 addresses:MapAddresses(*device)
                                                                           activityPreview:[[PCPPNativeActivityPreviewDescriptor alloc] initWithPacketsPerSecond:nil observedAt:nil]
                                                                                canCapture:canCapture
-                                                                   supportsPromiscuousMode:!loopback && supportsLink
+                                                                   supportsPromiscuousMode:NO
                                                                 requiresBPFPermissionSetup:YES
                                                                        providesMacOSMetadata:providesMacOSMetadata];
             [interfaces addObject:descriptor];

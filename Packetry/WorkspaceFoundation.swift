@@ -4,9 +4,19 @@ import Foundation
 import PcapPlusPlusCore
 import UniformTypeIdentifiers
 
+enum PacketIngestMutation: Sendable, Equatable {
+    case none
+    case reset
+    case replace
+    case append(Range<Int>)
+}
+
 struct PacketIngestState: Sendable, Equatable {
     var source: CaptureSource?
     var packets: [PacketSummary]
+    var packetRevision: UInt64
+    var packetLineageRevision: UInt64
+    var lastMutation: PacketIngestMutation
     var lastBatchCount: Int
     var truncatedPacketCount: Int
     var decodeIssueCount: Int
@@ -15,6 +25,9 @@ struct PacketIngestState: Sendable, Equatable {
     static let empty = PacketIngestState(
         source: nil,
         packets: [],
+        packetRevision: 0,
+        packetLineageRevision: 0,
+        lastMutation: .none,
         lastBatchCount: 0,
         truncatedPacketCount: 0,
         decodeIssueCount: 0,
@@ -28,6 +41,9 @@ struct PacketIngestState: Sendable, Equatable {
     mutating func reset(source: CaptureSource? = nil, message: String) {
         self.source = source
         packets = []
+        packetRevision &+= 1
+        packetLineageRevision &+= 1
+        lastMutation = .reset
         lastBatchCount = 0
         truncatedPacketCount = 0
         decodeIssueCount = 0
@@ -37,6 +53,9 @@ struct PacketIngestState: Sendable, Equatable {
     mutating func replace(with batch: [PacketSummary], source: CaptureSource, message: String? = nil) {
         self.source = source
         packets = batch
+        packetRevision &+= 1
+        packetLineageRevision &+= 1
+        lastMutation = .replace
         lastBatchCount = batch.count
         recalculateCounters()
         if let message {
@@ -46,11 +65,42 @@ struct PacketIngestState: Sendable, Equatable {
 
     mutating func append(_ batch: [PacketSummary], source: CaptureSource, message: String? = nil) {
         self.source = source
+        let startIndex = packets.count
         packets.append(contentsOf: batch)
+        if !batch.isEmpty {
+            packetRevision &+= 1
+            lastMutation = .append(startIndex..<packets.count)
+            addCounters(for: batch)
+        } else {
+            lastMutation = .none
+        }
         lastBatchCount = batch.count
-        recalculateCounters()
         if let message {
             statusMessage = message
+        }
+    }
+
+    static func == (lhs: PacketIngestState, rhs: PacketIngestState) -> Bool {
+        lhs.source == rhs.source &&
+            lhs.packetRevision == rhs.packetRevision &&
+            lhs.packetLineageRevision == rhs.packetLineageRevision &&
+            lhs.lastMutation == rhs.lastMutation &&
+            lhs.lastBatchCount == rhs.lastBatchCount &&
+            lhs.truncatedPacketCount == rhs.truncatedPacketCount &&
+            lhs.decodeIssueCount == rhs.decodeIssueCount &&
+            lhs.statusMessage == rhs.statusMessage &&
+            lhs.packets.count == rhs.packets.count
+    }
+
+    private mutating func addCounters(for batch: [PacketSummary]) {
+        for packet in batch {
+            if packet.captureMetadata.isTruncated {
+                truncatedPacketCount += 1
+            }
+
+            if packet.decodeStatus.kind != .complete {
+                decodeIssueCount += 1
+            }
         }
     }
 
@@ -206,7 +256,6 @@ struct PacketryWindowSnapshot: Sendable, Equatable {
     var inspectionState: PacketInspectionState
     var navigationState: PacketNavigationState
     var loadState: PacketLoadState
-    var layoutState: WindowLayoutState
 
     static let foundation = PacketryWindowSnapshot(
         accessState: .unknown,
@@ -216,13 +265,8 @@ struct PacketryWindowSnapshot: Sendable, Equatable {
         filterState: .empty,
         inspectionState: .empty,
         navigationState: .empty,
-        loadState: .idle,
-        layoutState: .default
+        loadState: .idle
     )
-
-    var visiblePacketCount: Int {
-        navigationState.visiblePackets.count
-    }
 
     var selectedPacketID: PacketSummary.ID? {
         get { inspectionState.selectedPacketID }
@@ -288,6 +332,15 @@ struct PacketNavigationState: Sendable, Equatable {
         jumpErrorMessage: nil,
         statusMessage: "No packets available."
     )
+
+    static func == (lhs: PacketNavigationState, rhs: PacketNavigationState) -> Bool {
+        lhs.visiblePackets.count == rhs.visiblePackets.count &&
+            lhs.visiblePackets.first?.id == rhs.visiblePackets.first?.id &&
+            lhs.visiblePackets.last?.id == rhs.visiblePackets.last?.id &&
+            lhs.jumpText == rhs.jumpText &&
+            lhs.jumpErrorMessage == rhs.jumpErrorMessage &&
+            lhs.statusMessage == rhs.statusMessage
+    }
 }
 
 struct PacketLoadState: Sendable, Equatable {
@@ -298,12 +351,6 @@ struct PacketLoadState: Sendable, Equatable {
     var canCancel: Bool {
         progress.phase == .loading
     }
-}
-
-struct WindowLayoutState: Sendable, Equatable {
-    let verticalAutosaveName: String
-
-    static let `default` = WindowLayoutState(verticalAutosaveName: "Packetry.Analyzer.VerticalSplit.v0_3")
 }
 
 actor PacketryBackgroundCoordinator {
@@ -369,6 +416,48 @@ private struct PacketryPreferences {
 }
 
 @MainActor
+private final class PacketryWindowControllerRegistry {
+    static let shared = PacketryWindowControllerRegistry()
+
+    private var controllers: [WeakPacketryWindowController] = []
+
+    func register(_ controller: PacketryWindowController) {
+        pruneReleasedControllers()
+        guard !controllers.contains(where: { $0.controller === controller }) else {
+            return
+        }
+
+        controllers.append(WeakPacketryWindowController(controller))
+    }
+
+    func prepareForApplicationTermination() async -> Bool {
+        pruneReleasedControllers()
+        let activeControllers = controllers.compactMap(\.controller)
+        var shouldTerminate = true
+
+        for controller in activeControllers {
+            let didPrepare = await controller.prepareForApplicationTermination()
+            shouldTerminate = shouldTerminate && didPrepare
+        }
+
+        pruneReleasedControllers()
+        return shouldTerminate
+    }
+
+    private func pruneReleasedControllers() {
+        controllers.removeAll { $0.controller == nil }
+    }
+}
+
+private final class WeakPacketryWindowController {
+    weak var controller: PacketryWindowController?
+
+    init(_ controller: PacketryWindowController) {
+        self.controller = controller
+    }
+}
+
+@MainActor
 final class PacketryWindowController: ObservableObject {
     @Published private(set) var snapshot: PacketryWindowSnapshot
 
@@ -399,6 +488,7 @@ final class PacketryWindowController: ObservableObject {
         resolvedSnapshot.filterState.captureFilterText = preferences.captureFilterText
         resolvedSnapshot.filterState.recentCaptureFilters = preferences.recentCaptureFilters
         self.snapshot = resolvedSnapshot
+        PacketryWindowControllerRegistry.shared.register(self)
     }
 
     deinit {
@@ -406,6 +496,10 @@ final class PacketryWindowController: ObservableObject {
         documentEventsTask?.cancel()
         inspectionTask?.cancel()
         filterValidationTask?.cancel()
+    }
+
+    static func prepareAllForApplicationTermination() async -> Bool {
+        await PacketryWindowControllerRegistry.shared.prepareForApplicationTermination()
     }
 
     func performInitialLoadIfNeeded() async {
@@ -901,22 +995,32 @@ final class PacketryWindowController: ObservableObject {
     }
 
     func cancelBackgroundWork() {
-        liveEventsTask?.cancel()
-        liveEventsTask = nil
-        documentEventsTask?.cancel()
-        documentEventsTask = nil
-        inspectionTask?.cancel()
-        inspectionTask = nil
-        filterValidationTask?.cancel()
-        filterValidationTask = nil
+        cancelControllerTasks()
 
+        let currentDocument = document
         Task {
             await backgroundCoordinator.cancelAll()
-            await self.document?.cancelLoading()
+            await currentDocument?.cancelLoading()
         }
 
         snapshot.sessionState.statusMessage = "Cancelled background work."
         snapshot.documentState.statusMessage = "Cancelled background work."
+    }
+
+    func prepareForApplicationTermination() async -> Bool {
+        do {
+            try await stopRetainedLiveSessionIfNeeded()
+        } catch {
+            let packetryError = packetryError(from: error, defaultCode: .liveSessionControlFailed)
+            snapshot.sessionState.phase = .failed
+            snapshot.sessionState.lastError = packetryError
+            snapshot.sessionState.statusMessage = packetryError.message
+            return false
+        }
+
+        releaseLiveSession()
+        await cancelBackgroundWorkForTermination()
+        return true
     }
 
     private func applyInterfaceInventory(_ interfaces: [CaptureInterfaceSummary], previousSelectionID: String?) {
@@ -1207,8 +1311,20 @@ final class PacketryWindowController: ObservableObject {
     }
 
     private func stopLiveCaptureIfNeeded() async throws {
-        guard let liveSession, snapshot.sessionState.canStop else {
-            releaseLiveSession()
+        try await stopRetainedLiveSessionIfNeeded()
+        releaseLiveSession()
+        snapshot.sessionState.phase = snapshot.accessState.isCaptureReady ? .ready : .idle
+        snapshot.sessionState.health = .empty
+        snapshot.loadState = .idle
+    }
+
+    private func resetLiveSession() async throws {
+        try await stopRetainedLiveSessionIfNeeded()
+        releaseLiveSession()
+    }
+
+    private func stopRetainedLiveSessionIfNeeded() async throws {
+        guard let liveSession, snapshot.sessionState.phase != .stopped else {
             return
         }
 
@@ -1217,19 +1333,6 @@ final class PacketryWindowController: ObservableObject {
         } catch {
             throw packetryError(from: error, defaultCode: .liveSessionControlFailed)
         }
-
-        releaseLiveSession()
-        snapshot.sessionState.phase = snapshot.accessState.isCaptureReady ? .ready : .idle
-        snapshot.sessionState.health = .empty
-        snapshot.loadState = .idle
-    }
-
-    private func resetLiveSession() async throws {
-        if let liveSession, snapshot.sessionState.canStop {
-            try await liveSession.stop()
-        }
-
-        releaseLiveSession()
     }
 
     private func releaseLiveSession() {
@@ -1243,6 +1346,25 @@ final class PacketryWindowController: ObservableObject {
         Task {
             await backgroundCoordinator.endOperation("live-events")
         }
+    }
+
+    private func cancelControllerTasks() {
+        liveEventsTask?.cancel()
+        liveEventsTask = nil
+        documentEventsTask?.cancel()
+        documentEventsTask = nil
+        inspectionTask?.cancel()
+        inspectionTask = nil
+        filterValidationTask?.cancel()
+        filterValidationTask = nil
+    }
+
+    private func cancelBackgroundWorkForTermination() async {
+        cancelControllerTasks()
+        let currentDocument = document
+        document = nil
+        await backgroundCoordinator.cancelAll()
+        await currentDocument?.cancelLoading()
     }
 
     private func releaseDocumentContext(resetState: Bool = false) {
@@ -1266,10 +1388,23 @@ final class PacketryWindowController: ObservableObject {
     }
 
     private func synchronizeVisiblePackets(message: String) {
-        snapshot.navigationState.visiblePackets = snapshot.packetIngestState.packets
+        let mutation = snapshot.packetIngestState.lastMutation
+        var shouldValidateSelection = true
+
+        if case .append(let range) = mutation,
+           snapshot.navigationState.visiblePackets.count == range.lowerBound,
+           range.upperBound <= snapshot.packetIngestState.packets.count {
+            snapshot.navigationState.visiblePackets.append(
+                contentsOf: snapshot.packetIngestState.packets[range]
+            )
+            shouldValidateSelection = false
+        } else {
+            snapshot.navigationState.visiblePackets = snapshot.packetIngestState.packets
+        }
         snapshot.navigationState.statusMessage = message
 
-        if let selectedPacketID = snapshot.selectedPacketID,
+        if shouldValidateSelection,
+           let selectedPacketID = snapshot.selectedPacketID,
            !snapshot.navigationState.visiblePackets.contains(where: { $0.id == selectedPacketID }) {
             resetInspectionState()
         }

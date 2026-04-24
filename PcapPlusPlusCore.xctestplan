@@ -1,0 +1,32 @@
+{
+  "configurations" : [
+    {
+      "id" : "AF913607-48D1-467C-94B2-14BD04F0CFA4",
+      "name" : "Test Scheme Action",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "codeCoverage" : false,
+    "performanceAntipatternCheckerEnabled" : true
+  },
+  "testTargets" : [
+    {
+      "target" : {
+        "containerPath" : "container:Packetry.xcodeproj",
+        "identifier" : "BA4D26BB2F9A2F770070BE17",
+        "name" : "PcapPlusPlusCoreTests"
+      }
+    },
+    {
+      "target" : {
+        "containerPath" : "container:Packetry.xcodeproj",
+        "identifier" : "BA4D26912F9A2F4B0070BE17",
+        "name" : "PacketryTests"
+      }
+    }
+  ],
+  "version" : 1
+}

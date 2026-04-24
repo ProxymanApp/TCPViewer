@@ -38,6 +38,23 @@ struct InspectorPipelineTests {
         #expect(normalized.captureFilterExpression == "tcp port 443")
     }
 
+    @Test func livePacketBatchBufferFlushesByCountTimerAndStop() {
+        var buffer = LivePacketBatchBuffer<Int>(maxBatchSize: 3)
+
+        #expect(buffer.append([1]) == nil)
+        #expect(buffer.append([2]) == nil)
+        #expect(buffer.append([3]) == [1, 2, 3])
+        #expect(buffer.isEmpty)
+
+        #expect(buffer.append([4, 5]) == nil)
+        #expect(buffer.flush() == [4, 5])
+        #expect(buffer.isEmpty)
+
+        #expect(buffer.append([6]) == nil)
+        #expect(buffer.flush() == [6])
+        #expect(buffer.flush() == nil)
+    }
+
     @Test func generatedCaptureInspectionCoversCoreProtocolsAndExactByteRanges() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

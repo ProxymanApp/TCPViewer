@@ -42,7 +42,46 @@ public final class NativeLiveCaptureSession: LiveCaptureSessionProviding, @unche
     }
 }
 
+struct LivePacketBatchBuffer<Element: Sendable>: Sendable {
+    let maxBatchSize: Int
+    private(set) var pendingElements: [Element] = []
+
+    init(maxBatchSize: Int) {
+        self.maxBatchSize = max(maxBatchSize, 1)
+    }
+
+    var isEmpty: Bool {
+        pendingElements.isEmpty
+    }
+
+    mutating func append(_ elements: [Element]) -> [Element]? {
+        guard !elements.isEmpty else {
+            return nil
+        }
+
+        pendingElements.append(contentsOf: elements)
+        guard pendingElements.count >= maxBatchSize else {
+            return nil
+        }
+
+        return flush()
+    }
+
+    mutating func flush() -> [Element]? {
+        guard !pendingElements.isEmpty else {
+            return nil
+        }
+
+        let elements = pendingElements
+        pendingElements.removeAll(keepingCapacity: true)
+        return elements
+    }
+}
+
 actor NativeLiveCaptureSessionState {
+    private static let maxLivePacketBatchSize = 256
+    private static let livePacketBatchInterval: Duration = .milliseconds(100)
+
     private let nativeSession: PCPPNativeLiveSession
     private let streamBox: EventStreamBox<PacketIngestEvent>
     private let stopCondition: CaptureStopCondition
@@ -51,6 +90,8 @@ actor NativeLiveCaptureSessionState {
     private var health: CaptureHealthSnapshot = .empty
     private var startedAt: Date?
     private var activeRunPacketCount: UInt64 = 0
+    private var packetBatchBuffer = LivePacketBatchBuffer<PacketSummary>(maxBatchSize: maxLivePacketBatchSize)
+    private var packetBatchFlushTask: Task<Void, Never>?
     private var durationStopTask: Task<Void, Never>?
 
     init(interfaceID: String, options: CaptureOptions, streamBox: EventStreamBox<PacketIngestEvent>) throws {
@@ -117,6 +158,8 @@ actor NativeLiveCaptureSessionState {
         if phase == .stopped || phase == .failed || phase == .ready {
             activeRunPacketCount = 0
             startedAt = Date()
+            cancelPacketBatchFlushTask()
+            _ = packetBatchBuffer.flush()
         }
 
         do {
@@ -135,9 +178,11 @@ actor NativeLiveCaptureSessionState {
 
     func pause() throws {
         cancelDurationStopTask()
+        flushPendingPacketBatch()
 
         do {
             try nativeSession.pause()
+            flushPendingPacketBatch()
         } catch {
             throw NativeBridgeMapper.coreError(error, defaultCode: .liveSessionControlFailed)
         }
@@ -154,9 +199,11 @@ actor NativeLiveCaptureSessionState {
 
     func stop(reason: String?) throws {
         cancelDurationStopTask()
+        flushPendingPacketBatch()
 
         do {
             try nativeSession.stop()
+            flushPendingPacketBatch()
             if let reason {
                 streamBox.yield(.liveStateChanged(phase: .stopped, message: reason))
             }
@@ -181,10 +228,18 @@ actor NativeLiveCaptureSessionState {
     private func handlePacketBatch(_ packets: [PCPPNativePacketSummaryDescriptor]) {
         let batch = NativeBridgeMapper.packetBatch(packets, source: .live)
         activeRunPacketCount += UInt64(batch.count)
-        streamBox.yield(.packetBatch(batch, disposition: .append))
+        if let readyBatch = packetBatchBuffer.append(batch) {
+            cancelPacketBatchFlushTask()
+            yieldPacketBatch(readyBatch)
+        } else if phase == .running || phase == .starting {
+            schedulePacketBatchFlushIfNeeded()
+        } else {
+            flushPendingPacketBatch()
+        }
 
         if case .packetCount(let limit) = stopCondition, activeRunPacketCount >= limit {
             do {
+                flushPendingPacketBatch()
                 try stop(reason: "Capture stopped after reaching \(limit) packets.")
             } catch {
                 streamBox.finish(throwing: NativeBridgeMapper.coreError(error, defaultCode: .liveSessionControlFailed))
@@ -194,6 +249,9 @@ actor NativeLiveCaptureSessionState {
 
     private func handlePhaseChange(_ phase: PCPPNativeLiveSessionPhase, message: String) {
         let mappedPhase = NativeBridgeMapper.livePhase(phase)
+        if mappedPhase == .paused || mappedPhase == .stopped || mappedPhase == .failed {
+            flushPendingPacketBatch()
+        }
         self.phase = mappedPhase
         streamBox.yield(.liveStateChanged(phase: mappedPhase, message: message))
 
@@ -212,8 +270,52 @@ actor NativeLiveCaptureSessionState {
         let packetryError = NativeBridgeMapper.coreError(error, defaultCode: .liveSessionControlFailed)
         phase = .failed
         cancelDurationStopTask()
+        flushPendingPacketBatch()
         streamBox.yield(.liveStateChanged(phase: .failed, message: packetryError.message))
         streamBox.finish(throwing: packetryError)
+    }
+
+    private func yieldPacketBatch(_ batch: [PacketSummary]) {
+        guard !batch.isEmpty else {
+            return
+        }
+
+        streamBox.yield(.packetBatch(batch, disposition: .append))
+    }
+
+    private func schedulePacketBatchFlushIfNeeded() {
+        guard packetBatchFlushTask == nil, !packetBatchBuffer.isEmpty else {
+            return
+        }
+
+        packetBatchFlushTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: Self.livePacketBatchInterval)
+                guard !Task.isCancelled, let self else {
+                    return
+                }
+
+                await self.flushPendingPacketBatchFromTimer()
+            } catch {
+            }
+        }
+    }
+
+    private func flushPendingPacketBatchFromTimer() {
+        packetBatchFlushTask = nil
+        flushPendingPacketBatch()
+    }
+
+    private func flushPendingPacketBatch() {
+        cancelPacketBatchFlushTask()
+        if let batch = packetBatchBuffer.flush() {
+            yieldPacketBatch(batch)
+        }
+    }
+
+    private func cancelPacketBatchFlushTask() {
+        packetBatchFlushTask?.cancel()
+        packetBatchFlushTask = nil
     }
 
     private func scheduleDurationStopIfNeeded() {
