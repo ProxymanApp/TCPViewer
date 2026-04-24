@@ -7,6 +7,7 @@ struct NetworkPacketTableView: NSViewRepresentable {
     let contentGeneration: UInt64
     let updatePlan: PacketTableUpdatePlan
     let density: PacketTableDensity
+    let selectedPacketID: PacketSummary.ID?
     let selectedRowIndex: Int?
     let onSelectPacket: (PacketSummary.ID?) -> Void
 
@@ -48,7 +49,11 @@ struct NetworkPacketTableView: NSViewRepresentable {
         context.coordinator.contentGeneration = contentGeneration
         context.coordinator.suppressSelectionCallbacks {
             tableView.reloadData()
-            context.coordinator.syncSelection(in: tableView, selectedRowIndex: selectedRowIndex)
+            context.coordinator.syncSelection(
+                in: tableView,
+                selectedPacketID: selectedPacketID,
+                selectedRowIndex: selectedRowIndex
+            )
         }
 
         return scrollView
@@ -77,19 +82,35 @@ struct NetworkPacketTableView: NSViewRepresentable {
                 break
             case .append(let range):
                 if range.lowerBound == previousRowCount, range.upperBound <= rows.count {
-                    tableView.insertRows(
-                        at: IndexSet(integersIn: range),
-                        withAnimation: []
-                    )
+                    print("[Packetry] \(NetworkInspectorDebugLog.timestamp()) Packet table inserting rows: \(range.lowerBound)..<\(range.upperBound), totalRows=\(rows.count)")
+                    tableView.noteNumberOfRowsChanged()
                 } else {
-                    tableView.reloadData()
+                    Self.preserveScrollPosition(in: scrollView) {
+                        tableView.reloadData()
+                    }
                 }
             case .reload:
-                tableView.reloadData()
+                Self.preserveScrollPosition(in: scrollView) {
+                    tableView.reloadData()
+                }
             }
 
-            context.coordinator.syncSelection(in: tableView, selectedRowIndex: selectedRowIndex)
+            context.coordinator.syncSelection(
+                in: tableView,
+                selectedPacketID: selectedPacketID,
+                selectedRowIndex: selectedRowIndex
+            )
         }
+    }
+
+    private static func preserveScrollPosition(in scrollView: NSScrollView, updates: () -> Void) {
+        let clipView = scrollView.contentView
+        let visibleOrigin = clipView.bounds.origin
+
+        updates()
+
+        clipView.scroll(to: visibleOrigin)
+        scrollView.reflectScrolledClipView(clipView)
     }
 
     private static func addColumn(
@@ -111,6 +132,7 @@ struct NetworkPacketTableView: NSViewRepresentable {
         var rows: [PacketTableRow] = []
         var contentGeneration: UInt64 = 0
         var onSelectPacket: (PacketSummary.ID?) -> Void
+        private var lastAppliedSelectedPacketID: PacketSummary.ID?
         private var selectionCallbackSuppressionDepth = 0
 
         private var isSuppressingSelectionCallbacks: Bool {
@@ -182,25 +204,41 @@ struct NetworkPacketTableView: NSViewRepresentable {
 
             let selectedRow = tableView.selectedRow
             let selectedID = rows.indices.contains(selectedRow) ? rows[selectedRow].id : nil
+            guard selectedID != lastAppliedSelectedPacketID else {
+                return
+            }
+
+            lastAppliedSelectedPacketID = selectedID
             let onSelectPacket = onSelectPacket
             DispatchQueue.main.async {
                 onSelectPacket(selectedID)
             }
         }
 
-        func syncSelection(in tableView: NSTableView, selectedRowIndex: Int?) {
+        // Applies model selection to AppKit only when the visible table selection is stale.
+        func syncSelection(
+            in tableView: NSTableView,
+            selectedPacketID: PacketSummary.ID?,
+            selectedRowIndex: Int?
+        ) {
             suppressSelectionCallbacks {
-                guard let rowIndex = selectedRowIndex, rows.indices.contains(rowIndex) else {
+                let action = PacketTableSelectionSyncPlanner.action(
+                    rows: rows,
+                    selectedPacketID: selectedPacketID,
+                    selectedRowIndex: selectedRowIndex,
+                    tableSelectedRow: tableView.selectedRow
+                )
+
+                switch action {
+                case .none:
+                    break
+                case .deselect:
                     tableView.deselectAll(nil)
-                    return
+                case .select(let rowIndex):
+                    tableView.selectRowIndexes(IndexSet(integer: rowIndex), byExtendingSelection: false)
                 }
 
-                guard tableView.selectedRow != rowIndex else {
-                    return
-                }
-
-                tableView.selectRowIndexes(IndexSet(integer: rowIndex), byExtendingSelection: false)
-                tableView.scrollRowToVisible(rowIndex)
+                lastAppliedSelectedPacketID = selectedPacketID
             }
         }
 
@@ -238,6 +276,35 @@ struct NetworkPacketTableView: NSViewRepresentable {
         private func usesMonospacedFont(_ column: String) -> Bool {
             column == "number" || column == "time" || column == "length"
         }
+    }
+}
+
+enum PacketTableSelectionSyncAction: Equatable {
+    case none
+    case select(Int)
+    case deselect
+}
+
+enum PacketTableSelectionSyncPlanner {
+    static func action(
+        rows: [PacketTableRow],
+        selectedPacketID: PacketSummary.ID?,
+        selectedRowIndex: Int?,
+        tableSelectedRow: Int
+    ) -> PacketTableSelectionSyncAction {
+        let visualSelectedID = rows.indices.contains(tableSelectedRow) ? rows[tableSelectedRow].id : nil
+
+        guard let selectedPacketID,
+              let selectedRowIndex,
+              rows.indices.contains(selectedRowIndex) else {
+            return visualSelectedID == nil ? .none : .deselect
+        }
+
+        if visualSelectedID == selectedPacketID {
+            return .none
+        }
+
+        return .select(selectedRowIndex)
     }
 }
 

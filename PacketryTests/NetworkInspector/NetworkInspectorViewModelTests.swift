@@ -116,6 +116,50 @@ struct NetworkInspectorViewModelTests {
         #expect(PacketTableUpdatePlanner.plan(previousGeneration: 1, currentGeneration: 1, proposedPlan: .reload) == .none)
     }
 
+    @Test func packetTableSelectionSyncOnlyTouchesStaleVisualSelection() {
+        let packets = [
+            makePacket(packetNumber: 1, source: .live, transportHint: .tcp),
+            makePacket(packetNumber: 2, source: .live, transportHint: .udp),
+            makePacket(packetNumber: 3, source: .live, transportHint: .dns),
+        ]
+        let rows = packets.map(PacketTableRow.init)
+
+        #expect(PacketTableSelectionSyncPlanner.action(
+            rows: rows,
+            selectedPacketID: packets[1].id,
+            selectedRowIndex: 1,
+            tableSelectedRow: 1
+        ) == .none)
+
+        #expect(PacketTableSelectionSyncPlanner.action(
+            rows: rows,
+            selectedPacketID: packets[1].id,
+            selectedRowIndex: 1,
+            tableSelectedRow: -1
+        ) == .select(1))
+
+        #expect(PacketTableSelectionSyncPlanner.action(
+            rows: rows,
+            selectedPacketID: packets[1].id,
+            selectedRowIndex: 1,
+            tableSelectedRow: 0
+        ) == .select(1))
+
+        #expect(PacketTableSelectionSyncPlanner.action(
+            rows: rows,
+            selectedPacketID: nil,
+            selectedRowIndex: nil,
+            tableSelectedRow: 1
+        ) == .deselect)
+
+        #expect(PacketTableSelectionSyncPlanner.action(
+            rows: rows,
+            selectedPacketID: packets[1].id,
+            selectedRowIndex: nil,
+            tableSelectedRow: -1
+        ) == .none)
+    }
+
     @Test func packetRowsAreCachedAcrossNonPacketUpdates() async {
         let packet = makePacket(packetNumber: 1, source: .live, transportHint: .tcp)
         let liveSession = InspectorFakeLiveSession()

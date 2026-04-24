@@ -23,7 +23,12 @@ struct NetworkInspectorWindow: View {
                         .frame(minWidth: 620, maxWidth: .infinity, maxHeight: .infinity)
 
                     if viewModel.snapshot.isInspectorVisible {
-                        PacketInspectorPane(viewModel: viewModel)
+                        PacketInspectorPane(
+                            state: PacketInspectorRenderState(snapshot: viewModel.snapshot),
+                            onSelectInspectorTab: { viewModel.selectInspectorTab($0) },
+                            onSelectDetailNode: { viewModel.selectDetailNode($0) }
+                        )
+                        .equatable()
                             .frame(minWidth: 320, idealWidth: 360, maxWidth: 460, maxHeight: .infinity)
                     }
                 }
@@ -327,6 +332,7 @@ private struct PacketWorkspace: View {
                     contentGeneration: viewModel.snapshot.packetTableGeneration,
                     updatePlan: viewModel.snapshot.packetTableUpdatePlan,
                     density: viewModel.snapshot.tableDensity,
+                    selectedPacketID: viewModel.snapshot.selectedPacketID,
                     selectedRowIndex: viewModel.snapshot.selectedPacketRowIndex,
                     onSelectPacket: { viewModel.selectPacket($0) }
                 )
@@ -410,29 +416,68 @@ private struct PreparedWorkspace: View {
     }
 }
 
-private struct PacketInspectorPane: View {
-    @ObservedObject var viewModel: NetworkInspectorViewModel
+private struct PacketInspectorRenderState: Equatable {
+    let inspectorTab: PacketInspectorTab
+    let selectedPacket: PacketSummary?
+    let selectedPacketID: PacketSummary.ID?
+    let inspection: PacketInspection?
+    let selectedDetailNodeID: String?
+    let highlightedByteRange: PacketByteRange?
+    let isLoading: Bool
+    let statusMessage: String
+
+    init(snapshot: NetworkInspectorSnapshot) {
+        self.inspectorTab = snapshot.inspectorTab
+        self.selectedPacket = snapshot.selectedPacket
+        self.selectedPacketID = snapshot.selectedPacketID
+        self.inspection = snapshot.base.inspectionState.inspection
+        self.selectedDetailNodeID = snapshot.base.inspectionState.selectedDetailNodeID
+        self.highlightedByteRange = snapshot.base.inspectionState.highlightedByteRange
+        self.isLoading = snapshot.base.inspectionState.isLoading
+        self.statusMessage = snapshot.base.inspectionState.statusMessage
+    }
+}
+
+private struct PacketInspectorPane: View, Equatable {
+    let state: PacketInspectorRenderState
+    let onSelectInspectorTab: (PacketInspectorTab) -> Void
+    let onSelectDetailNode: (String?) -> Void
+
+    static func == (lhs: PacketInspectorPane, rhs: PacketInspectorPane) -> Bool {
+        lhs.state == rhs.state
+    }
 
     var body: some View {
+        let _ = logInspectorRender()
+
         VStack(spacing: 0) {
             inspectorHeader
 
             Divider()
 
-            switch viewModel.snapshot.inspectorTab {
+            switch state.inspectorTab {
             case .overview:
-                PacketOverviewInspector(snapshot: viewModel.snapshot)
+                PacketOverviewInspector(state: state)
             case .layers:
-                PacketLayersInspector(viewModel: viewModel)
+                PacketLayersInspector(
+                    state: state,
+                    onSelectDetailNode: onSelectDetailNode
+                )
             case .hex:
-                PacketHexInspector(snapshot: viewModel.snapshot)
+                PacketHexInspector(state: state)
             case .stream:
-                PacketStreamInspector(snapshot: viewModel.snapshot)
+                PacketStreamInspector(state: state)
             case .notes:
-                PacketNotesInspector(snapshot: viewModel.snapshot)
+                PacketNotesInspector(state: state)
             }
         }
         .background(.regularMaterial)
+    }
+
+    private func logInspectorRender() {
+        let selectedPacketID = state.selectedPacketID?.description ?? "nil"
+        let inspectionPacketID = state.inspection?.packetID.description ?? "nil"
+        print("[Packetry] \(NetworkInspectorDebugLog.timestamp()) Inspector detail render: tab=\(state.inspectorTab.title), selectedPacketID=\(selectedPacketID), inspectionPacketID=\(inspectionPacketID)")
     }
 
     private var inspectorHeader: some View {
@@ -442,7 +487,7 @@ private struct PacketInspectorPane: View {
                     Text("Packet Inspector")
                         .font(.headline)
 
-                    if let packet = viewModel.snapshot.selectedPacket {
+                    if let packet = state.selectedPacket {
                         Text("Packet \(packet.packetNumber) - \(NetworkInspectorFormatters.protocolLabel(for: packet))")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -459,8 +504,8 @@ private struct PacketInspectorPane: View {
             Picker(
                 "Inspector Tab",
                 selection: Binding(
-                    get: { viewModel.snapshot.inspectorTab },
-                    set: { viewModel.selectInspectorTab($0) }
+                    get: { state.inspectorTab },
+                    set: { onSelectInspectorTab($0) }
                 )
             ) {
                 ForEach(PacketInspectorTab.allCases) { tab in
@@ -476,10 +521,10 @@ private struct PacketInspectorPane: View {
 }
 
 private struct PacketOverviewInspector: View {
-    let snapshot: NetworkInspectorSnapshot
+    let state: PacketInspectorRenderState
 
     var body: some View {
-        if let packet = snapshot.selectedPacket {
+        if let packet = state.selectedPacket {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     InspectorSection("Summary") {
@@ -508,28 +553,29 @@ private struct PacketOverviewInspector: View {
             ContentUnavailableView(
                 "No Packet Selected",
                 systemImage: "sidebar.trailing",
-                description: Text(snapshot.base.inspectionState.statusMessage)
+                description: Text(state.statusMessage)
             )
         }
     }
 }
 
 private struct PacketLayersInspector: View {
-    @ObservedObject var viewModel: NetworkInspectorViewModel
+    let state: PacketInspectorRenderState
+    let onSelectDetailNode: (String?) -> Void
 
     var body: some View {
-        if viewModel.snapshot.base.inspectionState.isLoading {
+        if state.isLoading {
             ProgressView("Decoding packet...")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if let inspection = viewModel.snapshot.base.inspectionState.inspection {
+        } else if let inspection = state.inspection {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
                     ForEach(inspection.detailNodes) { node in
                         PacketDetailNodeInspectorRow(
                             node: node,
                             depth: 0,
-                            selectedNodeID: viewModel.snapshot.base.inspectionState.selectedDetailNodeID,
-                            onSelect: { viewModel.selectDetailNode($0) }
+                            selectedNodeID: state.selectedDetailNodeID,
+                            onSelect: onSelectDetailNode
                         )
                     }
                 }
@@ -539,7 +585,7 @@ private struct PacketLayersInspector: View {
             ContentUnavailableView(
                 "Layers",
                 systemImage: "point.3.connected.trianglepath.dotted",
-                description: Text(viewModel.snapshot.base.inspectionState.statusMessage)
+                description: Text(state.statusMessage)
             )
         }
     }
@@ -604,13 +650,13 @@ private struct PacketDetailNodeInspectorRow: View {
 }
 
 private struct PacketHexInspector: View {
-    let snapshot: NetworkInspectorSnapshot
+    let state: PacketInspectorRenderState
 
     var body: some View {
-        if let inspection = snapshot.base.inspectionState.inspection {
+        if let inspection = state.inspection {
             PacketHexFiendView(
                 data: inspection.rawBytes,
-                highlightedByteRange: snapshot.base.inspectionState.highlightedByteRange
+                highlightedByteRange: state.highlightedByteRange
             )
         } else {
             ContentUnavailableView(
@@ -623,10 +669,10 @@ private struct PacketHexInspector: View {
 }
 
 private struct PacketStreamInspector: View {
-    let snapshot: NetworkInspectorSnapshot
+    let state: PacketInspectorRenderState
 
     var body: some View {
-        if let packet = snapshot.selectedPacket {
+        if let packet = state.selectedPacket {
             VStack(alignment: .leading, spacing: 12) {
                 InspectorSection("Stream") {
                     InspectorKeyValueRow(label: "Stream ID", value: packet.streamID.map(String.init) ?? "-")
@@ -649,10 +695,10 @@ private struct PacketStreamInspector: View {
 }
 
 private struct PacketNotesInspector: View {
-    let snapshot: NetworkInspectorSnapshot
+    let state: PacketInspectorRenderState
 
     var body: some View {
-        if let packet = snapshot.selectedPacket {
+        if let packet = state.selectedPacket {
             VStack(alignment: .leading, spacing: 12) {
                 InspectorSection("Notes") {
                     InspectorKeyValueRow(label: "Packet Comment", value: packet.captureMetadata.packetComment ?? "-")

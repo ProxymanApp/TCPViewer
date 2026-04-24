@@ -51,6 +51,18 @@ private struct NetworkInspectorPreferences {
     }
 }
 
+enum NetworkInspectorDebugLog {
+    private static let timestampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        return formatter
+    }()
+
+    static func timestamp() -> String {
+        timestampFormatter.string(from: Date())
+    }
+}
+
 private struct PacketTableContentCache {
     private var packetRevision: UInt64?
     private var packetLineageRevision: UInt64?
@@ -389,6 +401,7 @@ final class NetworkInspectorViewModel: ObservableObject {
     }
 
     func selectPacket(_ identifier: PacketSummary.ID?) {
+        print("[Packetry] \(NetworkInspectorDebugLog.timestamp()) Packet row selected: \(identifier?.description ?? "nil")")
         controller.selectPacket(identifier)
         if identifier != nil {
             inspectorTab = .overview
