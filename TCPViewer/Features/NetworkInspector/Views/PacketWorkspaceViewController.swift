@@ -3,6 +3,14 @@ import PcapPlusPlusCore
 
 protocol PacketWorkspaceViewControllerDelegate: AnyObject {
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didSelectPacket identifier: PacketSummary.ID?)
+    func packetWorkspaceViewController(
+        _ controller: PacketWorkspaceViewController,
+        didRequestPin kind: PacketPinCreationKind,
+        packetID: PacketSummary.ID,
+        clickedColumn: PacketTableColumnRole
+    )
+    func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestSavePackets identifiers: [PacketSummary.ID])
+    func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestDeletePackets identifiers: [PacketSummary.ID])
 }
 
 final class PacketWorkspaceViewModel {
@@ -25,11 +33,15 @@ final class PacketWorkspaceViewModel {
         switch snapshot.selectedSourceListSelection {
         case .pinned:
             emptyTitle = "Pinned Packets"
-            emptyMessage = "Pinning packets is coming soon."
+            emptyMessage = "Pinned matches will appear here as packets arrive."
+            emptyImageName = "pin.fill"
+        case .pinnedItem:
+            emptyTitle = "Pinned Packets"
+            emptyMessage = "No packets match this pinned item yet."
             emptyImageName = "pin.fill"
         case .saved:
             emptyTitle = "Saved Packets"
-            emptyMessage = "Saving packets is coming soon."
+            emptyMessage = "Saved packets appear here after using the packet table menu."
             emptyImageName = "tray.and.arrow.down"
         default:
             emptyTitle = snapshot.totalPacketCount == 0 ? "No Packets" : "No Matching Packets"
@@ -103,7 +115,12 @@ final class PacketWorkspaceViewController: NSViewController {
         }
 
         placeholderView?.removeFromSuperview()
-        let placeholder = TCPViewerUI.placeholder(title: title, imageName: imageName, message: message)
+        let placeholder = TCPViewerUI.placeholder(
+            title: title,
+            imageName: imageName,
+            message: message,
+            iconTitleSpacing: 18
+        )
         TCPViewerUI.pin(placeholder, to: contentContainer)
         placeholderView = placeholder
     }
@@ -121,5 +138,27 @@ final class PacketWorkspaceViewController: NSViewController {
 extension PacketWorkspaceViewController: PacketTableViewControllerDelegate {
     func packetTableViewController(_ controller: PacketTableViewController, didSelectPacket identifier: PacketSummary.ID?) {
         delegate?.packetWorkspaceViewController(self, didSelectPacket: identifier)
+    }
+
+    func packetTableViewController(
+        _ controller: PacketTableViewController,
+        didRequestPin kind: PacketPinCreationKind,
+        packetID: PacketSummary.ID,
+        clickedColumn: PacketTableColumnRole
+    ) {
+        delegate?.packetWorkspaceViewController(
+            self,
+            didRequestPin: kind,
+            packetID: packetID,
+            clickedColumn: clickedColumn
+        )
+    }
+
+    func packetTableViewController(_ controller: PacketTableViewController, didRequestSavePackets identifiers: [PacketSummary.ID]) {
+        delegate?.packetWorkspaceViewController(self, didRequestSavePackets: identifiers)
+    }
+
+    func packetTableViewController(_ controller: PacketTableViewController, didRequestDeletePackets identifiers: [PacketSummary.ID]) {
+        delegate?.packetWorkspaceViewController(self, didRequestDeletePackets: identifiers)
     }
 }

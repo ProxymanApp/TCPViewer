@@ -61,9 +61,49 @@ struct PacketSourceListServiceTests {
 
         let snapshot = PacketSourceListService().snapshot(for: state)
         let domain = snapshot.item(for: .domain(.ipAddresses))
+        let sourceIPKey = PacketSourceIPAddressKey(rawValue: "10.0.0.1")
+        let destinationIPKey = PacketSourceIPAddressKey(rawValue: "10.0.0.2")
 
         #expect(snapshot.item(for: .domains)?.children.map(\.title) == ["IP Addresses"])
         #expect(domain?.count == 2)
+        #expect(domain?.children.map(\.title) == ["10.0.0.2", "10.0.0.1"])
+        #expect(snapshot.item(for: .ipAddress(destinationIPKey))?.count == 2)
+        #expect(snapshot.item(for: .ipAddress(sourceIPKey))?.count == 2)
+    }
+
+    @Test func deletionPolicyOnlyAllowsDeletableLeafItems() {
+        let client = makeClient(displayName: "Example", bundleIdentifier: "com.example.app")
+        let pinID = PacketPinID(rawValue: "domain:api.example.com")
+        let pin = PacketPin(
+            id: pinID,
+            kind: .domain,
+            title: "api.example.com",
+            createdAt: Date(timeIntervalSince1970: 10),
+            domain: "api.example.com",
+            ipAddress: nil,
+            clientKey: nil,
+            clientDisplayName: nil,
+            clientIconFilePath: nil
+        )
+        var state = PacketIngestState.empty
+        state.append([
+            makePacket(packetNumber: 1, sniDomainName: "api.example.com", client: client),
+            makePacket(packetNumber: 2, sniDomainName: nil),
+        ], source: .live)
+
+        let snapshot = PacketSourceListService().snapshot(for: state, pinnedItems: [pin])
+        let appKey = PacketSourceClientKey(rawValue: "bundleIdentifier:com.example.app")
+        let domainKey = PacketSourceDomainKey(rawValue: "api.example.com", isMissingDomain: false)
+        let ipKey = PacketSourceIPAddressKey(rawValue: "10.0.0.2")
+
+        #expect(PacketSourceListDeletionPolicy.action(for: snapshot.item(for: .pinned)) == .none)
+        #expect(PacketSourceListDeletionPolicy.action(for: snapshot.item(for: .pinnedItem(pinID))) == .deletePin(pinID))
+        #expect(PacketSourceListDeletionPolicy.action(for: snapshot.item(for: .apps)) == .none)
+        #expect(PacketSourceListDeletionPolicy.action(for: snapshot.item(for: .app(appKey))) == .deletePackets(.app(appKey)))
+        #expect(PacketSourceListDeletionPolicy.action(for: snapshot.item(for: .domains)) == .none)
+        #expect(PacketSourceListDeletionPolicy.action(for: snapshot.item(for: .domain(domainKey))) == .deletePackets(.domain(domainKey)))
+        #expect(PacketSourceListDeletionPolicy.action(for: snapshot.item(for: .domain(.ipAddresses))) == .none)
+        #expect(PacketSourceListDeletionPolicy.action(for: snapshot.item(for: .ipAddress(ipKey))) == .deletePackets(.ipAddress(ipKey)))
     }
 
     @Test func clientIdentityFallsBackThroughAvailableFields() {

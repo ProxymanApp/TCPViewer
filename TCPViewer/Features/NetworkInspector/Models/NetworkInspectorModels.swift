@@ -64,6 +64,13 @@ enum NetworkInspectorSidebarSelection: Hashable, Sendable {
     case view(NetworkInspectorWorkspaceMode)
 }
 
+private extension String {
+    var tcpviewerTrimmedNonEmpty: String? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
 enum PacketInspectorTab: String, CaseIterable, Identifiable, Sendable, Hashable {
     case summary
     case detail
@@ -124,6 +131,9 @@ struct PacketTag: Identifiable, Sendable, Hashable {
 struct PacketTableRow: Identifiable, Sendable, Hashable {
     let id: PacketSummary.ID
     let client: PacketClient?
+    let sourceAddress: String?
+    let destinationAddress: String?
+    let sniDomainName: String?
     let numberText: String
     let timeText: String
     let sourceText: String
@@ -139,6 +149,9 @@ struct PacketTableRow: Identifiable, Sendable, Hashable {
     init(packet: PacketSummary) {
         self.id = packet.id
         self.client = packet.client
+        self.sourceAddress = packet.endpoints.source.address
+        self.destinationAddress = packet.endpoints.destination.address
+        self.sniDomainName = packet.sniDomainName
         self.numberText = "\(packet.packetNumber)"
         self.timeText = NetworkInspectorFormatters.packetTime.string(from: packet.timestamp)
         self.sourceText = NetworkInspectorFormatters.endpointLabel(packet.endpoints.source)
@@ -154,6 +167,52 @@ struct PacketTableRow: Identifiable, Sendable, Hashable {
 
     var tagText: String {
         tags.map(\.label).joined(separator: " | ")
+    }
+
+    var canPinDomain: Bool {
+        sniDomainName?.tcpviewerTrimmedNonEmpty != nil
+    }
+
+    var canPinClient: Bool {
+        client != nil
+    }
+
+    func ipAddress(for clickedColumn: PacketTableColumnRole) -> String? {
+        switch clickedColumn {
+        case .source:
+            return sourceAddress ?? destinationAddress
+        case .destination:
+            return destinationAddress ?? sourceAddress
+        default:
+            return destinationAddress ?? sourceAddress
+        }
+    }
+
+    func text(for column: PacketTableColumnRole) -> String {
+        switch column {
+        case .number:
+            numberText
+        case .time:
+            timeText
+        case .source:
+            sourceText
+        case .destination:
+            destinationText
+        case .domain:
+            domainText
+        case .client:
+            clientText
+        case .protocol:
+            protocolText
+        case .length:
+            lengthText
+        case .summary:
+            summaryText
+        case .tags:
+            tagText
+        case .unknown:
+            ""
+        }
     }
 }
 

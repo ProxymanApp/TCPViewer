@@ -44,9 +44,11 @@ final class AppConfiguration: NSObject {
     }
 
     private let defaults: UserDefaults
+    let interfaceSelectionHistory: InterfaceSelectionHistoryStore
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        self.interfaceSelectionHistory = InterfaceSelectionHistoryStore(defaults: defaults)
         super.init()
         registerDefaults()
     }
@@ -119,6 +121,7 @@ final class AppConfiguration: NSObject {
         defaults.removeObject(forKey: Key.packetFontSize)
         defaults.removeObject(forKey: Key.usesMonospacedPacketFont)
         defaults.removeObject(forKey: Key.appearanceTheme)
+        interfaceSelectionHistory.clear()
         registerDefaults()
         notifyChange()
     }

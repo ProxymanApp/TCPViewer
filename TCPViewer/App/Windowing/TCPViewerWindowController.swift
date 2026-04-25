@@ -10,7 +10,10 @@ final class TCPViewerWindowController: NSWindowController {
     private var helperSheetWindow: NSWindow?
 
     init(services: TCPViewerServiceRegistry, configuration: AppConfiguration, initialURL: URL? = nil) {
-        let viewModel = NetworkInspectorViewModel(services: services)
+        let viewModel = NetworkInspectorViewModel(
+            services: services,
+            interfaceHistoryStore: configuration.interfaceSelectionHistory
+        )
         self.rootViewController = TCPViewerRootViewController(viewModel: viewModel, configuration: configuration)
         let window = NSWindow(contentViewController: rootViewController)
         window.title = initialURL?.lastPathComponent ?? "TCP Viewer"

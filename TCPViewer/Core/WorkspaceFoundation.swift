@@ -97,6 +97,30 @@ struct PacketIngestState: Sendable, Equatable {
         }
     }
 
+    mutating func delete(packetIDs: Set<PacketSummary.ID>, message: String? = nil) {
+        guard !packetIDs.isEmpty else {
+            lastMutation = .none
+            return
+        }
+
+        let originalCount = packets.count
+        packets.removeAll { packetIDs.contains($0.id) }
+        guard packets.count != originalCount else {
+            lastMutation = .none
+            return
+        }
+
+        rebuildPacketIndex()
+        packetRevision &+= 1
+        packetLineageRevision &+= 1
+        lastMutation = .replace
+        lastBatchCount = 0
+        recalculateCounters()
+        if let message {
+            statusMessage = message
+        }
+    }
+
     mutating func applyMetadataUpdates(_ updates: [PacketMetadataUpdate]) {
         var didUpdate = false
         for update in updates {
@@ -232,6 +256,7 @@ struct CaptureSessionState: Sendable, Equatable {
     var phase: Phase
     var interfaceInventory: [CaptureInterfaceSummary]
     var selectedInterfaceID: String?
+    var lastUsedInterfaceIDs: [String]
     var options: CaptureOptions
     var health: CaptureHealthSnapshot
     var capturedPacketCount: Int
@@ -242,6 +267,7 @@ struct CaptureSessionState: Sendable, Equatable {
         phase: .idle,
         interfaceInventory: [],
         selectedInterfaceID: nil,
+        lastUsedInterfaceIDs: [],
         options: CaptureOptions.defaults(),
         health: .empty,
         capturedPacketCount: 0,
@@ -574,6 +600,7 @@ final class TCPViewerWorkspaceController {
     let services: TCPViewerServiceRegistry
     private let backgroundCoordinator: TCPViewerBackgroundCoordinator
     private let preferences: TCPViewerPreferences
+    private let interfaceHistoryStore: InterfaceSelectionHistoryStore
 
     private var hasPerformedInitialLoad = false
     private var liveSession: (any LiveCaptureSessionProviding)?
@@ -590,14 +617,17 @@ final class TCPViewerWorkspaceController {
         services: TCPViewerServiceRegistry? = nil,
         backgroundCoordinator: TCPViewerBackgroundCoordinator? = nil,
         snapshot: TCPViewerWindowSnapshot? = nil,
-        userDefaults: UserDefaults = .standard
+        userDefaults: UserDefaults = .standard,
+        interfaceHistoryStore: InterfaceSelectionHistoryStore? = nil
     ) {
         self.services = services ?? .foundation
         self.backgroundCoordinator = backgroundCoordinator ?? TCPViewerBackgroundCoordinator()
         self.preferences = TCPViewerPreferences(defaults: userDefaults)
+        self.interfaceHistoryStore = interfaceHistoryStore ?? InterfaceSelectionHistoryStore(defaults: userDefaults)
         var resolvedSnapshot = snapshot ?? .foundation
         resolvedSnapshot.filterState.captureFilterText = preferences.captureFilterText
         resolvedSnapshot.filterState.recentCaptureFilters = preferences.recentCaptureFilters
+        resolvedSnapshot.sessionState.lastUsedInterfaceIDs = self.interfaceHistoryStore.lastUsedInterfaceIDs
         self.snapshot = resolvedSnapshot
         TCPViewerWorkspaceControllerRegistry.shared.register(self)
     }
@@ -1239,6 +1269,29 @@ final class TCPViewerWorkspaceController {
         }
     }
 
+    func deletePackets(_ packetIDs: Set<PacketSummary.ID>) {
+        guard !packetIDs.isEmpty else {
+            return
+        }
+
+        batchSnapshotUpdates {
+            let source = snapshot.packetIngestState.source
+            snapshot.packetIngestState.delete(packetIDs: packetIDs, message: "Deleted \(packetIDs.count) packet(s).")
+            synchronizeVisiblePackets(message: snapshot.packetIngestState.statusMessage)
+
+            switch source {
+            case .some(.live):
+                snapshot.sessionState.capturedPacketCount = snapshot.packetIngestState.totalPacketCount
+            case .some(.offline):
+                snapshot.documentState.packetCount = snapshot.packetIngestState.totalPacketCount
+            case nil:
+                break
+            case .some:
+                break
+            }
+        }
+    }
+
     #if DEBUG
     func debugMemorySnapshot() -> TCPViewerWorkspaceMemoryDebugSnapshot {
         TCPViewerWorkspaceMemoryDebugSnapshot(
@@ -1411,6 +1464,16 @@ final class TCPViewerWorkspaceController {
         preferences.persistRecentCaptureFilters(recents)
     }
 
+    private func persistLastUsedInterface(_ interfaceID: String) {
+        // Promote the started interface while preserving a short, unique MRU list.
+        let normalizedID = interfaceID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedID.isEmpty else {
+            return
+        }
+
+        snapshot.sessionState.lastUsedInterfaceIDs = interfaceHistoryStore.recordInterfaceUsage(normalizedID)
+    }
+
     private func makeAndStartLiveSession(
         interface: CaptureInterfaceSummary,
         options: CaptureOptions,
@@ -1474,7 +1537,9 @@ final class TCPViewerWorkspaceController {
                     return
                 }
 
-                if case .failure(let error) = result {
+                if case .success = result {
+                    self.persistLastUsedInterface(interface.id)
+                } else if case .failure(let error) = result {
                     let tcpviewerError = self.tcpviewerError(from: error, defaultCode: .liveSessionStartFailed)
                     self.snapshot.sessionState.phase = .failed
                     self.snapshot.sessionState.lastError = tcpviewerError
