@@ -162,6 +162,228 @@ NSArray<PCPPNativeAddressDescriptor *> *MapAddresses(const pcpp::PcapLiveDevice 
     return addresses;
 }
 
+NSString *TLSVersionLabel(pcpp::SSLVersion version)
+{
+    switch (version.asEnum(true)) {
+        case pcpp::SSLVersion::SSL3:
+            return @"SSLv3.0";
+        case pcpp::SSLVersion::TLS1_0:
+            return @"TLSv1.0";
+        case pcpp::SSLVersion::TLS1_1:
+            return @"TLSv1.1";
+        case pcpp::SSLVersion::TLS1_2:
+            return @"TLSv1.2";
+        case pcpp::SSLVersion::TLS1_3:
+            return @"TLSv1.3";
+        case pcpp::SSLVersion::Unknown:
+        default:
+            return @"TLS";
+    }
+}
+
+pcpp::SSLVersion EffectiveTLSVersionForClientHello(pcpp::SSLClientHelloMessage *clientHelloMessage)
+{
+    if (auto *supportedVersions = clientHelloMessage->getExtensionOfType<pcpp::SSLSupportedVersionsExtension>()) {
+        std::optional<uint16_t> highestKnownVersion;
+        for (auto version : supportedVersions->getSupportedVersions()) {
+            if (version.asEnum(true) == pcpp::SSLVersion::Unknown) {
+                continue;
+            }
+
+            if (!highestKnownVersion.has_value() || version.asUInt() > highestKnownVersion.value()) {
+                highestKnownVersion = version.asUInt();
+            }
+        }
+
+        if (highestKnownVersion.has_value()) {
+            return pcpp::SSLVersion(highestKnownVersion.value());
+        }
+    }
+
+    return clientHelloMessage->getHandshakeVersion();
+}
+
+pcpp::SSLVersion EffectiveTLSVersion(pcpp::SSLLayer *sslLayer)
+{
+    if (auto *handshakeLayer = dynamic_cast<pcpp::SSLHandshakeLayer *>(sslLayer)) {
+        for (int index = 0; index < static_cast<int>(handshakeLayer->getHandshakeMessagesCount()); index += 1) {
+            auto *message = handshakeLayer->getHandshakeMessageAt(index);
+            if (auto *clientHelloMessage = dynamic_cast<pcpp::SSLClientHelloMessage *>(message)) {
+                return EffectiveTLSVersionForClientHello(clientHelloMessage);
+            }
+
+            if (auto *serverHelloMessage = dynamic_cast<pcpp::SSLServerHelloMessage *>(message)) {
+                return serverHelloMessage->getHandshakeVersion();
+            }
+        }
+    }
+
+    return sslLayer->getRecordVersion();
+}
+
+NSString *TLSLayerName(pcpp::SSLLayer *sslLayer)
+{
+    return TLSVersionLabel(EffectiveTLSVersion(sslLayer));
+}
+
+NSString *TLSVersionFieldValue(pcpp::SSLVersion version)
+{
+    return [NSString stringWithFormat:@"%@ (0x%04x)", TLSVersionLabel(version), version.asUInt()];
+}
+
+NSString *TLSRecordTypeName(pcpp::SSLRecordType recordType)
+{
+    switch (recordType) {
+        case pcpp::SSL_CHANGE_CIPHER_SPEC:
+            return @"Change Cipher Spec";
+        case pcpp::SSL_ALERT:
+            return @"Alert";
+        case pcpp::SSL_HANDSHAKE:
+            return @"Handshake";
+        case pcpp::SSL_APPLICATION_DATA:
+            return @"Application Data";
+        default:
+            return @"Unknown";
+    }
+}
+
+NSString *TLSRecordTypeFieldValue(pcpp::SSLRecordType recordType)
+{
+    return [NSString stringWithFormat:@"%@ (%u)", TLSRecordTypeName(recordType), static_cast<unsigned>(recordType)];
+}
+
+NSString *TLSHandshakeTypeName(pcpp::SSLHandshakeType handshakeType)
+{
+    switch (handshakeType) {
+        case pcpp::SSL_HELLO_REQUEST:
+            return @"Hello Request";
+        case pcpp::SSL_CLIENT_HELLO:
+            return @"Client Hello";
+        case pcpp::SSL_SERVER_HELLO:
+            return @"Server Hello";
+        case pcpp::SSL_NEW_SESSION_TICKET:
+            return @"New Session Ticket";
+        case pcpp::SSL_END_OF_EARLY_DATE:
+            return @"End Of Early Data";
+        case pcpp::SSL_ENCRYPTED_EXTENSIONS:
+            return @"Encrypted Extensions";
+        case pcpp::SSL_CERTIFICATE:
+            return @"Certificate";
+        case pcpp::SSL_SERVER_KEY_EXCHANGE:
+            return @"Server Key Exchange";
+        case pcpp::SSL_CERTIFICATE_REQUEST:
+            return @"Certificate Request";
+        case pcpp::SSL_SERVER_DONE:
+            return @"Server Hello Done";
+        case pcpp::SSL_CERTIFICATE_VERIFY:
+            return @"Certificate Verify";
+        case pcpp::SSL_CLIENT_KEY_EXCHANGE:
+            return @"Client Key Exchange";
+        case pcpp::SSL_FINISHED:
+            return @"Finished";
+        case pcpp::SSL_KEY_UPDATE:
+            return @"Key Update";
+        case pcpp::SSL_HANDSHAKE_UNKNOWN:
+        default:
+            return @"Unknown";
+    }
+}
+
+NSString *TLSHandshakeTypeFieldValue(pcpp::SSLHandshakeType handshakeType)
+{
+    return [NSString stringWithFormat:@"%@ (%u)", TLSHandshakeTypeName(handshakeType), static_cast<unsigned>(handshakeType)];
+}
+
+NSString *TLSSupportedVersionsSummary(pcpp::SSLSupportedVersionsExtension *supportedVersions)
+{
+    if (supportedVersions == nullptr) {
+        return nil;
+    }
+
+    NSMutableArray<NSString *> *versions = [NSMutableArray array];
+    for (auto version : supportedVersions->getSupportedVersions()) {
+        [versions addObject:TLSVersionLabel(version)];
+    }
+
+    if (versions.count == 0) {
+        return nil;
+    }
+
+    return [versions componentsJoinedByString:@", "];
+}
+
+NSString *TLSAlertLevelName(pcpp::SSLAlertLevel alertLevel)
+{
+    switch (alertLevel) {
+        case pcpp::SSL_ALERT_LEVEL_WARNING:
+            return @"Warning";
+        case pcpp::SSL_ALERT_LEVEL_FATAL:
+            return @"Fatal";
+        case pcpp::SSL_ALERT_LEVEL_ENCRYPTED:
+        default:
+            return @"Encrypted";
+    }
+}
+
+NSString *TLSAlertDescriptionName(pcpp::SSLAlertDescription alertDescription)
+{
+    switch (alertDescription) {
+        case pcpp::SSL_ALERT_CLOSE_NOTIFY:
+            return @"Close Notify";
+        case pcpp::SSL_ALERT_UNEXPECTED_MESSAGE:
+            return @"Unexpected Message";
+        case pcpp::SSL_ALERT_BAD_RECORD_MAC:
+            return @"Bad Record MAC";
+        case pcpp::SSL_ALERT_DECRYPTION_FAILED:
+            return @"Decryption Failed";
+        case pcpp::SSL_ALERT_RECORD_OVERFLOW:
+            return @"Record Overflow";
+        case pcpp::SSL_ALERT_DECOMPRESSION_FAILURE:
+            return @"Decompression Failure";
+        case pcpp::SSL_ALERT_HANDSHAKE_FAILURE:
+            return @"Handshake Failure";
+        case pcpp::SSL_ALERT_NO_CERTIFICATE:
+            return @"No Certificate";
+        case pcpp::SSL_ALERT_BAD_CERTIFICATE:
+            return @"Bad Certificate";
+        case pcpp::SSL_ALERT_UNSUPPORTED_CERTIFICATE:
+            return @"Unsupported Certificate";
+        case pcpp::SSL_ALERT_CERTIFICATE_REVOKED:
+            return @"Certificate Revoked";
+        case pcpp::SSL_ALERT_CERTIFICATE_EXPIRED:
+            return @"Certificate Expired";
+        case pcpp::SSL_ALERT_CERTIFICATE_UNKNOWN:
+            return @"Certificate Unknown";
+        case pcpp::SSL_ALERT_ILLEGAL_PARAMETER:
+            return @"Illegal Parameter";
+        case pcpp::SSL_ALERT_UNKNOWN_CA:
+            return @"Unknown CA";
+        case pcpp::SSL_ALERT_ACCESS_DENIED:
+            return @"Access Denied";
+        case pcpp::SSL_ALERT_DECODE_ERROR:
+            return @"Decode Error";
+        case pcpp::SSL_ALERT_DECRYPT_ERROR:
+            return @"Decrypt Error";
+        case pcpp::SSL_ALERT_EXPORT_RESTRICTION:
+            return @"Export Restriction";
+        case pcpp::SSL_ALERT_PROTOCOL_VERSION:
+            return @"Protocol Version";
+        case pcpp::SSL_ALERT_INSUFFICIENT_SECURITY:
+            return @"Insufficient Security";
+        case pcpp::SSL_ALERT_INTERNAL_ERROR:
+            return @"Internal Error";
+        case pcpp::SSL_ALERT_USER_CANCELLED:
+            return @"User Cancelled";
+        case pcpp::SSL_ALERT_NO_RENEGOTIATION:
+            return @"No Renegotiation";
+        case pcpp::SSL_ALERT_UNSUPPORTED_EXTENSION:
+            return @"Unsupported Extension";
+        case pcpp::SSL_ALERT_ENCRYPTED:
+        default:
+            return @"Encrypted";
+    }
+}
+
 PCPPNativeTransportHint MapTransportHint(const pcpp::Packet &packet)
 {
     if (packet.isPacketOfType(pcpp::HTTPRequest) || packet.isPacketOfType(pcpp::HTTPResponse)) {
@@ -203,7 +425,7 @@ PCPPNativeTransportHint MapTransportHint(const pcpp::Packet &packet)
     return PCPPNativeTransportHintUnknown;
 }
 
-NSString *LayerName(const pcpp::Layer &layer)
+NSString *LayerName(pcpp::Layer &layer)
 {
     switch (layer.getProtocol()) {
         case pcpp::Ethernet:
@@ -225,7 +447,7 @@ NSString *LayerName(const pcpp::Layer &layer)
         case pcpp::HTTPResponse:
             return @"HTTP Response";
         case pcpp::SSL:
-            return @"TLS";
+            return TLSLayerName(static_cast<pcpp::SSLLayer *>(&layer));
         case pcpp::GenericPayload:
             return @"Payload";
         default:
@@ -717,6 +939,26 @@ NSString *PayloadPreview(const uint8_t *bytes, size_t length, NSUInteger limit =
     return joined;
 }
 
+size_t TLSHandshakeDeclaredPayloadLength(const uint8_t *messageData, size_t messageLength)
+{
+    if (messageData == nullptr || messageLength < sizeof(pcpp::ssl_tls_handshake_layer)) {
+        return 0;
+    }
+
+    return (static_cast<size_t>(messageData[1]) << 16) |
+           (static_cast<size_t>(messageData[2]) << 8) |
+           static_cast<size_t>(messageData[3]);
+}
+
+NSString *TLSCipherSuiteFieldValue(uint16_t cipherSuiteID, pcpp::SSLCipherSuite *cipherSuite)
+{
+    if (cipherSuite == nullptr) {
+        return FormatHex16(cipherSuiteID);
+    }
+
+    return [NSString stringWithFormat:@"%@ (%@)", MakeNSString(cipherSuite->asString()), FormatHex16(cipherSuiteID)];
+}
+
 NSString *TCPFlagsSummary(const pcpp::tcphdr *header)
 {
     NSMutableArray<NSString *> *flags = [NSMutableArray array];
@@ -929,6 +1171,9 @@ private:
                 break;
             case pcpp::UDP:
                 appendUDP(static_cast<pcpp::UdpLayer *>(layer), offset, nodes);
+                break;
+            case pcpp::SSL:
+                appendTLS(static_cast<pcpp::SSLLayer *>(layer), offset, nodes);
                 break;
             case pcpp::GenericPayload:
                 appendPayload(static_cast<pcpp::PayloadLayer *>(layer), offset, nodes);
@@ -1160,6 +1405,245 @@ private:
                                        offset,
                                        udpLayer->getHeaderLen(),
                                        children)];
+    }
+
+    void appendTLS(pcpp::SSLLayer *sslLayer, NSUInteger offset, NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *nodes)
+    {
+        NSString *identifier = [NSString stringWithFormat:@"tls.%lu", static_cast<unsigned long>(offset)];
+        pcpp::SSLRecordType recordType = sslLayer->getRecordType();
+        uint16_t recordLength = ntohs(sslLayer->getRecordLayer()->length);
+        NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *children = [NSMutableArray arrayWithArray:@[
+            MakeFieldNode([NSString stringWithFormat:@"%@.contentType", identifier],
+                          @"Content Type",
+                          TLSRecordTypeFieldValue(recordType),
+                          offset,
+                          0,
+                          1),
+            MakeFieldNode([NSString stringWithFormat:@"%@.version", identifier],
+                          @"Version",
+                          TLSVersionFieldValue(sslLayer->getRecordVersion()),
+                          offset,
+                          1,
+                          2),
+            MakeFieldNode([NSString stringWithFormat:@"%@.length", identifier],
+                          @"Length",
+                          [NSString stringWithFormat:@"%u bytes", recordLength],
+                          offset,
+                          3,
+                          2),
+        ]];
+
+        if (auto *handshakeLayer = dynamic_cast<pcpp::SSLHandshakeLayer *>(sslLayer)) {
+            appendTLSHandshake(handshakeLayer, offset, identifier, children);
+        } else if (auto *applicationDataLayer = dynamic_cast<pcpp::SSLApplicationDataLayer *>(sslLayer)) {
+            appendTLSApplicationData(applicationDataLayer, offset, identifier, children);
+        } else if (auto *alertLayer = dynamic_cast<pcpp::SSLAlertLayer *>(sslLayer)) {
+            appendTLSAlert(alertLayer, offset, identifier, children);
+        } else if (auto *changeCipherSpecLayer = dynamic_cast<pcpp::SSLChangeCipherSpecLayer *>(sslLayer)) {
+            appendTLSChangeCipherSpec(changeCipherSpecLayer, offset, identifier, children);
+        }
+
+        [nodes addObject:MakeLayerNode(identifier,
+                                       @"Transport Layer Security",
+                                       [NSString stringWithFormat:@"%@, %@", TLSLayerName(sslLayer), TLSRecordTypeName(recordType)],
+                                       offset,
+                                       sslLayer->getHeaderLen(),
+                                       children)];
+    }
+
+    void appendTLSHandshake(pcpp::SSLHandshakeLayer *handshakeLayer,
+                            NSUInteger offset,
+                            NSString *identifier,
+                            NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *children)
+    {
+        // Decode the handshake records PcapPlusPlus exposes without attempting TLS decryption.
+        [children addObject:MakeSyntheticFieldNode([NSString stringWithFormat:@"%@.handshake.count", identifier],
+                                                   @"Handshake Message Count",
+                                                   [NSString stringWithFormat:@"%zu", handshakeLayer->getHandshakeMessagesCount()])];
+
+        size_t messageRelativeOffset = sizeof(pcpp::ssl_tls_record_layer);
+        size_t layerLength = handshakeLayer->getHeaderLen();
+        for (int index = 0; index < static_cast<int>(handshakeLayer->getHandshakeMessagesCount()); index += 1) {
+            auto *message = handshakeLayer->getHandshakeMessageAt(index);
+            if (message == nullptr || messageRelativeOffset >= layerLength) {
+                break;
+            }
+
+            size_t messageLength = std::min(message->getMessageLength(), layerLength - messageRelativeOffset);
+            if (messageLength == 0) {
+                break;
+            }
+
+            NSUInteger messageOffset = offset + messageRelativeOffset;
+            const uint8_t *messageData = handshakeLayer->getData() + messageRelativeOffset;
+            NSString *messageIdentifier = [NSString stringWithFormat:@"%@.handshake.%d", identifier, index];
+            pcpp::SSLHandshakeType handshakeType = message->getHandshakeType();
+            NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *messageChildren = [NSMutableArray arrayWithArray:@[
+                MakeFieldNode([NSString stringWithFormat:@"%@.type", messageIdentifier],
+                              @"Handshake Type",
+                              TLSHandshakeTypeFieldValue(handshakeType),
+                              messageOffset,
+                              0,
+                              1),
+                MakeFieldNode([NSString stringWithFormat:@"%@.length", messageIdentifier],
+                              @"Length",
+                              [NSString stringWithFormat:@"%zu bytes", TLSHandshakeDeclaredPayloadLength(messageData, messageLength)],
+                              messageOffset,
+                              1,
+                              3),
+                MakeSyntheticFieldNode([NSString stringWithFormat:@"%@.complete", messageIdentifier],
+                                       @"Complete",
+                                       message->isMessageComplete() ? @"Yes" : @"No"),
+            ]];
+
+            appendTLSHandshakeMessageMetadata(message, messageOffset, messageLength, messageIdentifier, messageChildren);
+            [children addObject:MakeDetailNode(messageIdentifier,
+                                               [NSString stringWithFormat:@"Handshake Protocol: %@", TLSHandshakeTypeName(handshakeType)],
+                                               MakeNSString(message->toString()),
+                                               @"field",
+                                               MakeByteRange(messageOffset, messageLength),
+                                               nil,
+                                               messageChildren)];
+            messageRelativeOffset += messageLength;
+        }
+    }
+
+    void appendTLSHandshakeMessageMetadata(pcpp::SSLHandshakeMessage *message,
+                                           NSUInteger messageOffset,
+                                           size_t messageLength,
+                                           NSString *messageIdentifier,
+                                           NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *children)
+    {
+        if (auto *clientHelloMessage = dynamic_cast<pcpp::SSLClientHelloMessage *>(message)) {
+            if (messageLength >= sizeof(pcpp::ssl_tls_client_server_hello)) {
+                [children addObject:MakeFieldNode([NSString stringWithFormat:@"%@.handshakeVersion", messageIdentifier],
+                                                  @"Handshake Version",
+                                                  TLSVersionFieldValue(clientHelloMessage->getHandshakeVersion()),
+                                                  messageOffset,
+                                                  4,
+                                                  2)];
+            }
+            if (auto *sniExtension = clientHelloMessage->getExtensionOfType<pcpp::SSLServerNameIndicationExtension>()) {
+                NSString *hostName = NullableNSString(sniExtension->getHostName());
+                if (hostName != nil) {
+                    [children addObject:MakeSyntheticFieldNode([NSString stringWithFormat:@"%@.sni", messageIdentifier],
+                                                               @"Server Name Indication",
+                                                               hostName)];
+                }
+            }
+            [children addObject:MakeSyntheticFieldNode([NSString stringWithFormat:@"%@.cipherSuiteCount", messageIdentifier],
+                                                       @"Cipher Suites",
+                                                       [NSString stringWithFormat:@"%d", clientHelloMessage->getCipherSuiteCount()])];
+            [children addObject:MakeSyntheticFieldNode([NSString stringWithFormat:@"%@.extensionCount", messageIdentifier],
+                                                       @"Extensions",
+                                                       [NSString stringWithFormat:@"%d", clientHelloMessage->getExtensionCount()])];
+            NSString *supportedVersions = TLSSupportedVersionsSummary(clientHelloMessage->getExtensionOfType<pcpp::SSLSupportedVersionsExtension>());
+            if (supportedVersions != nil) {
+                [children addObject:MakeSyntheticFieldNode([NSString stringWithFormat:@"%@.supportedVersions", messageIdentifier],
+                                                           @"Supported Versions",
+                                                           supportedVersions)];
+            }
+            return;
+        }
+
+        if (auto *serverHelloMessage = dynamic_cast<pcpp::SSLServerHelloMessage *>(message)) {
+            if (messageLength >= sizeof(pcpp::ssl_tls_client_server_hello)) {
+                [children addObject:MakeFieldNode([NSString stringWithFormat:@"%@.handshakeVersion", messageIdentifier],
+                                                  @"Handshake Version",
+                                                  TLSVersionFieldValue(serverHelloMessage->getHandshakeVersion()),
+                                                  messageOffset,
+                                                  4,
+                                                  2)];
+            }
+
+            bool isValid = false;
+            uint16_t cipherSuiteID = serverHelloMessage->getCipherSuiteID(isValid);
+            if (isValid) {
+                [children addObject:MakeSyntheticFieldNode([NSString stringWithFormat:@"%@.cipherSuite", messageIdentifier],
+                                                           @"Cipher Suite",
+                                                           TLSCipherSuiteFieldValue(cipherSuiteID, serverHelloMessage->getCipherSuite()))];
+            }
+            [children addObject:MakeSyntheticFieldNode([NSString stringWithFormat:@"%@.extensionCount", messageIdentifier],
+                                                       @"Extensions",
+                                                       [NSString stringWithFormat:@"%d", serverHelloMessage->getExtensionCount()])];
+            NSString *supportedVersions = TLSSupportedVersionsSummary(serverHelloMessage->getExtensionOfType<pcpp::SSLSupportedVersionsExtension>());
+            if (supportedVersions != nil) {
+                [children addObject:MakeSyntheticFieldNode([NSString stringWithFormat:@"%@.supportedVersions", messageIdentifier],
+                                                           @"Supported Versions",
+                                                           supportedVersions)];
+            }
+            return;
+        }
+
+        if (auto *certificateMessage = dynamic_cast<pcpp::SSLCertificateMessage *>(message)) {
+            [children addObject:MakeSyntheticFieldNode([NSString stringWithFormat:@"%@.certificateCount", messageIdentifier],
+                                                       @"Certificates",
+                                                       [NSString stringWithFormat:@"%d", certificateMessage->getNumOfCertificates()])];
+        }
+    }
+
+    void appendTLSApplicationData(pcpp::SSLApplicationDataLayer *applicationDataLayer,
+                                  NSUInteger offset,
+                                  NSString *identifier,
+                                  NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *children)
+    {
+        size_t encryptedDataLength = applicationDataLayer->getEncryptedDataLen();
+        NSUInteger encryptedDataOffset = offset + sizeof(pcpp::ssl_tls_record_layer);
+        [children addObject:MakeFieldNode([NSString stringWithFormat:@"%@.encryptedData", identifier],
+                                          @"Encrypted Application Data",
+                                          [NSString stringWithFormat:@"%zu bytes", encryptedDataLength],
+                                          encryptedDataOffset,
+                                          0,
+                                          encryptedDataLength)];
+        [children addObject:MakeFieldNode([NSString stringWithFormat:@"%@.encryptedDataPreview", identifier],
+                                          @"Encrypted Data Preview",
+                                          PayloadPreview(applicationDataLayer->getEncryptedData(), encryptedDataLength),
+                                          encryptedDataOffset,
+                                          0,
+                                          encryptedDataLength)];
+    }
+
+    void appendTLSAlert(pcpp::SSLAlertLayer *alertLayer,
+                        NSUInteger offset,
+                        NSString *identifier,
+                        NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *children)
+    {
+        if (alertLayer->getHeaderLen() > sizeof(pcpp::ssl_tls_record_layer)) {
+            pcpp::SSLAlertLevel alertLevel = alertLayer->getAlertLevel();
+            [children addObject:MakeFieldNode([NSString stringWithFormat:@"%@.alert.level", identifier],
+                                              @"Alert Level",
+                                              [NSString stringWithFormat:@"%@ (%u)", TLSAlertLevelName(alertLevel), static_cast<unsigned>(alertLevel)],
+                                              offset,
+                                              sizeof(pcpp::ssl_tls_record_layer),
+                                              1)];
+        }
+
+        if (alertLayer->getHeaderLen() > sizeof(pcpp::ssl_tls_record_layer) + 1) {
+            pcpp::SSLAlertDescription alertDescription = alertLayer->getAlertDescription();
+            [children addObject:MakeFieldNode([NSString stringWithFormat:@"%@.alert.description", identifier],
+                                              @"Alert Description",
+                                              [NSString stringWithFormat:@"%@ (%u)", TLSAlertDescriptionName(alertDescription), static_cast<unsigned>(alertDescription)],
+                                              offset,
+                                              sizeof(pcpp::ssl_tls_record_layer) + 1,
+                                              1)];
+        }
+    }
+
+    void appendTLSChangeCipherSpec(pcpp::SSLChangeCipherSpecLayer *changeCipherSpecLayer,
+                                   NSUInteger offset,
+                                   NSString *identifier,
+                                   NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *children)
+    {
+        if (changeCipherSpecLayer->getHeaderLen() <= sizeof(pcpp::ssl_tls_record_layer)) {
+            return;
+        }
+
+        [children addObject:MakeFieldNode([NSString stringWithFormat:@"%@.changeCipherSpec", identifier],
+                                          @"Change Cipher Spec",
+                                          [NSString stringWithFormat:@"%u", changeCipherSpecLayer->getData()[sizeof(pcpp::ssl_tls_record_layer)]],
+                                          offset,
+                                          sizeof(pcpp::ssl_tls_record_layer),
+                                          1)];
     }
 
     void appendPayload(pcpp::PayloadLayer *payloadLayer, NSUInteger offset, NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *nodes)

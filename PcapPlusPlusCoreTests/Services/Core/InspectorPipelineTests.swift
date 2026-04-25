@@ -124,6 +124,56 @@ struct InspectorPipelineTests {
         #expect(ipv6UDPChecksumStatus.value == "Illegal zero checksum")
     }
 
+    @Test func tlsClientHelloInspectionRendersVersionedSummaryAndDetail() async throws {
+        let fixtureURL = CoreFixtureCatalog.captureCategoryURL("tls").appendingPathComponent("SSL-ClientHello1.pcap")
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: fixtureURL)
+        let packets = try await document.open()
+        let packet = try #require(packets.first { $0.transportHint == .tls })
+
+        #expect(packet.layers.contains { $0.name == "TLSv1.2" })
+
+        let inspection = try await document.inspectPacket(id: packet.id)
+        let tlsNode = try #require(inspection.detailNodes.first { $0.name == "Transport Layer Security" })
+        #expect(tlsNode.value?.contains("TLSv1.2") == true)
+        #expect(findNode(in: tlsNode.children, name: "Content Type")?.value?.contains("Handshake") == true)
+        #expect(findNode(in: tlsNode.children, name: "Version") != nil)
+        #expect(findNode(in: tlsNode.children, name: "Length") != nil)
+        #expect(findNode(in: tlsNode.children, name: "Handshake Protocol: Client Hello") != nil)
+        #expect(findNode(in: tlsNode.children, name: "Handshake Version")?.value?.contains("TLSv1.2") == true)
+        #expect(findNode(in: tlsNode.children, name: "Server Name Indication")?.value == "www.google.com")
+    }
+
+    @Test func tlsApplicationDataInspectionRendersRecordVersionsAndEncryptedData() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let captureURL = directory.appendingPathComponent("tls-application-data.pcap")
+        try writePCAP(
+            to: captureURL,
+            packets: [
+                makeIPv4TLSApplicationDataPacket(recordVersion: 0x0301),
+                makeIPv4TLSApplicationDataPacket(recordVersion: 0x0303),
+            ]
+        )
+
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
+        let packets = try await document.open()
+        let firstPacket = try #require(packets.first)
+        let secondPacket = try #require(packets.dropFirst().first)
+
+        #expect(packets.map(\.transportHint) == [.tls, .tls])
+        #expect(firstPacket.layers.contains { $0.name == "TLSv1.0" })
+        #expect(secondPacket.layers.contains { $0.name == "TLSv1.2" })
+
+        let inspection = try await document.inspectPacket(id: secondPacket.id)
+        let tlsNode = try #require(inspection.detailNodes.first { $0.name == "Transport Layer Security" })
+        #expect(tlsNode.value == "TLSv1.2, Application Data")
+        #expect(findNode(in: tlsNode.children, name: "Content Type")?.value == "Application Data (23)")
+        #expect(findNode(in: tlsNode.children, name: "Version")?.value == "TLSv1.2 (0x0303)")
+        #expect(findNode(in: tlsNode.children, name: "Encrypted Application Data")?.value == "4 bytes")
+        #expect(findNode(in: tlsNode.children, name: "Encrypted Data Preview")?.value == "de ad be ef")
+    }
+
     @Test func tcpSynInspectionExpandsFlagsAndOptions() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -427,6 +477,36 @@ private func makeIPv4TCPPayloadPacket() -> Data {
     ])
 }
 
+private func makeIPv4TLSApplicationDataPacket(recordVersion: UInt16) -> Data {
+    let encryptedPayload: [UInt8] = [0xde, 0xad, 0xbe, 0xef]
+    let tlsRecordLength = 5 + encryptedPayload.count
+    let ipv4TotalLength = UInt16(20 + 20 + tlsRecordLength)
+    var packet = Data([
+        0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55,
+        0x08, 0x00,
+        0x45, 0x00,
+    ])
+    packet.appendBigEndian(ipv4TotalLength)
+    packet.append(contentsOf: [
+        0x12, 0x37, 0x40, 0x00, 0x40, 0x06, 0x00, 0x00,
+        0xc0, 0xa8, 0x00, 0x01,
+        0xc0, 0xa8, 0x00, 0x02,
+    ])
+    packet.appendBigEndian(UInt16(54_321))
+    packet.appendBigEndian(UInt16(443))
+    packet.append(contentsOf: [
+        0x00, 0x00, 0x00, 0x01,
+        0x00, 0x00, 0x00, 0x01,
+        0x50, 0x18, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x17,
+    ])
+    packet.appendBigEndian(recordVersion)
+    packet.appendBigEndian(UInt16(encryptedPayload.count))
+    packet.append(contentsOf: encryptedPayload)
+    return packet
+}
+
 private func makeIPv4TCPSYNOptionsPacket() -> Data {
     Data([
         0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
@@ -496,10 +576,31 @@ private func findNode(in nodes: [PacketDetailNode], id: String) -> PacketDetailN
     return nil
 }
 
+private func findNode(in nodes: [PacketDetailNode], name: String) -> PacketDetailNode? {
+    for node in nodes {
+        if node.name == name {
+            return node
+        }
+
+        if let match = findNode(in: node.children, name: name) {
+            return match
+        }
+    }
+
+    return nil
+}
+
 private extension Data {
     mutating func appendLittleEndian<T: FixedWidthInteger>(_ value: T) {
         var littleEndian = value.littleEndian
         Swift.withUnsafeBytes(of: &littleEndian) { buffer in
+            append(buffer.bindMemory(to: UInt8.self))
+        }
+    }
+
+    mutating func appendBigEndian<T: FixedWidthInteger>(_ value: T) {
+        var bigEndian = value.bigEndian
+        Swift.withUnsafeBytes(of: &bigEndian) { buffer in
             append(buffer.bindMemory(to: UInt8.self))
         }
     }
