@@ -1,4 +1,4 @@
-module PacketryNativeBridge {
-  header "PacketryNativeBridge.h"
+module TCPViewerNativeBridge {
+  header "TCPViewerNativeBridge.h"
   export *
 }

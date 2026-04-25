@@ -1,7 +1,7 @@
 # v0.5.5 Release-Grade Permissions Onboarding
 
 ## Summary
-Turn the macOS capture-permissions strategy into a release-grade onboarding flow suitable for first-time Packetry users.
+Turn the macOS capture-permissions strategy into a release-grade onboarding flow suitable for first-time TCPViewer users.
 
 ## What To Build
 - Define the MVP onboarding steps, retry behavior, and recovery flows for capture access.

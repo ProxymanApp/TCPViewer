@@ -1,7 +1,7 @@
 # v0.9.4 TLS Decryption v1
 
 ## Summary
-Define limited TLS decryption for supported TLS-over-TCP sessions using imported key-log files so Packetry can support practical encrypted-traffic debugging in v1.
+Define limited TLS decryption for supported TLS-over-TCP sessions using imported key-log files so TCP Viewer can support practical encrypted-traffic debugging in v1.
 
 ## What To Build
 - Specify the key-log import workflow and supported decryption scope.

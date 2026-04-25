@@ -1,6 +1,6 @@
-# Packetry Fixture Catalog
+# TCPViewer Fixture Catalog
 
-This directory stores shared capture inputs and golden expectations used by both `PacketryTests` and `PcapPlusPlusCoreTests`.
+This directory stores shared capture inputs and golden expectations used by both `TCPViewerTests` and `PcapPlusPlusCoreTests`.
 
 - `manifest.json` defines the current fixture schema and the starter category list.
 - `captures/` holds raw `pcap` and `pcapng` inputs.

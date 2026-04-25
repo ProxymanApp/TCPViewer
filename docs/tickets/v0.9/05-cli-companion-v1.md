@@ -1,7 +1,7 @@
 # v0.9.5 CLI Companion v1
 
 ## Summary
-Define a command-line companion for batch open/analyze/export workflows so advanced users can automate Packetry-style analysis outside the GUI.
+Define a command-line companion for batch open/analyze/export workflows so advanced users can automate TCPViewer-style analysis outside the GUI.
 
 ## What To Build
 - Specify the CLI surface for opening traces, applying saved filters, exporting summaries, and batch analysis.

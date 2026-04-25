@@ -11,7 +11,7 @@ PINNED_COMMIT="a49a79e0b67b402ad75ffa96c1795def36df75c8"
 CONFIGURATION_NAME="${CONFIGURATION:-Debug}"
 ARCHITECTURES="${ARCHS:-${NATIVE_ARCH_ACTUAL:-${CURRENT_ARCH:-arm64}}}"
 BUILD_DIR="$BUILD_ROOT/pcapplusplus-${CONFIGURATION_NAME}-$(printf '%s' "$ARCHITECTURES" | tr ' ' '_')"
-STAMP_FILE="$INSTALL_ROOT/.packetry-build-stamp"
+STAMP_FILE="$INSTALL_ROOT/.tcpviewer-build-stamp"
 CURRENT_STAMP_CONTENT="tag=$PINNED_TAG;commit=$PINNED_COMMIT;config=$CONFIGURATION_NAME;archs=$ARCHITECTURES"
 
 if ! command -v git >/dev/null 2>&1; then

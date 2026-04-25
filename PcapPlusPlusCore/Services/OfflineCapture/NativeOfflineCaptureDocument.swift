@@ -1,5 +1,5 @@
 import Foundation
-@_implementationOnly import PacketryNativeBridge
+@_implementationOnly import TCPViewerNativeBridge
 
 public final class NativeOfflineCaptureDocument: OfflineCaptureDocumentProviding, @unchecked Sendable {
     private let eventBox = EventCallbackBox<PacketIngestEvent>()
@@ -14,11 +14,11 @@ public final class NativeOfflineCaptureDocument: OfflineCaptureDocumentProviding
         self.state = try NativeOfflineCaptureDocumentState(fileURL: fileURL, eventBox: eventBox)
     }
 
-    public func open(completion: @escaping PacketryCompletion<[PacketSummary]>) {
+    public func open(completion: @escaping TCPViewerCompletion<[PacketSummary]>) {
         state.open(completion: completion)
     }
 
-    public func reopen(completion: @escaping PacketryCompletion<[PacketSummary]>) {
+    public func reopen(completion: @escaping TCPViewerCompletion<[PacketSummary]>) {
         state.reopen(completion: completion)
     }
 
@@ -26,15 +26,15 @@ public final class NativeOfflineCaptureDocument: OfflineCaptureDocumentProviding
         state.cancelLoading(completion: completion)
     }
 
-    public func inspectPacket(id: PacketSummary.ID, completion: @escaping PacketryCompletion<PacketInspection>) {
+    public func inspectPacket(id: PacketSummary.ID, completion: @escaping TCPViewerCompletion<PacketInspection>) {
         state.inspectPacket(id: id, completion: completion)
     }
 
-    public func save(completion: @escaping PacketryVoidCompletion) {
+    public func save(completion: @escaping TCPViewerVoidCompletion) {
         state.save(completion: completion)
     }
 
-    public func save(to url: URL, format: CaptureFileFormat, completion: @escaping PacketryVoidCompletion) {
+    public func save(to url: URL, format: CaptureFileFormat, completion: @escaping TCPViewerVoidCompletion) {
         state.save(to: url, format: format, completion: completion)
     }
 
@@ -127,26 +127,26 @@ private final class NativeOfflineCaptureDocumentState: @unchecked Sendable {
 
     private final class ActiveLoad {
         let cancellationFlag: CancellationFlag
-        var completions: [PacketryCompletion<[PacketSummary]>]
+        var completions: [TCPViewerCompletion<[PacketSummary]>]
 
         init(
             cancellationFlag: CancellationFlag,
-            completions: [PacketryCompletion<[PacketSummary]>]
+            completions: [TCPViewerCompletion<[PacketSummary]>]
         ) {
             self.cancellationFlag = cancellationFlag
             self.completions = completions
         }
     }
 
-    private let stateQueue = DispatchQueue(label: "com.proxyman.Packetry.PcapPlusPlusCore.NativeOfflineCaptureDocument.state", qos: .userInitiated)
-    private let loadQueue = DispatchQueue(label: "com.proxyman.Packetry.PcapPlusPlusCore.NativeOfflineCaptureDocument.load", qos: .userInitiated)
+    private let stateQueue = DispatchQueue(label: "com.proxyman.tcpviewer.PcapPlusPlusCore.NativeOfflineCaptureDocument.state", qos: .userInitiated)
+    private let loadQueue = DispatchQueue(label: "com.proxyman.tcpviewer.PcapPlusPlusCore.NativeOfflineCaptureDocument.load", qos: .userInitiated)
     private let nativeDocument: PCPPNativeOfflineDocument
     private let eventBox: EventCallbackBox<PacketIngestEvent>
     private let packetCache = LockedValueBox<[PacketSummary]>([])
     private let loadProgressBox = LockedValueBox<PacketLoadProgress>(.idle)
 
     private var activeLoad: ActiveLoad?
-    private var queuedReopenCompletions: [PacketryCompletion<[PacketSummary]>] = []
+    private var queuedReopenCompletions: [TCPViewerCompletion<[PacketSummary]>] = []
 
     init(fileURL: URL, eventBox: EventCallbackBox<PacketIngestEvent>) throws {
         self.eventBox = eventBox
@@ -161,7 +161,7 @@ private final class NativeOfflineCaptureDocumentState: @unchecked Sendable {
         }
     }
 
-    func open(completion: @escaping PacketryCompletion<[PacketSummary]>) {
+    func open(completion: @escaping TCPViewerCompletion<[PacketSummary]>) {
         stateQueue.async {
             if let activeLoad = self.activeLoad {
                 activeLoad.completions.append(completion)
@@ -172,7 +172,7 @@ private final class NativeOfflineCaptureDocumentState: @unchecked Sendable {
         }
     }
 
-    func reopen(completion: @escaping PacketryCompletion<[PacketSummary]>) {
+    func reopen(completion: @escaping TCPViewerCompletion<[PacketSummary]>) {
         stateQueue.async {
             if let activeLoad = self.activeLoad {
                 activeLoad.cancellationFlag.cancel()
@@ -191,7 +191,7 @@ private final class NativeOfflineCaptureDocumentState: @unchecked Sendable {
         }
     }
 
-    func inspectPacket(id: PacketSummary.ID, completion: @escaping PacketryCompletion<PacketInspection>) {
+    func inspectPacket(id: PacketSummary.ID, completion: @escaping TCPViewerCompletion<PacketInspection>) {
         stateQueue.async {
             completion(Result {
                 do {
@@ -204,7 +204,7 @@ private final class NativeOfflineCaptureDocumentState: @unchecked Sendable {
         }
     }
 
-    func save(completion: @escaping PacketryVoidCompletion) {
+    func save(completion: @escaping TCPViewerVoidCompletion) {
         stateQueue.async {
             completion(Result {
                 try self.ensureDocumentCanSave()
@@ -222,7 +222,7 @@ private final class NativeOfflineCaptureDocumentState: @unchecked Sendable {
         }
     }
 
-    func save(to url: URL, format: CaptureFileFormat, completion: @escaping PacketryVoidCompletion) {
+    func save(to url: URL, format: CaptureFileFormat, completion: @escaping TCPViewerVoidCompletion) {
         stateQueue.async {
             completion(Result {
                 try self.ensureDocumentCanSave()
@@ -256,7 +256,7 @@ private final class NativeOfflineCaptureDocumentState: @unchecked Sendable {
         loadProgressBox.get()
     }
 
-    private func performLoad(_ operation: LoadOperation, completions: [PacketryCompletion<[PacketSummary]>]) {
+    private func performLoad(_ operation: LoadOperation, completions: [TCPViewerCompletion<[PacketSummary]>]) {
         let fileName = nativeDocument.currentURL.lastPathComponent
         packetCache.set([])
         loadProgressBox.set(
@@ -358,11 +358,11 @@ private final class NativeOfflineCaptureDocumentState: @unchecked Sendable {
             eventBox.yield(.documentStateChanged(phase: .loaded, message: loadProgressBox.get().message))
             return .success(packets)
         case .failure(let error):
-            let packetryError = NativeBridgeMapper.coreError(error, defaultCode: .offlineFileOpenFailed)
+            let tcpviewerError = NativeBridgeMapper.coreError(error, defaultCode: .offlineFileOpenFailed)
             let metadata = NativeBridgeMapper.documentMetadata(nativeDocument.documentMetadata)
             eventBox.yield(.documentMetadataChanged(metadata))
 
-            if packetryError.code == .operationCancelled {
+            if tcpviewerError.code == .operationCancelled {
                 eventBox.yield(.documentStateChanged(phase: .loaded, message: loadProgressBox.get().message))
             } else {
                 let latestProgress = loadProgressBox.get()
@@ -373,38 +373,38 @@ private final class NativeOfflineCaptureDocumentState: @unchecked Sendable {
                         processedBytes: latestProgress.processedBytes,
                         totalBytes: latestProgress.totalBytes,
                         isPartialResult: !packetCache.get().isEmpty,
-                        message: packetryError.message
+                        message: tcpviewerError.message
                     )
                     loadProgressBox.set(failureProgress)
                     eventBox.yield(.loadProgressChanged(failureProgress))
                 }
-                eventBox.yield(.documentStateChanged(phase: .failed, message: packetryError.message))
+                eventBox.yield(.documentStateChanged(phase: .failed, message: tcpviewerError.message))
             }
 
-            return .failure(packetryError)
+            return .failure(tcpviewerError)
         }
     }
 
     private func ensureDocumentCanSave() throws {
         let progress = loadProgressBox.get()
         if progress.phase == .loading {
-            throw PacketryCoreError(
+            throw TCPViewerCoreError(
                 code: .offlineFileSaveFailed,
-                message: "Packetry cannot save while the capture is still loading."
+                message: "TCP Viewer cannot save while the capture is still loading."
             )
         }
 
         if progress.isPartialResult {
-            throw PacketryCoreError(
+            throw TCPViewerCoreError(
                 code: .offlineFileSaveFailed,
-                message: "Packetry cannot save a partially loaded capture. Reload the file to finish loading first."
+                message: "TCP Viewer cannot save a partially loaded capture. Reload the file to finish loading first."
             )
         }
     }
 
-    private func handleFailure(_ error: Error, code: PacketryCoreError.Code) -> PacketryCoreError {
-        let packetryError = NativeBridgeMapper.coreError(error, defaultCode: code)
-        eventBox.yield(.documentStateChanged(phase: .failed, message: packetryError.message))
-        return packetryError
+    private func handleFailure(_ error: Error, code: TCPViewerCoreError.Code) -> TCPViewerCoreError {
+        let tcpviewerError = NativeBridgeMapper.coreError(error, defaultCode: code)
+        eventBox.yield(.documentStateChanged(phase: .failed, message: tcpviewerError.message))
+        return tcpviewerError
     }
 }

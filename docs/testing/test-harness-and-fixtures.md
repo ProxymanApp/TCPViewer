@@ -1,7 +1,7 @@
 # Test Harness And Fixtures Strategy
 
 ## Goals
-- Keep Packetry's core contracts testable from the first native-integration ticket onward.
+- Keep TCP Viewer's core contracts testable from the first native-integration ticket onward.
 - Share one fixture catalog across app and core tests while keeping ownership boundaries explicit.
 - Prefer deterministic unit and integration tests over UI automation.
 
@@ -28,7 +28,7 @@
 
 ## Ownership Split
 - `PcapPlusPlusCoreTests` owns native-boundary model mapping, packet ingest, filter compilation, malformed data handling, and future decode-tree correctness.
-- `PacketryTests` owns reducers, onboarding states, document/session models, fixture lookup helpers, and window-level state transitions.
+- `TCPViewerTests` owns reducers, onboarding states, document/session models, fixture lookup helpers, and window-level state transitions.
 - Cross-target fixtures live once under `Fixtures/`; target ownership is expressed in the manifest and the tests that consume them.
 
 ## Determinism Rules
