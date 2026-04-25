@@ -41,6 +41,12 @@ public final class NativeLiveCaptureSession: LiveCaptureSessionProviding, @unche
     public func healthSnapshot(completion: @escaping (CaptureHealthSnapshot) -> Void) {
         state.healthSnapshot(completion: completion)
     }
+
+    #if DEBUG
+    public func debugMemorySnapshot() -> LiveCaptureSessionDebugSnapshot {
+        state.debugMemorySnapshot()
+    }
+    #endif
 }
 
 struct LivePacketBatchBuffer<Element: Sendable>: Sendable {
@@ -53,6 +59,10 @@ struct LivePacketBatchBuffer<Element: Sendable>: Sendable {
 
     var isEmpty: Bool {
         pendingElements.isEmpty
+    }
+
+    var pendingCount: Int {
+        pendingElements.count
     }
 
     mutating func append(_ elements: [Element]) -> [Element]? {
@@ -76,6 +86,10 @@ struct LivePacketBatchBuffer<Element: Sendable>: Sendable {
         let elements = pendingElements
         pendingElements.removeAll(keepingCapacity: true)
         return elements
+    }
+
+    mutating func discardPending(releasingCapacity: Bool) {
+        pendingElements.removeAll(keepingCapacity: !releasingCapacity)
     }
 }
 
@@ -185,13 +199,24 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
         }
     }
 
+    #if DEBUG
+    func debugMemorySnapshot() -> LiveCaptureSessionDebugSnapshot {
+        queue.sync {
+            LiveCaptureSessionDebugSnapshot(
+                pendingBatchCount: packetBatchBuffer.pendingCount,
+                activeRunPacketCount: activeRunPacketCount
+            )
+        }
+    }
+    #endif
+
     private func startOnQueue() throws {
         cancelDurationStopWorkItem()
         if phase == .stopped || phase == .failed || phase == .ready {
             activeRunPacketCount = 0
             startedAt = Date()
             cancelPacketBatchFlushWorkItem()
-            _ = packetBatchBuffer.flush()
+            packetBatchBuffer.discardPending(releasingCapacity: true)
         }
 
         do {

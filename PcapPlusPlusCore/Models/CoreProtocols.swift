@@ -4,6 +4,23 @@ public typealias TCPViewerCompletion<Value> = (Result<Value, Error>) -> Void
 public typealias TCPViewerVoidCompletion = (Result<Void, Error>) -> Void
 public typealias PacketIngestEventHandler = (Result<PacketIngestEvent, Error>) -> Void
 
+#if DEBUG
+public struct LiveCaptureSessionDebugSnapshot: Equatable, Sendable {
+    public let pendingBatchCount: Int
+    public let activeRunPacketCount: UInt64
+
+    public static let empty = LiveCaptureSessionDebugSnapshot(
+        pendingBatchCount: 0,
+        activeRunPacketCount: 0
+    )
+
+    public init(pendingBatchCount: Int, activeRunPacketCount: UInt64) {
+        self.pendingBatchCount = pendingBatchCount
+        self.activeRunPacketCount = activeRunPacketCount
+    }
+}
+#endif
+
 public protocol CaptureInterfaceProviding {
     func listInterfaces(completion: @escaping TCPViewerCompletion<[CaptureInterfaceSummary]>)
 }
@@ -21,7 +38,18 @@ public protocol LiveCaptureSessionProviding: AnyObject {
     func stop(completion: @escaping TCPViewerVoidCompletion)
     func inspectPacket(id: PacketSummary.ID, completion: @escaping TCPViewerCompletion<PacketInspection>)
     func healthSnapshot(completion: @escaping (CaptureHealthSnapshot) -> Void)
+    #if DEBUG
+    func debugMemorySnapshot() -> LiveCaptureSessionDebugSnapshot
+    #endif
 }
+
+#if DEBUG
+public extension LiveCaptureSessionProviding {
+    func debugMemorySnapshot() -> LiveCaptureSessionDebugSnapshot {
+        .empty
+    }
+}
+#endif
 
 public protocol OfflineCaptureDocumentProviding: AnyObject {
     var eventHandler: PacketIngestEventHandler? { get set }

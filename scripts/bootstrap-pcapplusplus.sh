@@ -14,6 +14,29 @@ BUILD_DIR="$BUILD_ROOT/pcapplusplus-${CONFIGURATION_NAME}-$(printf '%s' "$ARCHIT
 STAMP_FILE="$INSTALL_ROOT/.tcpviewer-build-stamp"
 CURRENT_STAMP_CONTENT="tag=$PINNED_TAG;commit=$PINNED_COMMIT;config=$CONFIGURATION_NAME;archs=$ARCHITECTURES"
 
+cache_value() {
+  KEY="$1"
+  CACHE_FILE="$2"
+  awk -F= -v key="$KEY:INTERNAL" '$1 == key { print $2; exit }' "$CACHE_FILE"
+}
+
+reset_mismatched_cmake_cache() {
+  CACHE_FILE="$BUILD_DIR/CMakeCache.txt"
+
+  if [ ! -f "$CACHE_FILE" ]; then
+    return
+  fi
+
+  CACHE_SOURCE_DIR="$(cache_value CMAKE_HOME_DIRECTORY "$CACHE_FILE")"
+  CACHE_BUILD_DIR="$(cache_value CMAKE_CACHEFILE_DIR "$CACHE_FILE")"
+
+  # CMake caches are tied to absolute source/build paths, so copied caches must be discarded.
+  if [ "$CACHE_SOURCE_DIR" != "$SOURCE_DIR" ] || [ "$CACHE_BUILD_DIR" != "$BUILD_DIR" ]; then
+    echo "warning: removing stale PcapPlusPlus CMake cache for a different checkout." >&2
+    rm -rf "$BUILD_DIR"
+  fi
+}
+
 if ! command -v git >/dev/null 2>&1; then
   echo "error: git is required to prepare vendored PcapPlusPlus." >&2
   exit 1
@@ -59,6 +82,7 @@ if git -C "$SOURCE_DIR" rev-parse --verify --quiet "$PINNED_TAG^{commit}" >/dev/
 fi
 
 mkdir -p "$BUILD_DIR" "$INSTALL_ROOT"
+reset_mismatched_cmake_cache
 
 if [ -f "$STAMP_FILE" ] && [ "$(cat "$STAMP_FILE")" = "$CURRENT_STAMP_CONTENT" ] \
   && [ -f "$INSTALL_ROOT/lib/libPcap++.a" ] \

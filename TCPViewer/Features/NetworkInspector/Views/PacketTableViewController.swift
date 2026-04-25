@@ -256,7 +256,7 @@ extension PacketTableViewController: NSTableViewDataSource, NSTableViewDelegate 
         if let cell = cell as? PacketProtocolCell {
             cell.configure(protocolText: packetRow.protocolText, severity: packetRow.severity)
         } else if let cell = cell as? PacketClientCell {
-            cell.configure(client: packetRow.packet.client)
+            cell.configure(client: packetRow.client)
         } else if let cell = cell as? PacketTextCell {
             cell.configure(style: textStyle(for: column, in: packetRow))
         }

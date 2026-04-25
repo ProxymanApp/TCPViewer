@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 @testable import PcapPlusPlusCore
@@ -52,6 +53,12 @@ struct InspectorPipelineTests {
 
         #expect(buffer.append([6]) == nil)
         #expect(buffer.flush() == [6])
+        #expect(buffer.flush() == nil)
+
+        #expect(buffer.append([7, 8]) == nil)
+        #expect(buffer.pendingCount == 2)
+        buffer.discardPending(releasingCapacity: true)
+        #expect(buffer.isEmpty)
         #expect(buffer.flush() == nil)
     }
 
@@ -122,6 +129,56 @@ struct InspectorPipelineTests {
         #expect(ipv6PayloadPreview.byteRange == PacketByteRange(offset: 62, length: 4))
         let ipv6UDPChecksumStatus = try #require(findNode(in: ipv6Inspection.detailNodes, id: "udp.checksum.status"))
         #expect(ipv6UDPChecksumStatus.value == "Illegal zero checksum")
+    }
+
+    @Test func tlsClientHelloInspectionRendersVersionedSummaryAndDetail() async throws {
+        let fixtureURL = CoreFixtureCatalog.captureCategoryURL("tls").appendingPathComponent("SSL-ClientHello1.pcap")
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: fixtureURL)
+        let packets = try await document.open()
+        let packet = try #require(packets.first { $0.transportHint == .tls })
+
+        #expect(packet.layers.contains { $0.name == "TLSv1.2" })
+
+        let inspection = try await document.inspectPacket(id: packet.id)
+        let tlsNode = try #require(inspection.detailNodes.first { $0.name == "Transport Layer Security" })
+        #expect(tlsNode.value?.contains("TLSv1.2") == true)
+        #expect(findNode(in: tlsNode.children, name: "Content Type")?.value?.contains("Handshake") == true)
+        #expect(findNode(in: tlsNode.children, name: "Version") != nil)
+        #expect(findNode(in: tlsNode.children, name: "Length") != nil)
+        #expect(findNode(in: tlsNode.children, name: "Handshake Protocol: Client Hello") != nil)
+        #expect(findNode(in: tlsNode.children, name: "Handshake Version")?.value?.contains("TLSv1.2") == true)
+        #expect(findNode(in: tlsNode.children, name: "Server Name Indication")?.value == "www.google.com")
+    }
+
+    @Test func tlsApplicationDataInspectionRendersRecordVersionsAndEncryptedData() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let captureURL = directory.appendingPathComponent("tls-application-data.pcap")
+        try writePCAP(
+            to: captureURL,
+            packets: [
+                makeIPv4TLSApplicationDataPacket(recordVersion: 0x0301),
+                makeIPv4TLSApplicationDataPacket(recordVersion: 0x0303),
+            ]
+        )
+
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
+        let packets = try await document.open()
+        let firstPacket = try #require(packets.first)
+        let secondPacket = try #require(packets.dropFirst().first)
+
+        #expect(packets.map(\.transportHint) == [.tls, .tls])
+        #expect(firstPacket.layers.contains { $0.name == "TLSv1.0" })
+        #expect(secondPacket.layers.contains { $0.name == "TLSv1.2" })
+
+        let inspection = try await document.inspectPacket(id: secondPacket.id)
+        let tlsNode = try #require(inspection.detailNodes.first { $0.name == "Transport Layer Security" })
+        #expect(tlsNode.value == "TLSv1.2, Application Data")
+        #expect(findNode(in: tlsNode.children, name: "Content Type")?.value == "Application Data (23)")
+        #expect(findNode(in: tlsNode.children, name: "Version")?.value == "TLSv1.2 (0x0303)")
+        #expect(findNode(in: tlsNode.children, name: "Encrypted Application Data")?.value == "4 bytes")
+        #expect(findNode(in: tlsNode.children, name: "Encrypted Data Preview")?.value == "de ad be ef")
     }
 
     @Test func tcpSynInspectionExpandsFlagsAndOptions() async throws {
@@ -286,6 +343,102 @@ struct InspectorPipelineTests {
             #expect(error.code == .offlineFileSaveFailed)
         }
     }
+
+    #if DEBUG
+    @Test func livePacketDiskStoreAppendsInspectsAndCleansUpLargeCounts() throws {
+        let harness = NativeLivePacketDiskStoreTestHarness()
+        let packet = makeIPv4UDPPayloadPacket()
+        let checkpoints = [10_000, 50_000, 100_000]
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        var lastCheckpoint = 0
+
+        for checkpoint in checkpoints {
+            for packetNumber in (lastCheckpoint + 1)...checkpoint {
+                try harness.appendPacket(
+                    identifier: UInt64(packetNumber),
+                    rawBytes: packet,
+                    timestamp: timestamp.addingTimeInterval(TimeInterval(packetNumber))
+                )
+            }
+
+            let snapshot = harness.snapshot
+            #expect(snapshot.packetCount == checkpoint)
+            #expect(snapshot.backingFileExists)
+            #expect(snapshot.backingFileSize == UInt64(packet.count * checkpoint))
+            #expect(try harness.offset(identifier: 1) == 0)
+            #expect(try harness.offset(identifier: UInt64(checkpoint)) == UInt64(packet.count * (checkpoint - 1)))
+            lastCheckpoint = checkpoint
+        }
+
+        for identifier in [UInt64(1), 50_000, 100_000] {
+            let inspection = try harness.inspectPacket(identifier: identifier)
+            #expect(inspection.packetID == identifier)
+            #expect(inspection.rawBytes == packet)
+            #expect(inspection.detailNodes.map(\.name).contains("UDP"))
+        }
+
+        do {
+            _ = try harness.inspectPacket(identifier: 100_001)
+            Issue.record("Expected a missing packet identifier to fail.")
+        } catch {
+            #expect(String(describing: error).contains("backing store"))
+        }
+
+        let backingFilePath = harness.snapshot.backingFilePath
+        #expect(FileManager.default.fileExists(atPath: backingFilePath))
+
+        harness.cleanup()
+
+        #expect(!FileManager.default.fileExists(atPath: backingFilePath))
+        #expect(harness.snapshot.packetCount == 0)
+        #expect(!harness.snapshot.backingFileExists)
+    }
+
+    @Test func livePacketDiskStoreRSSStressIsGated() throws {
+        guard ProcessInfo.processInfo.environment["TCPVIEWER_RUN_MEMORY_STRESS"] == "1" else {
+            return
+        }
+
+        let harness = NativeLivePacketDiskStoreTestHarness()
+        let packet = makePaddedPacket(base: makeIPv4UDPPayloadPacket(), byteCount: 2_048)
+        let timestamp = Date(timeIntervalSince1970: 1_700_100_000)
+        var samples: [(String, UInt64)] = [("before", residentMemoryBytes())]
+        var appended = 0
+
+        for checkpoint in [10_000, 50_000, 100_000] {
+            for packetNumber in (appended + 1)...checkpoint {
+                try harness.appendPacket(
+                    identifier: UInt64(packetNumber),
+                    rawBytes: packet,
+                    timestamp: timestamp.addingTimeInterval(TimeInterval(packetNumber))
+                )
+            }
+
+            appended = checkpoint
+            samples.append(("after \(checkpoint)", residentMemoryBytes()))
+        }
+
+        for identifier in [UInt64(1), 50_000, 100_000] {
+            let inspection = try harness.inspectPacket(identifier: identifier)
+            #expect(inspection.rawBytes.count == packet.count)
+        }
+        samples.append(("after inspections", residentMemoryBytes()))
+
+        let beforeCleanupPath = harness.snapshot.backingFilePath
+        harness.cleanup()
+        samples.append(("after cleanup", residentMemoryBytes()))
+
+        let capturedBytes = UInt64(packet.count * 100_000)
+        let growthAt100K = samples[3].1 > samples[0].1 ? samples[3].1 - samples[0].1 : 0
+        let growthAfterInspections = samples[4].1 > samples[0].1 ? samples[4].1 - samples[0].1 : 0
+        logMemorySamples(samples)
+
+        #expect(!FileManager.default.fileExists(atPath: beforeCleanupPath))
+        #expect(growthAt100K < 96 * 1_024 * 1_024)
+        #expect(growthAfterInspections < 112 * 1_024 * 1_024)
+        #expect(growthAt100K < capturedBytes / 2)
+    }
+    #endif
 }
 
 private struct LoadEventSnapshot: Sendable {
@@ -427,6 +580,36 @@ private func makeIPv4TCPPayloadPacket() -> Data {
     ])
 }
 
+private func makeIPv4TLSApplicationDataPacket(recordVersion: UInt16) -> Data {
+    let encryptedPayload: [UInt8] = [0xde, 0xad, 0xbe, 0xef]
+    let tlsRecordLength = 5 + encryptedPayload.count
+    let ipv4TotalLength = UInt16(20 + 20 + tlsRecordLength)
+    var packet = Data([
+        0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55,
+        0x08, 0x00,
+        0x45, 0x00,
+    ])
+    packet.appendBigEndian(ipv4TotalLength)
+    packet.append(contentsOf: [
+        0x12, 0x37, 0x40, 0x00, 0x40, 0x06, 0x00, 0x00,
+        0xc0, 0xa8, 0x00, 0x01,
+        0xc0, 0xa8, 0x00, 0x02,
+    ])
+    packet.appendBigEndian(UInt16(54_321))
+    packet.appendBigEndian(UInt16(443))
+    packet.append(contentsOf: [
+        0x00, 0x00, 0x00, 0x01,
+        0x00, 0x00, 0x00, 0x01,
+        0x50, 0x18, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x17,
+    ])
+    packet.appendBigEndian(recordVersion)
+    packet.appendBigEndian(UInt16(encryptedPayload.count))
+    packet.append(contentsOf: encryptedPayload)
+    return packet
+}
+
 private func makeIPv4TCPSYNOptionsPacket() -> Data {
     Data([
         0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
@@ -496,10 +679,62 @@ private func findNode(in nodes: [PacketDetailNode], id: String) -> PacketDetailN
     return nil
 }
 
+private func makePaddedPacket(base: Data, byteCount: Int) -> Data {
+    var packet = base
+    if packet.count < byteCount {
+        packet.append(Data(repeating: 0, count: byteCount - packet.count))
+    }
+    return packet
+}
+
+private func residentMemoryBytes() -> UInt64 {
+    var info = mach_task_basic_info()
+    var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.stride / MemoryLayout<natural_t>.stride)
+    let result = withUnsafeMutablePointer(to: &info) { pointer in
+        pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { reboundPointer in
+            task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), reboundPointer, &count)
+        }
+    }
+
+    guard result == KERN_SUCCESS else {
+        return 0
+    }
+
+    return UInt64(info.resident_size)
+}
+
+private func logMemorySamples(_ samples: [(String, UInt64)]) {
+    let formatted = samples.map { label, bytes in
+        String(format: "%@: %.1f MB", label, Double(bytes) / 1_048_576.0)
+    }
+    print("TCPViewer RSS stress samples: \(formatted.joined(separator: ", "))")
+}
+
+private func findNode(in nodes: [PacketDetailNode], name: String) -> PacketDetailNode? {
+    for node in nodes {
+        if node.name == name {
+            return node
+        }
+
+        if let match = findNode(in: node.children, name: name) {
+            return match
+        }
+    }
+
+    return nil
+}
+
 private extension Data {
     mutating func appendLittleEndian<T: FixedWidthInteger>(_ value: T) {
         var littleEndian = value.littleEndian
         Swift.withUnsafeBytes(of: &littleEndian) { buffer in
+            append(buffer.bindMemory(to: UInt8.self))
+        }
+    }
+
+    mutating func appendBigEndian<T: FixedWidthInteger>(_ value: T) {
+        var bigEndian = value.bigEndian
+        Swift.withUnsafeBytes(of: &bigEndian) { buffer in
             append(buffer.bindMemory(to: UInt8.self))
         }
     }

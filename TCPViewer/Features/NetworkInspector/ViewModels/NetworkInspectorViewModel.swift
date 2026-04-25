@@ -57,6 +57,25 @@ private struct PacketTableContentCache {
     private var generation: UInt64 = 0
     private var cachedContent = PacketTableContent.empty
 
+    mutating func reset() {
+        packetRevision = nil
+        packetLineageRevision = nil
+        sourcePacketCount = 0
+        displayFilterText = nil
+        sourceListSelection = nil
+        generation &+= 1
+        cachedContent = .empty
+    }
+
+    #if DEBUG
+    var debugMemorySnapshot: PacketTableContentCacheDebugSnapshot {
+        PacketTableContentCacheDebugSnapshot(
+            rowCount: cachedContent.rows.count,
+            visiblePacketIndexCount: cachedContent.visiblePacketRowIndexByID.count
+        )
+    }
+    #endif
+
     mutating func content(
         for ingestState: PacketIngestState,
         displayFilterText: String,
@@ -98,13 +117,9 @@ private struct PacketTableContentCache {
         sourceListSelection: PacketSourceListSelection
     ) -> PacketTableContent {
         var rows: [PacketTableRow] = []
-        var rowIDs: [PacketSummary.ID] = []
-        var visiblePacketsByID: [PacketSummary.ID: PacketSummary] = [:]
         var visiblePacketRowIndexByID: [PacketSummary.ID: Int] = [:]
         var malformedPacketCount = 0
         rows.reserveCapacity(ingestState.packets.count)
-        rowIDs.reserveCapacity(ingestState.packets.count)
-        visiblePacketsByID.reserveCapacity(ingestState.packets.count)
         visiblePacketRowIndexByID.reserveCapacity(ingestState.packets.count)
 
         for packet in ingestState.packets {
@@ -119,8 +134,6 @@ private struct PacketTableContentCache {
 
             let rowIndex = rows.count
             rows.append(PacketTableRow(packet: packet))
-            rowIDs.append(packet.id)
-            visiblePacketsByID[packet.id] = packet
             visiblePacketRowIndexByID[packet.id] = rowIndex
         }
 
@@ -130,11 +143,9 @@ private struct PacketTableContentCache {
             displayFilter: displayFilter,
             displayFilterChips: displayFilter.chips,
             rows: rows,
-            rowIDs: rowIDs,
             generation: generation,
             updatePlan: updatePlan,
             malformedPacketCount: malformedPacketCount,
-            visiblePacketsByID: visiblePacketsByID,
             visiblePacketRowIndexByID: visiblePacketRowIndexByID
         )
         return store(
@@ -162,15 +173,11 @@ private struct PacketTableContentCache {
         }
 
         var rows = cachedContent.rows
-        var rowIDs = cachedContent.rowIDs
-        var visiblePacketsByID = cachedContent.visiblePacketsByID
         var visiblePacketRowIndexByID = cachedContent.visiblePacketRowIndexByID
         var malformedPacketCount = cachedContent.malformedPacketCount
         let appendStartIndex = rows.count
 
         rows.reserveCapacity(rows.count + newPackets.count)
-        rowIDs.reserveCapacity(rowIDs.count + newPackets.count)
-        visiblePacketsByID.reserveCapacity(visiblePacketsByID.count + newPackets.count)
         visiblePacketRowIndexByID.reserveCapacity(visiblePacketRowIndexByID.count + newPackets.count)
 
         for packet in newPackets {
@@ -185,8 +192,6 @@ private struct PacketTableContentCache {
 
             let rowIndex = rows.count
             rows.append(PacketTableRow(packet: packet))
-            rowIDs.append(packet.id)
-            visiblePacketsByID[packet.id] = packet
             visiblePacketRowIndexByID[packet.id] = rowIndex
         }
 
@@ -199,11 +204,9 @@ private struct PacketTableContentCache {
             displayFilter: displayFilter,
             displayFilterChips: displayFilter.chips,
             rows: rows,
-            rowIDs: rowIDs,
             generation: generation,
             updatePlan: didAppendVisibleRows ? .append(appendStartIndex..<rows.count) : .none,
             malformedPacketCount: malformedPacketCount,
-            visiblePacketsByID: visiblePacketsByID,
             visiblePacketRowIndexByID: visiblePacketRowIndexByID
         )
         return store(
@@ -229,6 +232,44 @@ private struct PacketTableContentCache {
         return content
     }
 }
+
+#if DEBUG
+struct PacketTableContentCacheDebugSnapshot: Equatable {
+    let rowCount: Int
+    let visiblePacketIndexCount: Int
+}
+
+struct NetworkInspectorMemoryDebugSnapshot: Equatable {
+    let ingestPacketCount: Int
+    let packetIndexCount: Int
+    let navigationVisibleIDCount: Int
+    let tableRowCount: Int
+    let tableVisiblePacketIndexCount: Int
+    let sourceListAppBucketCount: Int
+    let sourceListDomainBucketCount: Int
+    let metadata: PacketMetadataEnrichmentDebugSnapshot
+    let liveSession: LiveCaptureSessionDebugSnapshot?
+
+    var logDescription: String {
+        [
+            "ingestPackets=\(ingestPacketCount)",
+            "packetIndex=\(packetIndexCount)",
+            "navIDs=\(navigationVisibleIDCount)",
+            "tableRows=\(tableRowCount)",
+            "tableVisibleIndex=\(tableVisiblePacketIndexCount)",
+            "sourceApps=\(sourceListAppBucketCount)",
+            "sourceDomains=\(sourceListDomainBucketCount)",
+            "metadataFlows=\(metadata.flowCount)",
+            "metadataPendingIDs=\(metadata.pendingPacketIDCount)",
+            "resolverPIDClients=\(metadata.clientResolver.pidClientCount)",
+            "resolverProcessIdentities=\(metadata.clientResolver.processIdentityCacheCount)",
+            "resolverBundleIdentities=\(metadata.clientResolver.bundleIdentityCacheCount)",
+            "livePendingBatch=\(liveSession?.pendingBatchCount.description ?? "nil")",
+            "liveActiveRunPackets=\(liveSession?.activeRunPacketCount.description ?? "nil")",
+        ].joined(separator: ", ")
+    }
+}
+#endif
 
 protocol NetworkInspectorViewModelDelegate: AnyObject {
     func networkInspectorViewModelDidChange(_ viewModel: NetworkInspectorViewModel)
@@ -419,8 +460,16 @@ final class NetworkInspectorViewModel {
     }
 
     func clearPackets() {
+        #if DEBUG
+        logClearMemorySnapshot("before")
+        #endif
         controller.clearPackets()
+        packetTableContentCache.reset()
+        sourceListService.reset()
         rebuildSnapshot()
+        #if DEBUG
+        logClearMemorySnapshot("after")
+        #endif
     }
 
     func updateCaptureFilterText(_ text: String) {
@@ -590,6 +639,30 @@ final class NetworkInspectorViewModel {
 
         snapshot = updatedSnapshot
     }
+
+    #if DEBUG
+    func debugMemorySnapshot() -> NetworkInspectorMemoryDebugSnapshot {
+        let tableSnapshot = packetTableContentCache.debugMemorySnapshot
+        let sourceListSnapshot = sourceListService.debugMemorySnapshot()
+        let workspaceSnapshot = controller.debugMemorySnapshot()
+        return NetworkInspectorMemoryDebugSnapshot(
+            ingestPacketCount: workspaceSnapshot.ingestPacketCount,
+            packetIndexCount: workspaceSnapshot.packetIndexCount,
+            navigationVisibleIDCount: workspaceSnapshot.navigationVisibleIDCount,
+            tableRowCount: tableSnapshot.rowCount,
+            tableVisiblePacketIndexCount: tableSnapshot.visiblePacketIndexCount,
+            sourceListAppBucketCount: sourceListSnapshot.appBucketCount,
+            sourceListDomainBucketCount: sourceListSnapshot.domainBucketCount,
+            metadata: workspaceSnapshot.metadata,
+            liveSession: workspaceSnapshot.liveSession
+        )
+    }
+
+    private func logClearMemorySnapshot(_ phase: String) {
+        let snapshot = debugMemorySnapshot()
+        print("[TCPViewer] 🧹 Clear memory \(phase): \(snapshot.logDescription)")
+    }
+    #endif
 }
 
 extension NetworkInspectorViewModel: TCPViewerWorkspaceControllerDelegate {

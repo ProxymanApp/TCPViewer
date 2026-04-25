@@ -447,6 +447,61 @@ enum NativeBridgeMapper {
     }
 }
 
+#if DEBUG
+struct NativeLivePacketDiskStoreSnapshot: Equatable {
+    let packetCount: Int
+    let backingFileSize: UInt64
+    let backingFileExists: Bool
+    let backingFilePath: String
+}
+
+final class NativeLivePacketDiskStoreTestHarness {
+    private let probe: PCPPNativeLivePacketStoreTestProbe
+
+    init() {
+        self.probe = PCPPNativeLivePacketStoreTestProbe()
+    }
+
+    var snapshot: NativeLivePacketDiskStoreSnapshot {
+        NativeLivePacketDiskStoreSnapshot(
+            packetCount: Int(probe.packetCount),
+            backingFileSize: UInt64(probe.backingFileSize),
+            backingFileExists: probe.backingFileExists,
+            backingFilePath: probe.backingFilePath
+        )
+    }
+
+    // Append synthetic packet bytes through the same native disk store used by live capture.
+    func appendPacket(
+        identifier: UInt64,
+        rawBytes: Data,
+        timestamp: Date,
+        linkLayerType: Int = 1,
+        originalLength: Int? = nil
+    ) throws {
+        try probe.appendPacket(
+            identifier: identifier,
+            rawBytes: rawBytes,
+            timestamp: timestamp,
+            linkLayerType: linkLayerType,
+            originalLength: originalLength ?? rawBytes.count
+        )
+    }
+
+    func inspectPacket(identifier: UInt64) throws -> PacketInspection {
+        try NativeBridgeMapper.packetInspection(probe.inspectPacket(identifier: identifier))
+    }
+
+    func offset(identifier: UInt64) throws -> UInt64 {
+        try probe.offset(identifier: identifier).uint64Value
+    }
+
+    func cleanup() {
+        probe.cleanup()
+    }
+}
+#endif
+
 extension CaptureOptions {
     func normalizedForLiveCapture() -> CaptureOptions {
         let normalizedFileWriting: CaptureFileWriting

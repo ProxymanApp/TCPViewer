@@ -400,6 +400,33 @@ typedef BOOL (^PCPPNativeCancellationHandler)(void);
 
 @end
 
+#if DEBUG
+
+@interface PCPPNativeLivePacketStoreTestProbe : NSObject
+
+@property (nonatomic, readonly) NSUInteger packetCount;
+@property (nonatomic, readonly) unsigned long long backingFileSize;
+@property (nonatomic, readonly) BOOL backingFileExists;
+@property (nonatomic, copy, readonly) NSString *backingFilePath;
+
+- (instancetype)init NS_DESIGNATED_INITIALIZER;
+
+- (BOOL)appendPacketWithIdentifier:(unsigned long long)identifier
+                           rawBytes:(NSData *)rawBytes
+                          timestamp:(NSDate *)timestamp
+                      linkLayerType:(NSInteger)linkLayerType
+                     originalLength:(NSInteger)originalLength
+                              error:(NSError **)error NS_SWIFT_NAME(appendPacket(identifier:rawBytes:timestamp:linkLayerType:originalLength:));
+- (nullable PCPPNativePacketInspectionDescriptor *)inspectPacketWithIdentifier:(unsigned long long)identifier
+                                                                         error:(NSError **)error NS_SWIFT_NAME(inspectPacket(identifier:));
+- (nullable NSNumber *)offsetForPacketWithIdentifier:(unsigned long long)identifier
+                                               error:(NSError **)error NS_SWIFT_NAME(offset(identifier:));
+- (void)cleanup;
+
+@end
+
+#endif
+
 @interface PCPPNativeCore : NSObject
 
 - (NSArray<PCPPNativeInterfaceDescriptor *> *)discoverInterfacesAndReturnError:(NSError **)error;

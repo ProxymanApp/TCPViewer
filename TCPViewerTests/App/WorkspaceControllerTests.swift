@@ -609,7 +609,7 @@ struct WindowControllerTests {
 
         #expect(controller.snapshot.selectedPacketID == firstPacket.id)
         #expect(controller.snapshot.inspectionState.inspection?.packetID == firstPacket.id)
-        #expect(controller.snapshot.navigationState.visiblePackets.map(\.packetNumber) == [1, 2])
+        #expect(controller.snapshot.navigationState.visiblePacketIDs == [firstPacket.id, secondPacket.id])
 
         await tearDown(controller)
     }
@@ -751,7 +751,7 @@ struct WindowControllerTests {
 
         #expect(controller.snapshot.packetIngestState.totalPacketCount == 0)
         #expect(controller.snapshot.documentState.packetCount == 0)
-        #expect(controller.snapshot.navigationState.visiblePackets.isEmpty)
+        #expect(controller.snapshot.navigationState.visiblePacketIDs.isEmpty)
         #expect(controller.snapshot.selectedPacketID == nil)
         #expect(controller.snapshot.inspectionState.inspection == nil)
         #expect(controller.snapshot.inspectionState.highlightedByteRange == nil)

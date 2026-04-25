@@ -162,6 +162,228 @@ NSArray<PCPPNativeAddressDescriptor *> *MapAddresses(const pcpp::PcapLiveDevice 
     return addresses;
 }
 
+NSString *TLSVersionLabel(pcpp::SSLVersion version)
+{
+    switch (version.asEnum(true)) {
+        case pcpp::SSLVersion::SSL3:
+            return @"SSLv3.0";
+        case pcpp::SSLVersion::TLS1_0:
+            return @"TLSv1.0";
+        case pcpp::SSLVersion::TLS1_1:
+            return @"TLSv1.1";
+        case pcpp::SSLVersion::TLS1_2:
+            return @"TLSv1.2";
+        case pcpp::SSLVersion::TLS1_3:
+            return @"TLSv1.3";
+        case pcpp::SSLVersion::Unknown:
+        default:
+            return @"TLS";
+    }
+}
+
+pcpp::SSLVersion EffectiveTLSVersionForClientHello(pcpp::SSLClientHelloMessage *clientHelloMessage)
+{
+    if (auto *supportedVersions = clientHelloMessage->getExtensionOfType<pcpp::SSLSupportedVersionsExtension>()) {
+        std::optional<uint16_t> highestKnownVersion;
+        for (auto version : supportedVersions->getSupportedVersions()) {
+            if (version.asEnum(true) == pcpp::SSLVersion::Unknown) {
+                continue;
+            }
+
+            if (!highestKnownVersion.has_value() || version.asUInt() > highestKnownVersion.value()) {
+                highestKnownVersion = version.asUInt();
+            }
+        }
+
+        if (highestKnownVersion.has_value()) {
+            return pcpp::SSLVersion(highestKnownVersion.value());
+        }
+    }
+
+    return clientHelloMessage->getHandshakeVersion();
+}
+
+pcpp::SSLVersion EffectiveTLSVersion(pcpp::SSLLayer *sslLayer)
+{
+    if (auto *handshakeLayer = dynamic_cast<pcpp::SSLHandshakeLayer *>(sslLayer)) {
+        for (int index = 0; index < static_cast<int>(handshakeLayer->getHandshakeMessagesCount()); index += 1) {
+            auto *message = handshakeLayer->getHandshakeMessageAt(index);
+            if (auto *clientHelloMessage = dynamic_cast<pcpp::SSLClientHelloMessage *>(message)) {
+                return EffectiveTLSVersionForClientHello(clientHelloMessage);
+            }
+
+            if (auto *serverHelloMessage = dynamic_cast<pcpp::SSLServerHelloMessage *>(message)) {
+                return serverHelloMessage->getHandshakeVersion();
+            }
+        }
+    }
+
+    return sslLayer->getRecordVersion();
+}
+
+NSString *TLSLayerName(pcpp::SSLLayer *sslLayer)
+{
+    return TLSVersionLabel(EffectiveTLSVersion(sslLayer));
+}
+
+NSString *TLSVersionFieldValue(pcpp::SSLVersion version)
+{
+    return [NSString stringWithFormat:@"%@ (0x%04x)", TLSVersionLabel(version), version.asUInt()];
+}
+
+NSString *TLSRecordTypeName(pcpp::SSLRecordType recordType)
+{
+    switch (recordType) {
+        case pcpp::SSL_CHANGE_CIPHER_SPEC:
+            return @"Change Cipher Spec";
+        case pcpp::SSL_ALERT:
+            return @"Alert";
+        case pcpp::SSL_HANDSHAKE:
+            return @"Handshake";
+        case pcpp::SSL_APPLICATION_DATA:
+            return @"Application Data";
+        default:
+            return @"Unknown";
+    }
+}
+
+NSString *TLSRecordTypeFieldValue(pcpp::SSLRecordType recordType)
+{
+    return [NSString stringWithFormat:@"%@ (%u)", TLSRecordTypeName(recordType), static_cast<unsigned>(recordType)];
+}
+
+NSString *TLSHandshakeTypeName(pcpp::SSLHandshakeType handshakeType)
+{
+    switch (handshakeType) {
+        case pcpp::SSL_HELLO_REQUEST:
+            return @"Hello Request";
+        case pcpp::SSL_CLIENT_HELLO:
+            return @"Client Hello";
+        case pcpp::SSL_SERVER_HELLO:
+            return @"Server Hello";
+        case pcpp::SSL_NEW_SESSION_TICKET:
+            return @"New Session Ticket";
+        case pcpp::SSL_END_OF_EARLY_DATE:
+            return @"End Of Early Data";
+        case pcpp::SSL_ENCRYPTED_EXTENSIONS:
+            return @"Encrypted Extensions";
+        case pcpp::SSL_CERTIFICATE:
+            return @"Certificate";
+        case pcpp::SSL_SERVER_KEY_EXCHANGE:
+            return @"Server Key Exchange";
+        case pcpp::SSL_CERTIFICATE_REQUEST:
+            return @"Certificate Request";
+        case pcpp::SSL_SERVER_DONE:
+            return @"Server Hello Done";
+        case pcpp::SSL_CERTIFICATE_VERIFY:
+            return @"Certificate Verify";
+        case pcpp::SSL_CLIENT_KEY_EXCHANGE:
+            return @"Client Key Exchange";
+        case pcpp::SSL_FINISHED:
+            return @"Finished";
+        case pcpp::SSL_KEY_UPDATE:
+            return @"Key Update";
+        case pcpp::SSL_HANDSHAKE_UNKNOWN:
+        default:
+            return @"Unknown";
+    }
+}
+
+NSString *TLSHandshakeTypeFieldValue(pcpp::SSLHandshakeType handshakeType)
+{
+    return [NSString stringWithFormat:@"%@ (%u)", TLSHandshakeTypeName(handshakeType), static_cast<unsigned>(handshakeType)];
+}
+
+NSString *TLSSupportedVersionsSummary(pcpp::SSLSupportedVersionsExtension *supportedVersions)
+{
+    if (supportedVersions == nullptr) {
+        return nil;
+    }
+
+    NSMutableArray<NSString *> *versions = [NSMutableArray array];
+    for (auto version : supportedVersions->getSupportedVersions()) {
+        [versions addObject:TLSVersionLabel(version)];
+    }
+
+    if (versions.count == 0) {
+        return nil;
+    }
+
+    return [versions componentsJoinedByString:@", "];
+}
+
+NSString *TLSAlertLevelName(pcpp::SSLAlertLevel alertLevel)
+{
+    switch (alertLevel) {
+        case pcpp::SSL_ALERT_LEVEL_WARNING:
+            return @"Warning";
+        case pcpp::SSL_ALERT_LEVEL_FATAL:
+            return @"Fatal";
+        case pcpp::SSL_ALERT_LEVEL_ENCRYPTED:
+        default:
+            return @"Encrypted";
+    }
+}
+
+NSString *TLSAlertDescriptionName(pcpp::SSLAlertDescription alertDescription)
+{
+    switch (alertDescription) {
+        case pcpp::SSL_ALERT_CLOSE_NOTIFY:
+            return @"Close Notify";
+        case pcpp::SSL_ALERT_UNEXPECTED_MESSAGE:
+            return @"Unexpected Message";
+        case pcpp::SSL_ALERT_BAD_RECORD_MAC:
+            return @"Bad Record MAC";
+        case pcpp::SSL_ALERT_DECRYPTION_FAILED:
+            return @"Decryption Failed";
+        case pcpp::SSL_ALERT_RECORD_OVERFLOW:
+            return @"Record Overflow";
+        case pcpp::SSL_ALERT_DECOMPRESSION_FAILURE:
+            return @"Decompression Failure";
+        case pcpp::SSL_ALERT_HANDSHAKE_FAILURE:
+            return @"Handshake Failure";
+        case pcpp::SSL_ALERT_NO_CERTIFICATE:
+            return @"No Certificate";
+        case pcpp::SSL_ALERT_BAD_CERTIFICATE:
+            return @"Bad Certificate";
+        case pcpp::SSL_ALERT_UNSUPPORTED_CERTIFICATE:
+            return @"Unsupported Certificate";
+        case pcpp::SSL_ALERT_CERTIFICATE_REVOKED:
+            return @"Certificate Revoked";
+        case pcpp::SSL_ALERT_CERTIFICATE_EXPIRED:
+            return @"Certificate Expired";
+        case pcpp::SSL_ALERT_CERTIFICATE_UNKNOWN:
+            return @"Certificate Unknown";
+        case pcpp::SSL_ALERT_ILLEGAL_PARAMETER:
+            return @"Illegal Parameter";
+        case pcpp::SSL_ALERT_UNKNOWN_CA:
+            return @"Unknown CA";
+        case pcpp::SSL_ALERT_ACCESS_DENIED:
+            return @"Access Denied";
+        case pcpp::SSL_ALERT_DECODE_ERROR:
+            return @"Decode Error";
+        case pcpp::SSL_ALERT_DECRYPT_ERROR:
+            return @"Decrypt Error";
+        case pcpp::SSL_ALERT_EXPORT_RESTRICTION:
+            return @"Export Restriction";
+        case pcpp::SSL_ALERT_PROTOCOL_VERSION:
+            return @"Protocol Version";
+        case pcpp::SSL_ALERT_INSUFFICIENT_SECURITY:
+            return @"Insufficient Security";
+        case pcpp::SSL_ALERT_INTERNAL_ERROR:
+            return @"Internal Error";
+        case pcpp::SSL_ALERT_USER_CANCELLED:
+            return @"User Cancelled";
+        case pcpp::SSL_ALERT_NO_RENEGOTIATION:
+            return @"No Renegotiation";
+        case pcpp::SSL_ALERT_UNSUPPORTED_EXTENSION:
+            return @"Unsupported Extension";
+        case pcpp::SSL_ALERT_ENCRYPTED:
+        default:
+            return @"Encrypted";
+    }
+}
+
 PCPPNativeTransportHint MapTransportHint(const pcpp::Packet &packet)
 {
     if (packet.isPacketOfType(pcpp::HTTPRequest) || packet.isPacketOfType(pcpp::HTTPResponse)) {
@@ -203,7 +425,7 @@ PCPPNativeTransportHint MapTransportHint(const pcpp::Packet &packet)
     return PCPPNativeTransportHintUnknown;
 }
 
-NSString *LayerName(const pcpp::Layer &layer)
+NSString *LayerName(pcpp::Layer &layer)
 {
     switch (layer.getProtocol()) {
         case pcpp::Ethernet:
@@ -225,7 +447,7 @@ NSString *LayerName(const pcpp::Layer &layer)
         case pcpp::HTTPResponse:
             return @"HTTP Response";
         case pcpp::SSL:
-            return @"TLS";
+            return TLSLayerName(static_cast<pcpp::SSLLayer *>(&layer));
         case pcpp::GenericPayload:
             return @"Payload";
         default:
@@ -717,6 +939,26 @@ NSString *PayloadPreview(const uint8_t *bytes, size_t length, NSUInteger limit =
     return joined;
 }
 
+size_t TLSHandshakeDeclaredPayloadLength(const uint8_t *messageData, size_t messageLength)
+{
+    if (messageData == nullptr || messageLength < sizeof(pcpp::ssl_tls_handshake_layer)) {
+        return 0;
+    }
+
+    return (static_cast<size_t>(messageData[1]) << 16) |
+           (static_cast<size_t>(messageData[2]) << 8) |
+           static_cast<size_t>(messageData[3]);
+}
+
+NSString *TLSCipherSuiteFieldValue(uint16_t cipherSuiteID, pcpp::SSLCipherSuite *cipherSuite)
+{
+    if (cipherSuite == nullptr) {
+        return FormatHex16(cipherSuiteID);
+    }
+
+    return [NSString stringWithFormat:@"%@ (%@)", MakeNSString(cipherSuite->asString()), FormatHex16(cipherSuiteID)];
+}
+
 NSString *TCPFlagsSummary(const pcpp::tcphdr *header)
 {
     NSMutableArray<NSString *> *flags = [NSMutableArray array];
@@ -929,6 +1171,9 @@ private:
                 break;
             case pcpp::UDP:
                 appendUDP(static_cast<pcpp::UdpLayer *>(layer), offset, nodes);
+                break;
+            case pcpp::SSL:
+                appendTLS(static_cast<pcpp::SSLLayer *>(layer), offset, nodes);
                 break;
             case pcpp::GenericPayload:
                 appendPayload(static_cast<pcpp::PayloadLayer *>(layer), offset, nodes);
@@ -1162,6 +1407,245 @@ private:
                                        children)];
     }
 
+    void appendTLS(pcpp::SSLLayer *sslLayer, NSUInteger offset, NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *nodes)
+    {
+        NSString *identifier = [NSString stringWithFormat:@"tls.%lu", static_cast<unsigned long>(offset)];
+        pcpp::SSLRecordType recordType = sslLayer->getRecordType();
+        uint16_t recordLength = ntohs(sslLayer->getRecordLayer()->length);
+        NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *children = [NSMutableArray arrayWithArray:@[
+            MakeFieldNode([NSString stringWithFormat:@"%@.contentType", identifier],
+                          @"Content Type",
+                          TLSRecordTypeFieldValue(recordType),
+                          offset,
+                          0,
+                          1),
+            MakeFieldNode([NSString stringWithFormat:@"%@.version", identifier],
+                          @"Version",
+                          TLSVersionFieldValue(sslLayer->getRecordVersion()),
+                          offset,
+                          1,
+                          2),
+            MakeFieldNode([NSString stringWithFormat:@"%@.length", identifier],
+                          @"Length",
+                          [NSString stringWithFormat:@"%u bytes", recordLength],
+                          offset,
+                          3,
+                          2),
+        ]];
+
+        if (auto *handshakeLayer = dynamic_cast<pcpp::SSLHandshakeLayer *>(sslLayer)) {
+            appendTLSHandshake(handshakeLayer, offset, identifier, children);
+        } else if (auto *applicationDataLayer = dynamic_cast<pcpp::SSLApplicationDataLayer *>(sslLayer)) {
+            appendTLSApplicationData(applicationDataLayer, offset, identifier, children);
+        } else if (auto *alertLayer = dynamic_cast<pcpp::SSLAlertLayer *>(sslLayer)) {
+            appendTLSAlert(alertLayer, offset, identifier, children);
+        } else if (auto *changeCipherSpecLayer = dynamic_cast<pcpp::SSLChangeCipherSpecLayer *>(sslLayer)) {
+            appendTLSChangeCipherSpec(changeCipherSpecLayer, offset, identifier, children);
+        }
+
+        [nodes addObject:MakeLayerNode(identifier,
+                                       @"Transport Layer Security",
+                                       [NSString stringWithFormat:@"%@, %@", TLSLayerName(sslLayer), TLSRecordTypeName(recordType)],
+                                       offset,
+                                       sslLayer->getHeaderLen(),
+                                       children)];
+    }
+
+    void appendTLSHandshake(pcpp::SSLHandshakeLayer *handshakeLayer,
+                            NSUInteger offset,
+                            NSString *identifier,
+                            NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *children)
+    {
+        // Decode the handshake records PcapPlusPlus exposes without attempting TLS decryption.
+        [children addObject:MakeSyntheticFieldNode([NSString stringWithFormat:@"%@.handshake.count", identifier],
+                                                   @"Handshake Message Count",
+                                                   [NSString stringWithFormat:@"%zu", handshakeLayer->getHandshakeMessagesCount()])];
+
+        size_t messageRelativeOffset = sizeof(pcpp::ssl_tls_record_layer);
+        size_t layerLength = handshakeLayer->getHeaderLen();
+        for (int index = 0; index < static_cast<int>(handshakeLayer->getHandshakeMessagesCount()); index += 1) {
+            auto *message = handshakeLayer->getHandshakeMessageAt(index);
+            if (message == nullptr || messageRelativeOffset >= layerLength) {
+                break;
+            }
+
+            size_t messageLength = std::min(message->getMessageLength(), layerLength - messageRelativeOffset);
+            if (messageLength == 0) {
+                break;
+            }
+
+            NSUInteger messageOffset = offset + messageRelativeOffset;
+            const uint8_t *messageData = handshakeLayer->getData() + messageRelativeOffset;
+            NSString *messageIdentifier = [NSString stringWithFormat:@"%@.handshake.%d", identifier, index];
+            pcpp::SSLHandshakeType handshakeType = message->getHandshakeType();
+            NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *messageChildren = [NSMutableArray arrayWithArray:@[
+                MakeFieldNode([NSString stringWithFormat:@"%@.type", messageIdentifier],
+                              @"Handshake Type",
+                              TLSHandshakeTypeFieldValue(handshakeType),
+                              messageOffset,
+                              0,
+                              1),
+                MakeFieldNode([NSString stringWithFormat:@"%@.length", messageIdentifier],
+                              @"Length",
+                              [NSString stringWithFormat:@"%zu bytes", TLSHandshakeDeclaredPayloadLength(messageData, messageLength)],
+                              messageOffset,
+                              1,
+                              3),
+                MakeSyntheticFieldNode([NSString stringWithFormat:@"%@.complete", messageIdentifier],
+                                       @"Complete",
+                                       message->isMessageComplete() ? @"Yes" : @"No"),
+            ]];
+
+            appendTLSHandshakeMessageMetadata(message, messageOffset, messageLength, messageIdentifier, messageChildren);
+            [children addObject:MakeDetailNode(messageIdentifier,
+                                               [NSString stringWithFormat:@"Handshake Protocol: %@", TLSHandshakeTypeName(handshakeType)],
+                                               MakeNSString(message->toString()),
+                                               @"field",
+                                               MakeByteRange(messageOffset, messageLength),
+                                               nil,
+                                               messageChildren)];
+            messageRelativeOffset += messageLength;
+        }
+    }
+
+    void appendTLSHandshakeMessageMetadata(pcpp::SSLHandshakeMessage *message,
+                                           NSUInteger messageOffset,
+                                           size_t messageLength,
+                                           NSString *messageIdentifier,
+                                           NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *children)
+    {
+        if (auto *clientHelloMessage = dynamic_cast<pcpp::SSLClientHelloMessage *>(message)) {
+            if (messageLength >= sizeof(pcpp::ssl_tls_client_server_hello)) {
+                [children addObject:MakeFieldNode([NSString stringWithFormat:@"%@.handshakeVersion", messageIdentifier],
+                                                  @"Handshake Version",
+                                                  TLSVersionFieldValue(clientHelloMessage->getHandshakeVersion()),
+                                                  messageOffset,
+                                                  4,
+                                                  2)];
+            }
+            if (auto *sniExtension = clientHelloMessage->getExtensionOfType<pcpp::SSLServerNameIndicationExtension>()) {
+                NSString *hostName = NullableNSString(sniExtension->getHostName());
+                if (hostName != nil) {
+                    [children addObject:MakeSyntheticFieldNode([NSString stringWithFormat:@"%@.sni", messageIdentifier],
+                                                               @"Server Name Indication",
+                                                               hostName)];
+                }
+            }
+            [children addObject:MakeSyntheticFieldNode([NSString stringWithFormat:@"%@.cipherSuiteCount", messageIdentifier],
+                                                       @"Cipher Suites",
+                                                       [NSString stringWithFormat:@"%d", clientHelloMessage->getCipherSuiteCount()])];
+            [children addObject:MakeSyntheticFieldNode([NSString stringWithFormat:@"%@.extensionCount", messageIdentifier],
+                                                       @"Extensions",
+                                                       [NSString stringWithFormat:@"%d", clientHelloMessage->getExtensionCount()])];
+            NSString *supportedVersions = TLSSupportedVersionsSummary(clientHelloMessage->getExtensionOfType<pcpp::SSLSupportedVersionsExtension>());
+            if (supportedVersions != nil) {
+                [children addObject:MakeSyntheticFieldNode([NSString stringWithFormat:@"%@.supportedVersions", messageIdentifier],
+                                                           @"Supported Versions",
+                                                           supportedVersions)];
+            }
+            return;
+        }
+
+        if (auto *serverHelloMessage = dynamic_cast<pcpp::SSLServerHelloMessage *>(message)) {
+            if (messageLength >= sizeof(pcpp::ssl_tls_client_server_hello)) {
+                [children addObject:MakeFieldNode([NSString stringWithFormat:@"%@.handshakeVersion", messageIdentifier],
+                                                  @"Handshake Version",
+                                                  TLSVersionFieldValue(serverHelloMessage->getHandshakeVersion()),
+                                                  messageOffset,
+                                                  4,
+                                                  2)];
+            }
+
+            bool isValid = false;
+            uint16_t cipherSuiteID = serverHelloMessage->getCipherSuiteID(isValid);
+            if (isValid) {
+                [children addObject:MakeSyntheticFieldNode([NSString stringWithFormat:@"%@.cipherSuite", messageIdentifier],
+                                                           @"Cipher Suite",
+                                                           TLSCipherSuiteFieldValue(cipherSuiteID, serverHelloMessage->getCipherSuite()))];
+            }
+            [children addObject:MakeSyntheticFieldNode([NSString stringWithFormat:@"%@.extensionCount", messageIdentifier],
+                                                       @"Extensions",
+                                                       [NSString stringWithFormat:@"%d", serverHelloMessage->getExtensionCount()])];
+            NSString *supportedVersions = TLSSupportedVersionsSummary(serverHelloMessage->getExtensionOfType<pcpp::SSLSupportedVersionsExtension>());
+            if (supportedVersions != nil) {
+                [children addObject:MakeSyntheticFieldNode([NSString stringWithFormat:@"%@.supportedVersions", messageIdentifier],
+                                                           @"Supported Versions",
+                                                           supportedVersions)];
+            }
+            return;
+        }
+
+        if (auto *certificateMessage = dynamic_cast<pcpp::SSLCertificateMessage *>(message)) {
+            [children addObject:MakeSyntheticFieldNode([NSString stringWithFormat:@"%@.certificateCount", messageIdentifier],
+                                                       @"Certificates",
+                                                       [NSString stringWithFormat:@"%d", certificateMessage->getNumOfCertificates()])];
+        }
+    }
+
+    void appendTLSApplicationData(pcpp::SSLApplicationDataLayer *applicationDataLayer,
+                                  NSUInteger offset,
+                                  NSString *identifier,
+                                  NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *children)
+    {
+        size_t encryptedDataLength = applicationDataLayer->getEncryptedDataLen();
+        NSUInteger encryptedDataOffset = offset + sizeof(pcpp::ssl_tls_record_layer);
+        [children addObject:MakeFieldNode([NSString stringWithFormat:@"%@.encryptedData", identifier],
+                                          @"Encrypted Application Data",
+                                          [NSString stringWithFormat:@"%zu bytes", encryptedDataLength],
+                                          encryptedDataOffset,
+                                          0,
+                                          encryptedDataLength)];
+        [children addObject:MakeFieldNode([NSString stringWithFormat:@"%@.encryptedDataPreview", identifier],
+                                          @"Encrypted Data Preview",
+                                          PayloadPreview(applicationDataLayer->getEncryptedData(), encryptedDataLength),
+                                          encryptedDataOffset,
+                                          0,
+                                          encryptedDataLength)];
+    }
+
+    void appendTLSAlert(pcpp::SSLAlertLayer *alertLayer,
+                        NSUInteger offset,
+                        NSString *identifier,
+                        NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *children)
+    {
+        if (alertLayer->getHeaderLen() > sizeof(pcpp::ssl_tls_record_layer)) {
+            pcpp::SSLAlertLevel alertLevel = alertLayer->getAlertLevel();
+            [children addObject:MakeFieldNode([NSString stringWithFormat:@"%@.alert.level", identifier],
+                                              @"Alert Level",
+                                              [NSString stringWithFormat:@"%@ (%u)", TLSAlertLevelName(alertLevel), static_cast<unsigned>(alertLevel)],
+                                              offset,
+                                              sizeof(pcpp::ssl_tls_record_layer),
+                                              1)];
+        }
+
+        if (alertLayer->getHeaderLen() > sizeof(pcpp::ssl_tls_record_layer) + 1) {
+            pcpp::SSLAlertDescription alertDescription = alertLayer->getAlertDescription();
+            [children addObject:MakeFieldNode([NSString stringWithFormat:@"%@.alert.description", identifier],
+                                              @"Alert Description",
+                                              [NSString stringWithFormat:@"%@ (%u)", TLSAlertDescriptionName(alertDescription), static_cast<unsigned>(alertDescription)],
+                                              offset,
+                                              sizeof(pcpp::ssl_tls_record_layer) + 1,
+                                              1)];
+        }
+    }
+
+    void appendTLSChangeCipherSpec(pcpp::SSLChangeCipherSpecLayer *changeCipherSpecLayer,
+                                   NSUInteger offset,
+                                   NSString *identifier,
+                                   NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *children)
+    {
+        if (changeCipherSpecLayer->getHeaderLen() <= sizeof(pcpp::ssl_tls_record_layer)) {
+            return;
+        }
+
+        [children addObject:MakeFieldNode([NSString stringWithFormat:@"%@.changeCipherSpec", identifier],
+                                          @"Change Cipher Spec",
+                                          [NSString stringWithFormat:@"%u", changeCipherSpecLayer->getData()[sizeof(pcpp::ssl_tls_record_layer)]],
+                                          offset,
+                                          sizeof(pcpp::ssl_tls_record_layer),
+                                          1)];
+    }
+
     void appendPayload(pcpp::PayloadLayer *payloadLayer, NSUInteger offset, NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *nodes)
     {
         NSArray *children = @[
@@ -1256,6 +1740,196 @@ PCPPNativePacketInspectionDescriptor *MakePacketInspection(const pcpp::RawPacket
 struct StoredPacket {
     std::unique_ptr<pcpp::RawPacket> rawPacket;
     std::string packetComment;
+};
+
+struct LivePacketDiskRecord {
+    unsigned long long identifier = 0;
+    uint64_t offset = 0;
+    int capturedLength = 0;
+    int originalLength = 0;
+    timespec timestamp{};
+    pcpp::LinkLayerType linkLayerType = pcpp::LINKTYPE_ETHERNET;
+};
+
+NSError *MakeFileError(TCPViewerNativeErrorCode code, const std::string &message)
+{
+    return MakeError(code, MakeNSString(message));
+}
+
+pcpp::LinkLayerType LinkLayerTypeFromInteger(NSInteger linkLayerType)
+{
+    if (pcpp::RawPacket::isLinkTypeValid(static_cast<int>(linkLayerType))) {
+        return static_cast<pcpp::LinkLayerType>(linkLayerType);
+    }
+
+    return pcpp::LINKTYPE_ETHERNET;
+}
+
+class LivePacketDiskStore {
+public:
+    LivePacketDiskStore()
+        : filePath_(makeTemporaryFilePath()) {}
+
+    ~LivePacketDiskStore()
+    {
+        clear();
+    }
+
+    void append(const pcpp::RawPacket &packet, unsigned long long identifier)
+    {
+        ensureFileOpen();
+
+        const auto offset = currentOffset();
+        const int capturedLength = packet.getRawDataLen();
+        if (capturedLength > 0) {
+            const auto bytesWritten = ::fwrite(packet.getRawData(), 1, static_cast<size_t>(capturedLength), file_);
+            if (bytesWritten != static_cast<size_t>(capturedLength)) {
+                throw std::runtime_error("Failed to write packet bytes into the live capture backing store.");
+            }
+        }
+
+        index_.push_back({
+            identifier,
+            offset,
+            capturedLength,
+            packet.getFrameLength(),
+            packet.getPacketTimeStamp(),
+            packet.getLinkLayerType(),
+        });
+    }
+
+    std::unique_ptr<pcpp::RawPacket> packet(unsigned long long identifier)
+    {
+        const auto *record = recordForIdentifier(identifier);
+        if (record == nullptr) {
+            throw std::out_of_range("TCP Viewer could not find that packet in the live capture backing store.");
+        }
+
+        flushPendingWrites();
+        if (::fseeko(file_, static_cast<off_t>(record->offset), SEEK_SET) != 0) {
+            throw std::runtime_error("Failed to seek to packet bytes in the live capture backing store.");
+        }
+
+        auto bytes = std::make_unique<uint8_t[]>(static_cast<size_t>(record->capturedLength));
+        if (record->capturedLength > 0) {
+            const auto bytesRead = ::fread(bytes.get(), 1, static_cast<size_t>(record->capturedLength), file_);
+            if (bytesRead != static_cast<size_t>(record->capturedLength)) {
+                throw std::runtime_error("Failed to read packet bytes from the live capture backing store.");
+            }
+        }
+
+        auto packet = std::make_unique<pcpp::RawPacket>();
+        if (!packet->setRawData(bytes.get(),
+                                record->capturedLength,
+                                record->timestamp,
+                                record->linkLayerType,
+                                record->originalLength)) {
+            throw std::runtime_error("Failed to rebuild a packet from the live capture backing store.");
+        }
+
+        bytes.release();
+        return packet;
+    }
+
+    uint64_t offset(unsigned long long identifier) const
+    {
+        const auto *record = recordForIdentifier(identifier);
+        if (record == nullptr) {
+            throw std::out_of_range("TCP Viewer could not find that packet in the live capture backing store.");
+        }
+
+        return record->offset;
+    }
+
+    size_t count() const
+    {
+        return index_.size();
+    }
+
+    uint64_t fileSize()
+    {
+        flushPendingWrites();
+        if (!std::filesystem::exists(filePath_)) {
+            return 0;
+        }
+
+        return static_cast<uint64_t>(std::filesystem::file_size(filePath_));
+    }
+
+    const std::filesystem::path &filePath() const
+    {
+        return filePath_;
+    }
+
+    bool fileExists() const
+    {
+        return std::filesystem::exists(filePath_);
+    }
+
+    void clear()
+    {
+        if (file_ != nullptr) {
+            ::fclose(file_);
+            file_ = nullptr;
+        }
+
+        std::error_code error;
+        std::filesystem::remove(filePath_, error);
+        index_.clear();
+    }
+
+private:
+    static std::filesystem::path makeTemporaryFilePath()
+    {
+        NSString *fileName = [NSString stringWithFormat:@"TCPViewerLiveCapture-%@.pktstore", NSUUID.UUID.UUIDString];
+        NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:fileName];
+        return std::filesystem::path(MakeStdString(path));
+    }
+
+    void ensureFileOpen()
+    {
+        if (file_ != nullptr) {
+            return;
+        }
+
+        file_ = ::fopen(filePath_.string().c_str(), "w+b");
+        if (file_ == nullptr) {
+            throw std::runtime_error("Failed to open the live capture backing store.");
+        }
+
+        NSLog(@"[TCPViewer] 🗂️ Live capture temp packet store created: %@", MakeNSString(filePath_.string()));
+    }
+
+    uint64_t currentOffset()
+    {
+        const off_t offset = ::ftello(file_);
+        if (offset < 0) {
+            throw std::runtime_error("Failed to determine the live capture backing store offset.");
+        }
+
+        return static_cast<uint64_t>(offset);
+    }
+
+    void flushPendingWrites()
+    {
+        if (file_ != nullptr && ::fflush(file_) != 0) {
+            throw std::runtime_error("Failed to flush the live capture backing store.");
+        }
+    }
+
+    const LivePacketDiskRecord *recordForIdentifier(unsigned long long identifier) const
+    {
+        if (identifier == 0 || identifier > index_.size()) {
+            return nullptr;
+        }
+
+        const auto &record = index_[static_cast<size_t>(identifier - 1)];
+        return record.identifier == identifier ? &record : nullptr;
+    }
+
+    std::filesystem::path filePath_;
+    FILE *file_ = nullptr;
+    std::vector<LivePacketDiskRecord> index_;
 };
 
 class CaptureFileWriter {
@@ -1400,7 +2074,7 @@ public:
     unsigned long long packetsReceived = 0;
     unsigned long long packetsDropped = 0;
     unsigned long long packetsDroppedByInterface = 0;
-    std::vector<StoredPacket> packets;
+    LivePacketDiskStore packetStore;
     NSString *statusMessage = @"Live capture is ready.";
     PCPPNativeLiveSessionPhase phase = PCPPNativeLiveSessionPhaseReady;
     CaptureFileWriter writer_;
@@ -1793,38 +2467,40 @@ PCPPNativeCaptureHealthDescriptor *MakeHealthDescriptor(const LiveCaptureState &
 
 static void OnLivePacketArrives(pcpp::RawPacket *rawPacket, pcpp::PcapLiveDevice *, void *userCookie)
 {
-    auto *session = (__bridge PCPPNativeLiveSession *)userCookie;
-    std::lock_guard<std::mutex> lock(session->_state->mutex);
+    @autoreleasepool {
+        auto *session = (__bridge PCPPNativeLiveSession *)userCookie;
+        std::lock_guard<std::mutex> lock(session->_state->mutex);
 
-    auto clonedPacket = std::unique_ptr<pcpp::RawPacket>(rawPacket->clone());
-    session->_state->packetsObserved += 1;
-    session->_state->packets.push_back({std::move(clonedPacket), ""});
+        try {
+            const unsigned long long packetIdentifier = session->_state->nextPacketIdentifier;
+            session->_state->packetsObserved += 1;
 
-    auto *summary = MakePacketSummary(*session->_state->packets.back().rawPacket,
-                                      session->_state->nextPacketIdentifier,
-                                      session->_state->interfaceIdentifier_,
-                                      session->_state->device == nullptr ? nil : MakeNSString(session->_state->device->getName()),
-                                      nil,
-                                      session->_state->sniReassembly.get());
-//    NSLog(@"TCPViewer captured live packet #%llu on %@ (%d/%d bytes, observed=%llu)",
-//          summary.packetNumber,
-//          summary.captureMetadata.interfaceName ?: session->_state->interfaceIdentifier_,
-//          rawPacket->getRawDataLen(),
-//          rawPacket->getFrameLength(),
-//          session->_state->packetsObserved);
-    session->_state->nextPacketIdentifier += 1;
+            auto *summary = MakePacketSummary(*rawPacket,
+                                              packetIdentifier,
+                                              session->_state->interfaceIdentifier_,
+                                              session->_state->device == nullptr ? nil : MakeNSString(session->_state->device->getName()),
+                                              nil,
+                                              session->_state->sniReassembly.get());
+            session->_state->packetStore.append(*rawPacket, packetIdentifier);
+            session->_state->nextPacketIdentifier += 1;
 
-    try {
-        session->_state->writer_.writePacket(*session->_state->packets.back().rawPacket, nil);
-    } catch (const std::exception &exception) {
-        if (session.errorHandler != nil) {
-            session.errorHandler(MakeError(TCPViewerNativeErrorCodeFileWriteFailed, MakeNSString(exception.what())));
+            try {
+                session->_state->writer_.writePacket(*rawPacket, nil);
+            } catch (const std::exception &exception) {
+                if (session.errorHandler != nil) {
+                    session.errorHandler(MakeError(TCPViewerNativeErrorCodeFileWriteFailed, MakeNSString(exception.what())));
+                }
+            }
+
+            session->_state->statusMessage = @"Capturing live packets.";
+            if (session.packetHandler != nil) {
+                session.packetHandler(@[summary]);
+            }
+        } catch (const std::exception &exception) {
+            if (session.errorHandler != nil) {
+                session.errorHandler(MakeError(TCPViewerNativeErrorCodeFileWriteFailed, MakeNSString(exception.what())));
+            }
         }
-    }
-
-    session->_state->statusMessage = @"Capturing live packets.";
-    if (session.packetHandler != nil) {
-        session.packetHandler(@[summary]);
     }
 }
 
@@ -1895,7 +2571,7 @@ static void OnLiveStatsUpdate(pcpp::IPcapDevice::PcapStats &stats, void *userCoo
         }
 
         if (_state->phase == PCPPNativeLiveSessionPhaseStopped) {
-            _state->packets.clear();
+            _state->packetStore.clear();
             _state->packetsObserved = 0;
             _state->packetsReceived = 0;
             _state->packetsDropped = 0;
@@ -2092,16 +2768,16 @@ static void OnLiveStatsUpdate(pcpp::IPcapDevice::PcapStats &stats, void *userCoo
 
     {
         std::lock_guard<std::mutex> lock(_state->mutex);
-        if (identifier == 0 || identifier > _state->packets.size()) {
+        try {
+            rawPacket = _state->packetStore.packet(identifier);
+            if (_state->device != nullptr) {
+                interfaceName = MakeNSString(_state->device->getName());
+            }
+        } catch (const std::exception &exception) {
             if (error != nullptr) {
-                *error = MakeError(TCPViewerNativeErrorCodeFileReadFailed, @"TCP Viewer could not find that packet in the live session.");
+                *error = MakeError(TCPViewerNativeErrorCodeFileReadFailed, MakeNSString(exception.what()));
             }
             return nil;
-        }
-
-        rawPacket = std::unique_ptr<pcpp::RawPacket>(_state->packets[identifier - 1].rawPacket->clone());
-        if (_state->device != nullptr) {
-            interfaceName = MakeNSString(_state->device->getName());
         }
     }
 
@@ -2115,6 +2791,159 @@ static void OnLiveStatsUpdate(pcpp::IPcapDevice::PcapStats &stats, void *userCoo
 }
 
 @end
+
+#if DEBUG
+
+@interface PCPPNativeLivePacketStoreTestProbe () {
+@private
+    std::unique_ptr<LivePacketDiskStore> _store;
+}
+
+@end
+
+@implementation PCPPNativeLivePacketStoreTestProbe
+
+- (instancetype)init
+{
+    self = [super init];
+    if (!self) {
+        return nil;
+    }
+
+    _store = std::make_unique<LivePacketDiskStore>();
+
+    return self;
+}
+
+- (NSUInteger)packetCount
+{
+    return _store == nullptr ? 0 : static_cast<NSUInteger>(_store->count());
+}
+
+- (unsigned long long)backingFileSize
+{
+    if (_store == nullptr) {
+        return 0;
+    }
+
+    try {
+        return _store->fileSize();
+    } catch (const std::exception &) {
+        return 0;
+    }
+}
+
+- (BOOL)backingFileExists
+{
+    return _store != nullptr && _store->fileExists();
+}
+
+- (NSString *)backingFilePath
+{
+    if (_store == nullptr) {
+        return @"";
+    }
+
+    return MakeNSString(_store->filePath().string());
+}
+
+- (BOOL)appendPacketWithIdentifier:(unsigned long long)identifier
+                           rawBytes:(NSData *)rawBytes
+                          timestamp:(NSDate *)timestamp
+                      linkLayerType:(NSInteger)linkLayerType
+                     originalLength:(NSInteger)originalLength
+                              error:(NSError **)error
+{
+    if (_store == nullptr) {
+        if (error != nullptr) {
+            *error = MakeError(TCPViewerNativeErrorCodeFileWriteFailed, @"The live packet backing store is not available.");
+        }
+        return NO;
+    }
+
+    timespec packetTimestamp{};
+    NSTimeInterval seconds = timestamp.timeIntervalSince1970;
+    packetTimestamp.tv_sec = static_cast<time_t>(seconds);
+    packetTimestamp.tv_nsec = static_cast<long>((seconds - static_cast<NSTimeInterval>(packetTimestamp.tv_sec)) * 1'000'000'000.0);
+
+    try {
+        auto bytes = std::make_unique<uint8_t[]>(static_cast<size_t>(rawBytes.length));
+        if (rawBytes.length > 0) {
+            std::memcpy(bytes.get(), rawBytes.bytes, static_cast<size_t>(rawBytes.length));
+        }
+
+        pcpp::RawPacket packet;
+        if (!packet.setRawData(bytes.get(),
+                               static_cast<int>(rawBytes.length),
+                               packetTimestamp,
+                               LinkLayerTypeFromInteger(linkLayerType),
+                               static_cast<int>(originalLength))) {
+            if (error != nullptr) {
+                *error = MakeError(TCPViewerNativeErrorCodeFileWriteFailed, @"The test packet bytes could not be prepared.");
+            }
+            return NO;
+        }
+
+        bytes.release();
+        _store->append(packet, identifier);
+        return YES;
+    } catch (const std::exception &exception) {
+        if (error != nullptr) {
+            *error = MakeFileError(TCPViewerNativeErrorCodeFileWriteFailed, exception.what());
+        }
+        return NO;
+    }
+}
+
+- (PCPPNativePacketInspectionDescriptor *)inspectPacketWithIdentifier:(unsigned long long)identifier error:(NSError **)error
+{
+    if (_store == nullptr) {
+        if (error != nullptr) {
+            *error = MakeError(TCPViewerNativeErrorCodeFileReadFailed, @"The live packet backing store is not available.");
+        }
+        return nil;
+    }
+
+    try {
+        auto packet = _store->packet(identifier);
+        return MakePacketInspection(*packet, identifier, nil, nil);
+    } catch (const std::exception &exception) {
+        if (error != nullptr) {
+            *error = MakeFileError(TCPViewerNativeErrorCodeFileReadFailed, exception.what());
+        }
+        return nil;
+    }
+}
+
+- (NSNumber *)offsetForPacketWithIdentifier:(unsigned long long)identifier error:(NSError **)error
+{
+    if (_store == nullptr) {
+        if (error != nullptr) {
+            *error = MakeError(TCPViewerNativeErrorCodeFileReadFailed, @"The live packet backing store is not available.");
+        }
+        return nil;
+    }
+
+    try {
+        return @(_store->offset(identifier));
+    } catch (const std::exception &exception) {
+        if (error != nullptr) {
+            *error = MakeFileError(TCPViewerNativeErrorCodeFileReadFailed, exception.what());
+        }
+        return nil;
+    }
+}
+
+- (void)cleanup
+{
+    if (_store != nullptr) {
+        _store->clear();
+    }
+}
+
+@end
+
+#endif
 
 namespace {
 
@@ -2401,48 +3230,50 @@ NSArray<PCPPNativePacketSummaryDescriptor *> *LoadPacketsFromURLIncrementally(Of
 
     try {
         while (true) {
-            if (cancellationCheck != nil && cancellationCheck()) {
-                wasCancelled = true;
-                break;
-            }
+            @autoreleasepool {
+                if (cancellationCheck != nil && cancellationCheck()) {
+                    wasCancelled = true;
+                    break;
+                }
 
-            pcpp::RawPacket rawPacket;
-            std::string packetComment;
-            bool didReadPacket = false;
+                pcpp::RawPacket rawPacket;
+                std::string packetComment;
+                bool didReadPacket = false;
 
-            if (auto *pcapngReader = dynamic_cast<pcpp::PcapNgFileReaderDevice *>(reader.get())) {
-                didReadPacket = pcapngReader->getNextPacket(rawPacket, packetComment);
-            } else {
-                didReadPacket = reader->getNextPacket(rawPacket);
-            }
+                if (auto *pcapngReader = dynamic_cast<pcpp::PcapNgFileReaderDevice *>(reader.get())) {
+                    didReadPacket = pcapngReader->getNextPacket(rawPacket, packetComment);
+                } else {
+                    didReadPacket = reader->getNextPacket(rawPacket);
+                }
 
-            if (!didReadPacket) {
-                break;
-            }
+                if (!didReadPacket) {
+                    break;
+                }
 
-            auto *summary = MakePacketSummary(rawPacket,
-                                              identifier,
-                                              nil,
-                                              nil,
-                                              NullableNSString(packetComment),
-                                              &sniReassembly);
-            {
-                std::lock_guard<std::mutex> lock(state.mutex);
-                state.packets.push_back({std::make_unique<pcpp::RawPacket>(rawPacket), packetComment});
-            }
+                auto *summary = MakePacketSummary(rawPacket,
+                                                  identifier,
+                                                  nil,
+                                                  nil,
+                                                  NullableNSString(packetComment),
+                                                  &sniReassembly);
+                {
+                    std::lock_guard<std::mutex> lock(state.mutex);
+                    state.packets.push_back({std::make_unique<pcpp::RawPacket>(rawPacket), packetComment});
+                }
 
-            [packets addObject:summary];
-            [pendingBatch addObject:summary];
-            processedBytes += static_cast<uint64_t>(rawPacket.getRawDataLen());
-            identifier += 1;
+                [packets addObject:summary];
+                [pendingBatch addObject:summary];
+                processedBytes += static_cast<uint64_t>(rawPacket.getRawDataLen());
+                identifier += 1;
 
-            if (pendingBatch.count >= effectiveBatchSize) {
-                flushPendingBatch();
-                emitProgress(@"loading",
-                             packets.count,
-                             processedBytes,
-                             false,
-                             [NSString stringWithFormat:@"Loaded %lu packets from %@…", (unsigned long)packets.count, fileName]);
+                if (pendingBatch.count >= effectiveBatchSize) {
+                    flushPendingBatch();
+                    emitProgress(@"loading",
+                                 packets.count,
+                                 processedBytes,
+                                 false,
+                                 [NSString stringWithFormat:@"Loaded %lu packets from %@…", (unsigned long)packets.count, fileName]);
+                }
             }
         }
     } catch (const std::exception &exception) {

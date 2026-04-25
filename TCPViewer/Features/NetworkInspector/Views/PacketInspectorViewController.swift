@@ -42,9 +42,36 @@ final class PacketInspectorPanelViewModel {
         packetTableContent: .empty
     ))
 
-    // Extract inspector-only state so the controller can render without touching root state.
-    func render(snapshot: NetworkInspectorSnapshot) {
-        state = PacketInspectorRenderState(snapshot: snapshot)
+    // Extract inspector-only state and report whether the inspector actually changed.
+    @discardableResult
+    func render(snapshot: NetworkInspectorSnapshot) -> Bool {
+        let nextState = PacketInspectorRenderState(snapshot: snapshot)
+        guard !shouldDeferPendingInspection(nextState) else {
+            return false
+        }
+
+        guard nextState != state else {
+            return false
+        }
+
+        state = nextState
+        return true
+    }
+
+    private func shouldDeferPendingInspection(_ state: PacketInspectorRenderState) -> Bool {
+        guard let selectedPacketID = state.selectedPacketID else {
+            return false
+        }
+
+        if state.isLoading {
+            return true
+        }
+
+        if let inspection = state.inspection, inspection.packetID != selectedPacketID {
+            return true
+        }
+
+        return false
     }
 }
 
@@ -57,6 +84,7 @@ final class PacketInspectorViewController: NSViewController {
     private var currentContentView: NSView?
     private var hexView: PacketHexFiendView?
     private var rawOutlineView: PacketRawOutlineView?
+    private var renderLogCount = 0
 
     override func loadView() {
         view = NSView()
@@ -73,10 +101,24 @@ final class PacketInspectorViewController: NSViewController {
     }
 
     func render(snapshot: NetworkInspectorSnapshot) {
-        viewModel.render(snapshot: snapshot)
+        let didChange = viewModel.render(snapshot: snapshot)
+        guard didChange || currentContentView == nil else {
+            return
+        }
+
         let state = viewModel.state
+        logSelectedPacketRender(state: state)
         tabControl.selectedSegment = PacketInspectorTab.allCases.firstIndex(of: state.inspectorTab) ?? 0
         renderContent(state: state)
+    }
+
+    // Log every inspector render so row-selection reload behavior is easy to count in Console.
+    private func logSelectedPacketRender(state: PacketInspectorRenderState) {
+        renderLogCount += 1
+        let selectedID = state.selectedPacketID.map(String.init) ?? "nil"
+        let packetNumber = state.selectedPacket.map { "#\($0.packetNumber)" } ?? "none"
+        let inspectionID = state.inspection?.packetID.description ?? "nil"
+        print("[TCPViewer] 🧪 Inspector render \(renderLogCount): selectedPacketID=\(selectedID), packet=\(packetNumber), tab=\(state.inspectorTab.title), loading=\(state.isLoading), inspectionPacketID=\(inspectionID)")
     }
 
     private func setupHeader() {
