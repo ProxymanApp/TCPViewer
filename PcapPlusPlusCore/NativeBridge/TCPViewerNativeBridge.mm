@@ -1412,6 +1412,8 @@ private:
         if (file_ == nullptr) {
             throw std::runtime_error("Failed to open the live capture backing store.");
         }
+
+        NSLog(@"[TCPViewer] 🗂️ Live capture temp packet store created: %@", MakeNSString(filePath_.string()));
     }
 
     uint64_t currentOffset()
