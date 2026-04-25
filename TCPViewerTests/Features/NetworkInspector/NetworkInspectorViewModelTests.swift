@@ -270,6 +270,48 @@ struct NetworkInspectorViewModelTests {
         #expect(panelViewModel.render(snapshot: selectedMetadataSnapshot))
     }
 
+    @Test func inspectorPanelDefersPendingSelectionUntilInspectionMatches() {
+        let firstPacket = makePacket(packetNumber: 5, source: .live, transportHint: .tcp, streamID: nil)
+        let nextPacket = makePacket(packetNumber: 15, source: .live, transportHint: .tcp, streamID: nil)
+        let firstInspection = makeInspection(for: firstPacket)
+        let nextInspection = makeInspection(for: nextPacket)
+        let panelViewModel = PacketInspectorPanelViewModel()
+        let firstSnapshot = makeInspectorSnapshot(
+            packets: [firstPacket, nextPacket],
+            selectedPacketID: firstPacket.id,
+            inspection: firstInspection,
+            generation: 1,
+            updatePlan: .reload
+        )
+        let staleInspectionSnapshot = makeInspectorSnapshot(
+            packets: [firstPacket, nextPacket],
+            selectedPacketID: nextPacket.id,
+            inspection: firstInspection,
+            generation: 2,
+            updatePlan: .reload
+        )
+        let loadingSnapshot = makeInspectorSnapshot(
+            packets: [firstPacket, nextPacket],
+            selectedPacketID: nextPacket.id,
+            inspection: nil,
+            generation: 3,
+            updatePlan: .reload,
+            isLoading: true
+        )
+        let resolvedSnapshot = makeInspectorSnapshot(
+            packets: [firstPacket, nextPacket],
+            selectedPacketID: nextPacket.id,
+            inspection: nextInspection,
+            generation: 4,
+            updatePlan: .reload
+        )
+
+        #expect(panelViewModel.render(snapshot: firstSnapshot))
+        #expect(!panelViewModel.render(snapshot: staleInspectionSnapshot))
+        #expect(!panelViewModel.render(snapshot: loadingSnapshot))
+        #expect(panelViewModel.render(snapshot: resolvedSnapshot))
+    }
+
     @Test func statusStripKeepsCancelAvailableDuringZeroPacketLoad() {
         var base = TCPViewerWindowSnapshot.foundation
         base.loadState = PacketLoadState(progress: PacketLoadProgress(
@@ -932,7 +974,8 @@ struct NetworkInspectorViewModelTests {
         selectedPacketID: PacketSummary.ID?,
         inspection: PacketInspection?,
         generation: UInt64,
-        updatePlan: PacketTableUpdatePlan
+        updatePlan: PacketTableUpdatePlan,
+        isLoading: Bool = false
     ) -> NetworkInspectorSnapshot {
         var base = TCPViewerWindowSnapshot.foundation
         base.packetIngestState.replace(with: packets, source: .live)
@@ -941,7 +984,7 @@ struct NetworkInspectorViewModelTests {
             inspection: inspection,
             selectedDetailNodeID: nil,
             highlightedByteRange: nil,
-            isLoading: false,
+            isLoading: isLoading,
             statusMessage: "Packet loaded."
         )
         let rows = packets.map(PacketTableRow.init(packet:))

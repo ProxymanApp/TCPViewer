@@ -46,12 +46,32 @@ final class PacketInspectorPanelViewModel {
     @discardableResult
     func render(snapshot: NetworkInspectorSnapshot) -> Bool {
         let nextState = PacketInspectorRenderState(snapshot: snapshot)
+        guard !shouldDeferPendingInspection(nextState) else {
+            return false
+        }
+
         guard nextState != state else {
             return false
         }
 
         state = nextState
         return true
+    }
+
+    private func shouldDeferPendingInspection(_ state: PacketInspectorRenderState) -> Bool {
+        guard let selectedPacketID = state.selectedPacketID else {
+            return false
+        }
+
+        if state.isLoading {
+            return true
+        }
+
+        if let inspection = state.inspection, inspection.packetID != selectedPacketID {
+            return true
+        }
+
+        return false
     }
 }
 

@@ -562,6 +562,11 @@ final class TCPViewerWorkspaceController {
 
     private(set) var snapshot: TCPViewerWindowSnapshot {
         didSet {
+            guard snapshotUpdateDepth == 0 else {
+                snapshotNeedsNotification = true
+                return
+            }
+
             delegate?.tcpViewerWorkspaceControllerDidChange(self)
         }
     }
@@ -578,6 +583,8 @@ final class TCPViewerWorkspaceController {
     private var documentEventGeneration = 0
     private var inspectionGeneration = 0
     private var filterValidationGeneration = 0
+    private var snapshotUpdateDepth = 0
+    private var snapshotNeedsNotification = false
 
     init(
         services: TCPViewerServiceRegistry? = nil,
@@ -597,6 +604,20 @@ final class TCPViewerWorkspaceController {
 
     deinit {
         cancelControllerTasks()
+    }
+
+    // Coalesce related snapshot writes so AppKit renders one coherent state.
+    private func batchSnapshotUpdates(_ updates: () -> Void) {
+        snapshotUpdateDepth += 1
+        updates()
+        snapshotUpdateDepth -= 1
+
+        guard snapshotUpdateDepth == 0, snapshotNeedsNotification else {
+            return
+        }
+
+        snapshotNeedsNotification = false
+        delegate?.tcpViewerWorkspaceControllerDidChange(self)
     }
 
     static func prepareAllForApplicationTermination(completion: @escaping (Bool) -> Void) {
@@ -1270,10 +1291,6 @@ final class TCPViewerWorkspaceController {
     }
 
     func selectPacket(_ identifier: PacketSummary.ID?) {
-        snapshot.selectedPacketID = identifier
-        snapshot.inspectionState.selectedDetailNodeID = nil
-        snapshot.inspectionState.highlightedByteRange = nil
-        snapshot.navigationState.jumpErrorMessage = nil
         scheduleInspection(for: identifier)
     }
 
@@ -1799,7 +1816,6 @@ final class TCPViewerWorkspaceController {
     private func resetInspectionState() {
         inspectionGeneration += 1
         snapshot.inspectionState = .empty
-        snapshot.selectedPacketID = nil
     }
 
     private func selectedVisiblePacketIndex() -> Int? {
@@ -1813,26 +1829,35 @@ final class TCPViewerWorkspaceController {
     private func scheduleInspection(for identifier: PacketSummary.ID?) {
         inspectionGeneration += 1
         let generation = inspectionGeneration
+        var packetForInspection: PacketSummary?
 
-        guard let identifier else {
-            snapshot.inspectionState = .empty
-            return
+        batchSnapshotUpdates {
+            snapshot.navigationState.jumpErrorMessage = nil
+            guard let identifier,
+                  let packet = snapshot.packetIngestState.packet(withID: identifier),
+                  snapshot.navigationState.visiblePacketIDs.contains(identifier) else {
+                snapshot.inspectionState = .empty
+                return
+            }
+
+            packetForInspection = packet
+            snapshot.inspectionState = PacketInspectionState(
+                selectedPacketID: identifier,
+                inspection: nil,
+                selectedDetailNodeID: nil,
+                highlightedByteRange: nil,
+                isLoading: true,
+                statusMessage: "Inspecting packet \(identifier)..."
+            )
         }
 
-        snapshot.inspectionState.selectedPacketID = identifier
-        snapshot.inspectionState.inspection = nil
-        snapshot.inspectionState.selectedDetailNodeID = nil
-        snapshot.inspectionState.highlightedByteRange = nil
-        snapshot.inspectionState.isLoading = true
-        snapshot.inspectionState.statusMessage = "Inspecting packet \(identifier)..."
+        guard let packet = packetForInspection,
+              let identifier = snapshot.selectedPacketID else {
+            return
+        }
 
         let liveSession = self.liveSession
         let document = self.document
-        guard let packet = snapshot.packetIngestState.packet(withID: identifier),
-              snapshot.navigationState.visiblePacketIDs.contains(identifier) else {
-            return
-        }
-
         let completion: TCPViewerCompletion<PacketInspection> = { [weak self] result in
             DispatchQueue.main.async {
                 guard let self,
@@ -1843,15 +1868,19 @@ final class TCPViewerWorkspaceController {
 
                 switch result {
                 case .success(let inspection):
-                    self.snapshot.inspectionState.selectedPacketID = identifier
-                    self.snapshot.inspectionState.inspection = inspection
-                    self.snapshot.inspectionState.isLoading = false
-                    self.snapshot.inspectionState.statusMessage = "Inspecting packet \(inspection.packetNumber)."
+                    self.batchSnapshotUpdates {
+                        self.snapshot.inspectionState.selectedPacketID = identifier
+                        self.snapshot.inspectionState.inspection = inspection
+                        self.snapshot.inspectionState.isLoading = false
+                        self.snapshot.inspectionState.statusMessage = "Inspecting packet \(inspection.packetNumber)."
+                    }
                 case .failure(let error):
                     let tcpviewerError = self.tcpviewerError(from: error, defaultCode: .offlineFileOpenFailed)
-                    self.snapshot.inspectionState.inspection = nil
-                    self.snapshot.inspectionState.isLoading = false
-                    self.snapshot.inspectionState.statusMessage = tcpviewerError.message
+                    self.batchSnapshotUpdates {
+                        self.snapshot.inspectionState.inspection = nil
+                        self.snapshot.inspectionState.isLoading = false
+                        self.snapshot.inspectionState.statusMessage = tcpviewerError.message
+                    }
                 }
             }
         }
