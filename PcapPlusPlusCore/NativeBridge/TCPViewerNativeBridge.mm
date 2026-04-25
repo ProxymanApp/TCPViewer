@@ -1742,6 +1742,196 @@ struct StoredPacket {
     std::string packetComment;
 };
 
+struct LivePacketDiskRecord {
+    unsigned long long identifier = 0;
+    uint64_t offset = 0;
+    int capturedLength = 0;
+    int originalLength = 0;
+    timespec timestamp{};
+    pcpp::LinkLayerType linkLayerType = pcpp::LINKTYPE_ETHERNET;
+};
+
+NSError *MakeFileError(TCPViewerNativeErrorCode code, const std::string &message)
+{
+    return MakeError(code, MakeNSString(message));
+}
+
+pcpp::LinkLayerType LinkLayerTypeFromInteger(NSInteger linkLayerType)
+{
+    if (pcpp::RawPacket::isLinkTypeValid(static_cast<int>(linkLayerType))) {
+        return static_cast<pcpp::LinkLayerType>(linkLayerType);
+    }
+
+    return pcpp::LINKTYPE_ETHERNET;
+}
+
+class LivePacketDiskStore {
+public:
+    LivePacketDiskStore()
+        : filePath_(makeTemporaryFilePath()) {}
+
+    ~LivePacketDiskStore()
+    {
+        clear();
+    }
+
+    void append(const pcpp::RawPacket &packet, unsigned long long identifier)
+    {
+        ensureFileOpen();
+
+        const auto offset = currentOffset();
+        const int capturedLength = packet.getRawDataLen();
+        if (capturedLength > 0) {
+            const auto bytesWritten = ::fwrite(packet.getRawData(), 1, static_cast<size_t>(capturedLength), file_);
+            if (bytesWritten != static_cast<size_t>(capturedLength)) {
+                throw std::runtime_error("Failed to write packet bytes into the live capture backing store.");
+            }
+        }
+
+        index_.push_back({
+            identifier,
+            offset,
+            capturedLength,
+            packet.getFrameLength(),
+            packet.getPacketTimeStamp(),
+            packet.getLinkLayerType(),
+        });
+    }
+
+    std::unique_ptr<pcpp::RawPacket> packet(unsigned long long identifier)
+    {
+        const auto *record = recordForIdentifier(identifier);
+        if (record == nullptr) {
+            throw std::out_of_range("TCP Viewer could not find that packet in the live capture backing store.");
+        }
+
+        flushPendingWrites();
+        if (::fseeko(file_, static_cast<off_t>(record->offset), SEEK_SET) != 0) {
+            throw std::runtime_error("Failed to seek to packet bytes in the live capture backing store.");
+        }
+
+        auto bytes = std::make_unique<uint8_t[]>(static_cast<size_t>(record->capturedLength));
+        if (record->capturedLength > 0) {
+            const auto bytesRead = ::fread(bytes.get(), 1, static_cast<size_t>(record->capturedLength), file_);
+            if (bytesRead != static_cast<size_t>(record->capturedLength)) {
+                throw std::runtime_error("Failed to read packet bytes from the live capture backing store.");
+            }
+        }
+
+        auto packet = std::make_unique<pcpp::RawPacket>();
+        if (!packet->setRawData(bytes.get(),
+                                record->capturedLength,
+                                record->timestamp,
+                                record->linkLayerType,
+                                record->originalLength)) {
+            throw std::runtime_error("Failed to rebuild a packet from the live capture backing store.");
+        }
+
+        bytes.release();
+        return packet;
+    }
+
+    uint64_t offset(unsigned long long identifier) const
+    {
+        const auto *record = recordForIdentifier(identifier);
+        if (record == nullptr) {
+            throw std::out_of_range("TCP Viewer could not find that packet in the live capture backing store.");
+        }
+
+        return record->offset;
+    }
+
+    size_t count() const
+    {
+        return index_.size();
+    }
+
+    uint64_t fileSize()
+    {
+        flushPendingWrites();
+        if (!std::filesystem::exists(filePath_)) {
+            return 0;
+        }
+
+        return static_cast<uint64_t>(std::filesystem::file_size(filePath_));
+    }
+
+    const std::filesystem::path &filePath() const
+    {
+        return filePath_;
+    }
+
+    bool fileExists() const
+    {
+        return std::filesystem::exists(filePath_);
+    }
+
+    void clear()
+    {
+        if (file_ != nullptr) {
+            ::fclose(file_);
+            file_ = nullptr;
+        }
+
+        std::error_code error;
+        std::filesystem::remove(filePath_, error);
+        index_.clear();
+    }
+
+private:
+    static std::filesystem::path makeTemporaryFilePath()
+    {
+        NSString *fileName = [NSString stringWithFormat:@"TCPViewerLiveCapture-%@.pktstore", NSUUID.UUID.UUIDString];
+        NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:fileName];
+        return std::filesystem::path(MakeStdString(path));
+    }
+
+    void ensureFileOpen()
+    {
+        if (file_ != nullptr) {
+            return;
+        }
+
+        file_ = ::fopen(filePath_.string().c_str(), "w+b");
+        if (file_ == nullptr) {
+            throw std::runtime_error("Failed to open the live capture backing store.");
+        }
+
+        NSLog(@"[TCPViewer] 🗂️ Live capture temp packet store created: %@", MakeNSString(filePath_.string()));
+    }
+
+    uint64_t currentOffset()
+    {
+        const off_t offset = ::ftello(file_);
+        if (offset < 0) {
+            throw std::runtime_error("Failed to determine the live capture backing store offset.");
+        }
+
+        return static_cast<uint64_t>(offset);
+    }
+
+    void flushPendingWrites()
+    {
+        if (file_ != nullptr && ::fflush(file_) != 0) {
+            throw std::runtime_error("Failed to flush the live capture backing store.");
+        }
+    }
+
+    const LivePacketDiskRecord *recordForIdentifier(unsigned long long identifier) const
+    {
+        if (identifier == 0 || identifier > index_.size()) {
+            return nullptr;
+        }
+
+        const auto &record = index_[static_cast<size_t>(identifier - 1)];
+        return record.identifier == identifier ? &record : nullptr;
+    }
+
+    std::filesystem::path filePath_;
+    FILE *file_ = nullptr;
+    std::vector<LivePacketDiskRecord> index_;
+};
+
 class CaptureFileWriter {
 public:
     CaptureFileWriter(const std::string &mode,
@@ -1884,7 +2074,7 @@ public:
     unsigned long long packetsReceived = 0;
     unsigned long long packetsDropped = 0;
     unsigned long long packetsDroppedByInterface = 0;
-    std::vector<StoredPacket> packets;
+    LivePacketDiskStore packetStore;
     NSString *statusMessage = @"Live capture is ready.";
     PCPPNativeLiveSessionPhase phase = PCPPNativeLiveSessionPhaseReady;
     CaptureFileWriter writer_;
@@ -2277,38 +2467,40 @@ PCPPNativeCaptureHealthDescriptor *MakeHealthDescriptor(const LiveCaptureState &
 
 static void OnLivePacketArrives(pcpp::RawPacket *rawPacket, pcpp::PcapLiveDevice *, void *userCookie)
 {
-    auto *session = (__bridge PCPPNativeLiveSession *)userCookie;
-    std::lock_guard<std::mutex> lock(session->_state->mutex);
+    @autoreleasepool {
+        auto *session = (__bridge PCPPNativeLiveSession *)userCookie;
+        std::lock_guard<std::mutex> lock(session->_state->mutex);
 
-    auto clonedPacket = std::unique_ptr<pcpp::RawPacket>(rawPacket->clone());
-    session->_state->packetsObserved += 1;
-    session->_state->packets.push_back({std::move(clonedPacket), ""});
+        try {
+            const unsigned long long packetIdentifier = session->_state->nextPacketIdentifier;
+            session->_state->packetsObserved += 1;
 
-    auto *summary = MakePacketSummary(*session->_state->packets.back().rawPacket,
-                                      session->_state->nextPacketIdentifier,
-                                      session->_state->interfaceIdentifier_,
-                                      session->_state->device == nullptr ? nil : MakeNSString(session->_state->device->getName()),
-                                      nil,
-                                      session->_state->sniReassembly.get());
-//    NSLog(@"TCPViewer captured live packet #%llu on %@ (%d/%d bytes, observed=%llu)",
-//          summary.packetNumber,
-//          summary.captureMetadata.interfaceName ?: session->_state->interfaceIdentifier_,
-//          rawPacket->getRawDataLen(),
-//          rawPacket->getFrameLength(),
-//          session->_state->packetsObserved);
-    session->_state->nextPacketIdentifier += 1;
+            auto *summary = MakePacketSummary(*rawPacket,
+                                              packetIdentifier,
+                                              session->_state->interfaceIdentifier_,
+                                              session->_state->device == nullptr ? nil : MakeNSString(session->_state->device->getName()),
+                                              nil,
+                                              session->_state->sniReassembly.get());
+            session->_state->packetStore.append(*rawPacket, packetIdentifier);
+            session->_state->nextPacketIdentifier += 1;
 
-    try {
-        session->_state->writer_.writePacket(*session->_state->packets.back().rawPacket, nil);
-    } catch (const std::exception &exception) {
-        if (session.errorHandler != nil) {
-            session.errorHandler(MakeError(TCPViewerNativeErrorCodeFileWriteFailed, MakeNSString(exception.what())));
+            try {
+                session->_state->writer_.writePacket(*rawPacket, nil);
+            } catch (const std::exception &exception) {
+                if (session.errorHandler != nil) {
+                    session.errorHandler(MakeError(TCPViewerNativeErrorCodeFileWriteFailed, MakeNSString(exception.what())));
+                }
+            }
+
+            session->_state->statusMessage = @"Capturing live packets.";
+            if (session.packetHandler != nil) {
+                session.packetHandler(@[summary]);
+            }
+        } catch (const std::exception &exception) {
+            if (session.errorHandler != nil) {
+                session.errorHandler(MakeError(TCPViewerNativeErrorCodeFileWriteFailed, MakeNSString(exception.what())));
+            }
         }
-    }
-
-    session->_state->statusMessage = @"Capturing live packets.";
-    if (session.packetHandler != nil) {
-        session.packetHandler(@[summary]);
     }
 }
 
@@ -2379,7 +2571,7 @@ static void OnLiveStatsUpdate(pcpp::IPcapDevice::PcapStats &stats, void *userCoo
         }
 
         if (_state->phase == PCPPNativeLiveSessionPhaseStopped) {
-            _state->packets.clear();
+            _state->packetStore.clear();
             _state->packetsObserved = 0;
             _state->packetsReceived = 0;
             _state->packetsDropped = 0;
@@ -2576,16 +2768,16 @@ static void OnLiveStatsUpdate(pcpp::IPcapDevice::PcapStats &stats, void *userCoo
 
     {
         std::lock_guard<std::mutex> lock(_state->mutex);
-        if (identifier == 0 || identifier > _state->packets.size()) {
+        try {
+            rawPacket = _state->packetStore.packet(identifier);
+            if (_state->device != nullptr) {
+                interfaceName = MakeNSString(_state->device->getName());
+            }
+        } catch (const std::exception &exception) {
             if (error != nullptr) {
-                *error = MakeError(TCPViewerNativeErrorCodeFileReadFailed, @"TCP Viewer could not find that packet in the live session.");
+                *error = MakeError(TCPViewerNativeErrorCodeFileReadFailed, MakeNSString(exception.what()));
             }
             return nil;
-        }
-
-        rawPacket = std::unique_ptr<pcpp::RawPacket>(_state->packets[identifier - 1].rawPacket->clone());
-        if (_state->device != nullptr) {
-            interfaceName = MakeNSString(_state->device->getName());
         }
     }
 
@@ -2599,6 +2791,159 @@ static void OnLiveStatsUpdate(pcpp::IPcapDevice::PcapStats &stats, void *userCoo
 }
 
 @end
+
+#if DEBUG
+
+@interface PCPPNativeLivePacketStoreTestProbe () {
+@private
+    std::unique_ptr<LivePacketDiskStore> _store;
+}
+
+@end
+
+@implementation PCPPNativeLivePacketStoreTestProbe
+
+- (instancetype)init
+{
+    self = [super init];
+    if (!self) {
+        return nil;
+    }
+
+    _store = std::make_unique<LivePacketDiskStore>();
+
+    return self;
+}
+
+- (NSUInteger)packetCount
+{
+    return _store == nullptr ? 0 : static_cast<NSUInteger>(_store->count());
+}
+
+- (unsigned long long)backingFileSize
+{
+    if (_store == nullptr) {
+        return 0;
+    }
+
+    try {
+        return _store->fileSize();
+    } catch (const std::exception &) {
+        return 0;
+    }
+}
+
+- (BOOL)backingFileExists
+{
+    return _store != nullptr && _store->fileExists();
+}
+
+- (NSString *)backingFilePath
+{
+    if (_store == nullptr) {
+        return @"";
+    }
+
+    return MakeNSString(_store->filePath().string());
+}
+
+- (BOOL)appendPacketWithIdentifier:(unsigned long long)identifier
+                           rawBytes:(NSData *)rawBytes
+                          timestamp:(NSDate *)timestamp
+                      linkLayerType:(NSInteger)linkLayerType
+                     originalLength:(NSInteger)originalLength
+                              error:(NSError **)error
+{
+    if (_store == nullptr) {
+        if (error != nullptr) {
+            *error = MakeError(TCPViewerNativeErrorCodeFileWriteFailed, @"The live packet backing store is not available.");
+        }
+        return NO;
+    }
+
+    timespec packetTimestamp{};
+    NSTimeInterval seconds = timestamp.timeIntervalSince1970;
+    packetTimestamp.tv_sec = static_cast<time_t>(seconds);
+    packetTimestamp.tv_nsec = static_cast<long>((seconds - static_cast<NSTimeInterval>(packetTimestamp.tv_sec)) * 1'000'000'000.0);
+
+    try {
+        auto bytes = std::make_unique<uint8_t[]>(static_cast<size_t>(rawBytes.length));
+        if (rawBytes.length > 0) {
+            std::memcpy(bytes.get(), rawBytes.bytes, static_cast<size_t>(rawBytes.length));
+        }
+
+        pcpp::RawPacket packet;
+        if (!packet.setRawData(bytes.get(),
+                               static_cast<int>(rawBytes.length),
+                               packetTimestamp,
+                               LinkLayerTypeFromInteger(linkLayerType),
+                               static_cast<int>(originalLength))) {
+            if (error != nullptr) {
+                *error = MakeError(TCPViewerNativeErrorCodeFileWriteFailed, @"The test packet bytes could not be prepared.");
+            }
+            return NO;
+        }
+
+        bytes.release();
+        _store->append(packet, identifier);
+        return YES;
+    } catch (const std::exception &exception) {
+        if (error != nullptr) {
+            *error = MakeFileError(TCPViewerNativeErrorCodeFileWriteFailed, exception.what());
+        }
+        return NO;
+    }
+}
+
+- (PCPPNativePacketInspectionDescriptor *)inspectPacketWithIdentifier:(unsigned long long)identifier error:(NSError **)error
+{
+    if (_store == nullptr) {
+        if (error != nullptr) {
+            *error = MakeError(TCPViewerNativeErrorCodeFileReadFailed, @"The live packet backing store is not available.");
+        }
+        return nil;
+    }
+
+    try {
+        auto packet = _store->packet(identifier);
+        return MakePacketInspection(*packet, identifier, nil, nil);
+    } catch (const std::exception &exception) {
+        if (error != nullptr) {
+            *error = MakeFileError(TCPViewerNativeErrorCodeFileReadFailed, exception.what());
+        }
+        return nil;
+    }
+}
+
+- (NSNumber *)offsetForPacketWithIdentifier:(unsigned long long)identifier error:(NSError **)error
+{
+    if (_store == nullptr) {
+        if (error != nullptr) {
+            *error = MakeError(TCPViewerNativeErrorCodeFileReadFailed, @"The live packet backing store is not available.");
+        }
+        return nil;
+    }
+
+    try {
+        return @(_store->offset(identifier));
+    } catch (const std::exception &exception) {
+        if (error != nullptr) {
+            *error = MakeFileError(TCPViewerNativeErrorCodeFileReadFailed, exception.what());
+        }
+        return nil;
+    }
+}
+
+- (void)cleanup
+{
+    if (_store != nullptr) {
+        _store->clear();
+    }
+}
+
+@end
+
+#endif
 
 namespace {
 
@@ -2885,48 +3230,50 @@ NSArray<PCPPNativePacketSummaryDescriptor *> *LoadPacketsFromURLIncrementally(Of
 
     try {
         while (true) {
-            if (cancellationCheck != nil && cancellationCheck()) {
-                wasCancelled = true;
-                break;
-            }
+            @autoreleasepool {
+                if (cancellationCheck != nil && cancellationCheck()) {
+                    wasCancelled = true;
+                    break;
+                }
 
-            pcpp::RawPacket rawPacket;
-            std::string packetComment;
-            bool didReadPacket = false;
+                pcpp::RawPacket rawPacket;
+                std::string packetComment;
+                bool didReadPacket = false;
 
-            if (auto *pcapngReader = dynamic_cast<pcpp::PcapNgFileReaderDevice *>(reader.get())) {
-                didReadPacket = pcapngReader->getNextPacket(rawPacket, packetComment);
-            } else {
-                didReadPacket = reader->getNextPacket(rawPacket);
-            }
+                if (auto *pcapngReader = dynamic_cast<pcpp::PcapNgFileReaderDevice *>(reader.get())) {
+                    didReadPacket = pcapngReader->getNextPacket(rawPacket, packetComment);
+                } else {
+                    didReadPacket = reader->getNextPacket(rawPacket);
+                }
 
-            if (!didReadPacket) {
-                break;
-            }
+                if (!didReadPacket) {
+                    break;
+                }
 
-            auto *summary = MakePacketSummary(rawPacket,
-                                              identifier,
-                                              nil,
-                                              nil,
-                                              NullableNSString(packetComment),
-                                              &sniReassembly);
-            {
-                std::lock_guard<std::mutex> lock(state.mutex);
-                state.packets.push_back({std::make_unique<pcpp::RawPacket>(rawPacket), packetComment});
-            }
+                auto *summary = MakePacketSummary(rawPacket,
+                                                  identifier,
+                                                  nil,
+                                                  nil,
+                                                  NullableNSString(packetComment),
+                                                  &sniReassembly);
+                {
+                    std::lock_guard<std::mutex> lock(state.mutex);
+                    state.packets.push_back({std::make_unique<pcpp::RawPacket>(rawPacket), packetComment});
+                }
 
-            [packets addObject:summary];
-            [pendingBatch addObject:summary];
-            processedBytes += static_cast<uint64_t>(rawPacket.getRawDataLen());
-            identifier += 1;
+                [packets addObject:summary];
+                [pendingBatch addObject:summary];
+                processedBytes += static_cast<uint64_t>(rawPacket.getRawDataLen());
+                identifier += 1;
 
-            if (pendingBatch.count >= effectiveBatchSize) {
-                flushPendingBatch();
-                emitProgress(@"loading",
-                             packets.count,
-                             processedBytes,
-                             false,
-                             [NSString stringWithFormat:@"Loaded %lu packets from %@…", (unsigned long)packets.count, fileName]);
+                if (pendingBatch.count >= effectiveBatchSize) {
+                    flushPendingBatch();
+                    emitProgress(@"loading",
+                                 packets.count,
+                                 processedBytes,
+                                 false,
+                                 [NSString stringWithFormat:@"Loaded %lu packets from %@…", (unsigned long)packets.count, fileName]);
+                }
             }
         }
     } catch (const std::exception &exception) {

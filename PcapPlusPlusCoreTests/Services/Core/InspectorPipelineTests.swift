@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 @testable import PcapPlusPlusCore
@@ -52,6 +53,12 @@ struct InspectorPipelineTests {
 
         #expect(buffer.append([6]) == nil)
         #expect(buffer.flush() == [6])
+        #expect(buffer.flush() == nil)
+
+        #expect(buffer.append([7, 8]) == nil)
+        #expect(buffer.pendingCount == 2)
+        buffer.discardPending(releasingCapacity: true)
+        #expect(buffer.isEmpty)
         #expect(buffer.flush() == nil)
     }
 
@@ -336,6 +343,102 @@ struct InspectorPipelineTests {
             #expect(error.code == .offlineFileSaveFailed)
         }
     }
+
+    #if DEBUG
+    @Test func livePacketDiskStoreAppendsInspectsAndCleansUpLargeCounts() throws {
+        let harness = NativeLivePacketDiskStoreTestHarness()
+        let packet = makeIPv4UDPPayloadPacket()
+        let checkpoints = [10_000, 50_000, 100_000]
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        var lastCheckpoint = 0
+
+        for checkpoint in checkpoints {
+            for packetNumber in (lastCheckpoint + 1)...checkpoint {
+                try harness.appendPacket(
+                    identifier: UInt64(packetNumber),
+                    rawBytes: packet,
+                    timestamp: timestamp.addingTimeInterval(TimeInterval(packetNumber))
+                )
+            }
+
+            let snapshot = harness.snapshot
+            #expect(snapshot.packetCount == checkpoint)
+            #expect(snapshot.backingFileExists)
+            #expect(snapshot.backingFileSize == UInt64(packet.count * checkpoint))
+            #expect(try harness.offset(identifier: 1) == 0)
+            #expect(try harness.offset(identifier: UInt64(checkpoint)) == UInt64(packet.count * (checkpoint - 1)))
+            lastCheckpoint = checkpoint
+        }
+
+        for identifier in [UInt64(1), 50_000, 100_000] {
+            let inspection = try harness.inspectPacket(identifier: identifier)
+            #expect(inspection.packetID == identifier)
+            #expect(inspection.rawBytes == packet)
+            #expect(inspection.detailNodes.map(\.name).contains("UDP"))
+        }
+
+        do {
+            _ = try harness.inspectPacket(identifier: 100_001)
+            Issue.record("Expected a missing packet identifier to fail.")
+        } catch {
+            #expect(String(describing: error).contains("backing store"))
+        }
+
+        let backingFilePath = harness.snapshot.backingFilePath
+        #expect(FileManager.default.fileExists(atPath: backingFilePath))
+
+        harness.cleanup()
+
+        #expect(!FileManager.default.fileExists(atPath: backingFilePath))
+        #expect(harness.snapshot.packetCount == 0)
+        #expect(!harness.snapshot.backingFileExists)
+    }
+
+    @Test func livePacketDiskStoreRSSStressIsGated() throws {
+        guard ProcessInfo.processInfo.environment["TCPVIEWER_RUN_MEMORY_STRESS"] == "1" else {
+            return
+        }
+
+        let harness = NativeLivePacketDiskStoreTestHarness()
+        let packet = makePaddedPacket(base: makeIPv4UDPPayloadPacket(), byteCount: 2_048)
+        let timestamp = Date(timeIntervalSince1970: 1_700_100_000)
+        var samples: [(String, UInt64)] = [("before", residentMemoryBytes())]
+        var appended = 0
+
+        for checkpoint in [10_000, 50_000, 100_000] {
+            for packetNumber in (appended + 1)...checkpoint {
+                try harness.appendPacket(
+                    identifier: UInt64(packetNumber),
+                    rawBytes: packet,
+                    timestamp: timestamp.addingTimeInterval(TimeInterval(packetNumber))
+                )
+            }
+
+            appended = checkpoint
+            samples.append(("after \(checkpoint)", residentMemoryBytes()))
+        }
+
+        for identifier in [UInt64(1), 50_000, 100_000] {
+            let inspection = try harness.inspectPacket(identifier: identifier)
+            #expect(inspection.rawBytes.count == packet.count)
+        }
+        samples.append(("after inspections", residentMemoryBytes()))
+
+        let beforeCleanupPath = harness.snapshot.backingFilePath
+        harness.cleanup()
+        samples.append(("after cleanup", residentMemoryBytes()))
+
+        let capturedBytes = UInt64(packet.count * 100_000)
+        let growthAt100K = samples[3].1 > samples[0].1 ? samples[3].1 - samples[0].1 : 0
+        let growthAfterInspections = samples[4].1 > samples[0].1 ? samples[4].1 - samples[0].1 : 0
+        logMemorySamples(samples)
+
+        #expect(!FileManager.default.fileExists(atPath: beforeCleanupPath))
+        #expect(growthAt100K < 96 * 1_024 * 1_024)
+        #expect(growthAfterInspections < 112 * 1_024 * 1_024)
+        #expect(growthAt100K < capturedBytes / 2)
+    }
+    #endif
 }
 
 private struct LoadEventSnapshot: Sendable {
@@ -574,6 +677,37 @@ private func findNode(in nodes: [PacketDetailNode], id: String) -> PacketDetailN
     }
 
     return nil
+}
+
+private func makePaddedPacket(base: Data, byteCount: Int) -> Data {
+    var packet = base
+    if packet.count < byteCount {
+        packet.append(Data(repeating: 0, count: byteCount - packet.count))
+    }
+    return packet
+}
+
+private func residentMemoryBytes() -> UInt64 {
+    var info = mach_task_basic_info()
+    var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.stride / MemoryLayout<natural_t>.stride)
+    let result = withUnsafeMutablePointer(to: &info) { pointer in
+        pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { reboundPointer in
+            task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), reboundPointer, &count)
+        }
+    }
+
+    guard result == KERN_SUCCESS else {
+        return 0
+    }
+
+    return UInt64(info.resident_size)
+}
+
+private func logMemorySamples(_ samples: [(String, UInt64)]) {
+    let formatted = samples.map { label, bytes in
+        String(format: "%@: %.1f MB", label, Double(bytes) / 1_048_576.0)
+    }
+    print("TCPViewer RSS stress samples: \(formatted.joined(separator: ", "))")
 }
 
 private func findNode(in nodes: [PacketDetailNode], name: String) -> PacketDetailNode? {

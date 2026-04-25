@@ -14,15 +14,65 @@ struct PacketMetadataUpdate {
     let client: PacketClient?
 }
 
+#if DEBUG
+struct PacketClientResolverDebugSnapshot: Equatable {
+    let socketKeyCount: Int
+    let localEndpointKeyCount: Int
+    let localPortKeyCount: Int
+    let pidClientCount: Int
+    let negativeLookupCount: Int
+    let processIdentityCacheCount: Int
+    let bundleIdentityCacheCount: Int
+
+    static let empty = PacketClientResolverDebugSnapshot(
+        socketKeyCount: 0,
+        localEndpointKeyCount: 0,
+        localPortKeyCount: 0,
+        pidClientCount: 0,
+        negativeLookupCount: 0,
+        processIdentityCacheCount: 0,
+        bundleIdentityCacheCount: 0
+    )
+}
+
+struct PacketMetadataEnrichmentDebugSnapshot: Equatable {
+    let flowCount: Int
+    let flowOrderCount: Int
+    let pendingPacketIDCount: Int
+    let clientResolver: PacketClientResolverDebugSnapshot
+
+    static let empty = PacketMetadataEnrichmentDebugSnapshot(
+        flowCount: 0,
+        flowOrderCount: 0,
+        pendingPacketIDCount: 0,
+        clientResolver: .empty
+    )
+}
+#endif
+
 protocol PacketMetadataEnriching: AnyObject {
     func reset()
     func enrich(_ packets: [PacketSummary], source: CaptureSource) -> PacketMetadataEnrichmentResult
+    #if DEBUG
+    func debugMemorySnapshot() -> PacketMetadataEnrichmentDebugSnapshot
+    #endif
 }
 
 protocol PacketClientResolving: AnyObject {
     func reset()
     func client(for packet: PacketSummary) -> PacketClient?
+    #if DEBUG
+    func debugMemorySnapshot() -> PacketClientResolverDebugSnapshot
+    #endif
 }
+
+#if DEBUG
+extension PacketClientResolving {
+    func debugMemorySnapshot() -> PacketClientResolverDebugSnapshot {
+        .empty
+    }
+}
+#endif
 
 final class PacketMetadataEnrichmentService: PacketMetadataEnriching {
     private struct FlowMetadata {
@@ -53,10 +103,21 @@ final class PacketMetadataEnrichmentService: PacketMetadataEnriching {
 
     // Reset flow and process caches when packet lineage changes.
     func reset() {
-        flowMetadataByStreamID.removeAll(keepingCapacity: true)
-        flowOrder.removeAll(keepingCapacity: true)
+        flowMetadataByStreamID.removeAll(keepingCapacity: false)
+        flowOrder.removeAll(keepingCapacity: false)
         clientResolver.reset()
     }
+
+    #if DEBUG
+    func debugMemorySnapshot() -> PacketMetadataEnrichmentDebugSnapshot {
+        PacketMetadataEnrichmentDebugSnapshot(
+            flowCount: flowMetadataByStreamID.count,
+            flowOrderCount: flowOrder.count,
+            pendingPacketIDCount: flowMetadataByStreamID.values.reduce(0) { $0 + $1.pendingPacketIDs.count },
+            clientResolver: clientResolver.debugMemorySnapshot()
+        )
+    }
+    #endif
 
     // Enrich the incoming batch and emit flow updates for packets already stored.
     func enrich(_ packets: [PacketSummary], source: CaptureSource) -> PacketMetadataEnrichmentResult {
@@ -152,6 +213,47 @@ final class PacketMetadataEnrichmentService: PacketMetadataEnriching {
     }
 }
 
+struct MacOSBundleIdentity {
+    let displayName: String?
+    let bundleIdentifier: String?
+}
+
+struct MacOSProcessClientResolverEnvironment {
+    let processName: (pid_t) -> String
+    let processPath: (pid_t) -> String?
+    let bundleIdentity: (URL) -> MacOSBundleIdentity
+
+    static let live = MacOSProcessClientResolverEnvironment(
+        processName: { pid in
+            var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+            let length = proc_name(pid, &buffer, UInt32(buffer.count))
+            guard length > 0 else {
+                return "PID \(pid)"
+            }
+            return String(cString: buffer)
+        },
+        processPath: { pid in
+            var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+            let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
+            guard length > 0 else {
+                return nil
+            }
+            return String(cString: buffer)
+        },
+        bundleIdentity: { bundleURL in
+            let bundle = Bundle(url: bundleURL)
+            let displayName = bundle.flatMap { bundle in
+                bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ??
+                    bundle.object(forInfoDictionaryKey: "CFBundleName") as? String
+            }
+            return MacOSBundleIdentity(
+                displayName: displayName,
+                bundleIdentifier: bundle?.bundleIdentifier
+            )
+        }
+    )
+}
+
 final class MacOSPacketClientResolver: PacketClientResolving {
     fileprivate enum SocketTransport: Hashable {
         case tcp
@@ -197,31 +299,71 @@ final class MacOSPacketClientResolver: PacketClientResolving {
         }
     }
 
+    private struct ProcessIdentityCacheEntry {
+        let executablePath: String?
+        let client: PacketClient
+    }
+
     private let snapshotTTL: TimeInterval
     private let negativeTTL: TimeInterval
     private let maxNegativeLookups: Int
+    private let maxProcessIdentityCacheEntries: Int
+    private let maxBundleIdentityCacheEntries: Int
+    private let environment: MacOSProcessClientResolverEnvironment
     private var snapshotDate: Date?
     private var clientsBySocketKey: [SocketKey: PacketClient] = [:]
     private var clientsByLocalEndpointKey: [LocalEndpointKey: PacketClient] = [:]
     private var clientsByLocalPortKey: [LocalPortKey: PacketClient] = [:]
     private var clientsByPID: [pid_t: PacketClient] = [:]
     private var negativeLookups: [PacketLookupKey: Date] = [:]
+    private var processIdentityCacheByPID: [pid_t: ProcessIdentityCacheEntry] = [:]
+    private var processIdentityOrder: [pid_t] = []
+    private var bundleIdentityByPath: [String: MacOSBundleIdentity] = [:]
+    private var bundleIdentityOrder: [String] = []
 
-    init(snapshotTTL: TimeInterval = 0.5, negativeTTL: TimeInterval = 0.5, maxNegativeLookups: Int = 10_000) {
+    init(
+        snapshotTTL: TimeInterval = 0.5,
+        negativeTTL: TimeInterval = 0.5,
+        maxNegativeLookups: Int = 10_000,
+        maxProcessIdentityCacheEntries: Int = 2_048,
+        maxBundleIdentityCacheEntries: Int = 512,
+        environment: MacOSProcessClientResolverEnvironment = .live
+    ) {
         self.snapshotTTL = snapshotTTL
         self.negativeTTL = negativeTTL
         self.maxNegativeLookups = max(maxNegativeLookups, 1)
+        self.maxProcessIdentityCacheEntries = max(maxProcessIdentityCacheEntries, 1)
+        self.maxBundleIdentityCacheEntries = max(maxBundleIdentityCacheEntries, 1)
+        self.environment = environment
     }
 
     // Clear process snapshots between live capture sessions.
     func reset() {
         snapshotDate = nil
-        clientsBySocketKey.removeAll(keepingCapacity: true)
-        clientsByLocalEndpointKey.removeAll(keepingCapacity: true)
-        clientsByLocalPortKey.removeAll(keepingCapacity: true)
-        clientsByPID.removeAll(keepingCapacity: true)
-        negativeLookups.removeAll(keepingCapacity: true)
+        clientsBySocketKey.removeAll(keepingCapacity: false)
+        clientsByLocalEndpointKey.removeAll(keepingCapacity: false)
+        clientsByLocalPortKey.removeAll(keepingCapacity: false)
+        clientsByPID.removeAll(keepingCapacity: false)
+        negativeLookups.removeAll(keepingCapacity: false)
+        processIdentityCacheByPID.removeAll(keepingCapacity: false)
+        processIdentityOrder.removeAll(keepingCapacity: false)
+        bundleIdentityByPath.removeAll(keepingCapacity: false)
+        bundleIdentityOrder.removeAll(keepingCapacity: false)
     }
+
+    #if DEBUG
+    func debugMemorySnapshot() -> PacketClientResolverDebugSnapshot {
+        PacketClientResolverDebugSnapshot(
+            socketKeyCount: clientsBySocketKey.count,
+            localEndpointKeyCount: clientsByLocalEndpointKey.count,
+            localPortKeyCount: clientsByLocalPortKey.count,
+            pidClientCount: clientsByPID.count,
+            negativeLookupCount: negativeLookups.count,
+            processIdentityCacheCount: processIdentityCacheByPID.count,
+            bundleIdentityCacheCount: bundleIdentityByPath.count
+        )
+    }
+    #endif
 
     // Resolve a packet to the current macOS process that owns its local socket.
     func client(for packet: PacketSummary) -> PacketClient? {
@@ -376,16 +518,24 @@ final class MacOSPacketClientResolver: PacketClientResolving {
         clientsBySocketKey[SocketKey(transport: transport, local: local, remote: remote)] = client
     }
 
-    private func client(for pid: pid_t) -> PacketClient? {
-        if let client = clientsByPID[pid] {
+    func client(for pid: pid_t) -> PacketClient? {
+        let executablePath = environment.processPath(pid)
+        if let client = clientsByPID[pid],
+           let cachedIdentity = processIdentityCacheByPID[pid],
+           cachedIdentity.executablePath == executablePath {
             return client
         }
 
-        let name = processName(for: pid)
-        let executablePath = processPath(for: pid)
+        if let cachedIdentity = processIdentityCacheByPID[pid],
+           cachedIdentity.executablePath == executablePath {
+            clientsByPID[pid] = cachedIdentity.client
+            return cachedIdentity.client
+        }
+
+        let name = environment.processName(pid)
         let bundleURL = executablePath.flatMap(appBundleURL(for:))
-        let bundle = bundleURL.flatMap(Bundle.init(url:))
-        let displayName = bundleDisplayName(bundle) ??
+        let bundleIdentity = bundleURL.flatMap(cachedBundleIdentity(for:))
+        let displayName = bundleIdentity?.displayName ??
             executablePath.map { URL(fileURLWithPath: $0).deletingPathExtension().lastPathComponent } ??
             name
 
@@ -394,38 +544,40 @@ final class MacOSPacketClientResolver: PacketClientResolving {
             name: name,
             displayName: displayName,
             executablePath: executablePath,
-            bundleIdentifier: bundle?.bundleIdentifier,
+            bundleIdentifier: bundleIdentity?.bundleIdentifier,
             bundlePath: bundleURL?.path
         )
         clientsByPID[pid] = client
+        rememberProcessIdentity(pid: pid, executablePath: executablePath, client: client)
         return client
     }
 
-    private func processName(for pid: pid_t) -> String {
-        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
-        let length = proc_name(pid, &buffer, UInt32(buffer.count))
-        guard length > 0 else {
-            return "PID \(pid)"
+    private func rememberProcessIdentity(pid: pid_t, executablePath: String?, client: PacketClient) {
+        if processIdentityCacheByPID[pid] == nil {
+            processIdentityOrder.append(pid)
         }
-        return String(cString: buffer)
+
+        processIdentityCacheByPID[pid] = ProcessIdentityCacheEntry(executablePath: executablePath, client: client)
+        while processIdentityOrder.count > maxProcessIdentityCacheEntries {
+            let removedPID = processIdentityOrder.removeFirst()
+            processIdentityCacheByPID.removeValue(forKey: removedPID)
+        }
     }
 
-    private func processPath(for pid: pid_t) -> String? {
-        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
-        let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
-        guard length > 0 else {
-            return nil
-        }
-        return String(cString: buffer)
-    }
-
-    private func bundleDisplayName(_ bundle: Bundle?) -> String? {
-        guard let bundle else {
-            return nil
+    private func cachedBundleIdentity(for bundleURL: URL) -> MacOSBundleIdentity {
+        let path = bundleURL.path
+        if let identity = bundleIdentityByPath[path] {
+            return identity
         }
 
-        return bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ??
-            bundle.object(forInfoDictionaryKey: "CFBundleName") as? String
+        let identity = environment.bundleIdentity(bundleURL)
+        bundleIdentityByPath[path] = identity
+        bundleIdentityOrder.append(path)
+        while bundleIdentityOrder.count > maxBundleIdentityCacheEntries {
+            let removedPath = bundleIdentityOrder.removeFirst()
+            bundleIdentityByPath.removeValue(forKey: removedPath)
+        }
+        return identity
     }
 
     private func appBundleURL(for executablePath: String) -> URL? {

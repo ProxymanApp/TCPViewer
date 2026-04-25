@@ -239,6 +239,26 @@ final class PacketSourceListService {
     private var domainBuckets: [PacketSourceDomainKey: PacketSourceListTreeBuilder.DomainBucket] = [:]
     private var domainOrder: [PacketSourceDomainKey] = []
 
+    func reset() {
+        packetRevision = nil
+        packetLineageRevision = nil
+        sourcePacketCount = 0
+        cachedSnapshot = .empty
+        appBuckets.removeAll(keepingCapacity: false)
+        appOrder.removeAll(keepingCapacity: false)
+        domainBuckets.removeAll(keepingCapacity: false)
+        domainOrder.removeAll(keepingCapacity: false)
+    }
+
+    #if DEBUG
+    func debugMemorySnapshot() -> PacketSourceListDebugSnapshot {
+        PacketSourceListDebugSnapshot(
+            appBucketCount: appBuckets.count,
+            domainBucketCount: domainBuckets.count
+        )
+    }
+    #endif
+
     // Keep the tree in sync with packet mutations, using append when packet lineage is unchanged.
     func snapshot(for ingestState: PacketIngestState) -> PacketSourceListSnapshot {
         guard packetRevision != ingestState.packetRevision else {
@@ -276,7 +296,7 @@ final class PacketSourceListService {
                     appBuckets[clientIdentity.key] = PacketSourceListTreeBuilder.AppBucket(identity: clientIdentity)
                 }
 
-                appBuckets[clientIdentity.key]?.packetIDs.append(packet.id)
+                appBuckets[clientIdentity.key]?.packetCount += 1
             }
 
             let domainIdentity = PacketSourceListClassifier.domainIdentity(for: packet)
@@ -285,7 +305,7 @@ final class PacketSourceListService {
                 domainBuckets[domainIdentity.key] = PacketSourceListTreeBuilder.DomainBucket(identity: domainIdentity)
             }
 
-            domainBuckets[domainIdentity.key]?.packetIDs.append(packet.id)
+            domainBuckets[domainIdentity.key]?.packetCount += 1
         }
     }
 
@@ -301,15 +321,22 @@ final class PacketSourceListService {
     }
 }
 
+#if DEBUG
+struct PacketSourceListDebugSnapshot: Equatable {
+    let appBucketCount: Int
+    let domainBucketCount: Int
+}
+#endif
+
 enum PacketSourceListTreeBuilder {
     struct AppBucket: Equatable, Sendable {
         let identity: PacketSourceClientIdentity
-        var packetIDs: [PacketSummary.ID] = []
+        var packetCount = 0
     }
 
     struct DomainBucket: Equatable, Sendable {
         let identity: PacketSourceDomainIdentity
-        var packetIDs: [PacketSummary.ID] = []
+        var packetCount = 0
     }
 
     static let favoritesGroupID = "group:favorites"
@@ -335,7 +362,7 @@ enum PacketSourceListTreeBuilder {
                 title: bucket.identity.displayName,
                 systemImageName: "app",
                 iconFilePath: bucket.identity.iconFilePath,
-                count: bucket.packetIDs.count,
+                count: bucket.packetCount,
                 kind: .app,
                 selection: .app(bucket.identity.key),
                 children: []
@@ -347,7 +374,7 @@ enum PacketSourceListTreeBuilder {
                 title: bucket.identity.displayName,
                 systemImageName: "network",
                 iconFilePath: nil,
-                count: bucket.packetIDs.count,
+                count: bucket.packetCount,
                 kind: .domain,
                 selection: .domain(bucket.identity.key),
                 children: []
@@ -400,7 +427,7 @@ enum PacketSourceListTreeBuilder {
                         title: "Apps",
                         systemImageName: "folder.fill",
                         iconFilePath: nil,
-                        count: appBuckets.reduce(0) { $0 + $1.packetIDs.count },
+                        count: appBuckets.reduce(0) { $0 + $1.packetCount },
                         kind: .folder,
                         selection: .apps,
                         children: appItems
@@ -410,7 +437,7 @@ enum PacketSourceListTreeBuilder {
                         title: "Domains",
                         systemImageName: "globe",
                         iconFilePath: nil,
-                        count: domainBuckets.reduce(0) { $0 + $1.packetIDs.count },
+                        count: domainBuckets.reduce(0) { $0 + $1.packetCount },
                         kind: .folder,
                         selection: .domains,
                         children: domainItems
