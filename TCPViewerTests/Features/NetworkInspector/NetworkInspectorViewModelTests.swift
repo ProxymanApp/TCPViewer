@@ -970,6 +970,55 @@ struct NetworkInspectorViewModelTests {
         #expect(reloadedSavedService.records().isEmpty)
     }
 
+    @Test func sourceListDeleteActionRemovesPinsAndMatchingPackets() async throws {
+        let pinURL = temporaryDirectory().appendingPathComponent("Pins.json")
+        let pinService = PacketPinService(storageURL: pinURL)
+        let client = makeClient(displayName: "Example", bundleIdentifier: "com.example.app")
+        let packets = [
+            makePacket(packetNumber: 1, source: .offline, transportHint: .tcp, sniDomainName: "api.example.com", client: client),
+            makePacket(packetNumber: 2, source: .offline, transportHint: .tcp, sniDomainName: "api.example.com"),
+            makePacket(packetNumber: 3, source: .offline, transportHint: .tcp, sniDomainName: nil),
+        ]
+        let openURL = URL(fileURLWithPath: "/tmp/source-list-delete-fixture.pcapng")
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                document: InspectorFakeDocument(url: openURL, packets: packets)
+            )),
+            userDefaults: isolatedDefaults(),
+            pinService: pinService
+        )
+
+        await viewModel.openDocument(at: openURL)
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == 3
+        }
+
+        viewModel.pinPacket(packets[0].id, kind: .domain, clickedColumn: .domain)
+        let pinID = try #require(pinService.pins().first?.id)
+        viewModel.deleteSourceListItem(.deletePin(pinID))
+
+        #expect(pinService.pins().isEmpty)
+        #expect(viewModel.snapshot.sourceListSnapshot.item(for: .pinnedItem(pinID)) == nil)
+        #expect(viewModel.snapshot.selectedSourceListSelection == .pinned)
+
+        let appKey = try #require(PacketSourceListClassifier.clientIdentity(for: packets[0])?.key)
+        viewModel.selectSourceList(.app(appKey))
+        viewModel.deleteSourceListItem(.deletePackets(.app(appKey)))
+
+        #expect(viewModel.snapshot.selectedSourceListSelection == .allPackets)
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[1].id, packets[2].id])
+        #expect(viewModel.snapshot.sourceListSnapshot.item(for: .app(appKey)) == nil)
+
+        let ipKey = PacketSourceIPAddressKey(rawValue: "10.0.0.2")
+        viewModel.selectSourceList(.ipAddress(ipKey))
+        viewModel.deleteSourceListItem(.deletePackets(.ipAddress(ipKey)))
+
+        #expect(viewModel.snapshot.selectedSourceListSelection == .allPackets)
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[1].id])
+        #expect(viewModel.snapshot.sourceListSnapshot.item(for: .ipAddress(ipKey)) == nil)
+    }
+
     @Test func deletingRowsSelectsRowAfterLastDeletedVisibleIndex() async {
         let packets = (1...5).map {
             makePacket(packetNumber: UInt64($0), source: .offline, transportHint: .tcp)

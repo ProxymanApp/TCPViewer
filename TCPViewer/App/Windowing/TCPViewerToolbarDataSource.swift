@@ -100,6 +100,7 @@ final class TCPViewerToolbarDataSource: NSObject {
         interfacePopup.target = self
         interfacePopup.action = #selector(interfaceChanged(_:))
         interfacePopup.controlSize = .regular
+        interfacePopup.menu?.autoenablesItems = false
 
         captureButton.target = self
         captureButton.action = #selector(captureButtonPressed(_:))
@@ -138,25 +139,81 @@ final class TCPViewerToolbarDataSource: NSObject {
 
     private func renderInterfacePopup() {
         interfacePopup.removeAllItems()
+        interfacePopup.menu?.autoenablesItems = false
         if viewModel.interfaces.isEmpty {
             interfacePopup.addItem(withTitle: "No Interfaces")
             interfacePopup.isEnabled = false
             return
         }
 
-        for interface in viewModel.interfaces {
-            let title = interface.friendlyName ?? interface.displayName
-            interfacePopup.addItem(withTitle: title)
-            interfacePopup.lastItem?.representedObject = interface.id
-            interfacePopup.lastItem?.isEnabled = interface.isSelectable && !viewModel.isCaptureLocked
+        let recentInterfaces = viewModel.lastUsedInterfaceIDs.compactMap { identifier in
+            viewModel.interfaces.first { $0.id == identifier }
+        }
+        let recentInterfaceIDs = Set(recentInterfaces.map(\.id))
+        let remainingInterfaces = viewModel.interfaces.filter { !recentInterfaceIDs.contains($0.id) }
+
+        if !recentInterfaces.isEmpty {
+            addInterfaceGroupHeader("Last used")
+            recentInterfaces.forEach(addInterfaceItem)
+            if !remainingInterfaces.isEmpty {
+                interfacePopup.menu?.addItem(.separator())
+            }
         }
 
-        if let selectedID = viewModel.selectedInterfaceID,
-           let index = viewModel.interfaces.firstIndex(where: { $0.id == selectedID }) {
-            interfacePopup.selectItem(at: index)
+        remainingInterfaces.forEach(addInterfaceItem)
+        if !selectInterfaceItem(with: viewModel.selectedInterfaceID) {
+            selectFirstInterfaceItem()
         }
-
         interfacePopup.isEnabled = !viewModel.isCaptureLocked
+    }
+
+    private func addInterfaceGroupHeader(_ title: String) {
+        // Add a disabled group label so recent interfaces read separately from the full inventory.
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.attributedTitle = NSAttributedString(
+            string: title,
+            attributes: [
+                .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold),
+                .foregroundColor: NSColor.disabledControlTextColor,
+            ]
+        )
+        item.isEnabled = false
+        interfacePopup.menu?.addItem(item)
+    }
+
+    private func addInterfaceItem(_ interface: CaptureInterfaceSummary) {
+        // Keep each menu item self-identifying so selection does not depend on grouped menu indexes.
+        let item = NSMenuItem(title: interface.friendlyName ?? interface.displayName, action: nil, keyEquivalent: "")
+        item.representedObject = interface.id
+        item.isEnabled = interface.isSelectable && !viewModel.isCaptureLocked
+        interfacePopup.menu?.addItem(item)
+    }
+
+    @discardableResult
+    private func selectInterfaceItem(with identifier: String?) -> Bool {
+        // Select by represented identifier because recent grouping changes visible row order.
+        guard let identifier, let menu = interfacePopup.menu else {
+            return false
+        }
+
+        for (index, item) in menu.items.enumerated() where item.representedObject as? String == identifier {
+            interfacePopup.selectItem(at: index)
+            return true
+        }
+
+        return false
+    }
+
+    private func selectFirstInterfaceItem() {
+        // Avoid leaving the disabled group header as the visible popup title when no selection exists.
+        guard let menu = interfacePopup.menu else {
+            return
+        }
+
+        for (index, item) in menu.items.enumerated() where item.representedObject is String {
+            interfacePopup.selectItem(at: index)
+            return
+        }
     }
 
     private func renderCaptureButton() {
@@ -180,6 +237,9 @@ final class TCPViewerToolbarDataSource: NSObject {
 
     @objc private func interfaceChanged(_ sender: NSPopUpButton) {
         guard let identifier = sender.selectedItem?.representedObject as? String else {
+            if !selectInterfaceItem(with: viewModel.selectedInterfaceID) {
+                selectFirstInterfaceItem()
+            }
             return
         }
 
@@ -259,6 +319,7 @@ private final class TCPViewerToolbarViewModel {
     private(set) var selectedInterfaceTitle = "Interface"
     private(set) var interfaces: [CaptureInterfaceSummary] = []
     private(set) var selectedInterfaceID: String?
+    private(set) var lastUsedInterfaceIDs: [String] = []
     private(set) var isCaptureLocked = false
     private(set) var captureButtonTitle = "Start"
     private(set) var captureButtonImageName = "play.fill"
@@ -276,6 +337,7 @@ private final class TCPViewerToolbarViewModel {
     func render(snapshot: NetworkInspectorSnapshot, viewModel: NetworkInspectorViewModel) {
         interfaces = snapshot.base.sessionState.interfaceInventory
         selectedInterfaceID = snapshot.base.sessionState.selectedInterfaceID
+        lastUsedInterfaceIDs = snapshot.base.sessionState.lastUsedInterfaceIDs
         selectedInterfaceTitle = viewModel.selectedInterfaceTitle()
         isCaptureLocked = snapshot.isCaptureLocked
         captureButtonTitle = viewModel.captureButtonTitle()

@@ -30,7 +30,8 @@ enum TCPViewerUI {
         title: String,
         imageName: String,
         message: String,
-        placement: PlaceholderPlacement = .center
+        placement: PlaceholderPlacement = .center,
+        iconTitleSpacing: CGFloat = 10
     ) -> NSView {
         let imageView = NSImageView(image: image(imageName) ?? NSImage())
         imageView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 42, weight: .regular)
@@ -47,6 +48,7 @@ enum TCPViewerUI {
         stack.orientation = .vertical
         stack.alignment = .centerX
         stack.spacing = 10
+        stack.setCustomSpacing(iconTitleSpacing, after: imageView)
         stack.translatesAutoresizingMaskIntoConstraints = false
 
         let container = NSView()

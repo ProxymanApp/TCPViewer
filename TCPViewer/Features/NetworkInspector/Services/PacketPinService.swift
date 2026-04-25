@@ -85,6 +85,20 @@ final class PacketPinService {
         cachedPins
     }
 
+    func deletePin(id: PacketPinID) throws {
+        guard let index = cachedPins.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+
+        let removedPin = cachedPins.remove(at: index)
+        do {
+            try persist()
+        } catch {
+            cachedPins.insert(removedPin, at: index)
+            throw error
+        }
+    }
+
     // Create or reuse a stable pin for the selected packet criteria.
     @discardableResult
     func upsertPin(

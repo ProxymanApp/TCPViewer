@@ -38,6 +38,18 @@ struct PacketPinServiceTests {
         #expect(service.matchingPackets(in: [future], for: .pinnedItem(firstPin.id)).map(\.id) == [future.id])
     }
 
+    @Test func deletePinPersistsRemoval() throws {
+        let storageURL = temporaryDirectory().appendingPathComponent("Pins.json")
+        let service = PacketPinService(storageURL: storageURL)
+        let pin = try service.upsertPin(from: makePacket(packetNumber: 1, sniDomainName: "Example.com"), kind: .domain, clickedColumn: .domain)
+
+        try service.deletePin(id: pin.id)
+        let reloaded = PacketPinService(storageURL: storageURL)
+
+        #expect(service.pins().isEmpty)
+        #expect(reloaded.pins().isEmpty)
+    }
+
     @Test func ipPinUsesClickedEndpointThenFallsBackToDestination() throws {
         let storageURL = temporaryDirectory().appendingPathComponent("Pins.json")
         let service = PacketPinService(storageURL: storageURL)

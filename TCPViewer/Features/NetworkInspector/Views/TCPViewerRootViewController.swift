@@ -203,6 +203,10 @@ extension TCPViewerRootViewController: SidebarViewControllerDelegate {
     func sidebarViewController(_ controller: SidebarViewController, didUpdateFilterText text: String) {
         viewModel.updateSourceListFilterText(text)
     }
+
+    func sidebarViewController(_ controller: SidebarViewController, didRequestDelete action: PacketSourceListDeletionAction) {
+        viewModel.deleteSourceListItem(action)
+    }
 }
 
 extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {

@@ -655,6 +655,39 @@ struct WindowControllerTests {
         await tearDown(controller)
     }
 
+    @Test func liveCapturePersistsStartedInterfaceAsLastUsed() async {
+        let suiteName = "TCPViewerTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let liveSession = FakeLiveSession()
+        let fakeCore = FakeTCPViewerCore(
+            interfaceInventories: [[
+                makeInterface(id: "en0", displayName: "Wi-Fi"),
+                makeInterface(id: "en1", displayName: "USB Ethernet"),
+            ]],
+            liveSession: liveSession
+        )
+        let controller = TCPViewerWorkspaceController(
+            services: TCPViewerServiceRegistry(core: fakeCore),
+            userDefaults: defaults
+        )
+
+        #expect(controller.snapshot.sessionState.lastUsedInterfaceIDs.isEmpty)
+
+        await controller.refreshInterfaces()
+        controller.selectInterface("en1")
+        await controller.startLiveCapture()
+
+        #expect(liveSession.startCount == 1)
+        #expect(controller.snapshot.sessionState.lastUsedInterfaceIDs == ["en1"])
+        #expect(defaults.stringArray(forKey: InterfaceSelectionHistoryStore.storageKey) == ["en1"])
+
+        await tearDown(controller)
+    }
+
     @Test func partialDocumentLoadKeepsLoadedPacketsAndDisablesSave() async {
         let url = URL(fileURLWithPath: "/tmp/partial-load.pcapng")
         let packets = [

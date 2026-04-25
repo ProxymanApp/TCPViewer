@@ -3,6 +3,7 @@ import AppKit
 protocol SidebarViewControllerDelegate: AnyObject {
     func sidebarViewController(_ controller: SidebarViewController, didSelect selection: PacketSourceListSelection?)
     func sidebarViewController(_ controller: SidebarViewController, didUpdateFilterText text: String)
+    func sidebarViewController(_ controller: SidebarViewController, didRequestDelete action: PacketSourceListDeletionAction)
 }
 
 enum SidebarOutlineReloadTiming: Equatable {
@@ -80,6 +81,29 @@ private extension PacketSourceListItem {
     }
 }
 
+private protocol SidebarOutlineKeyboardActionHandling: AnyObject {
+    func sidebarOutlineViewDidRequestDeleteFromKeyboard(_ outlineView: SidebarOutlineView)
+}
+
+private final class SidebarOutlineView: NSOutlineView {
+    weak var keyboardActionHandler: SidebarOutlineKeyboardActionHandling?
+
+    @objc func delete(_ sender: Any?) {
+        keyboardActionHandler?.sidebarOutlineViewDidRequestDeleteFromKeyboard(self)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let isDeleteKey = event.keyCode == 51 || event.keyCode == 117
+        if flags.contains(.command), isDeleteKey {
+            delete(nil)
+            return
+        }
+
+        super.keyDown(with: event)
+    }
+}
+
 private final class SidebarOutlineItem: NSObject {
     let sourceItem: PacketSourceListItem
     let children: [SidebarOutlineItem]
@@ -154,7 +178,7 @@ final class SidebarViewController: NSViewController {
     weak var delegate: SidebarViewControllerDelegate?
 
     private let viewModel = SidebarViewModel()
-    private let outlineView = NSOutlineView()
+    private let outlineView = SidebarOutlineView()
     private let scrollView = NSScrollView()
     private let searchField = NSSearchField()
     private let effectView = NSVisualEffectView()
@@ -259,6 +283,12 @@ final class SidebarViewController: NSViewController {
         outlineView.indentationMarkerFollowsCell = false
         outlineView.backgroundColor = .clear
         outlineView.focusRingType = .none
+        outlineView.keyboardActionHandler = self
+
+        let menu = NSMenu()
+        menu.delegate = self
+        menu.autoenablesItems = false
+        outlineView.menu = menu
 
         scrollView.documentView = outlineView
         scrollView.hasVerticalScroller = true
@@ -343,6 +373,46 @@ final class SidebarViewController: NSViewController {
 
     private func outlineItem(for item: Any?) -> SidebarOutlineItem? {
         item as? SidebarOutlineItem
+    }
+
+    private func selectedSourceItem() -> PacketSourceListItem? {
+        let selectedRow = outlineView.selectedRow
+        guard selectedRow >= 0 else {
+            return nil
+        }
+
+        return sourceItem(for: outlineView.item(atRow: selectedRow))
+    }
+
+    private func selectedDeletionAction() -> PacketSourceListDeletionAction {
+        PacketSourceListDeletionPolicy.action(for: selectedSourceItem())
+    }
+
+    private func updateSelectionFromCurrentMenuEvent() {
+        guard let event = view.window?.currentEvent,
+              event.type == .rightMouseDown || event.type == .leftMouseDown || event.type == .otherMouseDown else {
+            return
+        }
+
+        let point = outlineView.convert(event.locationInWindow, from: nil)
+        let row = outlineView.row(at: point)
+        guard row >= 0,
+              let item = outlineView.item(atRow: row),
+              sourceItem(for: item)?.selection != nil else {
+            outlineView.deselectAll(nil)
+            return
+        }
+
+        outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+    }
+
+    @objc private func deleteSelectedSourceListItem(_ sender: Any?) {
+        let action = selectedDeletionAction()
+        guard action.isEnabled else {
+            return
+        }
+
+        delegate?.sidebarViewController(self, didRequestDelete: action)
     }
 
     @objc private func searchFieldChanged(_ sender: NSSearchField) {
@@ -486,6 +556,30 @@ extension SidebarViewController: NSSearchFieldDelegate {
         }
 
         delegate?.sidebarViewController(self, didUpdateFilterText: searchField.stringValue)
+    }
+}
+
+extension SidebarViewController: NSMenuDelegate {
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        updateSelectionFromCurrentMenuEvent()
+        let action = selectedDeletionAction()
+
+        menu.removeAllItems()
+        guard action.isEnabled else {
+            return
+        }
+
+        let deleteItem = NSMenuItem(title: "Delete", action: #selector(deleteSelectedSourceListItem(_:)), keyEquivalent: "\u{8}")
+        deleteItem.keyEquivalentModifierMask = [.command]
+        deleteItem.target = self
+        deleteItem.isEnabled = true
+        menu.addItem(deleteItem)
+    }
+}
+
+extension SidebarViewController: SidebarOutlineKeyboardActionHandling {
+    fileprivate func sidebarOutlineViewDidRequestDeleteFromKeyboard(_ outlineView: SidebarOutlineView) {
+        deleteSelectedSourceListItem(nil)
     }
 }
 

@@ -396,12 +396,14 @@ final class NetworkInspectorViewModel {
     init(
         services: TCPViewerServiceRegistry,
         userDefaults: UserDefaults = .standard,
+        interfaceHistoryStore: InterfaceSelectionHistoryStore? = nil,
         pinService: PacketPinService = PacketPinService(),
         savedPacketService: SavedPacketService = SavedPacketService()
     ) {
         self.controller = TCPViewerWorkspaceController(
             services: services,
-            userDefaults: userDefaults
+            userDefaults: userDefaults,
+            interfaceHistoryStore: interfaceHistoryStore
         )
         self.preferences = NetworkInspectorPreferences(defaults: userDefaults)
         self.pinService = pinService
@@ -535,6 +537,17 @@ final class NetworkInspectorViewModel {
         rebuildSnapshot()
     }
 
+    func deleteSourceListItem(_ action: PacketSourceListDeletionAction) {
+        switch action {
+        case .none:
+            return
+        case .deletePin(let pinID):
+            deletePin(pinID)
+        case .deletePackets(let selection):
+            deletePackets(packetIDs(matching: selection))
+        }
+    }
+
     func updateSourceListFilterText(_ text: String) {
         sourceListFilterText = text
         rebuildSnapshot()
@@ -616,6 +629,23 @@ final class NetworkInspectorViewModel {
             controller.selectPacket(nextSelectionID)
         }
         rebuildSnapshot()
+    }
+
+    private func deletePin(_ pinID: PacketPinID) {
+        guard (try? pinService.deletePin(id: pinID)) != nil else {
+            return
+        }
+
+        if selectedSourceListSelection == .pinnedItem(pinID) {
+            selectedSourceListSelection = .pinned
+        }
+        rebuildSnapshot()
+    }
+
+    private func packetIDs(matching selection: PacketSourceListSelection) -> [PacketSummary.ID] {
+        controller.snapshot.packetIngestState.packets.compactMap { packet in
+            PacketSourceListClassifier.matches(packet, selection: selection) ? packet.id : nil
+        }
     }
 
     func updateCaptureFilterText(_ text: String) {

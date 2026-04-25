@@ -115,7 +115,12 @@ final class PacketWorkspaceViewController: NSViewController {
         }
 
         placeholderView?.removeFromSuperview()
-        let placeholder = TCPViewerUI.placeholder(title: title, imageName: imageName, message: message)
+        let placeholder = TCPViewerUI.placeholder(
+            title: title,
+            imageName: imageName,
+            message: message,
+            iconTitleSpacing: 18
+        )
         TCPViewerUI.pin(placeholder, to: contentContainer)
         placeholderView = placeholder
     }

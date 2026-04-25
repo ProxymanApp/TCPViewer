@@ -12,6 +12,10 @@ struct PacketSourceDomainKey: Hashable, Sendable {
     static let ipAddresses = PacketSourceDomainKey(rawValue: "ip-addresses", isMissingDomain: true)
 }
 
+struct PacketSourceIPAddressKey: Hashable, Sendable {
+    let rawValue: String
+}
+
 enum PacketSourceListSelection: Hashable, Sendable {
     case allPackets
     case pinned
@@ -21,6 +25,7 @@ enum PacketSourceListSelection: Hashable, Sendable {
     case app(PacketSourceClientKey)
     case domains
     case domain(PacketSourceDomainKey)
+    case ipAddress(PacketSourceIPAddressKey)
 }
 
 enum PacketSourceListItemKind: Hashable, Sendable {
@@ -62,6 +67,7 @@ struct PacketSourceListSnapshot: Equatable, Sendable {
         roots: PacketSourceListTreeBuilder.makeRoots(
             appBuckets: [],
             domainBuckets: [],
+            ipAddressBuckets: [],
             pinnedBuckets: [],
             savedPacketCount: 0
         )
@@ -153,6 +159,40 @@ struct PacketSourceDomainIdentity: Hashable, Sendable {
     let displayName: String
 }
 
+struct PacketSourceIPAddressIdentity: Hashable, Sendable {
+    let key: PacketSourceIPAddressKey
+    let displayName: String
+}
+
+enum PacketSourceListDeletionAction: Equatable, Sendable {
+    case none
+    case deletePin(PacketPinID)
+    case deletePackets(PacketSourceListSelection)
+
+    var isEnabled: Bool {
+        self != .none
+    }
+}
+
+enum PacketSourceListDeletionPolicy {
+    static func action(for item: PacketSourceListItem?) -> PacketSourceListDeletionAction {
+        guard let selection = item?.selection else {
+            return .none
+        }
+
+        switch selection {
+        case .pinnedItem(let pinID):
+            return .deletePin(pinID)
+        case .app, .ipAddress:
+            return .deletePackets(selection)
+        case .domain(let key) where !key.isMissingDomain:
+            return .deletePackets(selection)
+        default:
+            return .none
+        }
+    }
+}
+
 enum PacketSourceListClassifier {
     static func clientIdentity(for packet: PacketSummary) -> PacketSourceClientIdentity? {
         guard let client = packet.client else {
@@ -204,6 +244,32 @@ enum PacketSourceListClassifier {
         )
     }
 
+    static func ipAddressIdentities(for packet: PacketSummary) -> [PacketSourceIPAddressIdentity] {
+        guard domainIdentity(for: packet).key.isMissingDomain else {
+            return []
+        }
+
+        var seenKeys = Set<PacketSourceIPAddressKey>()
+        return [
+            trimmed(packet.endpoints.destination.address),
+            trimmed(packet.endpoints.source.address),
+        ].compactMap { address in
+            guard let address else {
+                return nil
+            }
+
+            let key = PacketSourceIPAddressKey(rawValue: address.lowercased())
+            guard seenKeys.insert(key).inserted else {
+                return nil
+            }
+
+            return PacketSourceIPAddressIdentity(
+                key: key,
+                displayName: address
+            )
+        }
+    }
+
     static func matches(_ packet: PacketSummary, selection: PacketSourceListSelection) -> Bool {
         switch selection {
         case .allPackets:
@@ -218,6 +284,8 @@ enum PacketSourceListClassifier {
             return true
         case .domain(let key):
             return domainIdentity(for: packet).key == key
+        case .ipAddress(let key):
+            return ipAddressIdentities(for: packet).contains { $0.key == key }
         }
     }
 
@@ -244,6 +312,8 @@ final class PacketSourceListService {
     private var appOrder: [PacketSourceClientKey] = []
     private var domainBuckets: [PacketSourceDomainKey: PacketSourceListTreeBuilder.DomainBucket] = [:]
     private var domainOrder: [PacketSourceDomainKey] = []
+    private var ipAddressBuckets: [PacketSourceIPAddressKey: PacketSourceListTreeBuilder.IPAddressBucket] = [:]
+    private var ipAddressOrder: [PacketSourceIPAddressKey] = []
     private var pinnedItems: [PacketPin] = []
     private var savedPacketCount = 0
 
@@ -256,6 +326,8 @@ final class PacketSourceListService {
         appOrder.removeAll(keepingCapacity: false)
         domainBuckets.removeAll(keepingCapacity: false)
         domainOrder.removeAll(keepingCapacity: false)
+        ipAddressBuckets.removeAll(keepingCapacity: false)
+        ipAddressOrder.removeAll(keepingCapacity: false)
         pinnedItems = []
         savedPacketCount = 0
     }
@@ -298,6 +370,8 @@ final class PacketSourceListService {
         appOrder = []
         domainBuckets = [:]
         domainOrder = []
+        ipAddressBuckets = [:]
+        ipAddressOrder = []
         appendPackets(ingestState.packets)
         return storeSnapshot(for: ingestState)
     }
@@ -325,6 +399,15 @@ final class PacketSourceListService {
             }
 
             domainBuckets[domainIdentity.key]?.packetCount += 1
+
+            for ipAddressIdentity in PacketSourceListClassifier.ipAddressIdentities(for: packet) {
+                if ipAddressBuckets[ipAddressIdentity.key] == nil {
+                    ipAddressOrder.append(ipAddressIdentity.key)
+                    ipAddressBuckets[ipAddressIdentity.key] = PacketSourceListTreeBuilder.IPAddressBucket(identity: ipAddressIdentity)
+                }
+
+                ipAddressBuckets[ipAddressIdentity.key]?.packetCount += 1
+            }
         }
     }
 
@@ -335,6 +418,7 @@ final class PacketSourceListService {
         cachedSnapshot = PacketSourceListTreeBuilder.makeSnapshot(
             appBuckets: appOrder.compactMap { appBuckets[$0] },
             domainBuckets: domainOrder.compactMap { domainBuckets[$0] },
+            ipAddressBuckets: ipAddressOrder.compactMap { ipAddressBuckets[$0] },
             pinnedBuckets: pinnedItems.map { pin in
                 PacketSourceListTreeBuilder.PinnedBucket(
                     pin: pin,
@@ -369,6 +453,11 @@ enum PacketSourceListTreeBuilder {
         var packetCount = 0
     }
 
+    struct IPAddressBucket: Equatable, Sendable {
+        let identity: PacketSourceIPAddressIdentity
+        var packetCount = 0
+    }
+
     struct PinnedBucket: Equatable, Sendable {
         let pin: PacketPin
         var packetCount = 0
@@ -391,6 +480,7 @@ enum PacketSourceListTreeBuilder {
     static func makeSnapshot(
         appBuckets: [AppBucket],
         domainBuckets: [DomainBucket],
+        ipAddressBuckets: [IPAddressBucket] = [],
         pinnedBuckets: [PinnedBucket] = [],
         savedPacketCount: Int = 0
     ) -> PacketSourceListSnapshot {
@@ -398,6 +488,7 @@ enum PacketSourceListTreeBuilder {
             roots: makeRoots(
                 appBuckets: appBuckets,
                 domainBuckets: domainBuckets,
+                ipAddressBuckets: ipAddressBuckets,
                 pinnedBuckets: pinnedBuckets,
                 savedPacketCount: savedPacketCount
             )
@@ -407,6 +498,7 @@ enum PacketSourceListTreeBuilder {
     static func makeRoots(
         appBuckets: [AppBucket],
         domainBuckets: [DomainBucket],
+        ipAddressBuckets: [IPAddressBucket] = [],
         pinnedBuckets: [PinnedBucket] = [],
         savedPacketCount: Int = 0
     ) -> [PacketSourceListItem] {
@@ -422,6 +514,18 @@ enum PacketSourceListTreeBuilder {
                 children: []
             )
         }
+        let ipAddressItems = ipAddressBuckets.map { bucket in
+            PacketSourceListItem(
+                id: "ip:\(bucket.identity.key.rawValue)",
+                title: bucket.identity.displayName,
+                systemImageName: "network",
+                iconFilePath: nil,
+                count: bucket.packetCount,
+                kind: .domain,
+                selection: .ipAddress(bucket.identity.key),
+                children: []
+            )
+        }
         let domainItems = domainBuckets.map { bucket in
             PacketSourceListItem(
                 id: "domain:\(bucket.identity.key.rawValue)",
@@ -431,7 +535,7 @@ enum PacketSourceListTreeBuilder {
                 count: bucket.packetCount,
                 kind: .domain,
                 selection: .domain(bucket.identity.key),
-                children: []
+                children: bucket.identity.key.isMissingDomain ? ipAddressItems : []
             )
         }
         let pinnedItems = pinnedBuckets.map { bucket in
