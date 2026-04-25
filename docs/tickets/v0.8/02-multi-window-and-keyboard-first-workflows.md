@@ -1,7 +1,7 @@
 # v0.8.2 Multi-Window And Keyboard-First Workflows
 
 ## Summary
-Define serious desktop workflows for multiple trace windows and keyboard-driven analysis so Packetry feels native and efficient during long sessions.
+Define serious desktop workflows for multiple trace windows and keyboard-driven analysis so TCP Viewer feels native and efficient during long sessions.
 
 ## What To Build
 - Specify multi-window document behavior and window ownership of analysis state.

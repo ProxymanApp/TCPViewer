@@ -4,7 +4,7 @@
 COMPLETE
 
 ## Summary
-Define the first capture-options set Packetry supports so live capture behavior is predictable and useful from the first MVP.
+Define the first capture-options set TCP Viewer supports so live capture behavior is predictable and useful from the first MVP.
 
 ## What To Build
 - Model options for promiscuous mode, snapshot length, buffer sizing, stop conditions, and rotating/ring capture files.

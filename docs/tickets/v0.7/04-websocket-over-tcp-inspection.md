@@ -1,7 +1,7 @@
 # v0.7.4 WebSocket-Over-TCP Inspection
 
 ## Summary
-Define limited WebSocket inspection for traffic Packetry can identify directly or through HTTP upgrade context and decode-as support.
+Define limited WebSocket inspection for traffic TCP Viewer can identify directly or through HTTP upgrade context and decode-as support.
 
 ## What To Build
 - Specify WebSocket detection, frame summaries, and basic message-direction views.

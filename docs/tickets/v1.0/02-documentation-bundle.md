@@ -1,7 +1,7 @@
 # v1.0.2 Documentation Bundle
 
 ## Summary
-Define the end-user and support documentation required for a stable Packetry release.
+Define the end-user and support documentation required for a stable TCPViewer release.
 
 ## What To Build
 - Produce the user guide, troubleshooting guide, capture-permission guide, and curated regression sample catalog.

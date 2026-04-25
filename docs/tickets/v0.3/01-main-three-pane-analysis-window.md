@@ -1,7 +1,7 @@
 # v0.3.1 Main Three-Pane Analysis Window
 
 ## Summary
-Define the primary Packetry desktop workflow: packet list, decoded packet detail tree, and raw bytes pane in one efficient analysis layout.
+Define the primary TCPViewer desktop workflow: packet list, decoded packet detail tree, and raw bytes pane in one efficient analysis layout.
 
 ## What To Build
 - Specify the layout model and panel responsibilities for the three panes.

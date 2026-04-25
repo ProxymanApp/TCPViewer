@@ -4,8 +4,8 @@ Status: COMPLETE
 
 ## Owned Artifacts
 - [docs/architecture/app-architecture-baseline.md](../../architecture/app-architecture-baseline.md)
-- [Packetry/WorkspaceFoundation.swift](../../../Packetry/WorkspaceFoundation.swift)
-- [Packetry/ContentView.swift](../../../Packetry/ContentView.swift)
+- [TCPViewer/WorkspaceFoundation.swift](../../../TCPViewer/WorkspaceFoundation.swift)
+- [TCPViewer/ContentView.swift](../../../TCPViewer/ContentView.swift)
 
 ## Definition Of Done
 - Document the app-side ownership model for windows, snapshots, services, and background work.
@@ -30,7 +30,7 @@ Define the core app structure for session state, document state, background work
 - v0.1.4 test harness and fixtures strategy.
 
 ## Tests
-- Unit tests: cover controller state transitions, document/session helpers, and cancellation behavior in `PacketryTests`.
+- Unit tests: cover controller state transitions, document/session helpers, and cancellation behavior in `TCPViewerTests`.
 - Integration tests: cover document open/reopen-style state movement with fixture-backed app models before real ingest is wired in.
 - UI tests: out of scope.
 

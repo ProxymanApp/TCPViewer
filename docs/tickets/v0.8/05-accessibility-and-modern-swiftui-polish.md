@@ -1,7 +1,7 @@
 # v0.8.5 Accessibility And Modern SwiftUI Polish
 
 ## Summary
-Define the accessibility, visual consistency, and SwiftUI refinement work needed for Packetry to feel like a polished native macOS application.
+Define the accessibility, visual consistency, and SwiftUI refinement work needed for TCP Viewer to feel like a polished native macOS application.
 
 ## What To Build
 - Establish accessibility expectations for labels, focus order, keyboard navigation, and readable data-dense layouts.

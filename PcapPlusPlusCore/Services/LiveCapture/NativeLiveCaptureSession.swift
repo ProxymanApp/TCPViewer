@@ -1,5 +1,5 @@
 import Foundation
-@_implementationOnly import PacketryNativeBridge
+@_implementationOnly import TCPViewerNativeBridge
 
 public final class NativeLiveCaptureSession: LiveCaptureSessionProviding, @unchecked Sendable {
     private let eventBox = EventCallbackBox<PacketIngestEvent>()
@@ -18,23 +18,23 @@ public final class NativeLiveCaptureSession: LiveCaptureSessionProviding, @unche
         )
     }
 
-    public func start(completion: @escaping PacketryVoidCompletion) {
+    public func start(completion: @escaping TCPViewerVoidCompletion) {
         state.start(completion: completion)
     }
 
-    public func pause(completion: @escaping PacketryVoidCompletion) {
+    public func pause(completion: @escaping TCPViewerVoidCompletion) {
         state.pause(completion: completion)
     }
 
-    public func resume(completion: @escaping PacketryVoidCompletion) {
+    public func resume(completion: @escaping TCPViewerVoidCompletion) {
         state.resume(completion: completion)
     }
 
-    public func stop(completion: @escaping PacketryVoidCompletion) {
+    public func stop(completion: @escaping TCPViewerVoidCompletion) {
         state.stop(completion: completion)
     }
 
-    public func inspectPacket(id: PacketSummary.ID, completion: @escaping PacketryCompletion<PacketInspection>) {
+    public func inspectPacket(id: PacketSummary.ID, completion: @escaping TCPViewerCompletion<PacketInspection>) {
         state.inspectPacket(id: id, completion: completion)
     }
 
@@ -83,7 +83,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     private static let maxLivePacketBatchSize = 256
     private static let livePacketBatchInterval: DispatchTimeInterval = .milliseconds(100)
 
-    private let queue = DispatchQueue(label: "com.proxyman.Packetry.PcapPlusPlusCore.NativeLiveCaptureSession", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "com.proxyman.tcpviewer.PcapPlusPlusCore.NativeLiveCaptureSession", qos: .userInitiated)
     private let nativeSession: PCPPNativeLiveSession
     private let eventBox: EventCallbackBox<PacketIngestEvent>
     private let stopCondition: CaptureStopCondition
@@ -139,7 +139,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
         }
     }
 
-    func start(completion: @escaping PacketryVoidCompletion) {
+    func start(completion: @escaping TCPViewerVoidCompletion) {
         queue.async {
             completion(Result {
                 try self.startOnQueue()
@@ -147,7 +147,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
         }
     }
 
-    func pause(completion: @escaping PacketryVoidCompletion) {
+    func pause(completion: @escaping TCPViewerVoidCompletion) {
         queue.async {
             completion(Result {
                 try self.pauseOnQueue()
@@ -155,7 +155,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
         }
     }
 
-    func resume(completion: @escaping PacketryVoidCompletion) {
+    func resume(completion: @escaping TCPViewerVoidCompletion) {
         queue.async {
             completion(Result {
                 try self.resumeOnQueue()
@@ -163,7 +163,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
         }
     }
 
-    func stop(completion: @escaping PacketryVoidCompletion) {
+    func stop(completion: @escaping TCPViewerVoidCompletion) {
         queue.async {
             completion(Result {
                 try self.stopOnQueue(reason: nil)
@@ -177,7 +177,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
         }
     }
 
-    func inspectPacket(id: PacketSummary.ID, completion: @escaping PacketryCompletion<PacketInspection>) {
+    func inspectPacket(id: PacketSummary.ID, completion: @escaping TCPViewerCompletion<PacketInspection>) {
         queue.async {
             completion(Result {
                 try self.inspectPacketOnQueue(id: id)
@@ -201,10 +201,10 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
             }
             scheduleDurationStopIfNeeded()
         } catch {
-            let packetryError = NativeBridgeMapper.coreError(error, defaultCode: .liveSessionStartFailed)
+            let tcpviewerError = NativeBridgeMapper.coreError(error, defaultCode: .liveSessionStartFailed)
             phase = .failed
-            eventBox.yield(.liveStateChanged(phase: .failed, message: packetryError.message))
-            throw packetryError
+            eventBox.yield(.liveStateChanged(phase: .failed, message: tcpviewerError.message))
+            throw tcpviewerError
         }
     }
 
@@ -295,12 +295,12 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     }
 
     private func handleError(_ error: Error) {
-        let packetryError = NativeBridgeMapper.coreError(error, defaultCode: .liveSessionControlFailed)
+        let tcpviewerError = NativeBridgeMapper.coreError(error, defaultCode: .liveSessionControlFailed)
         phase = .failed
         cancelDurationStopWorkItem()
         flushPendingPacketBatch()
-        eventBox.yield(.liveStateChanged(phase: .failed, message: packetryError.message))
-        eventBox.finish(throwing: packetryError)
+        eventBox.yield(.liveStateChanged(phase: .failed, message: tcpviewerError.message))
+        eventBox.finish(throwing: tcpviewerError)
     }
 
     private func yieldPacketBatch(_ batch: [PacketSummary]) {

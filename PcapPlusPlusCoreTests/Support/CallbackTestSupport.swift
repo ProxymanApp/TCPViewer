@@ -151,7 +151,7 @@ extension OfflineCaptureDocumentProviding {
 }
 
 private func waitForResult<Value>(
-    _ start: (@escaping PacketryCompletion<Value>) -> Void
+    _ start: (@escaping TCPViewerCompletion<Value>) -> Void
 ) async throws -> Value {
     try await withCheckedThrowingContinuation { continuation in
         start { result in
@@ -161,7 +161,7 @@ private func waitForResult<Value>(
 }
 
 private func waitForResult(
-    _ start: (@escaping PacketryVoidCompletion) -> Void
+    _ start: (@escaping TCPViewerVoidCompletion) -> Void
 ) async throws {
     try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
         start { result in

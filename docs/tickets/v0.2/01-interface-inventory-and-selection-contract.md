@@ -4,7 +4,7 @@
 COMPLETE
 
 ## Summary
-Define how Packetry discovers network interfaces and presents them to the app with enough metadata for capture setup and analyst trust.
+Define how TCPViewer discovers network interfaces and presents them to the app with enough metadata for capture setup and analyst trust.
 
 ## What To Build
 - Model interface identity, display name, addresses, link type, activity preview hooks, and capture capability flags.
@@ -18,9 +18,9 @@ Define how Packetry discovers network interfaces and presents them to the app wi
 
 ## Delivered Artifacts
 - `PcapPlusPlusCore/Models/CaptureModels.swift` expands `CaptureInterfaceSummary` with technical name, description, loopback state, availability reason, activity preview, addresses, and capability flags.
-- `PcapPlusPlusCore/NativeBridge/PacketryNativeBridge.mm` performs real interface discovery through `PcapPlusPlus` and maps macOS-facing capability and availability metadata into stable descriptors.
+- `PcapPlusPlusCore/NativeBridge/TCPViewerNativeBridge.mm` performs real interface discovery through `PcapPlusPlus` and maps macOS-facing capability and availability metadata into stable descriptors.
 - `PcapPlusPlusCore/NativeBridge/NativeBridgeSupport.swift` adds deterministic sorting so selectable non-loopback interfaces appear first, loopback follows, and disabled/hidden/unavailable interfaces fall to the end.
-- `Packetry/WorkspaceFoundation.swift` recomputes selection validity on refresh and clears stale selections with an explicit user-facing reason instead of silently failing start.
+- `TCPViewer/WorkspaceFoundation.swift` recomputes selection validity on refresh and clears stale selections with an explicit user-facing reason instead of silently failing start.
 
 ## Verification
 - `CoreFacadeTypesTests.interfaceSortingPrefersSelectableEthernetThenLoopbackThenUnavailable()`

@@ -1,7 +1,7 @@
 # v0.5.2 Follow Stream Workflows
 
 ## Summary
-Define follow TCP stream and follow UDP conversation workflows so Packetry can reconstruct and isolate transport conversations in the MVP release.
+Define follow TCP stream and follow UDP conversation workflows so TCP Viewer can reconstruct and isolate transport conversations in the MVP release.
 
 ## What To Build
 - Specify stream transcript models, bidirectional presentation, and export behavior.

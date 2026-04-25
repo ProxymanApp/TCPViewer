@@ -5,7 +5,7 @@ Define the native macOS capture experience for interface quirks, permissions, an
 
 ## What To Build
 - Refine interface presentation, empty states, and capture-start ergonomics for macOS users.
-- Document how Packetry handles Apple-specific interface naming and availability quirks.
+- Document how TCPViewer handles Apple-specific interface naming and availability quirks.
 - Cover graceful messaging for unsupported or limited interface modes.
 
 ## Requirements

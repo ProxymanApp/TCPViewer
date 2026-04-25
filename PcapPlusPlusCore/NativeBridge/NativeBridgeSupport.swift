@@ -1,5 +1,5 @@
 import Foundation
-@_implementationOnly import PacketryNativeBridge
+@_implementationOnly import TCPViewerNativeBridge
 
 final class EventCallbackBox<Element>: @unchecked Sendable {
     private let lock = NSLock()
@@ -385,14 +385,14 @@ enum NativeBridgeMapper {
         descriptors.map { packetSummary($0, source: source) }
     }
 
-    static func coreError(_ error: Error, defaultCode: PacketryCoreError.Code) -> PacketryCoreError {
-        if let error = error as? PacketryCoreError {
+    static func coreError(_ error: Error, defaultCode: TCPViewerCoreError.Code) -> TCPViewerCoreError {
+        if let error = error as? TCPViewerCoreError {
             return error
         }
 
         let nsError = error as NSError
         let message = nsError.localizedDescription.isEmpty ? String(describing: error) : nsError.localizedDescription
-        let code: PacketryCoreError.Code
+        let code: TCPViewerCoreError.Code
         switch nsError.code {
         case 1001:
             code = .unsupportedInterface
@@ -413,7 +413,7 @@ enum NativeBridgeMapper {
         default:
             code = defaultCode
         }
-        return PacketryCoreError(code: code, message: message)
+        return TCPViewerCoreError(code: code, message: message)
     }
 
     private static func sortKey(for interface: CaptureInterfaceSummary) -> (Int, Int, String, String) {

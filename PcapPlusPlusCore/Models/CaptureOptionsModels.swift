@@ -103,15 +103,15 @@ public struct CaptureOptions: Sendable, Codable, Hashable {
 
     public func validated(for interface: CaptureInterfaceSummary? = nil) throws -> CaptureOptions {
         guard snapshotLength > 0 else {
-            throw PacketryCoreError(code: .invalidCaptureOptions, message: "Snapshot length must be greater than zero.")
+            throw TCPViewerCoreError(code: .invalidCaptureOptions, message: "Snapshot length must be greater than zero.")
         }
 
         guard kernelBufferSizeBytes >= 0 else {
-            throw PacketryCoreError(code: .invalidCaptureOptions, message: "Kernel buffer size cannot be negative.")
+            throw TCPViewerCoreError(code: .invalidCaptureOptions, message: "Kernel buffer size cannot be negative.")
         }
 
         guard readTimeoutMilliseconds >= 0 else {
-            throw PacketryCoreError(code: .invalidCaptureOptions, message: "Read timeout cannot be negative.")
+            throw TCPViewerCoreError(code: .invalidCaptureOptions, message: "Read timeout cannot be negative.")
         }
 
         switch stopCondition {
@@ -119,11 +119,11 @@ public struct CaptureOptions: Sendable, Codable, Hashable {
             break
         case .packetCount(let count):
             guard count > 0 else {
-                throw PacketryCoreError(code: .invalidCaptureOptions, message: "Packet-count stop conditions must be greater than zero.")
+                throw TCPViewerCoreError(code: .invalidCaptureOptions, message: "Packet-count stop conditions must be greater than zero.")
             }
         case .durationMilliseconds(let duration):
             guard duration > 0 else {
-                throw PacketryCoreError(code: .invalidCaptureOptions, message: "Duration stop conditions must be greater than zero.")
+                throw TCPViewerCoreError(code: .invalidCaptureOptions, message: "Duration stop conditions must be greater than zero.")
             }
         }
 
@@ -132,42 +132,42 @@ public struct CaptureOptions: Sendable, Codable, Hashable {
             break
         case .single:
             guard fileWriting.directoryURL != nil else {
-                throw PacketryCoreError(code: .invalidCaptureOptions, message: "Single-file capture writing needs a directory.")
+                throw TCPViewerCoreError(code: .invalidCaptureOptions, message: "Single-file capture writing needs a directory.")
             }
             guard !(fileWriting.fileNameStem?.isEmpty ?? true) else {
-                throw PacketryCoreError(code: .invalidCaptureOptions, message: "Single-file capture writing needs a filename stem.")
+                throw TCPViewerCoreError(code: .invalidCaptureOptions, message: "Single-file capture writing needs a filename stem.")
             }
             guard fileWriting.format != nil else {
-                throw PacketryCoreError(code: .invalidCaptureOptions, message: "Single-file capture writing needs an output format.")
+                throw TCPViewerCoreError(code: .invalidCaptureOptions, message: "Single-file capture writing needs an output format.")
             }
         case .rotating:
             guard fileWriting.directoryURL != nil else {
-                throw PacketryCoreError(code: .invalidCaptureOptions, message: "Rotating capture writing needs a directory.")
+                throw TCPViewerCoreError(code: .invalidCaptureOptions, message: "Rotating capture writing needs a directory.")
             }
             guard !(fileWriting.fileNameStem?.isEmpty ?? true) else {
-                throw PacketryCoreError(code: .invalidCaptureOptions, message: "Rotating capture writing needs a filename stem.")
+                throw TCPViewerCoreError(code: .invalidCaptureOptions, message: "Rotating capture writing needs a filename stem.")
             }
             guard fileWriting.format != nil else {
-                throw PacketryCoreError(code: .invalidCaptureOptions, message: "Rotating capture writing needs an output format.")
+                throw TCPViewerCoreError(code: .invalidCaptureOptions, message: "Rotating capture writing needs an output format.")
             }
             guard (fileWriting.maxFileSizeBytes ?? 0) > 0 else {
-                throw PacketryCoreError(code: .invalidCaptureOptions, message: "Rotating capture writing needs a max file size.")
+                throw TCPViewerCoreError(code: .invalidCaptureOptions, message: "Rotating capture writing needs a max file size.")
             }
         case .ring:
             guard fileWriting.directoryURL != nil else {
-                throw PacketryCoreError(code: .invalidCaptureOptions, message: "Ring capture writing needs a directory.")
+                throw TCPViewerCoreError(code: .invalidCaptureOptions, message: "Ring capture writing needs a directory.")
             }
             guard !(fileWriting.fileNameStem?.isEmpty ?? true) else {
-                throw PacketryCoreError(code: .invalidCaptureOptions, message: "Ring capture writing needs a filename stem.")
+                throw TCPViewerCoreError(code: .invalidCaptureOptions, message: "Ring capture writing needs a filename stem.")
             }
             guard fileWriting.format != nil else {
-                throw PacketryCoreError(code: .invalidCaptureOptions, message: "Ring capture writing needs an output format.")
+                throw TCPViewerCoreError(code: .invalidCaptureOptions, message: "Ring capture writing needs an output format.")
             }
             guard (fileWriting.maxFileSizeBytes ?? 0) > 0 else {
-                throw PacketryCoreError(code: .invalidCaptureOptions, message: "Ring capture writing needs a max file size.")
+                throw TCPViewerCoreError(code: .invalidCaptureOptions, message: "Ring capture writing needs a max file size.")
             }
             guard (fileWriting.ringFileCount ?? 0) > 1 else {
-                throw PacketryCoreError(code: .invalidCaptureOptions, message: "Ring capture writing needs at least two files.")
+                throw TCPViewerCoreError(code: .invalidCaptureOptions, message: "Ring capture writing needs at least two files.")
             }
         }
 

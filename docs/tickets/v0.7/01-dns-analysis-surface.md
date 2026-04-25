@@ -1,7 +1,7 @@
 # v0.7.1 DNS Analysis Surface
 
 ## Summary
-Define the first protocol-specific analysis view for DNS so Packetry can surface decoded DNS behavior beyond generic UDP/TCP payload inspection.
+Define the first protocol-specific analysis view for DNS so TCP Viewer can surface decoded DNS behavior beyond generic UDP/TCP payload inspection.
 
 ## What To Build
 - Specify decoded DNS fields, transaction grouping, and response-timing summaries.

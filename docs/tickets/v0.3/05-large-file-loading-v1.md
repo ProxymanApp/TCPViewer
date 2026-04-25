@@ -1,7 +1,7 @@
 # v0.3.5 Large File Loading v1
 
 ## Summary
-Define the first large-file loading behavior so Packetry can open meaningful captures without freezing the app while deeper performance work remains future-phased.
+Define the first large-file loading behavior so TCP Viewer can open meaningful captures without freezing the app while deeper performance work remains future-phased.
 
 ## What To Build
 - Describe incremental loading, responsive selection, and cancellation expectations for large traces.

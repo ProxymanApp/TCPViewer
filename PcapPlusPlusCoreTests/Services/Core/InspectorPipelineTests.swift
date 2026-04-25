@@ -5,7 +5,7 @@ import Testing
 struct InspectorPipelineTests {
 
     @Test func nativeCoreCaptureFilterValidationNormalizesAndRejectsInvalidSyntax() async {
-        let core = NativePacketryCore()
+        let core = NativeTCPViewerCore()
 
         let empty = await core.validateCaptureFilter("   ")
         #expect(empty.disposition == .invalid)
@@ -70,7 +70,7 @@ struct InspectorPipelineTests {
             ]
         )
 
-        let document = try await NativePacketryCore().openOfflineCaptureDocument(at: captureURL)
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
         let packets = try await document.open()
 
         #expect(packets.count == 4)
@@ -131,7 +131,7 @@ struct InspectorPipelineTests {
         let captureURL = directory.appendingPathComponent("tcp-syn-options.pcap")
         try writePCAP(to: captureURL, packets: [makeIPv4TCPSYNOptionsPacket()])
 
-        let document = try await NativePacketryCore().openOfflineCaptureDocument(at: captureURL)
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
         let packets = try await document.open()
         let packet = try #require(packets.first)
         let inspection = try await document.inspectPacket(id: packet.id)
@@ -169,7 +169,7 @@ struct InspectorPipelineTests {
 
     @Test func malformedInspectionAddsDecodeWarningAndKeepsRawBytes() async throws {
         let fixtureURL = CoreFixtureCatalog.captureCategoryURL("malformed").appendingPathComponent("partial-http-request.pcap")
-        let document = try await NativePacketryCore().openOfflineCaptureDocument(at: fixtureURL)
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: fixtureURL)
         let packets = try await document.open()
         let packet = try #require(packets.first)
 
@@ -190,7 +190,7 @@ struct InspectorPipelineTests {
         let packetCount = 640
         try writePCAP(to: captureURL, repeating: repeatedPacket, count: packetCount)
 
-        let document = try await NativePacketryCore().openOfflineCaptureDocument(at: captureURL)
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
         let probe = LoadEventProbe()
         let events = document.events()
         let collector = Task {
@@ -228,7 +228,7 @@ struct InspectorPipelineTests {
         let totalPacketCount = 120_000
         try writePCAP(to: captureURL, repeating: repeatedPacket, count: totalPacketCount)
 
-        let document = try await NativePacketryCore().openOfflineCaptureDocument(at: captureURL)
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
         let probe = LoadEventProbe()
         let events = document.events()
         let collector = Task {
@@ -263,8 +263,8 @@ struct InspectorPipelineTests {
 
         do {
             _ = try await openTask.value
-            Issue.record("Expected loading cancellation to throw PacketryCoreError.operationCancelled.")
-        } catch let error as PacketryCoreError {
+            Issue.record("Expected loading cancellation to throw TCPViewerCoreError.operationCancelled.")
+        } catch let error as TCPViewerCoreError {
             #expect(error.code == .operationCancelled)
         }
 
@@ -282,7 +282,7 @@ struct InspectorPipelineTests {
         do {
             try await document.save()
             Issue.record("Expected save() to fail for a partially loaded capture.")
-        } catch let error as PacketryCoreError {
+        } catch let error as TCPViewerCoreError {
             #expect(error.code == .offlineFileSaveFailed)
         }
     }

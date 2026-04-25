@@ -19,12 +19,12 @@ Define the live capture engine contract for starting, stopping, pausing, resumin
 ## Delivered Artifacts
 - `PcapPlusPlusCore/Models/CoreProtocols.swift` adds `LiveCaptureSessionProviding`, while `PcapPlusPlusCore/Models/PacketModels.swift` owns `PacketIngestEvent` and `PcapPlusPlusCore/Models/CaptureModels.swift` owns health and lifecycle models.
 - `PcapPlusPlusCore/Services/LiveCapture/NativeLiveCaptureSession.swift` wraps one native session inside an actor-backed Swift handle, exposes an `AsyncThrowingStream`, and supports `start`, `pause`, `resume`, and `stop`.
-- `PcapPlusPlusCore/NativeBridge/PacketryNativeBridge.mm` owns the actual live device, translates native phase and drop counters, and keeps packet ownership on the core side.
-- `Packetry/WorkspaceFoundation.swift` consumes live session events per window and keeps packet counts, drop counters, and lifecycle state cancelable at the controller layer.
+- `PcapPlusPlusCore/NativeBridge/TCPViewerNativeBridge.mm` owns the actual live device, translates native phase and drop counters, and keeps packet ownership on the core side.
+- `TCPViewer/WorkspaceFoundation.swift` consumes live session events per window and keeps packet counts, drop counters, and lifecycle state cancelable at the controller layer.
 
 ## Verification
 - `WindowControllerTests.liveCaptureLifecycleAppliesEventsAndHealth()`
-- `xcodebuild test -project Packetry.xcodeproj -scheme Packetry -destination 'platform=macOS'`
+- `xcodebuild test -project TCPViewer.xcodeproj -scheme TCPViewer -destination 'platform=macOS'`
 
 ## Dependencies
 - v0.2.1 interface inventory and selection contract.
