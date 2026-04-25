@@ -491,6 +491,15 @@ enum NetworkInspectorFormatters {
     }
 
     static func protocolLabel(for packet: PacketSummary) -> String {
+        if packet.transportHint == .tls {
+            return packet.layers.reversed()
+                .map(\.name)
+                .first { name in
+                    let uppercasedName = name.uppercased()
+                    return uppercasedName.hasPrefix("TLS") || uppercasedName.hasPrefix("SSL")
+                } ?? "TLS"
+        }
+
         if packet.transportHint != .unknown {
             return packet.transportHint.rawValue.uppercased()
         }

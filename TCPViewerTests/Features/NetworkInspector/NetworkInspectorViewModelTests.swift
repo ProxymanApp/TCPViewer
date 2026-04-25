@@ -147,6 +147,19 @@ struct NetworkInspectorViewModelTests {
             transportHint: .udp,
             decodeStatus: PacketDecodeStatus(kind: .malformed, reason: "Bad length")
         )
+        let tls = makePacket(
+            packetNumber: 3,
+            source: .offline,
+            transportHint: .tls,
+            destinationPort: 443,
+            transportLayerName: "TLSv1.2"
+        )
+        let tlsFallback = makePacket(
+            packetNumber: 4,
+            source: .offline,
+            transportHint: .tls,
+            destinationPort: 443
+        )
 
         let healthyRow = PacketTableRow(packet: healthy)
         let malformedRow = PacketTableRow(packet: malformed)
@@ -157,8 +170,11 @@ struct NetworkInspectorViewModelTests {
         #expect(healthyRow.clientText == "Example")
         #expect(malformedRow.severity == .malformed)
         #expect(malformedRow.tags.map(\.label) == ["Malformed"])
+        #expect(PacketTableRow(packet: tls).protocolText == "TLSv1.2")
+        #expect(PacketTableRow(packet: tlsFallback).protocolText == "TLS")
 
         #expect(PacketDisplayFilter("protocol:http port:80").matches(healthy))
+        #expect(PacketDisplayFilter("protocol:TLSv1.2").matches(tls))
         #expect(PacketDisplayFilter("api.example.com").matches(healthy))
         #expect(PacketDisplayFilter("com.example.app").matches(healthy))
         #expect(PacketDisplayFilter("error:malformed").matches(malformed))
@@ -1024,7 +1040,8 @@ struct NetworkInspectorViewModelTests {
         decodeStatus: PacketDecodeStatus = PacketDecodeStatus(kind: .complete),
         sniDomainName: String? = nil,
         client: PacketClient? = nil,
-        transportDetailSummary: String? = nil
+        transportDetailSummary: String? = nil,
+        transportLayerName: String? = nil
     ) -> PacketSummary {
         PacketSummary(
             packetNumber: packetNumber,
@@ -1042,7 +1059,7 @@ struct NetworkInspectorViewModelTests {
             infoSummary: "Packet \(packetNumber)",
             layers: [
                 PacketLayer(name: "Ethernet"),
-                PacketLayer(name: transportHint.rawValue.uppercased(), detailSummary: transportDetailSummary),
+                PacketLayer(name: transportLayerName ?? transportHint.rawValue.uppercased(), detailSummary: transportDetailSummary),
             ],
             decodeStatus: decodeStatus,
             captureMetadata: PacketCaptureMetadata(linkType: .ethernet, isTruncated: false),
