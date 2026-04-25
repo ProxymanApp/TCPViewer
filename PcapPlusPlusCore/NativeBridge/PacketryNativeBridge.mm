@@ -752,242 +752,466 @@ NSString *TCPFlagsSummary(const pcpp::tcphdr *header)
     return [flags componentsJoinedByString:@", "];
 }
 
+uint16_t TCPFlagsValue(const pcpp::tcphdr *header)
+{
+    uint16_t value = 0;
+    value |= header->cwrFlag ? 0x80 : 0;
+    value |= header->eceFlag ? 0x40 : 0;
+    value |= header->urgFlag ? 0x20 : 0;
+    value |= header->ackFlag ? 0x10 : 0;
+    value |= header->pshFlag ? 0x08 : 0;
+    value |= header->rstFlag ? 0x04 : 0;
+    value |= header->synFlag ? 0x02 : 0;
+    value |= header->finFlag ? 0x01 : 0;
+    return value;
+}
+
+NSString *SetStatus(bool isSet)
+{
+    return isSet ? @"Set" : @"Not set";
+}
+
+NSString *TCPOptionName(pcpp::TcpOptionEnumType type)
+{
+    switch (type) {
+        case pcpp::TcpOptionEnumType::Mss:
+            return @"TCP Option - Maximum segment size";
+        case pcpp::TcpOptionEnumType::Nop:
+            return @"TCP Option - No-Operation";
+        case pcpp::TcpOptionEnumType::Window:
+            return @"TCP Option - Window scale";
+        case pcpp::TcpOptionEnumType::Timestamp:
+            return @"TCP Option - Timestamps";
+        case pcpp::TcpOptionEnumType::SackPerm:
+            return @"TCP Option - SACK permitted";
+        case pcpp::TcpOptionEnumType::Sack:
+            return @"TCP Option - SACK";
+        case pcpp::TcpOptionEnumType::Eol:
+            return @"TCP Option - End of Option List";
+        default:
+            return @"TCP Option - Unknown";
+    }
+}
+
+NSString *TCPOptionValue(pcpp::TcpOption &option)
+{
+    switch (option.getTcpOptionEnumType()) {
+        case pcpp::TcpOptionEnumType::Mss:
+            if (option.getDataSize() >= 2) {
+                return [NSString stringWithFormat:@"%u bytes", ntohs(option.getValueAs<uint16_t>())];
+            }
+            break;
+        case pcpp::TcpOptionEnumType::Window:
+            if (option.getDataSize() >= 1) {
+                uint8_t shift = option.getValueAs<uint8_t>();
+                uint32_t multiplier = shift < 31 ? (1u << shift) : 0;
+                return multiplier > 0
+                    ? [NSString stringWithFormat:@"%u (multiply by %u)", shift, multiplier]
+                    : [NSString stringWithFormat:@"%u", shift];
+            }
+            break;
+        case pcpp::TcpOptionEnumType::Timestamp:
+            if (option.getDataSize() >= 8) {
+                uint32_t tsValue = ntohl(option.getValueAs<uint32_t>(0));
+                uint32_t tsEcho = ntohl(option.getValueAs<uint32_t>(4));
+                return [NSString stringWithFormat:@"TSval %u, TSecr %u", tsValue, tsEcho];
+            }
+            break;
+        case pcpp::TcpOptionEnumType::SackPerm:
+            return @"Permitted";
+        case pcpp::TcpOptionEnumType::Nop:
+        case pcpp::TcpOptionEnumType::Eol:
+            return nil;
+        default:
+            break;
+    }
+
+    return [NSString stringWithFormat:@"Kind %u, %zu bytes", option.getType(), option.getTotalSize()];
+}
+
+NSString *UDPChecksumStatus(pcpp::UdpLayer *udpLayer)
+{
+    const uint16_t checksum = ntohs(udpLayer->getUdpHeader()->headerChecksum);
+    if (checksum == 0) {
+        auto *previousLayer = udpLayer->getPrevLayer();
+        if (previousLayer != nullptr && previousLayer->getProtocol() == pcpp::IPv6) {
+            return @"Illegal zero checksum";
+        }
+        return @"Not present";
+    }
+
+    return @"Present (unverified)";
+}
+
+class PacketDetailTreeBuilder {
+public:
+    PacketDetailTreeBuilder(const pcpp::Packet &packet,
+                            const pcpp::RawPacket &rawPacket,
+                            unsigned long long packetIdentifier,
+                            NSString * _Nullable interfaceName,
+                            NSString * _Nullable packetComment)
+        : packet_(packet),
+          rawPacket_(rawPacket),
+          packetIdentifier_(packetIdentifier),
+          interfaceName_(interfaceName),
+          packetComment_(packetComment) {}
+
+    NSArray<PCPPNativePacketDetailNodeDescriptor *> *build()
+    {
+        NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *nodes = [NSMutableArray array];
+        appendFrame(nodes);
+        for (pcpp::Layer *layer = packet_.getFirstLayer(); layer != nullptr; layer = layer->getNextLayer()) {
+            appendLayer(layer, nodes);
+        }
+
+        auto decodeStatus = DetermineDecodeStatus(packet_, rawPacket_);
+        if (decodeStatus.first != PCPPNativeDecodeStatusKindComplete && decodeStatus.second != nil) {
+            [nodes addObject:MakeWarningNode(@"warning.decode", decodeStatus.second)];
+        }
+
+        return nodes;
+    }
+
+private:
+    const pcpp::Packet &packet_;
+    const pcpp::RawPacket &rawPacket_;
+    unsigned long long packetIdentifier_;
+    NSString * _Nullable interfaceName_;
+    NSString * _Nullable packetComment_;
+
+    uint32_t streamIdentifier()
+    {
+        return pcpp::hash5Tuple(const_cast<pcpp::Packet *>(&packet_), false);
+    }
+
+    void appendFrame(NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *nodes)
+    {
+        NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *frameChildren = [NSMutableArray array];
+        [frameChildren addObject:MakeSyntheticFieldNode(@"frame.number", @"Frame Number", [NSString stringWithFormat:@"%llu", packetIdentifier_])];
+        [frameChildren addObject:MakeSyntheticFieldNode(@"frame.arrival", @"Arrival Time", MakeNSDate(rawPacket_.getPacketTimeStamp()).description)];
+        [frameChildren addObject:MakeSyntheticFieldNode(@"frame.length", @"Frame Length", [NSString stringWithFormat:@"%d bytes", rawPacket_.getFrameLength()])];
+        [frameChildren addObject:MakeSyntheticFieldNode(@"frame.captureLength", @"Captured Length", [NSString stringWithFormat:@"%d bytes", rawPacket_.getRawDataLen()])];
+        if (interfaceName_ != nil) {
+            [frameChildren addObject:MakeSyntheticFieldNode(@"frame.interface", @"Interface", interfaceName_)];
+        }
+        if (packetComment_ != nil) {
+            [frameChildren addObject:MakeSyntheticFieldNode(@"frame.comment", @"Packet Comment", packetComment_)];
+        }
+        [nodes addObject:MakeLayerNode(@"frame",
+                                       @"Frame",
+                                       [NSString stringWithFormat:@"Packet %llu: %d bytes on wire (%d captured)",
+                                                                  packetIdentifier_,
+                                                                  rawPacket_.getFrameLength(),
+                                                                  rawPacket_.getRawDataLen()],
+                                       0,
+                                       rawPacket_.getRawDataLen(),
+                                       frameChildren)];
+    }
+
+    void appendLayer(pcpp::Layer *layer, NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *nodes)
+    {
+        NSUInteger offset = LayerOffset(*layer, rawPacket_);
+        switch (layer->getProtocol()) {
+            case pcpp::Ethernet:
+                appendEthernet(static_cast<pcpp::EthLayer *>(layer), offset, nodes);
+                break;
+            case pcpp::ARP:
+                appendARP(static_cast<pcpp::ArpLayer *>(layer), offset, nodes);
+                break;
+            case pcpp::IPv4:
+                appendIPv4(static_cast<pcpp::IPv4Layer *>(layer), offset, nodes);
+                break;
+            case pcpp::IPv6:
+                appendIPv6(static_cast<pcpp::IPv6Layer *>(layer), offset, nodes);
+                break;
+            case pcpp::TCP:
+                appendTCP(static_cast<pcpp::TcpLayer *>(layer), offset, nodes);
+                break;
+            case pcpp::UDP:
+                appendUDP(static_cast<pcpp::UdpLayer *>(layer), offset, nodes);
+                break;
+            case pcpp::GenericPayload:
+                appendPayload(static_cast<pcpp::PayloadLayer *>(layer), offset, nodes);
+                break;
+            default:
+                appendUnsupported(layer, offset, nodes);
+                break;
+        }
+    }
+
+    void appendEthernet(pcpp::EthLayer *ethLayer, NSUInteger offset, NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *nodes)
+    {
+        auto *header = ethLayer->getEthHeader();
+        NSArray *children = @[
+            MakeFieldNode(@"eth.dst", @"Destination", MakeNSString(ethLayer->getDestMac().toString()), offset, 0, 6),
+            MakeFieldNode(@"eth.src", @"Source", MakeNSString(ethLayer->getSourceMac().toString()), offset, 6, 6),
+            MakeFieldNode(@"eth.type", @"Type", FormatHex16(ntohs(header->etherType)), offset, 12, 2),
+        ];
+        [nodes addObject:MakeLayerNode(@"eth",
+                                       @"Ethernet",
+                                       [NSString stringWithFormat:@"Src: %@, Dst: %@",
+                                                                  MakeNSString(ethLayer->getSourceMac().toString()),
+                                                                  MakeNSString(ethLayer->getDestMac().toString())],
+                                       offset,
+                                       ethLayer->getHeaderLen(),
+                                       children)];
+    }
+
+    void appendARP(pcpp::ArpLayer *arpLayer, NSUInteger offset, NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *nodes)
+    {
+        auto *header = arpLayer->getArpHeader();
+        NSArray *children = @[
+            MakeFieldNode(@"arp.hardware", @"Hardware Type", [NSString stringWithFormat:@"%u", ntohs(header->hardwareType)], offset, 0, 2),
+            MakeFieldNode(@"arp.protocol", @"Protocol Type", FormatHex16(ntohs(header->protocolType)), offset, 2, 2),
+            MakeFieldNode(@"arp.hardwareSize", @"Hardware Size", [NSString stringWithFormat:@"%u", header->hardwareSize], offset, 4, 1),
+            MakeFieldNode(@"arp.protocolSize", @"Protocol Size", [NSString stringWithFormat:@"%u", header->protocolSize], offset, 5, 1),
+            MakeFieldNode(@"arp.opcode", @"Opcode", [NSString stringWithFormat:@"%u", ntohs(header->opcode)], offset, 6, 2),
+            MakeFieldNode(@"arp.senderMac", @"Sender MAC", MakeNSString(arpLayer->getSenderMacAddress().toString()), offset, 8, 6),
+            MakeFieldNode(@"arp.senderIP", @"Sender IP", MakeNSString(arpLayer->getSenderIpAddr().toString()), offset, 14, 4),
+            MakeFieldNode(@"arp.targetMac", @"Target MAC", MakeNSString(arpLayer->getTargetMacAddress().toString()), offset, 18, 6),
+            MakeFieldNode(@"arp.targetIP", @"Target IP", MakeNSString(arpLayer->getTargetIpAddr().toString()), offset, 24, 4),
+        ];
+        [nodes addObject:MakeLayerNode(@"arp",
+                                       @"ARP",
+                                       MakeNSString(arpLayer->toString()),
+                                       offset,
+                                       arpLayer->getHeaderLen(),
+                                       children)];
+    }
+
+    void appendIPv4(pcpp::IPv4Layer *ipv4Layer, NSUInteger offset, NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *nodes)
+    {
+        auto *header = ipv4Layer->getIPv4Header();
+        NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *children = [NSMutableArray arrayWithArray:@[
+            MakeFieldNode(@"ipv4.version", @"Version", [NSString stringWithFormat:@"%u", header->ipVersion], offset, 0, 1),
+            MakeFieldNode(@"ipv4.ihl", @"Header Length", [NSString stringWithFormat:@"%zu bytes", ipv4Layer->getHeaderLen()], offset, 0, 1),
+            MakeFieldNode(@"ipv4.dscp", @"Differentiated Services", FormatHex16(header->typeOfService), offset, 1, 1),
+            MakeFieldNode(@"ipv4.totalLength", @"Total Length", [NSString stringWithFormat:@"%u", ntohs(header->totalLength)], offset, 2, 2),
+            MakeFieldNode(@"ipv4.identification", @"Identification", FormatHex16(ntohs(header->ipId)), offset, 4, 2),
+            MakeFieldNode(@"ipv4.flagsOffset", @"Flags / Fragment Offset", FormatHex16(ntohs(header->fragmentOffset)), offset, 6, 2),
+            MakeFieldNode(@"ipv4.ttl", @"Time To Live", [NSString stringWithFormat:@"%u", header->timeToLive], offset, 8, 1),
+            MakeFieldNode(@"ipv4.protocol", @"Protocol", [NSString stringWithFormat:@"%u", header->protocol], offset, 9, 1),
+            MakeFieldNode(@"ipv4.checksum", @"Header Checksum", FormatHex16(ntohs(header->headerChecksum)), offset, 10, 2),
+            MakeFieldNode(@"ipv4.src", @"Source", MakeNSString(ipv4Layer->getSrcIPv4Address().toString()), offset, 12, 4),
+            MakeFieldNode(@"ipv4.dst", @"Destination", MakeNSString(ipv4Layer->getDstIPv4Address().toString()), offset, 16, 4),
+        ]];
+        if (ipv4Layer->getHeaderLen() > sizeof(pcpp::iphdr)) {
+            [children addObject:MakeFieldNode(@"ipv4.options",
+                                              @"Options",
+                                              [NSString stringWithFormat:@"%zu bytes", ipv4Layer->getHeaderLen() - sizeof(pcpp::iphdr)],
+                                              offset,
+                                              sizeof(pcpp::iphdr),
+                                              ipv4Layer->getHeaderLen() - sizeof(pcpp::iphdr))];
+        }
+        [nodes addObject:MakeLayerNode(@"ipv4",
+                                       @"IPv4",
+                                       [NSString stringWithFormat:@"Src: %@, Dst: %@",
+                                                                  MakeNSString(ipv4Layer->getSrcIPv4Address().toString()),
+                                                                  MakeNSString(ipv4Layer->getDstIPv4Address().toString())],
+                                       offset,
+                                       ipv4Layer->getHeaderLen(),
+                                       children)];
+    }
+
+    void appendIPv6(pcpp::IPv6Layer *ipv6Layer, NSUInteger offset, NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *nodes)
+    {
+        auto *header = ipv6Layer->getIPv6Header();
+        uint32_t versionTrafficFlow = 0;
+        std::memcpy(&versionTrafficFlow, header, sizeof(versionTrafficFlow));
+        NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *children = [NSMutableArray arrayWithArray:@[
+            MakeFieldNode(@"ipv6.versionTraffic", @"Version / Traffic Class / Flow Label", FormatHex32(ntohl(versionTrafficFlow)), offset, 0, 4),
+            MakeFieldNode(@"ipv6.payloadLength", @"Payload Length", [NSString stringWithFormat:@"%u", ntohs(header->payloadLength)], offset, 4, 2),
+            MakeFieldNode(@"ipv6.nextHeader", @"Next Header", [NSString stringWithFormat:@"%u", header->nextHeader], offset, 6, 1),
+            MakeFieldNode(@"ipv6.hopLimit", @"Hop Limit", [NSString stringWithFormat:@"%u", header->hopLimit], offset, 7, 1),
+            MakeFieldNode(@"ipv6.src", @"Source", MakeNSString(ipv6Layer->getSrcIPv6Address().toString()), offset, 8, 16),
+            MakeFieldNode(@"ipv6.dst", @"Destination", MakeNSString(ipv6Layer->getDstIPv6Address().toString()), offset, 24, 16),
+        ]];
+        if (ipv6Layer->getHeaderLen() > sizeof(pcpp::ip6_hdr)) {
+            [children addObject:MakeFieldNode(@"ipv6.extensions",
+                                              @"Extension Headers",
+                                              [NSString stringWithFormat:@"%zu bytes", ipv6Layer->getHeaderLen() - sizeof(pcpp::ip6_hdr)],
+                                              offset,
+                                              sizeof(pcpp::ip6_hdr),
+                                              ipv6Layer->getHeaderLen() - sizeof(pcpp::ip6_hdr))];
+        }
+        [nodes addObject:MakeLayerNode(@"ipv6",
+                                       @"IPv6",
+                                       [NSString stringWithFormat:@"Src: %@, Dst: %@",
+                                                                  MakeNSString(ipv6Layer->getSrcIPv6Address().toString()),
+                                                                  MakeNSString(ipv6Layer->getDstIPv6Address().toString())],
+                                       offset,
+                                       ipv6Layer->getHeaderLen(),
+                                       children)];
+    }
+
+    void appendTCP(pcpp::TcpLayer *tcpLayer, NSUInteger offset, NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *nodes)
+    {
+        auto *header = tcpLayer->getTcpHeader();
+        NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *children = [NSMutableArray array];
+        uint32_t streamID = streamIdentifier();
+        if (streamID != 0) {
+            [children addObject:MakeSyntheticFieldNode(@"tcp.streamID", @"Stream ID", [NSString stringWithFormat:@"%u", streamID])];
+        }
+        [children addObject:MakeSyntheticFieldNode(@"tcp.segmentLength", @"TCP Segment Len", [NSString stringWithFormat:@"%zu", tcpLayer->getLayerPayloadSize()])];
+        [children addObject:MakeFieldNode(@"tcp.srcPort", @"Source Port", [NSString stringWithFormat:@"%u", tcpLayer->getSrcPort()], offset, 0, 2)];
+        [children addObject:MakeFieldNode(@"tcp.dstPort", @"Destination Port", [NSString stringWithFormat:@"%u", tcpLayer->getDstPort()], offset, 2, 2)];
+        [children addObject:MakeFieldNode(@"tcp.sequence.raw", @"Sequence Number (raw)", [NSString stringWithFormat:@"%u", ntohl(header->sequenceNumber)], offset, 4, 4)];
+        [children addObject:MakeFieldNode(@"tcp.ack.raw", @"Acknowledgment Number (raw)", [NSString stringWithFormat:@"%u", ntohl(header->ackNumber)], offset, 8, 4)];
+        [children addObject:MakeFieldNode(@"tcp.dataOffset", @"Header Length", [NSString stringWithFormat:@"%zu bytes (%u)", tcpLayer->getHeaderLen(), header->dataOffset], offset, 12, 1)];
+        [children addObject:tcpFlagsNode(header, offset)];
+        [children addObject:MakeFieldNode(@"tcp.window", @"Window", [NSString stringWithFormat:@"%u", ntohs(header->windowSize)], offset, 14, 2)];
+        [children addObject:MakeFieldNode(@"tcp.checksum", @"Checksum", FormatHex16(ntohs(header->headerChecksum)), offset, 16, 2)];
+        [children addObject:MakeFieldNode(@"tcp.urgentPointer", @"Urgent Pointer", [NSString stringWithFormat:@"%u", ntohs(header->urgentPointer)], offset, 18, 2)];
+
+        if (tcpLayer->getHeaderLen() > sizeof(pcpp::tcphdr)) {
+            [children addObject:MakeDetailNode(@"tcp.options",
+                                              @"Options",
+                                              [NSString stringWithFormat:@"%zu bytes", tcpLayer->getHeaderLen() - sizeof(pcpp::tcphdr)],
+                                              @"field",
+                                              MakeByteRange(offset + sizeof(pcpp::tcphdr), tcpLayer->getHeaderLen() - sizeof(pcpp::tcphdr)),
+                                              nil,
+                                              tcpOptionNodes(tcpLayer, offset))];
+        }
+
+        [nodes addObject:MakeLayerNode(@"tcp",
+                                       @"TCP",
+                                       [NSString stringWithFormat:@"%u → %u (%@)",
+                                                                  tcpLayer->getSrcPort(),
+                                                                  tcpLayer->getDstPort(),
+                                                                  TCPFlagsSummary(header)],
+                                       offset,
+                                       tcpLayer->getHeaderLen(),
+                                       children)];
+    }
+
+    PCPPNativePacketDetailNodeDescriptor *tcpFlagsNode(const pcpp::tcphdr *header, NSUInteger offset)
+    {
+        NSArray *flagChildren = @[
+            MakeFieldNode(@"tcp.flags.cwr", @"Congestion Window Reduced", SetStatus(header->cwrFlag), offset, 12, 2),
+            MakeFieldNode(@"tcp.flags.ece", @"ECN-Echo", SetStatus(header->eceFlag), offset, 12, 2),
+            MakeFieldNode(@"tcp.flags.urg", @"Urgent", SetStatus(header->urgFlag), offset, 12, 2),
+            MakeFieldNode(@"tcp.flags.ack", @"Acknowledgment", SetStatus(header->ackFlag), offset, 12, 2),
+            MakeFieldNode(@"tcp.flags.psh", @"Push", SetStatus(header->pshFlag), offset, 12, 2),
+            MakeFieldNode(@"tcp.flags.rst", @"Reset", SetStatus(header->rstFlag), offset, 12, 2),
+            MakeFieldNode(@"tcp.flags.syn", @"Syn", SetStatus(header->synFlag), offset, 12, 2),
+            MakeFieldNode(@"tcp.flags.fin", @"Fin", SetStatus(header->finFlag), offset, 12, 2),
+        ];
+        return MakeDetailNode(@"tcp.flags",
+                              @"Flags",
+                              [NSString stringWithFormat:@"0x%03x (%@)", TCPFlagsValue(header), TCPFlagsSummary(header)],
+                              @"field",
+                              MakeByteRange(offset + 12, 2),
+                              nil,
+                              flagChildren);
+    }
+
+    NSArray<PCPPNativePacketDetailNodeDescriptor *> *tcpOptionNodes(pcpp::TcpLayer *tcpLayer, NSUInteger layerOffset)
+    {
+        NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *nodes = [NSMutableArray array];
+        pcpp::TcpOption option = tcpLayer->getFirstTcpOption();
+        NSUInteger index = 0;
+        while (option.isNotNull() && index < 64) {
+            ptrdiff_t relativeOffset = option.getRecordBasePtr() - tcpLayer->getData();
+            if (relativeOffset >= 0) {
+                [nodes addObject:MakeDetailNode([NSString stringWithFormat:@"tcp.option.%lu", (unsigned long)index],
+                                                TCPOptionName(option.getTcpOptionEnumType()),
+                                                TCPOptionValue(option),
+                                                @"field",
+                                                MakeByteRange(layerOffset + static_cast<NSUInteger>(relativeOffset), option.getTotalSize()),
+                                                nil,
+                                                @[
+                                                    MakeSyntheticFieldNode([NSString stringWithFormat:@"tcp.option.%lu.kind", (unsigned long)index],
+                                                                           @"Kind",
+                                                                           [NSString stringWithFormat:@"%u", option.getType()]),
+                                                    MakeSyntheticFieldNode([NSString stringWithFormat:@"tcp.option.%lu.length", (unsigned long)index],
+                                                                           @"Length",
+                                                                           [NSString stringWithFormat:@"%zu", option.getTotalSize()]),
+                                                ])];
+            }
+
+            option = tcpLayer->getNextTcpOption(option);
+            index += 1;
+        }
+        return nodes;
+    }
+
+    void appendUDP(pcpp::UdpLayer *udpLayer, NSUInteger offset, NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *nodes)
+    {
+        auto *header = udpLayer->getUdpHeader();
+        uint16_t udpLength = ntohs(header->length);
+        uint16_t payloadLength = udpLength >= sizeof(pcpp::udphdr) ? udpLength - sizeof(pcpp::udphdr) : 0;
+        uint16_t calculatedChecksum = udpLayer->calculateChecksum(false);
+        NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *children = [NSMutableArray array];
+        uint32_t streamID = streamIdentifier();
+        if (streamID != 0) {
+            [children addObject:MakeSyntheticFieldNode(@"udp.streamID", @"Stream ID", [NSString stringWithFormat:@"%u", streamID])];
+        }
+        [children addObject:MakeFieldNode(@"udp.srcPort", @"Source Port", [NSString stringWithFormat:@"%u", udpLayer->getSrcPort()], offset, 0, 2)];
+        [children addObject:MakeFieldNode(@"udp.dstPort", @"Destination Port", [NSString stringWithFormat:@"%u", udpLayer->getDstPort()], offset, 2, 2)];
+        [children addObject:MakeFieldNode(@"udp.length", @"Length", [NSString stringWithFormat:@"%u", udpLength], offset, 4, 2)];
+        [children addObject:MakeFieldNode(@"udp.payloadLength", @"Payload Length", [NSString stringWithFormat:@"%u bytes", payloadLength], offset, 4, 2)];
+        [children addObject:MakeFieldNode(@"udp.checksum", @"Checksum", FormatHex16(ntohs(header->headerChecksum)), offset, 6, 2)];
+        [children addObject:MakeSyntheticFieldNode(@"udp.checksum.status", @"Checksum Status", UDPChecksumStatus(udpLayer))];
+        [children addObject:MakeSyntheticFieldNode(@"udp.checksum.calculated", @"Calculated Checksum", FormatHex16(calculatedChecksum))];
+
+        [nodes addObject:MakeLayerNode(@"udp",
+                                       @"UDP",
+                                       [NSString stringWithFormat:@"%u → %u", udpLayer->getSrcPort(), udpLayer->getDstPort()],
+                                       offset,
+                                       udpLayer->getHeaderLen(),
+                                       children)];
+    }
+
+    void appendPayload(pcpp::PayloadLayer *payloadLayer, NSUInteger offset, NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *nodes)
+    {
+        NSArray *children = @[
+            MakeFieldNode(@"payload.length",
+                          @"Length",
+                          [NSString stringWithFormat:@"%zu bytes", payloadLayer->getPayloadLen()],
+                          offset,
+                          0,
+                          payloadLayer->getPayloadLen()),
+            MakeFieldNode(@"payload.preview",
+                          @"Preview",
+                          PayloadPreview(payloadLayer->getPayload(), payloadLayer->getPayloadLen()),
+                          offset,
+                          0,
+                          payloadLayer->getPayloadLen()),
+        ];
+        [nodes addObject:MakeLayerNode(@"payload",
+                                       @"Payload",
+                                       [NSString stringWithFormat:@"%zu bytes", payloadLayer->getPayloadLen()],
+                                       offset,
+                                       payloadLayer->getPayloadLen(),
+                                       children)];
+    }
+
+    void appendUnsupported(pcpp::Layer *layer, NSUInteger offset, NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *nodes)
+    {
+        [nodes addObject:MakeLayerNode([NSString stringWithFormat:@"layer-%lu", (unsigned long)offset],
+                                       LayerName(*layer),
+                                       [NSString stringWithFormat:@"Detailed field decoding is not available yet for %@.",
+                                                                  LayerName(*layer)],
+                                       offset,
+                                       layer->getHeaderLen(),
+                                       @[
+                                           MakeFieldNode([NSString stringWithFormat:@"layer-%lu.bytes", (unsigned long)offset],
+                                                         @"Bytes",
+                                                         [NSString stringWithFormat:@"%zu bytes", layer->getHeaderLen()],
+                                                         offset,
+                                                         0,
+                                                         layer->getHeaderLen()),
+                                       ])];
+    }
+};
+
 NSArray<PCPPNativePacketDetailNodeDescriptor *> *BuildPacketDetailNodes(const pcpp::Packet &packet,
                                                                         const pcpp::RawPacket &rawPacket,
                                                                         unsigned long long packetIdentifier,
                                                                         NSString * _Nullable interfaceName,
                                                                         NSString * _Nullable packetComment)
 {
-    NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *nodes = [NSMutableArray array];
-    NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *frameChildren = [NSMutableArray array];
-    [frameChildren addObject:MakeSyntheticFieldNode(@"frame.number", @"Frame Number", [NSString stringWithFormat:@"%llu", packetIdentifier])];
-    [frameChildren addObject:MakeSyntheticFieldNode(@"frame.arrival", @"Arrival Time", MakeNSDate(rawPacket.getPacketTimeStamp()).description)];
-    [frameChildren addObject:MakeSyntheticFieldNode(@"frame.length", @"Frame Length", [NSString stringWithFormat:@"%d bytes", rawPacket.getFrameLength()])];
-    [frameChildren addObject:MakeSyntheticFieldNode(@"frame.captureLength", @"Captured Length", [NSString stringWithFormat:@"%d bytes", rawPacket.getRawDataLen()])];
-    if (interfaceName != nil) {
-        [frameChildren addObject:MakeSyntheticFieldNode(@"frame.interface", @"Interface", interfaceName)];
-    }
-    if (packetComment != nil) {
-        [frameChildren addObject:MakeSyntheticFieldNode(@"frame.comment", @"Packet Comment", packetComment)];
-    }
-    [nodes addObject:MakeLayerNode(@"frame",
-                                   @"Frame",
-                                   [NSString stringWithFormat:@"Packet %llu: %d bytes on wire (%d captured)",
-                                                              packetIdentifier,
-                                                              rawPacket.getFrameLength(),
-                                                              rawPacket.getRawDataLen()],
-                                   0,
-                                   rawPacket.getRawDataLen(),
-                                   frameChildren)];
-
-    for (pcpp::Layer *layer = packet.getFirstLayer(); layer != nullptr; layer = layer->getNextLayer()) {
-        NSUInteger offset = LayerOffset(*layer, rawPacket);
-        switch (layer->getProtocol()) {
-            case pcpp::Ethernet: {
-                auto *ethLayer = static_cast<pcpp::EthLayer *>(layer);
-                auto *header = ethLayer->getEthHeader();
-                NSArray *children = @[
-                    MakeFieldNode(@"eth.dst", @"Destination", MakeNSString(ethLayer->getDestMac().toString()), offset, 0, 6),
-                    MakeFieldNode(@"eth.src", @"Source", MakeNSString(ethLayer->getSourceMac().toString()), offset, 6, 6),
-                    MakeFieldNode(@"eth.type", @"Type", FormatHex16(ntohs(header->etherType)), offset, 12, 2),
-                ];
-                [nodes addObject:MakeLayerNode(@"eth",
-                                               @"Ethernet",
-                                               [NSString stringWithFormat:@"Src: %@, Dst: %@",
-                                                                          MakeNSString(ethLayer->getSourceMac().toString()),
-                                                                          MakeNSString(ethLayer->getDestMac().toString())],
-                                               offset,
-                                               ethLayer->getHeaderLen(),
-                                               children)];
-                break;
-            }
-            case pcpp::ARP: {
-                auto *arpLayer = static_cast<pcpp::ArpLayer *>(layer);
-                auto *header = arpLayer->getArpHeader();
-                NSArray *children = @[
-                    MakeFieldNode(@"arp.hardware", @"Hardware Type", [NSString stringWithFormat:@"%u", ntohs(header->hardwareType)], offset, 0, 2),
-                    MakeFieldNode(@"arp.protocol", @"Protocol Type", FormatHex16(ntohs(header->protocolType)), offset, 2, 2),
-                    MakeFieldNode(@"arp.hardwareSize", @"Hardware Size", [NSString stringWithFormat:@"%u", header->hardwareSize], offset, 4, 1),
-                    MakeFieldNode(@"arp.protocolSize", @"Protocol Size", [NSString stringWithFormat:@"%u", header->protocolSize], offset, 5, 1),
-                    MakeFieldNode(@"arp.opcode", @"Opcode", [NSString stringWithFormat:@"%u", ntohs(header->opcode)], offset, 6, 2),
-                    MakeFieldNode(@"arp.senderMac", @"Sender MAC", MakeNSString(arpLayer->getSenderMacAddress().toString()), offset, 8, 6),
-                    MakeFieldNode(@"arp.senderIP", @"Sender IP", MakeNSString(arpLayer->getSenderIpAddr().toString()), offset, 14, 4),
-                    MakeFieldNode(@"arp.targetMac", @"Target MAC", MakeNSString(arpLayer->getTargetMacAddress().toString()), offset, 18, 6),
-                    MakeFieldNode(@"arp.targetIP", @"Target IP", MakeNSString(arpLayer->getTargetIpAddr().toString()), offset, 24, 4),
-                ];
-                [nodes addObject:MakeLayerNode(@"arp",
-                                               @"ARP",
-                                               MakeNSString(arpLayer->toString()),
-                                               offset,
-                                               arpLayer->getHeaderLen(),
-                                               children)];
-                break;
-            }
-            case pcpp::IPv4: {
-                auto *ipv4Layer = static_cast<pcpp::IPv4Layer *>(layer);
-                auto *header = ipv4Layer->getIPv4Header();
-                NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *children = [NSMutableArray arrayWithArray:@[
-                    MakeFieldNode(@"ipv4.version", @"Version", [NSString stringWithFormat:@"%u", header->ipVersion], offset, 0, 1),
-                    MakeFieldNode(@"ipv4.ihl", @"Header Length", [NSString stringWithFormat:@"%zu bytes", ipv4Layer->getHeaderLen()], offset, 0, 1),
-                    MakeFieldNode(@"ipv4.dscp", @"Differentiated Services", FormatHex16(header->typeOfService), offset, 1, 1),
-                    MakeFieldNode(@"ipv4.totalLength", @"Total Length", [NSString stringWithFormat:@"%u", ntohs(header->totalLength)], offset, 2, 2),
-                    MakeFieldNode(@"ipv4.identification", @"Identification", FormatHex16(ntohs(header->ipId)), offset, 4, 2),
-                    MakeFieldNode(@"ipv4.flagsOffset", @"Flags / Fragment Offset", FormatHex16(ntohs(header->fragmentOffset)), offset, 6, 2),
-                    MakeFieldNode(@"ipv4.ttl", @"Time To Live", [NSString stringWithFormat:@"%u", header->timeToLive], offset, 8, 1),
-                    MakeFieldNode(@"ipv4.protocol", @"Protocol", [NSString stringWithFormat:@"%u", header->protocol], offset, 9, 1),
-                    MakeFieldNode(@"ipv4.checksum", @"Header Checksum", FormatHex16(ntohs(header->headerChecksum)), offset, 10, 2),
-                    MakeFieldNode(@"ipv4.src", @"Source", MakeNSString(ipv4Layer->getSrcIPv4Address().toString()), offset, 12, 4),
-                    MakeFieldNode(@"ipv4.dst", @"Destination", MakeNSString(ipv4Layer->getDstIPv4Address().toString()), offset, 16, 4),
-                ]];
-                if (ipv4Layer->getHeaderLen() > sizeof(pcpp::iphdr)) {
-                    [children addObject:MakeFieldNode(@"ipv4.options",
-                                                      @"Options",
-                                                      [NSString stringWithFormat:@"%zu bytes", ipv4Layer->getHeaderLen() - sizeof(pcpp::iphdr)],
-                                                      offset,
-                                                      sizeof(pcpp::iphdr),
-                                                      ipv4Layer->getHeaderLen() - sizeof(pcpp::iphdr))];
-                }
-                [nodes addObject:MakeLayerNode(@"ipv4",
-                                               @"IPv4",
-                                               [NSString stringWithFormat:@"Src: %@, Dst: %@",
-                                                                          MakeNSString(ipv4Layer->getSrcIPv4Address().toString()),
-                                                                          MakeNSString(ipv4Layer->getDstIPv4Address().toString())],
-                                               offset,
-                                               ipv4Layer->getHeaderLen(),
-                                               children)];
-                break;
-            }
-            case pcpp::IPv6: {
-                auto *ipv6Layer = static_cast<pcpp::IPv6Layer *>(layer);
-                auto *header = ipv6Layer->getIPv6Header();
-                uint32_t versionTrafficFlow = 0;
-                std::memcpy(&versionTrafficFlow, header, sizeof(versionTrafficFlow));
-                NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *children = [NSMutableArray arrayWithArray:@[
-                    MakeFieldNode(@"ipv6.versionTraffic", @"Version / Traffic Class / Flow Label", FormatHex32(ntohl(versionTrafficFlow)), offset, 0, 4),
-                    MakeFieldNode(@"ipv6.payloadLength", @"Payload Length", [NSString stringWithFormat:@"%u", ntohs(header->payloadLength)], offset, 4, 2),
-                    MakeFieldNode(@"ipv6.nextHeader", @"Next Header", [NSString stringWithFormat:@"%u", header->nextHeader], offset, 6, 1),
-                    MakeFieldNode(@"ipv6.hopLimit", @"Hop Limit", [NSString stringWithFormat:@"%u", header->hopLimit], offset, 7, 1),
-                    MakeFieldNode(@"ipv6.src", @"Source", MakeNSString(ipv6Layer->getSrcIPv6Address().toString()), offset, 8, 16),
-                    MakeFieldNode(@"ipv6.dst", @"Destination", MakeNSString(ipv6Layer->getDstIPv6Address().toString()), offset, 24, 16),
-                ]];
-                if (ipv6Layer->getHeaderLen() > sizeof(pcpp::ip6_hdr)) {
-                    [children addObject:MakeFieldNode(@"ipv6.extensions",
-                                                      @"Extension Headers",
-                                                      [NSString stringWithFormat:@"%zu bytes", ipv6Layer->getHeaderLen() - sizeof(pcpp::ip6_hdr)],
-                                                      offset,
-                                                      sizeof(pcpp::ip6_hdr),
-                                                      ipv6Layer->getHeaderLen() - sizeof(pcpp::ip6_hdr))];
-                }
-                [nodes addObject:MakeLayerNode(@"ipv6",
-                                               @"IPv6",
-                                               [NSString stringWithFormat:@"Src: %@, Dst: %@",
-                                                                          MakeNSString(ipv6Layer->getSrcIPv6Address().toString()),
-                                                                          MakeNSString(ipv6Layer->getDstIPv6Address().toString())],
-                                               offset,
-                                               ipv6Layer->getHeaderLen(),
-                                               children)];
-                break;
-            }
-            case pcpp::TCP: {
-                auto *tcpLayer = static_cast<pcpp::TcpLayer *>(layer);
-                auto *header = tcpLayer->getTcpHeader();
-                NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *children = [NSMutableArray arrayWithArray:@[
-                    MakeFieldNode(@"tcp.srcPort", @"Source Port", [NSString stringWithFormat:@"%u", tcpLayer->getSrcPort()], offset, 0, 2),
-                    MakeFieldNode(@"tcp.dstPort", @"Destination Port", [NSString stringWithFormat:@"%u", tcpLayer->getDstPort()], offset, 2, 2),
-                    MakeFieldNode(@"tcp.sequence", @"Sequence Number", [NSString stringWithFormat:@"%u", ntohl(header->sequenceNumber)], offset, 4, 4),
-                    MakeFieldNode(@"tcp.ack", @"Acknowledgment Number", [NSString stringWithFormat:@"%u", ntohl(header->ackNumber)], offset, 8, 4),
-                    MakeFieldNode(@"tcp.dataOffset", @"Header Length", [NSString stringWithFormat:@"%zu bytes", tcpLayer->getHeaderLen()], offset, 12, 2),
-                    MakeFieldNode(@"tcp.flags", @"Flags", TCPFlagsSummary(header), offset, 12, 2),
-                    MakeFieldNode(@"tcp.window", @"Window", [NSString stringWithFormat:@"%u", ntohs(header->windowSize)], offset, 14, 2),
-                    MakeFieldNode(@"tcp.checksum", @"Checksum", FormatHex16(ntohs(header->headerChecksum)), offset, 16, 2),
-                    MakeFieldNode(@"tcp.urgentPointer", @"Urgent Pointer", [NSString stringWithFormat:@"%u", ntohs(header->urgentPointer)], offset, 18, 2),
-                ]];
-                if (tcpLayer->getHeaderLen() > sizeof(pcpp::tcphdr)) {
-                    [children addObject:MakeFieldNode(@"tcp.options",
-                                                      @"Options",
-                                                      [NSString stringWithFormat:@"%zu bytes", tcpLayer->getHeaderLen() - sizeof(pcpp::tcphdr)],
-                                                      offset,
-                                                      sizeof(pcpp::tcphdr),
-                                                      tcpLayer->getHeaderLen() - sizeof(pcpp::tcphdr))];
-                }
-                [nodes addObject:MakeLayerNode(@"tcp",
-                                               @"TCP",
-                                               [NSString stringWithFormat:@"%u → %u (%@)",
-                                                                          tcpLayer->getSrcPort(),
-                                                                          tcpLayer->getDstPort(),
-                                                                          TCPFlagsSummary(header)],
-                                               offset,
-                                               tcpLayer->getHeaderLen(),
-                                               children)];
-                break;
-            }
-            case pcpp::UDP: {
-                auto *udpLayer = static_cast<pcpp::UdpLayer *>(layer);
-                auto *header = udpLayer->getUdpHeader();
-                NSArray *children = @[
-                    MakeFieldNode(@"udp.srcPort", @"Source Port", [NSString stringWithFormat:@"%u", udpLayer->getSrcPort()], offset, 0, 2),
-                    MakeFieldNode(@"udp.dstPort", @"Destination Port", [NSString stringWithFormat:@"%u", udpLayer->getDstPort()], offset, 2, 2),
-                    MakeFieldNode(@"udp.length", @"Length", [NSString stringWithFormat:@"%u", ntohs(header->length)], offset, 4, 2),
-                    MakeFieldNode(@"udp.checksum", @"Checksum", FormatHex16(ntohs(header->headerChecksum)), offset, 6, 2),
-                ];
-                [nodes addObject:MakeLayerNode(@"udp",
-                                               @"UDP",
-                                               [NSString stringWithFormat:@"%u → %u", udpLayer->getSrcPort(), udpLayer->getDstPort()],
-                                               offset,
-                                               udpLayer->getHeaderLen(),
-                                               children)];
-                break;
-            }
-            case pcpp::GenericPayload: {
-                auto *payloadLayer = static_cast<pcpp::PayloadLayer *>(layer);
-                NSArray *children = @[
-                    MakeFieldNode(@"payload.length",
-                                  @"Length",
-                                  [NSString stringWithFormat:@"%zu bytes", payloadLayer->getPayloadLen()],
-                                  offset,
-                                  0,
-                                  payloadLayer->getPayloadLen()),
-                    MakeFieldNode(@"payload.preview",
-                                  @"Preview",
-                                  PayloadPreview(payloadLayer->getPayload(), payloadLayer->getPayloadLen()),
-                                  offset,
-                                  0,
-                                  payloadLayer->getPayloadLen()),
-                ];
-                [nodes addObject:MakeLayerNode(@"payload",
-                                               @"Payload",
-                                               [NSString stringWithFormat:@"%zu bytes", payloadLayer->getPayloadLen()],
-                                               offset,
-                                               payloadLayer->getPayloadLen(),
-                                               children)];
-                break;
-            }
-            default: {
-                [nodes addObject:MakeLayerNode([NSString stringWithFormat:@"layer-%lu", (unsigned long)offset],
-                                               LayerName(*layer),
-                                               [NSString stringWithFormat:@"Detailed field decoding is not available yet for %@.",
-                                                                          LayerName(*layer)],
-                                               offset,
-                                               layer->getHeaderLen(),
-                                               @[
-                                                   MakeFieldNode([NSString stringWithFormat:@"layer-%lu.bytes", (unsigned long)offset],
-                                                                 @"Bytes",
-                                                                 [NSString stringWithFormat:@"%zu bytes", layer->getHeaderLen()],
-                                                                 offset,
-                                                                 0,
-                                                                 layer->getHeaderLen()),
-                                               ])];
-                break;
-            }
-        }
-    }
-
-    auto decodeStatus = DetermineDecodeStatus(packet, rawPacket);
-    if (decodeStatus.first != PCPPNativeDecodeStatusKindComplete && decodeStatus.second != nil) {
-        [nodes addObject:MakeWarningNode(@"warning.decode", decodeStatus.second)];
-    }
-
-    return nodes;
+    return PacketDetailTreeBuilder(packet, rawPacket, packetIdentifier, interfaceName, packetComment).build();
 }
 
 PCPPNativePacketInspectionDescriptor *MakePacketInspection(const pcpp::RawPacket &rawPacket,

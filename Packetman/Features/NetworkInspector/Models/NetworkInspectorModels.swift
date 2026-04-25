@@ -65,26 +65,23 @@ enum NetworkInspectorSidebarSelection: Hashable, Sendable {
 }
 
 enum PacketInspectorTab: String, CaseIterable, Identifiable, Sendable, Hashable {
-    case overview
-    case layers
+    case summary
+    case detail
+    case raw
     case hex
-    case stream
-    case notes
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .overview:
-            "Overview"
-        case .layers:
-            "Layers"
+        case .summary:
+            "Summary"
+        case .detail:
+            "Detail"
+        case .raw:
+            "Raw"
         case .hex:
             "Hex"
-        case .stream:
-            "Stream"
-        case .notes:
-            "Notes"
         }
     }
 }

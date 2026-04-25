@@ -722,6 +722,43 @@ struct WindowControllerTests {
         await tearDown(controller)
     }
 
+    @Test func clearPacketsResetsSelectionInspectionAndNavigation() async {
+        let url = URL(fileURLWithPath: "/tmp/clear-packets.pcapng")
+        let packet = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp)
+        let document = FakeOfflineDocument(
+            url: url,
+            metadata: CaptureDocumentMetadata(format: .pcapng),
+            openPlan: .completed([packet]),
+            inspections: [packet.id: makeInspection(for: packet)]
+        )
+        let controller = PacketryWindowController(
+            services: PacketryServiceRegistry(core: FakePacketryCore(
+                interfaceInventories: [[makeInterface(id: "en0", displayName: "Wi-Fi")]],
+                documentFactory: { _ in document }
+            ))
+        )
+
+        await controller.openDocument(at: url)
+        await waitUntil {
+            controller.snapshot.packetIngestState.totalPacketCount == 1
+        }
+        controller.selectPacket(packet.id)
+        await waitUntil {
+            controller.snapshot.inspectionState.inspection?.packetID == packet.id
+        }
+
+        controller.clearPackets()
+
+        #expect(controller.snapshot.packetIngestState.totalPacketCount == 0)
+        #expect(controller.snapshot.documentState.packetCount == 0)
+        #expect(controller.snapshot.navigationState.visiblePackets.isEmpty)
+        #expect(controller.snapshot.selectedPacketID == nil)
+        #expect(controller.snapshot.inspectionState.inspection == nil)
+        #expect(controller.snapshot.inspectionState.highlightedByteRange == nil)
+
+        await tearDown(controller)
+    }
+
     private func makeInterface(
         id: String,
         displayName: String,

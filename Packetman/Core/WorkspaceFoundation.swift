@@ -1181,7 +1181,16 @@ final class PacketryWindowController {
     func clearPackets() {
         let source = snapshot.packetIngestState.source
         snapshot.packetIngestState.reset(source: source, message: "Cleared.")
+        snapshot.navigationState = PacketNavigationState(
+            visiblePackets: [],
+            jumpText: "",
+            jumpErrorMessage: nil,
+            statusMessage: "Cleared."
+        )
+        resetInspectionState()
         snapshot.documentState.packetCount = 0
+        snapshot.sessionState.capturedPacketCount = 0
+        services.packetMetadataEnricher.reset()
     }
 
     func presentOpenCapturePanel() {

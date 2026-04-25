@@ -253,7 +253,7 @@ final class NetworkInspectorViewModel {
     private var selectedSourceListSelection: PacketSourceListSelection = .allPackets
     private var sourceListFilterText = ""
     private var workspaceMode: NetworkInspectorWorkspaceMode = .packets
-    private var inspectorTab: PacketInspectorTab = .overview
+    private var inspectorTab: PacketInspectorTab = .summary
     private var isInspectorVisible: Bool
     private var displayFilterText: String
     private var helperOnboardingDismissed = false
@@ -520,7 +520,7 @@ final class NetworkInspectorViewModel {
         print("[Packetry] \(NetworkInspectorDebugLog.timestamp()) 🎯 Packet row selected: \(identifier?.description ?? "nil")")
         controller.selectPacket(identifier)
         if identifier != nil {
-            inspectorTab = .overview
+            inspectorTab = .summary
         }
         rebuildSnapshot()
     }

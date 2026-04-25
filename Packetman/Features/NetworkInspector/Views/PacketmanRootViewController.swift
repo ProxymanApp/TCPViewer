@@ -220,6 +220,10 @@ extension PacketmanRootViewController: PacketInspectorViewControllerDelegate {
 }
 
 extension PacketmanRootViewController: StatusStripViewControllerDelegate {
+    func statusStripViewControllerDidRequestCancelLoad(_ controller: StatusStripViewController) {
+        cancelDocumentLoading()
+    }
+
     func statusStripViewControllerDidRequestClearPackets(_ controller: StatusStripViewController) {
         viewModel.clearPackets()
     }

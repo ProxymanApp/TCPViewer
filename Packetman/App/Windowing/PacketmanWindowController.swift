@@ -36,7 +36,7 @@ final class PacketmanWindowController: NSWindowController {
     }
 
     private static let frameAutosaveName = "Packetman.MainWindow"
-    private static let contentMinSize = NSSize(width: 900, height: 600)
+    private static let contentMinSize = NSSize(width: 1_180, height: 600)
     private static let defaultScreenRatio: CGFloat = 0.85
 
     private static func defaultContentSize(for window: NSWindow) -> NSSize {

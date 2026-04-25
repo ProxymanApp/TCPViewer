@@ -2,6 +2,7 @@ import AppKit
 import PcapPlusPlusCore
 
 protocol StatusStripViewControllerDelegate: AnyObject {
+    func statusStripViewControllerDidRequestCancelLoad(_ controller: StatusStripViewController)
     func statusStripViewControllerDidRequestClearPackets(_ controller: StatusStripViewController)
 }
 
@@ -10,13 +11,15 @@ final class StatusStripViewModel {
     private(set) var statusText = "Idle"
     private(set) var statusImageName = "circle"
     private(set) var statusColor = NSColor.secondaryLabelColor
+    private(set) var canCancelLoad = false
     private(set) var canClear = false
 
     // Build the compact bottom status strip from the current packet/capture snapshot.
     func render(snapshot: NetworkInspectorSnapshot) {
         let packetCount = snapshot.totalPacketCount
         totalText = packetCount == 1 ? "1 packet" : "\(packetCount) packets"
-        canClear = packetCount > 0
+        canCancelLoad = snapshot.base.loadState.canCancel
+        canClear = packetCount > 0 && !canCancelLoad
 
         let phase = snapshot.base.sessionState.phase
         statusText = title(for: phase)
@@ -64,6 +67,7 @@ final class StatusStripViewController: NSViewController {
     weak var delegate: StatusStripViewControllerDelegate?
 
     private let viewModel = StatusStripViewModel()
+    private let cancelButton = NSButton(title: "Cancel Load", target: nil, action: nil)
     private let clearButton = NSButton(title: "Clear", target: nil, action: nil)
     private let totalLabel = PacketmanUI.label(
         "",
@@ -82,12 +86,16 @@ final class StatusStripViewController: NSViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        cancelButton.target = self
+        cancelButton.action = #selector(cancelLoad(_:))
         clearButton.target = self
         clearButton.action = #selector(clearPackets(_:))
     }
 
     func render(snapshot: NetworkInspectorSnapshot) {
         viewModel.render(snapshot: snapshot)
+        cancelButton.isHidden = !viewModel.canCancelLoad
+        clearButton.isHidden = viewModel.canCancelLoad
         clearButton.isEnabled = viewModel.canClear
         totalLabel.stringValue = viewModel.totalText
         statusLabel.stringValue = viewModel.statusText
@@ -97,6 +105,9 @@ final class StatusStripViewController: NSViewController {
     }
 
     private func setupLayout() {
+        cancelButton.bezelStyle = .rounded
+        cancelButton.controlSize = .small
+
         clearButton.bezelStyle = .rounded
         clearButton.controlSize = .small
         clearButton.image = PacketmanUI.image("trash")
@@ -118,6 +129,7 @@ final class StatusStripViewController: NSViewController {
         trailingSpacer.translatesAutoresizingMaskIntoConstraints = false
 
         let stack = NSStackView(views: [
+            cancelButton,
             clearButton,
             leadingSpacer,
             totalLabel,
@@ -148,6 +160,10 @@ final class StatusStripViewController: NSViewController {
 
             leadingSpacer.widthAnchor.constraint(equalTo: trailingSpacer.widthAnchor),
         ])
+    }
+
+    @objc private func cancelLoad(_ sender: Any?) {
+        delegate?.statusStripViewControllerDidRequestCancelLoad(self)
     }
 
     @objc private func clearPackets(_ sender: Any?) {

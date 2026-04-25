@@ -38,6 +38,7 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.base.sessionState.selectedInterfaceID == "en0")
         #expect(viewModel.snapshot.packetRows.first?.protocolText == "TCP")
         #expect(viewModel.snapshot.packetRows.first?.destinationText == "10.0.0.2:443")
+        #expect(viewModel.snapshot.inspectorTab == .summary)
 
         viewModel.selectPacket(packet.id)
         await waitUntil {
@@ -45,6 +46,7 @@ struct NetworkInspectorViewModelTests {
         }
 
         #expect(viewModel.snapshot.selectedPacket?.id == packet.id)
+        #expect(viewModel.snapshot.inspectorTab == .summary)
         #expect(viewModel.snapshot.base.inspectionState.inspection?.rawBytes.count == 16)
 
         viewModel.updateDisplayFilterText("protocol:tcp port:443")
@@ -209,6 +211,51 @@ struct NetworkInspectorViewModelTests {
             selectedRowIndex: nil,
             tableSelectedRow: -1
         ) == .none)
+    }
+
+    @Test func inspectorTabsAndRawCopyFormatterMatchRedesignedInspector() {
+        #expect(PacketInspectorTab.allCases.map(\.title) == ["Summary", "Detail", "Raw", "Hex"])
+
+        let copyText = PacketDetailCopyFormatter.text(for: [
+            PacketDetailCopyRow(depth: 0, name: "Transmission Control Protocol", value: "53845 → 62078"),
+            PacketDetailCopyRow(depth: 1, name: "Source Port", value: "53845"),
+            PacketDetailCopyRow(depth: 1, name: "TCP Option - SACK permitted", value: "Permitted"),
+            PacketDetailCopyRow(depth: 2, name: "Kind", value: "4"),
+        ])
+
+        #expect(copyText == """
+        Transmission Control Protocol: 53845 → 62078
+            Source Port: 53845
+            TCP Option - SACK permitted: Permitted
+                Kind: 4
+        """)
+    }
+
+    @Test func statusStripKeepsCancelAvailableDuringZeroPacketLoad() {
+        var base = PacketryWindowSnapshot.foundation
+        base.loadState = PacketLoadState(progress: PacketLoadProgress(
+            phase: .loading,
+            loadedPacketCount: 0,
+            message: "Loading capture..."
+        ))
+        let snapshot = NetworkInspectorSnapshot.make(
+            base: base,
+            selectedSidebar: .liveCapture,
+            selectedSourceListSelection: .allPackets,
+            sourceListSnapshot: .empty,
+            sourceListFilterText: "",
+            workspaceMode: .packets,
+            inspectorTab: .summary,
+            isInspectorVisible: true,
+            displayFilterText: "",
+            packetTableContent: .empty
+        )
+        let viewModel = StatusStripViewModel()
+
+        viewModel.render(snapshot: snapshot)
+
+        #expect(viewModel.canCancelLoad)
+        #expect(!viewModel.canClear)
     }
 
     @Test func packetRowsAreCachedAcrossNonPacketUpdates() async {
