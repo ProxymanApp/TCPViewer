@@ -1,43 +1,14 @@
 import AppKit
 import SwiftUI
 
-private enum TCPViewerSettingsTab: Hashable {
-    case privacy
-    case appearance
-    case helperTool
+enum TCPViewerSettingsLayout {
+    static let windowWidth: CGFloat = 760
+    static let paneWidth: CGFloat = 620
+    static let verticalPadding: CGFloat = 30
+    static let horizontalPadding: CGFloat = 28
 }
 
-struct TCPViewerSettingsView: View {
-    let configuration: AppConfiguration
-    let networkHelperToolManager: any TCPViewerNetworkHelperToolManaging
-
-    @State private var selectedTab: TCPViewerSettingsTab = .privacy
-
-    var body: some View {
-        TabView(selection: $selectedTab) {
-            TCPViewerPrivacySettingsView(configuration: configuration)
-                .tabItem {
-                    Label("Privacy", systemImage: "person.fill")
-                }
-                .tag(TCPViewerSettingsTab.privacy)
-
-            TCPViewerAppearanceSettingsView(configuration: configuration)
-                .tabItem {
-                    Label("Appearance", systemImage: "paintbrush.pointed.fill")
-                }
-                .tag(TCPViewerSettingsTab.appearance)
-
-            TCPViewerHelperToolSettingsView(manager: networkHelperToolManager)
-                .tabItem {
-                    Label("Helper Tool", systemImage: "wrench.and.screwdriver.fill")
-                }
-                .tag(TCPViewerSettingsTab.helperTool)
-        }
-        .frame(width: 760, height: 500)
-    }
-}
-
-private struct TCPViewerPrivacySettingsView: View {
+struct TCPViewerPrivacySettingsView: View {
     let configuration: AppConfiguration
 
     @State private var sharesAnalytics: Bool
@@ -106,7 +77,7 @@ private struct TCPViewerPrivacySettingsView: View {
     }
 }
 
-private struct TCPViewerAppearanceSettingsView: View {
+struct TCPViewerAppearanceSettingsView: View {
     let configuration: AppConfiguration
 
     @State private var packetFontSize: Double
@@ -188,7 +159,7 @@ private struct TCPViewerAppearanceSettingsView: View {
     }
 }
 
-private struct TCPViewerHelperToolSettingsView: View {
+struct TCPViewerHelperToolSettingsView: View {
     let manager: any TCPViewerNetworkHelperToolManaging
 
     @State private var snapshot: TCPViewerNetworkHelperToolSnapshot
@@ -427,14 +398,14 @@ private struct SettingsPane<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                content
-            }
-            .frame(maxWidth: 620, alignment: .leading)
-            .padding(.vertical, 30)
-            .padding(.horizontal, 28)
+        VStack(alignment: .leading, spacing: 18) {
+            content
         }
+        .frame(width: TCPViewerSettingsLayout.paneWidth, alignment: .leading)
+        .padding(.vertical, TCPViewerSettingsLayout.verticalPadding)
+        .padding(.horizontal, TCPViewerSettingsLayout.horizontalPadding)
+        .frame(width: TCPViewerSettingsLayout.windowWidth)
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 
