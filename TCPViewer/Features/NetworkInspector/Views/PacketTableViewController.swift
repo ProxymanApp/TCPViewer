@@ -10,6 +10,7 @@ protocol PacketTableViewControllerDelegate: AnyObject {
         clickedColumn: PacketTableColumnRole
     )
     func packetTableViewController(_ controller: PacketTableViewController, didRequestSavePackets identifiers: [PacketSummary.ID])
+    func packetTableViewController(_ controller: PacketTableViewController, didRequestExportPackets identifiers: [PacketSummary.ID], format: CaptureFileFormat)
     func packetTableViewController(_ controller: PacketTableViewController, didRequestDeletePackets identifiers: [PacketSummary.ID])
 }
 
@@ -357,6 +358,14 @@ final class PacketTableViewController: NSViewController {
         delegate?.packetTableViewController(self, didRequestSavePackets: identifiers)
     }
 
+    @objc private func exportRowsAsPcapFromMenu(_ sender: Any?) {
+        exportTargetRows(format: .pcap)
+    }
+
+    @objc private func exportRowsAsPcapngFromMenu(_ sender: Any?) {
+        exportTargetRows(format: .pcapng)
+    }
+
     @objc private func deleteRowsFromMenu(_ sender: Any?) {
         deleteTargetRows()
     }
@@ -372,6 +381,15 @@ final class PacketTableViewController: NSViewController {
         }
 
         delegate?.packetTableViewController(self, didRequestDeletePackets: identifiers)
+    }
+
+    private func exportTargetRows(format: CaptureFileFormat) {
+        let identifiers = targetPacketIDs()
+        guard !identifiers.isEmpty else {
+            return
+        }
+
+        delegate?.packetTableViewController(self, didRequestExportPackets: identifiers, format: format)
     }
 
     private func requestPin(_ kind: PacketPinCreationKind) {
@@ -478,6 +496,22 @@ extension PacketTableViewController: NSMenuDelegate {
         saveItem.target = self
         saveItem.isEnabled = state.saveEnabled
         menu.addItem(saveItem)
+
+        let exportItem = NSMenuItem(title: "Export", action: nil, keyEquivalent: "")
+        let exportSubmenu = NSMenu(title: "Export")
+        let exportPcapItem = NSMenuItem(title: "as pcap...", action: #selector(exportRowsAsPcapFromMenu(_:)), keyEquivalent: "")
+        exportPcapItem.target = self
+        exportPcapItem.isEnabled = state.exportEnabled
+        exportSubmenu.addItem(exportPcapItem)
+
+        let exportPcapngItem = NSMenuItem(title: "as pcapng...", action: #selector(exportRowsAsPcapngFromMenu(_:)), keyEquivalent: "")
+        exportPcapngItem.target = self
+        exportPcapngItem.isEnabled = state.exportEnabled
+        exportSubmenu.addItem(exportPcapngItem)
+
+        exportItem.submenu = exportSubmenu
+        exportItem.isEnabled = state.exportEnabled
+        menu.addItem(exportItem)
 
         menu.addItem(.separator())
 

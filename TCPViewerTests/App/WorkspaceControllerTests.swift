@@ -368,6 +368,46 @@ struct WindowControllerTests {
         await tearDown(controller)
     }
 
+    @Test func exportPacketsDoesNotMutateDocumentURL() async {
+        let openURL = URL(fileURLWithPath: "/tmp/export-source.pcapng")
+        let exportURL = URL(fileURLWithPath: "/tmp/export-copy.pcap")
+        let packets = [
+            makePacket(packetNumber: 1, source: .offline, transportHint: .udp),
+            makePacket(packetNumber: 2, source: .offline, transportHint: .dns),
+        ]
+        let document = FakeOfflineDocument(
+            url: openURL,
+            metadata: CaptureDocumentMetadata(format: .pcapng),
+            openPlan: .completed(packets)
+        )
+        let controller = TCPViewerWorkspaceController(
+            services: TCPViewerServiceRegistry(core: FakeTCPViewerCore(
+                interfaceInventories: [[makeInterface(id: "en0", displayName: "Wi-Fi")]],
+                documentFactory: { _ in document }
+            ))
+        )
+
+        await controller.openDocument(at: openURL)
+        await waitUntil {
+            controller.snapshot.documentState.phase == .loaded
+        }
+
+        let result = await controller.exportPackets(withIDs: packets.map(\.id), to: exportURL, format: .pcap)
+
+        guard case .success = result else {
+            Issue.record("Expected export to succeed.")
+            return
+        }
+        #expect(document.exportRequests.count == 1)
+        #expect(document.exportRequests.first?.0 == packets.map(\.id))
+        #expect(document.exportRequests.first?.1 == exportURL)
+        #expect(document.exportRequests.first?.2 == .pcap)
+        #expect(controller.snapshot.documentState.fileURL == openURL)
+        #expect(controller.snapshot.documentState.format == .pcapng)
+
+        await tearDown(controller)
+    }
+
     @Test func openingNewDocumentIgnoresEventsFromPreviousDocumentStream() async {
         let firstURL = URL(fileURLWithPath: "/tmp/first-stream.pcapng")
         let secondURL = URL(fileURLWithPath: "/tmp/second-stream.pcapng")
@@ -987,6 +1027,7 @@ private final class FakeLiveSession: LiveCaptureSessionProviding, @unchecked Sen
     private(set) var pauseCount = 0
     private(set) var resumeCount = 0
     private(set) var stopCount = 0
+    private(set) var exportRequests: [([PacketSummary.ID], URL, CaptureFileFormat)] = []
     private(set) var latestHealthSnapshot = CaptureHealthSnapshot.empty
 
     func start(completion: @escaping TCPViewerVoidCompletion) {
@@ -1019,6 +1060,11 @@ private final class FakeLiveSession: LiveCaptureSessionProviding, @unchecked Sen
             return
         }
         completion(.success(inspection))
+    }
+
+    func exportPackets(withIDs identifiers: [PacketSummary.ID], to url: URL, format: CaptureFileFormat, completion: @escaping TCPViewerVoidCompletion) {
+        exportRequests.append((identifiers, url, format))
+        completion(.success(()))
     }
 
     func healthSnapshot(completion: @escaping (CaptureHealthSnapshot) -> Void) {
@@ -1061,6 +1107,7 @@ private final class FakeOfflineDocument: OfflineCaptureDocumentProviding, @unche
 
     private(set) var saveCount = 0
     private(set) var saveAsRequests: [(URL, CaptureFileFormat)] = []
+    private(set) var exportRequests: [([PacketSummary.ID], URL, CaptureFileFormat)] = []
     private(set) var cancelLoadingCount = 0
     private(set) var currentProgress: PacketLoadProgress = .idle
 
@@ -1149,6 +1196,17 @@ private final class FakeOfflineDocument: OfflineCaptureDocumentProviding, @unche
 
         send(.documentMetadataChanged(metadata))
         send(.documentStateChanged(phase: .saved, message: "Saved as \(url.lastPathComponent)."))
+        completion(.success(()))
+    }
+
+    func exportPackets(withIDs identifiers: [PacketSummary.ID], to url: URL, format: CaptureFileFormat, completion: @escaping TCPViewerVoidCompletion) {
+        let knownIDs = Set(packets.map(\.id))
+        guard identifiers.allSatisfy({ knownIDs.contains($0) }) else {
+            completion(.failure(TCPViewerCoreError(code: .offlineFileSaveFailed, message: "Missing packet export backing.")))
+            return
+        }
+
+        exportRequests.append((identifiers, url, format))
         completion(.success(()))
     }
 

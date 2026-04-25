@@ -38,6 +38,10 @@ public final class NativeLiveCaptureSession: LiveCaptureSessionProviding, @unche
         state.inspectPacket(id: id, completion: completion)
     }
 
+    public func exportPackets(withIDs identifiers: [PacketSummary.ID], to url: URL, format: CaptureFileFormat, completion: @escaping TCPViewerVoidCompletion) {
+        state.exportPackets(withIDs: identifiers, to: url, format: format, completion: completion)
+    }
+
     public func healthSnapshot(completion: @escaping (CaptureHealthSnapshot) -> Void) {
         state.healthSnapshot(completion: completion)
     }
@@ -195,6 +199,22 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
         queue.async {
             completion(Result {
                 try self.inspectPacketOnQueue(id: id)
+            })
+        }
+    }
+
+    func exportPackets(withIDs identifiers: [PacketSummary.ID], to url: URL, format: CaptureFileFormat, completion: @escaping TCPViewerVoidCompletion) {
+        queue.async {
+            completion(Result {
+                guard !identifiers.isEmpty else {
+                    throw TCPViewerCoreError(code: .offlineFileSaveFailed, message: "There are no packets to export.")
+                }
+
+                do {
+                    try self.nativeSession.exportPackets(withIdentifiers: identifiers.map { NSNumber(value: $0) }, to: url, format: format.rawValue)
+                } catch {
+                    throw NativeBridgeMapper.coreError(error, defaultCode: .offlineFileSaveFailed)
+                }
             })
         }
     }

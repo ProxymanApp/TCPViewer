@@ -106,6 +106,40 @@ struct PacketSourceListServiceTests {
         #expect(PacketSourceListDeletionPolicy.action(for: snapshot.item(for: .ipAddress(ipKey))) == .deletePackets(.ipAddress(ipKey)))
     }
 
+    @Test func exportPolicyAllowsNonEmptyExportableFoldersAndLeaves() {
+        let client = makeClient(displayName: "Example", bundleIdentifier: "com.example.app")
+        let pinID = PacketPinID(rawValue: "domain:api.example.com")
+        let pin = PacketPin(
+            id: pinID,
+            kind: .domain,
+            title: "api.example.com",
+            createdAt: Date(timeIntervalSince1970: 10),
+            domain: "api.example.com",
+            ipAddress: nil,
+            clientKey: nil,
+            clientDisplayName: nil,
+            clientIconFilePath: nil
+        )
+        var state = PacketIngestState.empty
+        state.append([
+            makePacket(packetNumber: 1, sniDomainName: "api.example.com", client: client),
+            makePacket(packetNumber: 2, sniDomainName: nil),
+        ], source: .live)
+
+        let snapshot = PacketSourceListService().snapshot(for: state, pinnedItems: [pin], savedPacketCount: 1)
+        let appKey = PacketSourceClientKey(rawValue: "bundleIdentifier:com.example.app")
+        let domainKey = PacketSourceDomainKey(rawValue: "api.example.com", isMissingDomain: false)
+
+        #expect(PacketSourceListExportPolicy.selection(for: snapshot.item(for: .pinned)) == .pinned)
+        #expect(PacketSourceListExportPolicy.selection(for: snapshot.item(for: .pinnedItem(pinID))) == .pinnedItem(pinID))
+        #expect(PacketSourceListExportPolicy.selection(for: snapshot.item(for: .saved)) == .saved)
+        #expect(PacketSourceListExportPolicy.selection(for: snapshot.item(for: .apps)) == .apps)
+        #expect(PacketSourceListExportPolicy.selection(for: snapshot.item(for: .app(appKey))) == .app(appKey))
+        #expect(PacketSourceListExportPolicy.selection(for: snapshot.item(for: .domains)) == .domains)
+        #expect(PacketSourceListExportPolicy.selection(for: snapshot.item(for: .domain(domainKey))) == .domain(domainKey))
+        #expect(PacketSourceListExportPolicy.selection(for: PacketSourceListSnapshot.empty.item(for: .saved)) == nil)
+    }
+
     @Test func clientIdentityFallsBackThroughAvailableFields() {
         let clients = [
             makeClient(displayName: "Bundle", bundleIdentifier: "com.example.bundle", bundlePath: "/Applications/Bundle.app", executablePath: "/Applications/Bundle.app/Contents/MacOS/Bundle"),

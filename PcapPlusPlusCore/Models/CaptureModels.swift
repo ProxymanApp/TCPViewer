@@ -3,6 +3,18 @@ import Foundation
 public enum CaptureFileFormat: String, Sendable, Codable, CaseIterable {
     case pcap
     case pcapng
+
+    public static let defaultExportFormat: CaptureFileFormat = .pcapng
+
+    public init(exportRawValue rawValue: String?) {
+        guard let rawValue,
+              let format = CaptureFileFormat(rawValue: rawValue.lowercased()) else {
+            self = Self.defaultExportFormat
+            return
+        }
+
+        self = format
+    }
 }
 
 public enum CaptureSource: String, Sendable, Codable {

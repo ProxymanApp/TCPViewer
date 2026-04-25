@@ -62,6 +62,10 @@ final class TCPViewerRootViewController: NSViewController {
         viewModel.presentSaveCapturePanel(format: format)
     }
 
+    func exportSession(format: CaptureFileFormat) {
+        viewModel.presentSessionExportPanel(format: format)
+    }
+
     func cancelDocumentLoading() {
         viewModel.cancelDocumentLoading()
     }
@@ -207,6 +211,10 @@ extension TCPViewerRootViewController: SidebarViewControllerDelegate {
     func sidebarViewController(_ controller: SidebarViewController, didRequestDelete action: PacketSourceListDeletionAction) {
         viewModel.deleteSourceListItem(action)
     }
+
+    func sidebarViewController(_ controller: SidebarViewController, didRequestExport selection: PacketSourceListSelection, format: CaptureFileFormat) {
+        viewModel.presentSourceListExportPanel(selection: selection, format: format)
+    }
 }
 
 extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
@@ -225,6 +233,10 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
 
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestSavePackets identifiers: [PacketSummary.ID]) {
         viewModel.savePackets(identifiers)
+    }
+
+    func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestExportPackets identifiers: [PacketSummary.ID], format: CaptureFileFormat) {
+        viewModel.presentPacketExportPanel(identifiers: identifiers, format: format)
     }
 
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestDeletePackets identifiers: [PacketSummary.ID]) {

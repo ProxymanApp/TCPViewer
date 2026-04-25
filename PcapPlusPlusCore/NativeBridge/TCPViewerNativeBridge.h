@@ -369,6 +369,10 @@ typedef BOOL (^PCPPNativeCancellationHandler)(void);
 - (BOOL)resumeAndReturnError:(NSError **)error NS_SWIFT_NAME(resume());
 - (BOOL)stopAndReturnError:(NSError **)error NS_SWIFT_NAME(stop());
 - (nullable PCPPNativePacketInspectionDescriptor *)inspectPacketWithIdentifier:(unsigned long long)identifier error:(NSError **)error;
+- (BOOL)exportPacketsWithIdentifiers:(NSArray<NSNumber *> *)identifiers
+                                toURL:(NSURL *)url
+                               format:(NSString *)format
+                                error:(NSError **)error NS_SWIFT_NAME(exportPackets(withIdentifiers:to:format:));
 
 @end
 
@@ -397,6 +401,10 @@ typedef BOOL (^PCPPNativeCancellationHandler)(void);
 - (nullable PCPPNativePacketInspectionDescriptor *)inspectPacketWithIdentifier:(unsigned long long)identifier error:(NSError **)error;
 - (BOOL)saveAndReturnError:(NSError **)error NS_SWIFT_NAME(save());
 - (BOOL)saveToURL:(NSURL *)url format:(NSString *)format error:(NSError **)error NS_SWIFT_NAME(save(to:format:));
+- (BOOL)exportPacketsWithIdentifiers:(NSArray<NSNumber *> *)identifiers
+                                toURL:(NSURL *)url
+                               format:(NSString *)format
+                                error:(NSError **)error NS_SWIFT_NAME(exportPackets(withIdentifiers:to:format:));
 
 @end
 

@@ -913,6 +913,91 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[1].id])
     }
 
+    @Test func sessionExportUsesAllActivePacketsIgnoringSelectionAndFilter() async {
+        let client = makeClient(displayName: "Example", bundleIdentifier: "com.example.app")
+        let packets = [
+            makePacket(packetNumber: 1, source: .offline, transportHint: .tcp, streamID: nil, sniDomainName: "example.com", client: client),
+            makePacket(packetNumber: 2, source: .offline, transportHint: .udp, streamID: nil, sniDomainName: "example.com", client: client),
+            makePacket(packetNumber: 3, source: .offline, transportHint: .dns, streamID: nil, sniDomainName: "api.example.com", client: nil),
+        ]
+        let document = InspectorFakeDocument(url: URL(fileURLWithPath: "/tmp/export-source.pcapng"), packets: packets)
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                document: document
+            )),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.openDocument(at: document.currentURL())
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == 3
+        }
+
+        viewModel.selectSourceList(.apps)
+        viewModel.updateDisplayFilterText("protocol:udp")
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[1].id])
+
+        let result = await viewModel.exportSession(to: URL(fileURLWithPath: "/tmp/session-export.pcapng"), format: .pcapng)
+
+        guard case .success = result else {
+            Issue.record("Expected session export to succeed.")
+            return
+        }
+        #expect(document.exportRequests.count == 1)
+        #expect(document.exportRequests.first?.0 == packets.map(\.id))
+        #expect(document.exportRequests.first?.2 == .pcapng)
+    }
+
+    @Test func savedExportRequiresCurrentRawBacking() async throws {
+        let directory = temporaryDirectory()
+        let savedURL = directory.appendingPathComponent("Saved.json")
+        let savedService = SavedPacketService(storageURL: savedURL)
+        let packet = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp, streamID: nil)
+        try savedService.save([packet])
+        let document = InspectorFakeDocument(url: URL(fileURLWithPath: "/tmp/current-backed.pcapng"), packets: [packet])
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                document: document
+            )),
+            userDefaults: isolatedDefaults(),
+            savedPacketService: savedService
+        )
+
+        await viewModel.openDocument(at: document.currentURL())
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == 1
+        }
+
+        let success = await viewModel.exportSourceList(.saved, to: URL(fileURLWithPath: "/tmp/saved-current.pcap"), format: .pcap)
+        guard case .success = success else {
+            Issue.record("Expected current-backed saved export to succeed.")
+            return
+        }
+        #expect(document.exportRequests.first?.0 == [packet.id])
+        #expect(document.exportRequests.first?.2 == .pcap)
+
+        let reloadedSavedService = SavedPacketService(storageURL: savedURL)
+        let emptyDocument = InspectorFakeDocument(url: URL(fileURLWithPath: "/tmp/no-backing.pcapng"), packets: [])
+        let reloaded = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                document: emptyDocument
+            )),
+            userDefaults: isolatedDefaults(),
+            savedPacketService: reloadedSavedService
+        )
+
+        let failure = await reloaded.exportSourceList(.saved, to: URL(fileURLWithPath: "/tmp/saved-old.pcapng"), format: .pcapng)
+        guard case .failure(let error as TCPViewerCoreError) = failure else {
+            Issue.record("Expected saved export without current backing to fail.")
+            return
+        }
+        #expect(error.code == .offlineFileSaveFailed)
+        #expect(emptyDocument.exportRequests.isEmpty)
+    }
+
     @Test func pinnedAndSavedSelectionsFilterRowsAndReloadFromDisk() async throws {
         let directory = temporaryDirectory()
         let pinURL = directory.appendingPathComponent("Pins.json")
@@ -1367,6 +1452,7 @@ private final class InspectorFakeLiveSession: LiveCaptureSessionProviding, @unch
     var inspections: [PacketSummary.ID: PacketInspection] = [:]
     private(set) var startCount = 0
     private(set) var stopCount = 0
+    private(set) var exportRequests: [([PacketSummary.ID], URL, CaptureFileFormat)] = []
 
     func start(completion: @escaping TCPViewerVoidCompletion) {
         startCount += 1
@@ -1399,6 +1485,11 @@ private final class InspectorFakeLiveSession: LiveCaptureSessionProviding, @unch
         completion(.empty)
     }
 
+    func exportPackets(withIDs identifiers: [PacketSummary.ID], to url: URL, format: CaptureFileFormat, completion: @escaping TCPViewerVoidCompletion) {
+        exportRequests.append((identifiers, url, format))
+        completion(.success(()))
+    }
+
     func send(_ event: PacketIngestEvent) {
         eventHandler?(.success(event))
     }
@@ -1411,6 +1502,7 @@ private final class InspectorFakeDocument: OfflineCaptureDocumentProviding, @unc
     private(set) var metadata: CaptureDocumentMetadata
     private(set) var saveCount = 0
     private(set) var saveAsRequests: [(URL, CaptureFileFormat)] = []
+    private(set) var exportRequests: [([PacketSummary.ID], URL, CaptureFileFormat)] = []
     private var progress: PacketLoadProgress = .idle
 
     init(url: URL, packets: [PacketSummary]) {
@@ -1468,6 +1560,17 @@ private final class InspectorFakeDocument: OfflineCaptureDocumentProviding, @unc
         saveAsRequests.append((url, format))
         self.url = url
         metadata = CaptureDocumentMetadata(format: format)
+        completion(.success(()))
+    }
+
+    func exportPackets(withIDs identifiers: [PacketSummary.ID], to url: URL, format: CaptureFileFormat, completion: @escaping TCPViewerVoidCompletion) {
+        let knownIDs = Set(packets.map(\.id))
+        guard identifiers.allSatisfy({ knownIDs.contains($0) }) else {
+            completion(.failure(TCPViewerCoreError(code: .offlineFileSaveFailed, message: "Missing packet export backing.")))
+            return
+        }
+
+        exportRequests.append((identifiers, url, format))
         completion(.success(()))
     }
 

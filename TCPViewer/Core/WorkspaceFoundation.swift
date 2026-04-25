@@ -1240,6 +1240,76 @@ final class TCPViewerWorkspaceController {
         }
     }
 
+    func exportPackets(withIDs identifiers: [PacketSummary.ID], to url: URL, format: CaptureFileFormat, completion: @escaping TCPViewerVoidCompletion) {
+        guard !identifiers.isEmpty else {
+            completion(.failure(TCPViewerCoreError(code: .offlineFileSaveFailed, message: "There are no packets to export.")))
+            return
+        }
+
+        switch snapshot.packetIngestState.source {
+        case .live:
+            guard let liveSession else {
+                completion(.failure(TCPViewerCoreError(code: .offlineFileSaveFailed, message: "The live capture backing store is not available for export.")))
+                return
+            }
+
+            snapshot.sessionState.statusMessage = "Exporting \(url.lastPathComponent)..."
+            liveSession.exportPackets(withIDs: identifiers, to: url, format: format) { [weak self] result in
+                DispatchQueue.main.async {
+                    guard let self else {
+                        completion(result)
+                        return
+                    }
+
+                    switch result {
+                    case .success:
+                        self.snapshot.sessionState.lastError = nil
+                        self.snapshot.sessionState.statusMessage = "Exported \(url.lastPathComponent)."
+                    case .failure(let error):
+                        let tcpviewerError = self.tcpviewerError(from: error, defaultCode: .offlineFileSaveFailed)
+                        self.snapshot.sessionState.lastError = tcpviewerError
+                        self.snapshot.sessionState.statusMessage = tcpviewerError.message
+                        completion(.failure(tcpviewerError))
+                        return
+                    }
+                    completion(result)
+                }
+            }
+        case .offline:
+            guard let document else {
+                completion(.failure(TCPViewerCoreError(code: .offlineFileSaveFailed, message: "The capture document is not available for export.")))
+                return
+            }
+
+            snapshot.documentState.statusMessage = "Exporting \(url.lastPathComponent)..."
+            document.exportPackets(withIDs: identifiers, to: url, format: format) { [weak self] result in
+                DispatchQueue.main.async {
+                    guard let self else {
+                        completion(result)
+                        return
+                    }
+
+                    switch result {
+                    case .success:
+                        self.snapshot.documentState.lastError = nil
+                        self.snapshot.documentState.statusMessage = "Exported \(url.lastPathComponent)."
+                    case .failure(let error):
+                        let tcpviewerError = self.tcpviewerError(from: error, defaultCode: .offlineFileSaveFailed)
+                        self.snapshot.documentState.lastError = tcpviewerError
+                        self.snapshot.documentState.statusMessage = tcpviewerError.message
+                        completion(.failure(tcpviewerError))
+                        return
+                    }
+                    completion(result)
+                }
+            }
+        case nil:
+            completion(.failure(TCPViewerCoreError(code: .offlineFileSaveFailed, message: "There is no active capture to export.")))
+        @unknown default:
+            completion(.failure(TCPViewerCoreError(code: .offlineFileSaveFailed, message: "TCP Viewer cannot export packets from this capture source.")))
+        }
+    }
+
     func cancelDocumentLoading(completion: (() -> Void)? = nil) {
         guard let document else {
             completion?()

@@ -130,6 +130,13 @@ struct CoreFacadeTypesTests {
         #expect(ring.normalizedForLiveCapture().fileWriting.format == .pcapng)
     }
 
+    @Test func exportFormatNormalizationFallsBackToPcapng() {
+        #expect(CaptureFileFormat(exportRawValue: "pcap") == .pcap)
+        #expect(CaptureFileFormat(exportRawValue: "PCAPNG") == .pcapng)
+        #expect(CaptureFileFormat(exportRawValue: nil) == .pcapng)
+        #expect(CaptureFileFormat(exportRawValue: "bad-format") == .pcapng)
+    }
+
     @Test func interfaceSortingPrefersSelectableEthernetThenLoopbackThenUnavailable() {
         let sorted = NativeBridgeMapper.sortedInterfaces([
             makeInterface(

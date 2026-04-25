@@ -152,6 +152,73 @@ struct PcapPlusPlusCoreTests {
         #expect(try Data(contentsOf: destinationURL) == originalContents)
     }
 
+    @Test func offlineDocumentExportsSelectedPacketsAsPcapAndPcapng() async throws {
+        let fixtureURL = CoreFixtureCatalog.captureCategoryURL("tls").appendingPathComponent("SSL-ClientHello1.pcap")
+        let core = NativeTCPViewerCore()
+        let tempDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let document = try await core.openOfflineCaptureDocument(at: fixtureURL)
+        let packets = try await document.open()
+        let selectedPackets = Array(packets.prefix(2))
+        let selectedIDs = selectedPackets.map(\.id)
+        let originalInspections = try await selectedIDs.asyncMap { try await document.inspectPacket(id: $0) }
+
+        let pcapngURL = tempDirectory.appendingPathComponent("selected.pcapng")
+        try await document.exportPackets(withIDs: selectedIDs, to: pcapngURL, format: .pcapng)
+        let reopenedPcapng = try await core.openOfflineCaptureDocument(at: pcapngURL)
+        let pcapngPackets = try await reopenedPcapng.open()
+        let pcapngInspections = try await pcapngPackets.map(\.id).asyncMap { try await reopenedPcapng.inspectPacket(id: $0) }
+
+        #expect(pcapngPackets.count == selectedPackets.count)
+        #expect(pcapngPackets.map(\.timestamp) == selectedPackets.map(\.timestamp))
+        #expect(pcapngInspections.map(\.rawBytes) == originalInspections.map(\.rawBytes))
+
+        let pcapURL = tempDirectory.appendingPathComponent("selected.pcap")
+        try await document.exportPackets(withIDs: selectedIDs, to: pcapURL, format: .pcap)
+        let pcapHeader = try Data(contentsOf: pcapURL).prefix(4)
+        #expect([
+            Data([0xd4, 0xc3, 0xb2, 0xa1]),
+            Data([0xa1, 0xb2, 0xc3, 0xd4]),
+            Data([0x4d, 0x3c, 0xb2, 0xa1]),
+            Data([0xa1, 0xb2, 0x3c, 0x4d]),
+        ].contains(Data(pcapHeader)))
+
+        let reopenedPcap = try await core.openOfflineCaptureDocument(at: pcapURL)
+        let pcapPackets = try await reopenedPcap.open()
+        let pcapInspections = try await pcapPackets.map(\.id).asyncMap { try await reopenedPcap.inspectPacket(id: $0) }
+        #expect(pcapPackets.count == selectedPackets.count)
+        #expect(pcapPackets.map(\.timestamp) == selectedPackets.map(\.timestamp))
+        #expect(pcapInspections.map(\.rawBytes) == originalInspections.map(\.rawBytes))
+    }
+
+    @Test func exportFailuresDoNotReplaceExistingDestination() async throws {
+        let fixtureURL = CoreFixtureCatalog.captureCategoryURL("tls").appendingPathComponent("SSL-ClientHello1.pcap")
+        let core = NativeTCPViewerCore()
+        let tempDirectory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+        let document = try await core.openOfflineCaptureDocument(at: fixtureURL)
+        _ = try await document.open()
+        let destinationURL = tempDirectory.appendingPathComponent("existing.pcapng")
+        let originalContents = Data("existing export".utf8)
+        try originalContents.write(to: destinationURL)
+
+        do {
+            try await document.exportPackets(withIDs: [UInt64.max], to: destinationURL, format: .pcapng)
+            Issue.record("Expected export to fail for a missing packet identifier.")
+        } catch {
+            #expect(try Data(contentsOf: destinationURL) == originalContents)
+        }
+
+        do {
+            try await document.exportPackets(withIDs: [], to: destinationURL, format: .pcapng)
+            Issue.record("Expected export to fail for an empty packet selection.")
+        } catch {
+            #expect(try Data(contentsOf: destinationURL) == originalContents)
+        }
+    }
+
     @Test func nativeLiveSessionCanStopBeforeStart() async throws {
         let core = NativeTCPViewerCore()
         guard let captureInterface = try await core.listInterfaces().first(where: \.isSelectable) else {
@@ -192,6 +259,24 @@ struct PcapPlusPlusCoreTests {
 
     private func isBlank(_ value: String?) -> Bool {
         value?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true
+    }
+
+    private func makeTemporaryDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+}
+
+private extension Array {
+    func asyncMap<Transformed>(_ transform: (Element) async throws -> Transformed) async throws -> [Transformed] {
+        var values: [Transformed] = []
+        values.reserveCapacity(count)
+        for element in self {
+            let value = try await transform(element)
+            values.append(value)
+        }
+        return values
     }
 }
 

@@ -27,6 +27,7 @@ struct PacketTableMenuLogicTests {
         #expect(!state.pinIPEnabled)
         #expect(!state.pinClientEnabled)
         #expect(state.saveEnabled)
+        #expect(state.exportEnabled)
         #expect(state.deleteEnabled)
     }
 
@@ -48,6 +49,7 @@ struct PacketTableMenuLogicTests {
         #expect(state.pinDomainEnabled)
         #expect(state.pinIPEnabled)
         #expect(state.pinClientEnabled)
+        #expect(state.exportEnabled)
     }
 
     @Test func copyFormatterUsesCSVRowsAndClickedColumnCells() {

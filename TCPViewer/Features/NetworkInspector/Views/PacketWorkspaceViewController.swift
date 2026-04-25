@@ -10,6 +10,7 @@ protocol PacketWorkspaceViewControllerDelegate: AnyObject {
         clickedColumn: PacketTableColumnRole
     )
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestSavePackets identifiers: [PacketSummary.ID])
+    func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestExportPackets identifiers: [PacketSummary.ID], format: CaptureFileFormat)
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestDeletePackets identifiers: [PacketSummary.ID])
 }
 
@@ -156,6 +157,10 @@ extension PacketWorkspaceViewController: PacketTableViewControllerDelegate {
 
     func packetTableViewController(_ controller: PacketTableViewController, didRequestSavePackets identifiers: [PacketSummary.ID]) {
         delegate?.packetWorkspaceViewController(self, didRequestSavePackets: identifiers)
+    }
+
+    func packetTableViewController(_ controller: PacketTableViewController, didRequestExportPackets identifiers: [PacketSummary.ID], format: CaptureFileFormat) {
+        delegate?.packetWorkspaceViewController(self, didRequestExportPackets: identifiers, format: format)
     }
 
     func packetTableViewController(_ controller: PacketTableViewController, didRequestDeletePackets identifiers: [PacketSummary.ID]) {

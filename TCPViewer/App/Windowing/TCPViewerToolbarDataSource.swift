@@ -226,8 +226,8 @@ final class TCPViewerToolbarDataSource: NSObject {
 
     private func renderSharePopup() {
         sharePopup.item(at: 1)?.isEnabled = viewModel.canSave
-        sharePopup.item(at: 2)?.isEnabled = viewModel.canSaveAs
-        sharePopup.item(at: 3)?.isEnabled = viewModel.canSaveAs
+        sharePopup.item(at: 2)?.isEnabled = viewModel.canExport
+        sharePopup.item(at: 3)?.isEnabled = viewModel.canExport
         sharePopup.selectItem(at: 0)
     }
 
@@ -327,6 +327,7 @@ private final class TCPViewerToolbarViewModel {
     private(set) var canUseCaptureButton = false
     private(set) var canSave = false
     private(set) var canSaveAs = false
+    private(set) var canExport = false
     private(set) var isInspectorVisible = true
     private(set) var statusText = "TCP Viewer | Idle"
     private(set) var emphasizedText: String?
@@ -346,6 +347,7 @@ private final class TCPViewerToolbarViewModel {
         canUseCaptureButton = snapshot.base.sessionState.canStart || snapshot.base.sessionState.canStop
         canSave = snapshot.base.documentState.canSave
         canSaveAs = snapshot.base.documentState.canSaveAs
+        canExport = snapshot.totalPacketCount > 0 && snapshot.base.loadState.progress.phase != .loading
         isInspectorVisible = snapshot.isInspectorVisible
         statusTint = Self.tint(for: snapshot)
         statusText = Self.statusText(for: snapshot)

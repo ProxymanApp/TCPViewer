@@ -32,6 +32,7 @@ struct PacketTableMenuState: Equatable {
     let pinIPEnabled: Bool
     let pinClientEnabled: Bool
     let saveEnabled: Bool
+    let exportEnabled: Bool
     let deleteEnabled: Bool
 }
 
@@ -60,6 +61,7 @@ enum PacketTableMenuLogic {
             pinIPEnabled: singleRow?.ipAddress(for: clickedColumn) != nil,
             pinClientEnabled: singleRow?.canPinClient == true,
             saveEnabled: !targetRows.isEmpty,
+            exportEnabled: !targetRows.isEmpty,
             deleteEnabled: !targetRows.isEmpty
         )
     }

@@ -174,6 +174,23 @@ enum PacketSourceListDeletionAction: Equatable, Sendable {
     }
 }
 
+enum PacketSourceListExportPolicy {
+    static func selection(for item: PacketSourceListItem?) -> PacketSourceListSelection? {
+        guard let item,
+              let selection = item.selection,
+              item.count ?? 0 > 0 else {
+            return nil
+        }
+
+        switch selection {
+        case .pinned, .pinnedItem, .saved, .apps, .app, .domains, .domain, .ipAddress:
+            return selection
+        case .allPackets:
+            return nil
+        }
+    }
+}
+
 enum PacketSourceListDeletionPolicy {
     static func action(for item: PacketSourceListItem?) -> PacketSourceListDeletionAction {
         guard let selection = item?.selection else {
