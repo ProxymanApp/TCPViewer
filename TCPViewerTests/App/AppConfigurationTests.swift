@@ -41,6 +41,36 @@ struct AppConfigurationTests {
         #expect(configuration.packetFontSize == AppConfiguration.maximumPacketFontSize)
     }
 
+    @Test func packetRowHeightScalesWithFontSize() {
+        let configuration = AppConfiguration(defaults: Self.makeUserDefaults())
+
+        configuration.packetFontSize = 10
+        #expect(configuration.packetRowHeight == 22)
+
+        configuration.packetFontSize = 12
+        #expect(configuration.packetRowHeight == 24)
+
+        configuration.packetFontSize = 18
+        #expect(configuration.packetRowHeight == 30)
+    }
+
+    @Test func resetAppearanceKeepsPrivacySettings() {
+        let configuration = AppConfiguration(defaults: Self.makeUserDefaults())
+        configuration.sharesAnalytics = false
+        configuration.sharesCrashReports = false
+        configuration.packetFontSize = 18
+        configuration.usesMonospacedPacketFont = false
+        configuration.appearanceTheme = .dark
+
+        configuration.resetAppearanceToDefaults()
+
+        #expect(!configuration.sharesAnalytics)
+        #expect(!configuration.sharesCrashReports)
+        #expect(configuration.packetFontSize == AppConfiguration.defaultPacketFontSize)
+        #expect(configuration.usesMonospacedPacketFont)
+        #expect(configuration.appearanceTheme == .system)
+    }
+
     @Test func invalidThemeFallsBackToSystem() {
         let defaults = Self.makeUserDefaults()
         defaults.set("neon", forKey: "TCPViewer.settings.appearance.theme")

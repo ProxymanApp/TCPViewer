@@ -98,19 +98,33 @@ final class AppConfiguration: NSObject {
         application.appearance = name.flatMap { NSAppearance(named: $0) }
     }
 
+    var packetRowHeight: CGFloat {
+        ceil(max(22, packetFontSize + 12))
+    }
+
     // Return the packet text font requested by Appearance settings.
-    func packetFont(weight: NSFont.Weight = .regular) -> NSFont {
+    func packetFont(sizeDelta: CGFloat = 0, weight: NSFont.Weight = .regular) -> NSFont {
+        let fontSize = max(8, packetFontSize + sizeDelta)
         if usesMonospacedPacketFont {
-            return .monospacedSystemFont(ofSize: packetFontSize, weight: weight)
+            return .monospacedSystemFont(ofSize: fontSize, weight: weight)
         }
 
-        return .systemFont(ofSize: packetFontSize, weight: weight)
+        return .systemFont(ofSize: fontSize, weight: weight)
     }
 
     // Restore persisted settings back to the app defaults.
     func resetToDefaults() {
         defaults.removeObject(forKey: Key.sharesAnalytics)
         defaults.removeObject(forKey: Key.sharesCrashReports)
+        defaults.removeObject(forKey: Key.packetFontSize)
+        defaults.removeObject(forKey: Key.usesMonospacedPacketFont)
+        defaults.removeObject(forKey: Key.appearanceTheme)
+        registerDefaults()
+        notifyChange()
+    }
+
+    // Restore only Appearance settings without changing Privacy choices.
+    func resetAppearanceToDefaults() {
         defaults.removeObject(forKey: Key.packetFontSize)
         defaults.removeObject(forKey: Key.usesMonospacedPacketFont)
         defaults.removeObject(forKey: Key.appearanceTheme)

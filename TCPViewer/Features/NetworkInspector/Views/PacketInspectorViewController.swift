@@ -78,6 +78,7 @@ final class PacketInspectorPanelViewModel {
 final class PacketInspectorViewController: NSViewController {
     weak var delegate: PacketInspectorViewControllerDelegate?
 
+    private let configuration: AppConfiguration
     private let viewModel = PacketInspectorPanelViewModel()
     private let tabControl = NSSegmentedControl(labels: PacketInspectorTab.allCases.map(\.title), trackingMode: .selectOne, target: nil, action: nil)
     private let contentContainer = NSView()
@@ -85,6 +86,26 @@ final class PacketInspectorViewController: NSViewController {
     private var hexView: PacketHexFiendView?
     private var rawOutlineView: PacketRawOutlineView?
     private var renderLogCount = 0
+
+    init(configuration: AppConfiguration) {
+        self.configuration = configuration
+        super.init(nibName: nil, bundle: nil)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appConfigurationDidChange(_:)),
+            name: AppConfiguration.didChangeNotification,
+            object: configuration
+        )
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
 
     override func loadView() {
         view = NSView()
@@ -177,6 +198,14 @@ final class PacketInspectorViewController: NSViewController {
         delegate?.packetInspectorViewController(self, didSelectDetailNode: sender.identifier?.rawValue)
     }
 
+    @objc private func appConfigurationDidChange(_ notification: Notification) {
+        guard isViewLoaded else {
+            return
+        }
+
+        renderContent(state: viewModel.state)
+    }
+
     private func renderContent(state: PacketInspectorRenderState) {
         switch state.inspectorTab {
         case .summary:
@@ -206,7 +235,7 @@ final class PacketInspectorViewController: NSViewController {
             )
         }
 
-        let title = TCPViewerUI.label(summarySentence(for: packet), font: .systemFont(ofSize: NSFont.systemFontSize + 1, weight: .semibold))
+        let title = TCPViewerUI.label(summarySentence(for: packet), font: configuration.packetFont(sizeDelta: 1, weight: .semibold))
         title.maximumNumberOfLines = 3
         title.lineBreakMode = .byWordWrapping
 
@@ -273,9 +302,10 @@ final class PacketInspectorViewController: NSViewController {
             )
         }
 
-        let rawOutlineView = self.rawOutlineView ?? PacketRawOutlineView()
+        let rawOutlineView = self.rawOutlineView ?? PacketRawOutlineView(configuration: configuration)
         self.rawOutlineView = rawOutlineView
         rawOutlineView.delegate = self
+        rawOutlineView.applyConfiguration(configuration)
         rawOutlineView.render(nodes: inspection.detailNodes, selectedNodeID: state.selectedDetailNodeID)
         return rawOutlineView
     }
@@ -291,8 +321,9 @@ final class PacketInspectorViewController: NSViewController {
             )
         }
 
-        let hexView = self.hexView ?? PacketHexFiendView()
+        let hexView = self.hexView ?? PacketHexFiendView(configuration: configuration)
         self.hexView = hexView
+        hexView.applyConfiguration(configuration)
         hexView.render(data: inspection.rawBytes, highlightedByteRange: state.highlightedByteRange)
         return hexView
     }
@@ -315,7 +346,7 @@ final class PacketInspectorViewController: NSViewController {
         let progress = NSProgressIndicator()
         progress.style = .spinning
         progress.startAnimation(nil)
-        let label = TCPViewerUI.label(message, font: .systemFont(ofSize: NSFont.systemFontSize), color: .secondaryLabelColor)
+        let label = TCPViewerUI.label(message, font: configuration.packetFont(weight: .regular), color: .secondaryLabelColor)
         let stack = NSStackView(views: [progress, label], orientation: .vertical, spacing: 10)
         stack.alignment = .centerX
         let container = NSView()
@@ -338,7 +369,7 @@ final class PacketInspectorViewController: NSViewController {
     }
 
     private func section(_ title: String, rows: [NSView]) -> NSView {
-        let titleLabel = TCPViewerUI.label(title.uppercased(), font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold), color: .secondaryLabelColor)
+        let titleLabel = TCPViewerUI.label(title.uppercased(), font: configuration.packetFont(sizeDelta: -1, weight: .semibold), color: .secondaryLabelColor)
         let rowsStack = NSStackView(views: rows)
         rowsStack.orientation = .vertical
         rowsStack.alignment = .leading
@@ -351,8 +382,8 @@ final class PacketInspectorViewController: NSViewController {
     }
 
     private func keyValue(_ key: String, _ value: String) -> NSView {
-        let keyLabel = TCPViewerUI.label(key, font: .systemFont(ofSize: NSFont.systemFontSize), color: .secondaryLabelColor)
-        let valueLabel = TCPViewerUI.label(value, font: .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular))
+        let keyLabel = TCPViewerUI.label(key, font: configuration.packetFont(weight: .regular), color: .secondaryLabelColor)
+        let valueLabel = TCPViewerUI.label(value, font: configuration.packetFont(weight: .regular))
         valueLabel.maximumNumberOfLines = 2
         valueLabel.isSelectable = true
 
@@ -383,8 +414,8 @@ final class PacketInspectorViewController: NSViewController {
         icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: node.children.isEmpty ? 7 : 11, weight: .regular)
         icon.contentTintColor = node.kind == .warning ? .systemOrange : .secondaryLabelColor
 
-        let nameLabel = TCPViewerUI.label(node.name, font: .systemFont(ofSize: NSFont.systemFontSize, weight: node.kind == .layer ? .semibold : .regular), color: node.kind == .warning ? .systemOrange : .labelColor)
-        let valueLabel = TCPViewerUI.label(node.value ?? "", font: .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular), color: .secondaryLabelColor)
+        let nameLabel = TCPViewerUI.label(node.name, font: configuration.packetFont(weight: node.kind == .layer ? .semibold : .regular), color: node.kind == .warning ? .systemOrange : .labelColor)
+        let valueLabel = TCPViewerUI.label(node.value ?? "", font: configuration.packetFont(sizeDelta: -1, weight: .regular), color: .secondaryLabelColor)
         valueLabel.maximumNumberOfLines = 2
 
         let rowContent = NSStackView(views: [icon, nameLabel, NSView(), valueLabel])
@@ -404,7 +435,7 @@ final class PacketInspectorViewController: NSViewController {
             rowContent.trailingAnchor.constraint(equalTo: button.trailingAnchor),
             rowContent.topAnchor.constraint(equalTo: button.topAnchor),
             rowContent.bottomAnchor.constraint(equalTo: button.bottomAnchor),
-            button.heightAnchor.constraint(greaterThanOrEqualToConstant: 28),
+            button.heightAnchor.constraint(greaterThanOrEqualToConstant: max(28, configuration.packetRowHeight)),
         ])
 
         return button
@@ -432,7 +463,7 @@ final class PacketInspectorViewController: NSViewController {
     }
 
     private func makeBadge(_ text: String) -> NSView {
-        let label = TCPViewerUI.label(text, font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium), color: .secondaryLabelColor)
+        let label = TCPViewerUI.label(text, font: configuration.packetFont(sizeDelta: -1, weight: .medium), color: .secondaryLabelColor)
         label.lineBreakMode = .byTruncatingTail
         let container = NSView()
         container.wantsLayer = true
@@ -524,6 +555,7 @@ private final class PacketRawOutlineTableView: NSOutlineView {
 final class PacketRawOutlineView: NSView {
     weak var delegate: PacketRawOutlineViewDelegate?
 
+    private var configuration: AppConfiguration
     private let outlineView = PacketRawOutlineTableView()
     private let scrollView = NSScrollView()
     private var roots: [PacketRawOutlineItem] = []
@@ -531,7 +563,15 @@ final class PacketRawOutlineView: NSView {
     private var itemByID: [String: PacketRawOutlineItem] = [:]
     private var isSyncingSelection = false
 
+    init(configuration: AppConfiguration) {
+        self.configuration = configuration
+        super.init(frame: .zero)
+        setupOutlineView()
+        setupLayout()
+    }
+
     override init(frame frameRect: NSRect) {
+        self.configuration = AppConfiguration()
         super.init(frame: frameRect)
         setupOutlineView()
         setupLayout()
@@ -540,6 +580,12 @@ final class PacketRawOutlineView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    func applyConfiguration(_ configuration: AppConfiguration) {
+        self.configuration = configuration
+        outlineView.rowHeight = configuration.packetRowHeight
+        outlineView.reloadData()
     }
 
     // Render the decode tree and keep the selected decoded field visible.
@@ -577,7 +623,7 @@ final class PacketRawOutlineView: NSView {
         outlineView.copyHandler = self
         outlineView.allowsEmptySelection = true
         outlineView.allowsMultipleSelection = true
-        outlineView.rowHeight = 24
+        outlineView.rowHeight = configuration.packetRowHeight
         outlineView.indentationPerLevel = 16
         outlineView.indentationMarkerFollowsCell = true
         outlineView.style = .fullWidth
@@ -708,7 +754,8 @@ extension PacketRawOutlineView: NSOutlineViewDataSource, NSOutlineViewDelegate {
         cell.render(
             text: tableColumn?.identifier.rawValue == "value" ? (outlineItem.node.value ?? "") : outlineItem.node.name,
             kind: outlineItem.node.kind,
-            isValue: tableColumn?.identifier.rawValue == "value"
+            isValue: tableColumn?.identifier.rawValue == "value",
+            configuration: configuration
         )
         return cell
     }
@@ -740,11 +787,11 @@ private final class PacketRawOutlineTextCell: NSTableCellView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func render(text: String, kind: PacketDetailNodeKind, isValue: Bool) {
+    func render(text: String, kind: PacketDetailNodeKind, isValue: Bool, configuration: AppConfiguration) {
         label.stringValue = text
         label.font = isValue
-            ? .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
-            : .systemFont(ofSize: NSFont.systemFontSize, weight: kind == .layer ? .semibold : .regular)
+            ? configuration.packetFont(sizeDelta: -1, weight: .regular)
+            : configuration.packetFont(weight: kind == .layer ? .semibold : .regular)
         label.textColor = kind == .warning ? .systemOrange : (isValue ? .secondaryLabelColor : .labelColor)
     }
 

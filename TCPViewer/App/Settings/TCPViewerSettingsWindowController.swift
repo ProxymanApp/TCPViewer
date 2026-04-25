@@ -26,6 +26,11 @@ final class TCPViewerSettingsWindowController: NSWindowController {
             systemImage: "wrench.and.screwdriver.fill",
             viewController: Self.makeHostingController(rootView: TCPViewerHelperToolSettingsView(manager: networkHelperToolManager))
         ))
+        tabViewController.addTabViewItem(Self.makeTab(
+            title: "More Apps",
+            systemImage: "square.grid.2x2.fill",
+            viewController: Self.makeHostingController(rootView: TCPViewerMoreAppsSettingsView())
+        ))
 
         let window = NSWindow(contentViewController: tabViewController)
         window.title = "Settings"

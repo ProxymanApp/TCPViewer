@@ -2,10 +2,14 @@ import AppKit
 import SwiftUI
 
 enum TCPViewerSettingsLayout {
-    static let windowWidth: CGFloat = 760
-    static let paneWidth: CGFloat = 620
+    static let windowWidth: CGFloat = 600
+    static let paneWidth: CGFloat = 460
     static let verticalPadding: CGFloat = 30
     static let horizontalPadding: CGFloat = 28
+    static let rowTitleWidth: CGFloat = 116
+    static let rowSpacing: CGFloat = 12
+    static let rowContentWidth: CGFloat = paneWidth - rowTitleWidth - rowSpacing
+    static let rowContentLeadingInset: CGFloat = rowTitleWidth + rowSpacing
 }
 
 struct TCPViewerPrivacySettingsView: View {
@@ -22,11 +26,6 @@ struct TCPViewerPrivacySettingsView: View {
 
     var body: some View {
         SettingsPane {
-            SettingsHeading(
-                title: "Privacy",
-                message: "Control diagnostics that help improve TCP Viewer."
-            )
-
             SettingsRow(
                 title: "Analytics:",
                 detail: "Help improve TCP Viewer by automatically sending anonymous diagnostics and usage data."
@@ -43,7 +42,7 @@ struct TCPViewerPrivacySettingsView: View {
 
             HStack(spacing: 6) {
                 Spacer()
-                    .frame(width: 148)
+                    .frame(width: TCPViewerSettingsLayout.rowContentLeadingInset)
                 Text("Powered by Sentry")
                     .fontWeight(.medium)
                 Image(systemName: "arrow.up.right.circle")
@@ -52,7 +51,7 @@ struct TCPViewerPrivacySettingsView: View {
 
             HStack {
                 Spacer()
-                    .frame(width: 148)
+                    .frame(width: TCPViewerSettingsLayout.rowContentLeadingInset)
                 Button {
                     openPrivacyPolicy()
                 } label: {
@@ -93,11 +92,6 @@ struct TCPViewerAppearanceSettingsView: View {
 
     var body: some View {
         SettingsPane {
-            SettingsHeading(
-                title: "Appearance",
-                message: "Tune packet text and choose how TCP Viewer follows macOS appearance."
-            )
-
             SettingsRow(
                 title: "Font Size:",
                 detail: "Used by packet-oriented text such as tables and payload views."
@@ -108,7 +102,7 @@ struct TCPViewerAppearanceSettingsView: View {
                         in: Double(AppConfiguration.minimumPacketFontSize)...Double(AppConfiguration.maximumPacketFontSize),
                         step: 1
                     )
-                    .frame(width: 260)
+                    .frame(width: 190)
 
                     TextField("", value: $packetFontSize, format: .number.precision(.fractionLength(0)))
                         .textFieldStyle(.roundedBorder)
@@ -136,13 +130,26 @@ struct TCPViewerAppearanceSettingsView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(width: 260)
+                .frame(width: 240)
             }
 
             SettingsRow(title: "Preview:") {
                 Text("GET /packets tcp port 443")
                     .font(.system(size: packetFontSize, design: usesMonospacedPacketFont ? .monospaced : .default))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .frame(maxWidth: .infinity, alignment: .center)
+            }
+
+            HStack {
+                Spacer()
+                    .frame(width: TCPViewerSettingsLayout.rowContentLeadingInset)
+                Button {
+                    restoreAppearanceDefaults()
+                } label: {
+                    Label("Restore Defaults", systemImage: "arrow.counterclockwise")
+                }
             }
         }
         .onChange(of: packetFontSize) { _, newValue in
@@ -157,6 +164,14 @@ struct TCPViewerAppearanceSettingsView: View {
             configuration.applyAppearance()
         }
     }
+
+    private func restoreAppearanceDefaults() {
+        configuration.resetAppearanceToDefaults()
+        packetFontSize = Double(configuration.packetFontSize)
+        usesMonospacedPacketFont = configuration.usesMonospacedPacketFont
+        appearanceTheme = configuration.appearanceTheme
+        configuration.applyAppearance()
+    }
 }
 
 struct TCPViewerHelperToolSettingsView: View {
@@ -170,12 +185,7 @@ struct TCPViewerHelperToolSettingsView: View {
     }
 
     var body: some View {
-        SettingsPane {
-            SettingsHeading(
-                title: "Helper Tool",
-                message: "TCP Viewer uses a small background helper so macOS can allow packet capture without running the app as root."
-            )
-
+        CenteredSettingsPane {
             HStack(alignment: .top, spacing: 14) {
                 Image(systemName: statusImageName)
                     .font(.system(size: 34, weight: .semibold))
@@ -193,7 +203,7 @@ struct TCPViewerHelperToolSettingsView: View {
                         .font(.system(size: 12))
                         .foregroundStyle(.tertiary)
                 }
-                .frame(width: 520, alignment: .leading)
+                .fixedSize(horizontal: true, vertical: false)
             }
 
             HStack(spacing: 8) {
@@ -230,28 +240,6 @@ struct TCPViewerHelperToolSettingsView: View {
                 primaryAction
             }
 
-            Divider()
-
-            VStack(alignment: .leading, spacing: 12) {
-                Text("More Apps from Proxyman")
-                    .font(.system(size: 15, weight: .semibold))
-
-                ProductRow(
-                    systemImage: "desktopcomputer",
-                    title: "Proxyman for macOS, Windows, Linux",
-                    detail: "Inspect, debug, and rewrite HTTP traffic on desktop."
-                )
-                ProductRow(
-                    systemImage: "iphone.and.arrow.forward",
-                    title: "Proxyman iOS, Android",
-                    detail: "Capture and inspect mobile traffic while you build and test."
-                )
-                ProductRow(
-                    systemImage: "shield.lefthalf.filled",
-                    title: "TinyShield",
-                    detail: "A focused network privacy companion for everyday protection."
-                )
-            }
         }
         .onAppear {
             refreshStatus()
@@ -369,6 +357,28 @@ struct TCPViewerHelperToolSettingsView: View {
     }()
 }
 
+struct TCPViewerMoreAppsSettingsView: View {
+    var body: some View {
+        CenteredSettingsPane {
+            ProductRow(
+                systemImage: "desktopcomputer",
+                title: "Proxyman for macOS, Windows, Linux",
+                detail: "Inspect, debug, and rewrite HTTP traffic on desktop."
+            )
+            ProductRow(
+                systemImage: "iphone.and.arrow.forward",
+                title: "Proxyman iOS, Android",
+                detail: "Capture and inspect mobile traffic while you build and test."
+            )
+            ProductRow(
+                systemImage: "shield.lefthalf.filled",
+                title: "TinyShield",
+                detail: "A focused network privacy companion for everyday protection."
+            )
+        }
+    }
+}
+
 private struct ProductRow: View {
     let systemImage: String
     let title: String
@@ -389,7 +399,7 @@ private struct ProductRow: View {
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
             }
-            .frame(width: 520, alignment: .leading)
+            .frame(width: 380, alignment: .leading)
         }
     }
 }
@@ -409,18 +419,18 @@ private struct SettingsPane<Content: View>: View {
     }
 }
 
-private struct SettingsHeading: View {
-    let title: String
-    let message: String
+private struct CenteredSettingsPane<Content: View>: View {
+    @ViewBuilder let content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(.system(size: 20, weight: .semibold))
-            Text(message)
-                .font(.system(size: 13))
-                .foregroundStyle(.secondary)
+        VStack(alignment: .center, spacing: 18) {
+            content
         }
+        .frame(width: TCPViewerSettingsLayout.paneWidth, alignment: .center)
+        .padding(.vertical, TCPViewerSettingsLayout.verticalPadding)
+        .padding(.horizontal, TCPViewerSettingsLayout.horizontalPadding)
+        .frame(width: TCPViewerSettingsLayout.windowWidth)
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -439,7 +449,7 @@ private struct SettingsRow<Content: View>: View {
         HStack(alignment: .top, spacing: 12) {
             Text(title)
                 .font(.system(size: NSFont.systemFontSize, weight: .semibold))
-                .frame(width: 136, alignment: .trailing)
+                .frame(width: TCPViewerSettingsLayout.rowTitleWidth, alignment: .trailing)
 
             VStack(alignment: .leading, spacing: 7) {
                 content
@@ -449,7 +459,8 @@ private struct SettingsRow<Content: View>: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .frame(width: 440, alignment: .leading)
+            .frame(width: TCPViewerSettingsLayout.rowContentWidth, alignment: .leading)
         }
+        .frame(width: TCPViewerSettingsLayout.paneWidth, alignment: .leading)
     }
 }
