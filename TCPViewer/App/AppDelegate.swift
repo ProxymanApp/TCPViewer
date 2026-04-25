@@ -6,17 +6,18 @@
 //
 
 import Cocoa
-import SwiftUI
 
 @main
 class AppDelegate: NSObject, NSApplicationDelegate {
     let networkHelperToolManager = TCPViewerNetworkHelperToolManager()
+    let appConfiguration = AppConfiguration()
 
     private var settingsWindowController: NSWindowController?
     private var isHandlingTermination = false
 
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
+        appConfiguration.applyAppearance()
         wirePreferencesMenu()
     }
 
@@ -48,14 +49,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        let hostingController = NSHostingController(
-            rootView: TCPViewerSettingsView(networkHelperToolManager: networkHelperToolManager)
+        let controller = TCPViewerSettingsWindowController(
+            configuration: appConfiguration,
+            networkHelperToolManager: networkHelperToolManager
         )
-        let window = NSWindow(contentViewController: hostingController)
-        window.title = "TCP Viewer Settings"
-        window.styleMask = [.titled, .closable, .miniaturizable]
-        window.setContentSize(NSSize(width: 640, height: 460))
-        let controller = NSWindowController(window: window)
         settingsWindowController = controller
         controller.showWindow(sender)
     }

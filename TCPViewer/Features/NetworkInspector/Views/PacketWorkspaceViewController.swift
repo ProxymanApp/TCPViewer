@@ -46,8 +46,18 @@ final class PacketWorkspaceViewController: NSViewController {
 
     private let viewModel = PacketWorkspaceViewModel()
     private let contentContainer = NSView()
-    private let tableController = PacketTableViewController()
+    private let tableController: PacketTableViewController
     private var placeholderView: NSView?
+
+    init(configuration: AppConfiguration) {
+        self.tableController = PacketTableViewController(configuration: configuration)
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
 
     override func loadView() {
         view = NSView()

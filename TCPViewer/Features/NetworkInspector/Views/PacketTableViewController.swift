@@ -56,11 +56,9 @@ final class PacketTableViewModel {
 }
 
 final class PacketTableViewController: NSViewController {
-    private static let compactRowHeight: CGFloat = 24
-    fileprivate static let tableFontSize: CGFloat = 12
-
     weak var delegate: PacketTableViewControllerDelegate?
 
+    private let configuration: AppConfiguration
     private let tableView = NSTableView()
     private let scrollView = NSScrollView()
     private let viewModel = PacketTableViewModel()
@@ -75,6 +73,26 @@ final class PacketTableViewController: NSViewController {
         selectionCallbackSuppressionDepth > 0
     }
 
+    init(configuration: AppConfiguration) {
+        self.configuration = configuration
+        super.init(nibName: nil, bundle: nil)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appConfigurationDidChange(_:)),
+            name: AppConfiguration.didChangeNotification,
+            object: configuration
+        )
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
     override func loadView() {
         setupTable()
         view = scrollView
@@ -84,7 +102,7 @@ final class PacketTableViewController: NSViewController {
     func render(snapshot: NetworkInspectorSnapshot) {
         let previousRowCount = rows.count
         let updatePlan = viewModel.render(snapshot: snapshot)
-        tableView.rowHeight = Self.compactRowHeight
+        applyAppearanceConfiguration(reload: false)
 
         suppressSelectionCallbacks {
             switch updatePlan {
@@ -108,13 +126,17 @@ final class PacketTableViewController: NSViewController {
         }
     }
 
+    @objc private func appConfigurationDidChange(_ notification: Notification) {
+        applyAppearanceConfiguration(reload: true)
+    }
+
     private func setupTable() {
         tableView.delegate = self
         tableView.dataSource = self
         tableView.usesAlternatingRowBackgroundColors = true
         tableView.allowsEmptySelection = true
         tableView.allowsMultipleSelection = false
-        tableView.rowHeight = Self.compactRowHeight
+        tableView.rowHeight = configuration.packetRowHeight
         tableView.intercellSpacing = NSSize(width: 0, height: 0)
         tableView.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         tableView.selectionHighlightStyle = .regular
@@ -138,6 +160,13 @@ final class PacketTableViewController: NSViewController {
         scrollView.autohidesScrollers = false
         scrollView.drawsBackground = true
         scrollView.backgroundColor = .controlBackgroundColor
+    }
+
+    private func applyAppearanceConfiguration(reload: Bool) {
+        tableView.rowHeight = configuration.packetRowHeight
+        if reload, isViewLoaded {
+            tableView.reloadData()
+        }
     }
 
     private func addColumn(
@@ -254,11 +283,11 @@ extension PacketTableViewController: NSTableViewDataSource, NSTableViewDelegate 
 
         let packetRow = rows[row]
         if let cell = cell as? PacketProtocolCell {
-            cell.configure(protocolText: packetRow.protocolText, severity: packetRow.severity)
+            cell.configure(protocolText: packetRow.protocolText, severity: packetRow.severity, configuration: configuration)
         } else if let cell = cell as? PacketClientCell {
-            cell.configure(client: packetRow.client)
+            cell.configure(client: packetRow.client, configuration: configuration)
         } else if let cell = cell as? PacketTextCell {
-            cell.configure(style: textStyle(for: column, in: packetRow))
+            cell.configure(style: textStyle(for: column, in: packetRow), configuration: configuration)
         }
     }
 
@@ -303,8 +332,8 @@ final class PacketTextCell: NSTextFieldCell {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func configure(style: Style) {
-        font = .monospacedSystemFont(ofSize: PacketTableViewController.tableFontSize, weight: .regular)
+    func configure(style: Style, configuration: AppConfiguration) {
+        font = configuration.packetFont(weight: .regular)
 
         switch style {
         case .primary:
@@ -346,7 +375,6 @@ final class PacketProtocolCell: NSTextFieldCell {
         drawsBackground = false
         lineBreakMode = .byTruncatingTail
         truncatesLastVisibleLine = true
-        font = .monospacedSystemFont(ofSize: PacketTableViewController.tableFontSize, weight: .semibold)
     }
 
     convenience init() {
@@ -358,10 +386,11 @@ final class PacketProtocolCell: NSTextFieldCell {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func configure(protocolText: String, severity: PacketSeverity) {
+    func configure(protocolText: String, severity: PacketSeverity, configuration: AppConfiguration) {
         self.protocolText = protocolText
         self.severity = severity
         stringValue = protocolText
+        font = configuration.packetFont(weight: .semibold)
         textColor = textColor(for: protocolText, severity: severity)
     }
 
@@ -373,12 +402,12 @@ final class PacketProtocolCell: NSTextFieldCell {
         }
 
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: font ?? .monospacedSystemFont(ofSize: PacketTableViewController.tableFontSize, weight: .semibold),
+            .font: font ?? .monospacedSystemFont(ofSize: AppConfiguration.defaultPacketFontSize, weight: .semibold),
             .foregroundColor: textColor ?? .labelColor,
         ]
         let textSize = label.size(withAttributes: attributes)
         let pillWidth = min(max(textSize.width + 16, 42), cellFrame.width - 12)
-        let pillHeight: CGFloat = 18
+        let pillHeight = min(cellFrame.height - 4, max(18, ceil(textSize.height + 6)))
         let pillRect = NSRect(
             x: cellFrame.midX - pillWidth / 2,
             y: cellFrame.midY - pillHeight / 2,
@@ -387,7 +416,7 @@ final class PacketProtocolCell: NSTextFieldCell {
         )
 
         backgroundColor(for: label, severity: severity).setFill()
-        NSBezierPath(roundedRect: pillRect, xRadius: 9, yRadius: 9).fill()
+        NSBezierPath(roundedRect: pillRect, xRadius: pillHeight / 2, yRadius: pillHeight / 2).fill()
 
         let textRect = NSRect(
             x: pillRect.midX - textSize.width / 2,
@@ -485,7 +514,6 @@ final class PacketClientCell: NSTextFieldCell {
         drawsBackground = false
         lineBreakMode = .byTruncatingTail
         truncatesLastVisibleLine = true
-        font = .systemFont(ofSize: NSFont.systemFontSize)
         textColor = .labelColor
     }
 
@@ -499,9 +527,10 @@ final class PacketClientCell: NSTextFieldCell {
     }
 
     // Configure the reused cell with the current row's client metadata.
-    func configure(client: PacketClient?) {
+    func configure(client: PacketClient?, configuration: AppConfiguration) {
         self.client = client
         stringValue = client?.displayName ?? "-"
+        font = configuration.packetFont(weight: .regular)
         textColor = client == nil ? .secondaryLabelColor : .labelColor
     }
 

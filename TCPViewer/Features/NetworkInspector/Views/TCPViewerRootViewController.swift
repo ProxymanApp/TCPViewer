@@ -15,14 +15,16 @@ final class TCPViewerRootViewController: NSViewController {
     private let innerSplitViewController = NSSplitViewController()
     private let rightPaneViewController = NSViewController()
     private let sidebarViewController = SidebarViewController()
-    private let workspaceViewController = PacketWorkspaceViewController()
-    private let inspectorViewController = PacketInspectorViewController()
+    private let workspaceViewController: PacketWorkspaceViewController
+    private let inspectorViewController: PacketInspectorViewController
     private let statusStripViewController = StatusStripViewController()
     private var inspectorItem: NSSplitViewItem?
     private var hasRenderedHelperOnboarding = false
 
-    init(viewModel: NetworkInspectorViewModel) {
+    init(viewModel: NetworkInspectorViewModel, configuration: AppConfiguration) {
         self.viewModel = viewModel
+        self.workspaceViewController = PacketWorkspaceViewController(configuration: configuration)
+        self.inspectorViewController = PacketInspectorViewController(configuration: configuration)
         super.init(nibName: nil, bundle: nil)
         self.viewModel.delegate = self
     }

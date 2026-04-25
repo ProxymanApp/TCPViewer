@@ -27,6 +27,7 @@ class Document: NSDocument {
         )
         let windowController = TCPViewerWindowController(
             services: services,
+            configuration: appDelegate?.appConfiguration ?? AppConfiguration(),
             initialURL: openedCaptureURL ?? fileURL
         )
         addWindowController(windowController)

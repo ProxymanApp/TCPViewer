@@ -3,11 +3,19 @@ import HexFiend
 import PcapPlusPlusCore
 
 final class PacketHexFiendView: NSView {
+    private var configuration: AppConfiguration
     private let textView = HFTextView(frame: .zero)
     private var currentData = Data()
     private var currentSelectionRange: PacketHexFiendSelectionRange?
 
+    init(configuration: AppConfiguration) {
+        self.configuration = configuration
+        super.init(frame: .zero)
+        setupTextView()
+    }
+
     override init(frame frameRect: NSRect) {
+        self.configuration = AppConfiguration()
         super.init(frame: frameRect)
         setupTextView()
     }
@@ -15,6 +23,11 @@ final class PacketHexFiendView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    func applyConfiguration(_ configuration: AppConfiguration) {
+        self.configuration = configuration
+        textView.controller.font = configuration.packetFont(weight: .regular)
     }
 
     // Render packet bytes and keep the selected decoded field centered.
@@ -49,10 +62,7 @@ final class PacketHexFiendView: NSView {
         textView.autoresizingMask = [.width, .height]
         textView.bordered = false
         textView.controller.editable = false
-        textView.controller.font = NSFont.monospacedSystemFont(
-            ofSize: NSFont.smallSystemFontSize,
-            weight: .regular
-        )
+        applyConfiguration(configuration)
         textView.backgroundColors = [NSColor.textBackgroundColor]
         addSubview(textView)
 

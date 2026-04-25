@@ -9,9 +9,9 @@ final class TCPViewerWindowController: NSWindowController {
     private var helperSheetController: NSHostingController<TCPViewerNetworkHelperOnboardingSheet>?
     private var helperSheetWindow: NSWindow?
 
-    init(services: TCPViewerServiceRegistry, initialURL: URL? = nil) {
+    init(services: TCPViewerServiceRegistry, configuration: AppConfiguration, initialURL: URL? = nil) {
         let viewModel = NetworkInspectorViewModel(services: services)
-        self.rootViewController = TCPViewerRootViewController(viewModel: viewModel)
+        self.rootViewController = TCPViewerRootViewController(viewModel: viewModel, configuration: configuration)
         let window = NSWindow(contentViewController: rootViewController)
         window.title = initialURL?.lastPathComponent ?? "TCP Viewer"
         window.titleVisibility = .hidden
