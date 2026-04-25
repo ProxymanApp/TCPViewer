@@ -1,6 +1,6 @@
 import Foundation
 
-public struct PacketryCoreError: Error, Sendable, Codable, Hashable, Equatable, CustomStringConvertible {
+public struct TCPViewerCoreError: Error, Sendable, Codable, Hashable, Equatable, CustomStringConvertible {
     public enum Code: String, Sendable, Codable {
         case integrationMisconfigured
         case interfaceDiscoveryFailed

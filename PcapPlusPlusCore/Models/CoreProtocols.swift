@@ -1,11 +1,11 @@
 import Foundation
 
-public typealias PacketryCompletion<Value> = (Result<Value, Error>) -> Void
-public typealias PacketryVoidCompletion = (Result<Void, Error>) -> Void
+public typealias TCPViewerCompletion<Value> = (Result<Value, Error>) -> Void
+public typealias TCPViewerVoidCompletion = (Result<Void, Error>) -> Void
 public typealias PacketIngestEventHandler = (Result<PacketIngestEvent, Error>) -> Void
 
 public protocol CaptureInterfaceProviding {
-    func listInterfaces(completion: @escaping PacketryCompletion<[CaptureInterfaceSummary]>)
+    func listInterfaces(completion: @escaping TCPViewerCompletion<[CaptureInterfaceSummary]>)
 }
 
 public protocol CaptureFilterValidating {
@@ -15,23 +15,23 @@ public protocol CaptureFilterValidating {
 public protocol LiveCaptureSessionProviding: AnyObject {
     var eventHandler: PacketIngestEventHandler? { get set }
 
-    func start(completion: @escaping PacketryVoidCompletion)
-    func pause(completion: @escaping PacketryVoidCompletion)
-    func resume(completion: @escaping PacketryVoidCompletion)
-    func stop(completion: @escaping PacketryVoidCompletion)
-    func inspectPacket(id: PacketSummary.ID, completion: @escaping PacketryCompletion<PacketInspection>)
+    func start(completion: @escaping TCPViewerVoidCompletion)
+    func pause(completion: @escaping TCPViewerVoidCompletion)
+    func resume(completion: @escaping TCPViewerVoidCompletion)
+    func stop(completion: @escaping TCPViewerVoidCompletion)
+    func inspectPacket(id: PacketSummary.ID, completion: @escaping TCPViewerCompletion<PacketInspection>)
     func healthSnapshot(completion: @escaping (CaptureHealthSnapshot) -> Void)
 }
 
 public protocol OfflineCaptureDocumentProviding: AnyObject {
     var eventHandler: PacketIngestEventHandler? { get set }
 
-    func open(completion: @escaping PacketryCompletion<[PacketSummary]>)
-    func reopen(completion: @escaping PacketryCompletion<[PacketSummary]>)
+    func open(completion: @escaping TCPViewerCompletion<[PacketSummary]>)
+    func reopen(completion: @escaping TCPViewerCompletion<[PacketSummary]>)
     func cancelLoading(completion: (() -> Void)?)
-    func inspectPacket(id: PacketSummary.ID, completion: @escaping PacketryCompletion<PacketInspection>)
-    func save(completion: @escaping PacketryVoidCompletion)
-    func save(to url: URL, format: CaptureFileFormat, completion: @escaping PacketryVoidCompletion)
+    func inspectPacket(id: PacketSummary.ID, completion: @escaping TCPViewerCompletion<PacketInspection>)
+    func save(completion: @escaping TCPViewerVoidCompletion)
+    func save(to url: URL, format: CaptureFileFormat, completion: @escaping TCPViewerVoidCompletion)
     func currentURL() -> URL
     func currentMetadata() -> CaptureDocumentMetadata
     func packetSummaries() -> [PacketSummary]
@@ -40,26 +40,26 @@ public protocol OfflineCaptureDocumentProviding: AnyObject {
 
 public protocol LiveCaptureProviding {
     func validateCaptureOptions(_ options: CaptureOptions, for interface: CaptureInterfaceSummary?) throws -> CaptureOptions
-    func makeLiveCaptureSession(interfaceID: String, options: CaptureOptions, completion: @escaping PacketryCompletion<any LiveCaptureSessionProviding>)
+    func makeLiveCaptureSession(interfaceID: String, options: CaptureOptions, completion: @escaping TCPViewerCompletion<any LiveCaptureSessionProviding>)
 }
 
 public protocol OfflineCaptureProviding {
     func supportedOfflineFormats() -> [CaptureFileFormat]
-    func openOfflineCaptureDocument(at fileURL: URL, completion: @escaping PacketryCompletion<any OfflineCaptureDocumentProviding>)
-    func loadPacketSummaries(from fileURL: URL, completion: @escaping PacketryCompletion<[PacketSummary]>)
+    func openOfflineCaptureDocument(at fileURL: URL, completion: @escaping TCPViewerCompletion<any OfflineCaptureDocumentProviding>)
+    func loadPacketSummaries(from fileURL: URL, completion: @escaping TCPViewerCompletion<[PacketSummary]>)
 }
 
-public protocol PacketryCoreProviding:
+public protocol TCPViewerCoreProviding:
     CaptureInterfaceProviding,
     CaptureFilterValidating,
     LiveCaptureProviding,
     OfflineCaptureProviding {}
 
-public struct UnconfiguredPacketryCore: PacketryCoreProviding {
+public struct UnconfiguredTCPViewerCore: TCPViewerCoreProviding {
     public init() {}
 
-    public func listInterfaces(completion: @escaping PacketryCompletion<[CaptureInterfaceSummary]>) {
-        completion(.failure(PacketryCoreError(
+    public func listInterfaces(completion: @escaping TCPViewerCompletion<[CaptureInterfaceSummary]>) {
+        completion(.failure(TCPViewerCoreError(
             code: .integrationMisconfigured,
             message: "Native interface discovery is not wired into PcapPlusPlusCore yet."
         )))
@@ -88,10 +88,10 @@ public struct UnconfiguredPacketryCore: PacketryCoreProviding {
         try options.validated(for: interface)
     }
 
-    public func makeLiveCaptureSession(interfaceID: String, options: CaptureOptions, completion: @escaping PacketryCompletion<any LiveCaptureSessionProviding>) {
+    public func makeLiveCaptureSession(interfaceID: String, options: CaptureOptions, completion: @escaping TCPViewerCompletion<any LiveCaptureSessionProviding>) {
         do {
             _ = try validateCaptureOptions(options, for: nil)
-            completion(.failure(PacketryCoreError(
+            completion(.failure(TCPViewerCoreError(
                 code: .integrationMisconfigured,
                 message: "Native live capture sessions are not wired into PcapPlusPlusCore yet."
             )))
@@ -104,14 +104,14 @@ public struct UnconfiguredPacketryCore: PacketryCoreProviding {
         CaptureFileFormat.allCases
     }
 
-    public func openOfflineCaptureDocument(at fileURL: URL, completion: @escaping PacketryCompletion<any OfflineCaptureDocumentProviding>) {
-        completion(.failure(PacketryCoreError(
+    public func openOfflineCaptureDocument(at fileURL: URL, completion: @escaping TCPViewerCompletion<any OfflineCaptureDocumentProviding>) {
+        completion(.failure(TCPViewerCoreError(
             code: .integrationMisconfigured,
             message: "Native offline capture documents are not wired into PcapPlusPlusCore yet for \(fileURL.lastPathComponent)."
         )))
     }
 
-    public func loadPacketSummaries(from fileURL: URL, completion: @escaping PacketryCompletion<[PacketSummary]>) {
+    public func loadPacketSummaries(from fileURL: URL, completion: @escaping TCPViewerCompletion<[PacketSummary]>) {
         openOfflineCaptureDocument(at: fileURL) { result in
             switch result {
             case .success(let document):
@@ -128,25 +128,25 @@ public final class UnconfiguredLiveCaptureSession: LiveCaptureSessionProviding {
 
     public init() {}
 
-    public func start(completion: @escaping PacketryVoidCompletion) {
-        completion(.failure(PacketryCoreError(code: .integrationMisconfigured, message: "Native live capture sessions are not wired into PcapPlusPlusCore yet.")))
+    public func start(completion: @escaping TCPViewerVoidCompletion) {
+        completion(.failure(TCPViewerCoreError(code: .integrationMisconfigured, message: "Native live capture sessions are not wired into PcapPlusPlusCore yet.")))
     }
 
-    public func pause(completion: @escaping PacketryVoidCompletion) {
-        completion(.failure(PacketryCoreError(code: .integrationMisconfigured, message: "Native live capture sessions are not wired into PcapPlusPlusCore yet.")))
+    public func pause(completion: @escaping TCPViewerVoidCompletion) {
+        completion(.failure(TCPViewerCoreError(code: .integrationMisconfigured, message: "Native live capture sessions are not wired into PcapPlusPlusCore yet.")))
     }
 
-    public func resume(completion: @escaping PacketryVoidCompletion) {
-        completion(.failure(PacketryCoreError(code: .integrationMisconfigured, message: "Native live capture sessions are not wired into PcapPlusPlusCore yet.")))
+    public func resume(completion: @escaping TCPViewerVoidCompletion) {
+        completion(.failure(TCPViewerCoreError(code: .integrationMisconfigured, message: "Native live capture sessions are not wired into PcapPlusPlusCore yet.")))
     }
 
-    public func stop(completion: @escaping PacketryVoidCompletion) {
-        completion(.failure(PacketryCoreError(code: .integrationMisconfigured, message: "Native live capture sessions are not wired into PcapPlusPlusCore yet.")))
+    public func stop(completion: @escaping TCPViewerVoidCompletion) {
+        completion(.failure(TCPViewerCoreError(code: .integrationMisconfigured, message: "Native live capture sessions are not wired into PcapPlusPlusCore yet.")))
     }
 
-    public func inspectPacket(id: PacketSummary.ID, completion: @escaping PacketryCompletion<PacketInspection>) {
+    public func inspectPacket(id: PacketSummary.ID, completion: @escaping TCPViewerCompletion<PacketInspection>) {
         _ = id
-        completion(.failure(PacketryCoreError(code: .integrationMisconfigured, message: "Packet inspection is not wired into PcapPlusPlusCore yet.")))
+        completion(.failure(TCPViewerCoreError(code: .integrationMisconfigured, message: "Packet inspection is not wired into PcapPlusPlusCore yet.")))
     }
 
     public func healthSnapshot(completion: @escaping (CaptureHealthSnapshot) -> Void) {
@@ -162,11 +162,11 @@ public final class UnconfiguredOfflineCaptureDocument: OfflineCaptureDocumentPro
         self.fileURL = fileURL
     }
 
-    public func open(completion: @escaping PacketryCompletion<[PacketSummary]>) {
-        completion(.failure(PacketryCoreError(code: .integrationMisconfigured, message: "Native offline capture documents are not wired into PcapPlusPlusCore yet for \(fileURL.lastPathComponent).")))
+    public func open(completion: @escaping TCPViewerCompletion<[PacketSummary]>) {
+        completion(.failure(TCPViewerCoreError(code: .integrationMisconfigured, message: "Native offline capture documents are not wired into PcapPlusPlusCore yet for \(fileURL.lastPathComponent).")))
     }
 
-    public func reopen(completion: @escaping PacketryCompletion<[PacketSummary]>) {
+    public func reopen(completion: @escaping TCPViewerCompletion<[PacketSummary]>) {
         open(completion: completion)
     }
 
@@ -174,19 +174,19 @@ public final class UnconfiguredOfflineCaptureDocument: OfflineCaptureDocumentPro
         completion?()
     }
 
-    public func inspectPacket(id: PacketSummary.ID, completion: @escaping PacketryCompletion<PacketInspection>) {
+    public func inspectPacket(id: PacketSummary.ID, completion: @escaping TCPViewerCompletion<PacketInspection>) {
         _ = id
-        completion(.failure(PacketryCoreError(code: .integrationMisconfigured, message: "Packet inspection is not wired into PcapPlusPlusCore yet.")))
+        completion(.failure(TCPViewerCoreError(code: .integrationMisconfigured, message: "Packet inspection is not wired into PcapPlusPlusCore yet.")))
     }
 
-    public func save(completion: @escaping PacketryVoidCompletion) {
-        completion(.failure(PacketryCoreError(code: .integrationMisconfigured, message: "Native offline capture documents are not wired into PcapPlusPlusCore yet for \(fileURL.lastPathComponent).")))
+    public func save(completion: @escaping TCPViewerVoidCompletion) {
+        completion(.failure(TCPViewerCoreError(code: .integrationMisconfigured, message: "Native offline capture documents are not wired into PcapPlusPlusCore yet for \(fileURL.lastPathComponent).")))
     }
 
-    public func save(to url: URL, format: CaptureFileFormat, completion: @escaping PacketryVoidCompletion) {
+    public func save(to url: URL, format: CaptureFileFormat, completion: @escaping TCPViewerVoidCompletion) {
         _ = url
         _ = format
-        completion(.failure(PacketryCoreError(code: .integrationMisconfigured, message: "Native offline capture documents are not wired into PcapPlusPlusCore yet for \(fileURL.lastPathComponent).")))
+        completion(.failure(TCPViewerCoreError(code: .integrationMisconfigured, message: "Native offline capture documents are not wired into PcapPlusPlusCore yet for \(fileURL.lastPathComponent).")))
     }
 
     public func currentURL() -> URL {

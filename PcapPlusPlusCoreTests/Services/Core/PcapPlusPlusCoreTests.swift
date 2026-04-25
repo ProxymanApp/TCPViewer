@@ -8,7 +8,7 @@ struct PcapPlusPlusCoreTests {
         let fixtureURL = CoreFixtureCatalog.captureCategoryURL("tcp").appendingPathComponent("tcp-reassembly.pcap")
         let golden = try loadSummaryGolden(named: "tcp-reassembly.summary.json")
 
-        let packets = try await NativePacketryCore().loadPacketSummaries(from: fixtureURL)
+        let packets = try await NativeTCPViewerCore().loadPacketSummaries(from: fixtureURL)
 
         #expect(packets.count == golden.expectedPacketCount)
         #expect(Set(packets.map(\.source)) == [.offline])
@@ -21,7 +21,7 @@ struct PcapPlusPlusCoreTests {
         let fixtureURL = CoreFixtureCatalog.captureCategoryURL("udp").appendingPathComponent("someip-sd.pcapng")
         let golden = try loadSummaryGolden(named: "someip-sd.summary.json")
 
-        let document = try await NativePacketryCore().openOfflineCaptureDocument(at: fixtureURL)
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: fixtureURL)
         let packets = try await document.open()
         let metadata = await document.currentMetadata()
 
@@ -36,9 +36,9 @@ struct PcapPlusPlusCoreTests {
         let splitTLSFixtureURL = CoreFixtureCatalog.captureCategoryURL("tls").appendingPathComponent("SSL-ClientHello1-split.pcap")
         let udpFixtureURL = CoreFixtureCatalog.captureCategoryURL("udp").appendingPathComponent("someip-sd.pcapng")
 
-        let tlsPackets = try await NativePacketryCore().loadPacketSummaries(from: tlsFixtureURL)
-        let splitTLSPackets = try await NativePacketryCore().loadPacketSummaries(from: splitTLSFixtureURL)
-        let udpPackets = try await NativePacketryCore().loadPacketSummaries(from: udpFixtureURL)
+        let tlsPackets = try await NativeTCPViewerCore().loadPacketSummaries(from: tlsFixtureURL)
+        let splitTLSPackets = try await NativeTCPViewerCore().loadPacketSummaries(from: splitTLSFixtureURL)
+        let udpPackets = try await NativeTCPViewerCore().loadPacketSummaries(from: udpFixtureURL)
 
         #expect(tlsPackets.contains { $0.sniDomainName == "www.google.com" })
         #expect(splitTLSPackets.contains { $0.sniDomainName == "www.google.com" })
@@ -49,7 +49,7 @@ struct PcapPlusPlusCoreTests {
         let fixtureURL = CoreFixtureCatalog.captureCategoryURL("malformed").appendingPathComponent("partial-http-request.pcap")
         let golden = try loadMalformedGolden(named: "ipv4-malformed.summary.json")
 
-        let packets = try await NativePacketryCore().loadPacketSummaries(from: fixtureURL)
+        let packets = try await NativeTCPViewerCore().loadPacketSummaries(from: fixtureURL)
 
         #expect(packets.count == golden.expectedPacketCount)
         #expect(packets.filter { $0.decodeStatus.kind != .complete }.count == golden.expectedIssueCount)
@@ -62,7 +62,7 @@ struct PcapPlusPlusCoreTests {
         let metadataGolden = try loadMetadataGolden(named: "many-interfaces-1.metadata.json")
         let pcapFixtureURL = CoreFixtureCatalog.captureCategoryURL("macos-metadata").appendingPathComponent("ipsec.pcapng")
         let pcapGolden = try loadMetadataGolden(named: "ipsec.metadata.json")
-        let core = NativePacketryCore()
+        let core = NativeTCPViewerCore()
         let fileManager = FileManager.default
         let tempDirectory = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try fileManager.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
@@ -126,7 +126,7 @@ struct PcapPlusPlusCoreTests {
 
     @Test func failedSaveAsPcapPreservesExistingDestinationFile() async throws {
         let fixtureURL = CoreFixtureCatalog.captureCategoryURL("macos-metadata").appendingPathComponent("many-interfaces-1.pcapng")
-        let core = NativePacketryCore()
+        let core = NativeTCPViewerCore()
         let fileManager = FileManager.default
         let tempDirectory = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try fileManager.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
@@ -153,7 +153,7 @@ struct PcapPlusPlusCoreTests {
     }
 
     @Test func nativeLiveSessionCanStopBeforeStart() async throws {
-        let core = NativePacketryCore()
+        let core = NativeTCPViewerCore()
         guard let captureInterface = try await core.listInterfaces().first(where: \.isSelectable) else {
             return
         }

@@ -11,14 +11,14 @@ struct CoreFacadeTypesTests {
     }
 
     @Test func unconfiguredCoreRejectsEmptyCaptureFilter() async {
-        let validation = await UnconfiguredPacketryCore().validateCaptureFilter("   ")
+        let validation = await UnconfiguredTCPViewerCore().validateCaptureFilter("   ")
 
         #expect(validation.disposition == .invalid)
         #expect(validation.normalizedExpression == nil)
     }
 
     @Test func unconfiguredCoreNormalizesNonEmptyCaptureFilter() async {
-        let validation = await UnconfiguredPacketryCore().validateCaptureFilter(" tcp port 443 ")
+        let validation = await UnconfiguredTCPViewerCore().validateCaptureFilter(" tcp port 443 ")
 
         #expect(validation.disposition == .unavailable)
         #expect(validation.normalizedExpression == "tcp port 443")
@@ -170,7 +170,7 @@ struct CoreFacadeTypesTests {
     }
 
     @Test func unconfiguredCoreDeclaresOfflineFormats() {
-        #expect(UnconfiguredPacketryCore().supportedOfflineFormats() == [.pcap, .pcapng])
+        #expect(UnconfiguredTCPViewerCore().supportedOfflineFormats() == [.pcap, .pcapng])
     }
 
     private func makeInterface(

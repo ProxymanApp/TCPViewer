@@ -5,7 +5,7 @@ import Testing
 struct InspectorPipelineTests {
 
     @Test func nativeCoreCaptureFilterValidationNormalizesAndRejectsInvalidSyntax() async {
-        let core = NativePacketryCore()
+        let core = NativeTCPViewerCore()
 
         let empty = await core.validateCaptureFilter("   ")
         #expect(empty.disposition == .invalid)
@@ -70,7 +70,7 @@ struct InspectorPipelineTests {
             ]
         )
 
-        let document = try await NativePacketryCore().openOfflineCaptureDocument(at: captureURL)
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
         let packets = try await document.open()
 
         #expect(packets.count == 4)
@@ -105,6 +105,11 @@ struct InspectorPipelineTests {
         let udpLength = try #require(findNode(in: udpInspection.detailNodes, id: "udp.length"))
         #expect(udpLength.value == "12")
         #expect(udpLength.byteRange == PacketByteRange(offset: 38, length: 2))
+        let udpPayloadLength = try #require(findNode(in: udpInspection.detailNodes, id: "udp.payloadLength"))
+        #expect(udpPayloadLength.value == "4 bytes")
+        #expect(udpPayloadLength.byteRange == PacketByteRange(offset: 38, length: 2))
+        let udpChecksumStatus = try #require(findNode(in: udpInspection.detailNodes, id: "udp.checksum.status"))
+        #expect(udpChecksumStatus.value == "Not present")
 
         let ipv6Inspection = try await document.inspectPacket(id: packets[3].id)
         #expect(ipv6Inspection.detailNodes.map(\.name).contains("IPv6"))
@@ -115,11 +120,56 @@ struct InspectorPipelineTests {
         #expect(ipv6Source.byteRange == PacketByteRange(offset: 22, length: 16))
         let ipv6PayloadPreview = try #require(findNode(in: ipv6Inspection.detailNodes, id: "payload.preview"))
         #expect(ipv6PayloadPreview.byteRange == PacketByteRange(offset: 62, length: 4))
+        let ipv6UDPChecksumStatus = try #require(findNode(in: ipv6Inspection.detailNodes, id: "udp.checksum.status"))
+        #expect(ipv6UDPChecksumStatus.value == "Illegal zero checksum")
+    }
+
+    @Test func tcpSynInspectionExpandsFlagsAndOptions() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let captureURL = directory.appendingPathComponent("tcp-syn-options.pcap")
+        try writePCAP(to: captureURL, packets: [makeIPv4TCPSYNOptionsPacket()])
+
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
+        let packets = try await document.open()
+        let packet = try #require(packets.first)
+        let inspection = try await document.inspectPacket(id: packet.id)
+
+        let tcpSegmentLength = try #require(findNode(in: inspection.detailNodes, id: "tcp.segmentLength"))
+        #expect(tcpSegmentLength.value == "0")
+        let tcpFlags = try #require(findNode(in: inspection.detailNodes, id: "tcp.flags"))
+        #expect(tcpFlags.value == "0x0c2 (SYN, ECE, CWR)")
+        #expect(tcpFlags.byteRange == PacketByteRange(offset: 46, length: 2))
+        #expect(findNode(in: tcpFlags.children, id: "tcp.flags.syn")?.value == "Set")
+        #expect(findNode(in: tcpFlags.children, id: "tcp.flags.ece")?.value == "Set")
+        #expect(findNode(in: tcpFlags.children, id: "tcp.flags.cwr")?.value == "Set")
+        #expect(findNode(in: tcpFlags.children, id: "tcp.flags.ack")?.value == "Not set")
+
+        let rawSequence = try #require(findNode(in: inspection.detailNodes, id: "tcp.sequence.raw"))
+        #expect(rawSequence.value == "2849299978")
+        #expect(rawSequence.byteRange == PacketByteRange(offset: 38, length: 4))
+        let options = try #require(findNode(in: inspection.detailNodes, id: "tcp.options"))
+        #expect(options.value == "24 bytes")
+        #expect(options.byteRange == PacketByteRange(offset: 54, length: 24))
+        #expect(options.children.count == 9)
+        #expect(options.children[0].name == "TCP Option - Maximum segment size")
+        #expect(options.children[0].value == "1440 bytes")
+        #expect(options.children[0].byteRange == PacketByteRange(offset: 54, length: 4))
+        #expect(options.children[1].name == "TCP Option - No-Operation")
+        #expect(options.children[2].name == "TCP Option - Window scale")
+        #expect(options.children[2].value == "6 (multiply by 64)")
+        #expect(options.children[5].name == "TCP Option - Timestamps")
+        #expect(options.children[5].value == "TSval 663237127, TSecr 0")
+        #expect(options.children[6].name == "TCP Option - SACK permitted")
+        #expect(options.children[6].value == "Permitted")
+        #expect(options.children[7].name == "TCP Option - End of Option List")
+        #expect(options.children[8].name == "TCP Option - End of Option List")
     }
 
     @Test func malformedInspectionAddsDecodeWarningAndKeepsRawBytes() async throws {
         let fixtureURL = CoreFixtureCatalog.captureCategoryURL("malformed").appendingPathComponent("partial-http-request.pcap")
-        let document = try await NativePacketryCore().openOfflineCaptureDocument(at: fixtureURL)
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: fixtureURL)
         let packets = try await document.open()
         let packet = try #require(packets.first)
 
@@ -140,7 +190,7 @@ struct InspectorPipelineTests {
         let packetCount = 640
         try writePCAP(to: captureURL, repeating: repeatedPacket, count: packetCount)
 
-        let document = try await NativePacketryCore().openOfflineCaptureDocument(at: captureURL)
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
         let probe = LoadEventProbe()
         let events = document.events()
         let collector = Task {
@@ -178,7 +228,7 @@ struct InspectorPipelineTests {
         let totalPacketCount = 120_000
         try writePCAP(to: captureURL, repeating: repeatedPacket, count: totalPacketCount)
 
-        let document = try await NativePacketryCore().openOfflineCaptureDocument(at: captureURL)
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
         let probe = LoadEventProbe()
         let events = document.events()
         let collector = Task {
@@ -213,8 +263,8 @@ struct InspectorPipelineTests {
 
         do {
             _ = try await openTask.value
-            Issue.record("Expected loading cancellation to throw PacketryCoreError.operationCancelled.")
-        } catch let error as PacketryCoreError {
+            Issue.record("Expected loading cancellation to throw TCPViewerCoreError.operationCancelled.")
+        } catch let error as TCPViewerCoreError {
             #expect(error.code == .operationCancelled)
         }
 
@@ -232,7 +282,7 @@ struct InspectorPipelineTests {
         do {
             try await document.save()
             Issue.record("Expected save() to fail for a partially loaded capture.")
-        } catch let error as PacketryCoreError {
+        } catch let error as TCPViewerCoreError {
             #expect(error.code == .offlineFileSaveFailed)
         }
     }
@@ -374,6 +424,30 @@ private func makeIPv4TCPPayloadPacket() -> Data {
         0x00, 0x00, 0x00, 0x00,
         0x50, 0x18, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
         0xde, 0xad, 0xbe, 0xef,
+    ])
+}
+
+private func makeIPv4TCPSYNOptionsPacket() -> Data {
+    Data([
+        0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55,
+        0x08, 0x00,
+        0x45, 0x00, 0x00, 0x40, 0x12, 0x36, 0x40, 0x00, 0x40, 0x06, 0x00, 0x00,
+        0xc0, 0xa8, 0x00, 0x01,
+        0xc0, 0xa8, 0x00, 0x02,
+        0xd2, 0x55, 0xf2, 0x7e,
+        0xa9, 0xd4, 0xde, 0x0a,
+        0x00, 0x00, 0x00, 0x00,
+        0xb0, 0xc2, 0xff, 0xff, 0x68, 0xb2, 0x00, 0x00,
+        0x02, 0x04, 0x05, 0xa0,
+        0x01,
+        0x03, 0x03, 0x06,
+        0x01,
+        0x01,
+        0x08, 0x0a, 0x27, 0x88, 0x32, 0x07, 0x00, 0x00, 0x00, 0x00,
+        0x04, 0x02,
+        0x00,
+        0x00,
     ])
 }
 

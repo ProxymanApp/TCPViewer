@@ -1,7 +1,7 @@
 # v0.8.3 macOS Packet Metadata Surface
 
 ## Summary
-Define how Packetry surfaces macOS-specific packet metadata such as process info, flow IDs, packet metadata, and drop information when present in captures.
+Define how TCPViewer surfaces macOS-specific packet metadata such as process info, flow IDs, packet metadata, and drop information when present in captures.
 
 ## What To Build
 - Model macOS-specific metadata fields and their availability states.

@@ -1,7 +1,7 @@
 # v0.6.1 TCP Reassembly And IP Defragmentation
 
 ## Summary
-Define how Packetry reconstructs higher-value transport and IP views so analysts can inspect complete conversations instead of fragmented packets only.
+Define how TCPViewer reconstructs higher-value transport and IP views so analysts can inspect complete conversations instead of fragmented packets only.
 
 ## What To Build
 - Specify TCP reassembly and IP defragmentation outputs from `PcapPlusPlusCore`.

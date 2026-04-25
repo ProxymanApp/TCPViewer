@@ -6,8 +6,8 @@ Status: COMPLETE
 - [docs/testing/test-harness-and-fixtures.md](../../testing/test-harness-and-fixtures.md)
 - [Fixtures/README.md](../../../Fixtures/README.md)
 - [Fixtures/manifest.json](../../../Fixtures/manifest.json)
-- [PacketryTests/FixtureLocator.swift](../../../PacketryTests/FixtureLocator.swift)
-- [PacketryTests/CaptureAccessModelTests.swift](../../../PacketryTests/CaptureAccessModelTests.swift)
+- [TCPViewerTests/FixtureLocator.swift](../../../TCPViewerTests/FixtureLocator.swift)
+- [TCPViewerTests/CaptureAccessModelTests.swift](../../../TCPViewerTests/CaptureAccessModelTests.swift)
 - [PcapPlusPlusCoreTests/Support/FixtureLocator.swift](../../../PcapPlusPlusCoreTests/Support/FixtureLocator.swift)
 - [PcapPlusPlusCoreTests/Models/CoreFacadeTypesTests.swift](../../../PcapPlusPlusCoreTests/Models/CoreFacadeTypesTests.swift)
 
@@ -17,11 +17,11 @@ Status: COMPLETE
 - Add fixture-locator helpers and smoke coverage in both existing test targets.
 
 ## Summary
-Define the fixture library, test split, and regression strategy so Packetry and `PcapPlusPlusCore` can be verified with unit and integration tests from the start.
+Define the fixture library, test split, and regression strategy so TCPViewer and `PcapPlusPlusCore` can be verified with unit and integration tests from the start.
 
 ## What To Build
 - Describe the shared fixture catalog for TCP, UDP, retransmits, malformed packets, HTTP, TLS, DNS, WebSocket, and macOS metadata samples.
-- Define which tests belong in `PacketryTests` vs `PcapPlusPlusCoreTests`.
+- Define which tests belong in `TCPViewerTests` vs `PcapPlusPlusCoreTests`.
 - Document deterministic expectations for file round-trips, parsing, and graph/stat outputs.
 
 ## Requirements

@@ -1,4 +1,4 @@
-# Packetry
+# TCP Viewer
 
 ## Requirements
 
@@ -15,8 +15,8 @@ brew install cmake
 
 ```bash
 git clone --recurse-submodules <repo-url>
-cd Packetry
-open Packetry.xcodeproj
+cd TCPViewer
+open TCPViewer.xcodeproj
 ```
 
 If you already cloned the repo:
@@ -29,19 +29,19 @@ If you already cloned the repo:
 
 In Xcode:
 
-1. Open `Packetry.xcodeproj`
-2. Select the `Packetry` scheme
+1. Open `TCPViewer.xcodeproj`
+2. Select the `TCPViewer` scheme
 3. Choose `My Mac`
 4. Press `Run`
 
-If Xcode asks for signing, select your development team for `Packetry` and `PcapPlusPlusCore`.
+If Xcode asks for signing, select your development team for `TCPViewer` and `PcapPlusPlusCore`.
 
 ## Test
 
 ```bash
 xcodebuild test \
-  -project Packetry.xcodeproj \
-  -scheme Packetry \
+  -project TCPViewer.xcodeproj \
+  -scheme TCPViewer \
   -destination 'platform=macOS'
 ```
 

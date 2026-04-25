@@ -10,11 +10,11 @@ final class NativeLiveCaptureIntegrationTests {
             return
         }
 
-        let core = NativePacketryCore()
+        let core = NativeTCPViewerCore()
         let interfaces = try await core.listInterfaces()
         let captureInterface = try #require(
             interfaces.first { $0.id == requestedInterfaceID },
-            "Set PACKETRY_LIVE_CAPTURE_INTERFACE to an available interface, for example en1."
+            "Set TCPVIEWER_LIVE_CAPTURE_INTERFACE to an available interface, for example en1."
         )
         guard captureInterface.isSelectable else {
             let message = captureInterface.availabilityReason ?? "\(requestedInterfaceID) is not selectable for live capture."
@@ -65,7 +65,7 @@ final class NativeLiveCaptureIntegrationTests {
     }
 
     private static var requestedInterfaceID: String? {
-        let value = ProcessInfo.processInfo.environment["PACKETRY_LIVE_CAPTURE_INTERFACE"]?
+        let value = ProcessInfo.processInfo.environment["TCPVIEWER_LIVE_CAPTURE_INTERFACE"]?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return value?.isEmpty == false ? value : nil
     }

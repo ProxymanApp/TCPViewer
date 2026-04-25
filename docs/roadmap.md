@@ -1,7 +1,7 @@
-# Packetry Roadmap to v1.0.0
+# TCP Viewer Roadmap to v1.0.0
 
 ## Product Goal
-Packetry is a macOS-native SwiftUI packet analyzer aimed at TCP/UDP-heavy workflows. The v1 release should cover the core analysis loop users expect from a serious Wireshark alternative: capture, filter, inspect, reconstruct, diagnose, summarize, and export.
+TCP Viewer is a macOS-native SwiftUI packet analyzer aimed at TCP/UDP-heavy workflows. The v1 release should cover the core analysis loop users expect from a serious Wireshark alternative: capture, filter, inspect, reconstruct, diagnose, summarize, and export.
 
 ## Deliverables In This Folder
 - `docs/roadmap.md`: program-level roadmap, scope, sequencing, and release expectations.
@@ -19,7 +19,7 @@ Packetry is a macOS-native SwiftUI packet analyzer aimed at TCP/UDP-heavy workfl
 
 ## Architectural Boundaries
 - `PcapPlusPlusCore` is the only target that talks directly to PcapPlusPlus, libpcap, and mixed-language glue.
-- `Packetry` consumes a narrow Swift-importable facade only; no raw C++ types may cross into app-facing APIs.
+- `TCPViewer` consumes a narrow Swift-importable facade only; no raw C++ types may cross into app-facing APIs.
 - All C++ exceptions, pointer lifetimes, and unsafe ownership issues must be translated inside `PcapPlusPlusCore`.
 - App-facing models must be stable enough for unit tests and long-term document compatibility.
 
@@ -71,19 +71,19 @@ Exit criteria:
 Move from browsing to serious transport analysis with reassembly, defragmentation, expert diagnostics, decode-as, flow graphs, and name resolution.
 
 Exit criteria:
-- Packetry can explain transport behavior instead of only listing packets.
+- TCP Viewer can explain transport behavior instead of only listing packets.
 
 ### v0.7 App-Layer Focus Set
 Add the smallest app-layer slice that materially improves day-to-day debugging: DNS, HTTP/1.x, TLS metadata/fingerprinting, WebSocket detection, and HTTP object export.
 
 Exit criteria:
-- Packetry supports common backend and API debugging workflows, not just transport inspection.
+- TCP Viewer supports common backend and API debugging workflows, not just transport inspection.
 
 ### v0.8 macOS-Native Power UX
 Raise the desktop experience with profiles, multi-window workflows, macOS packet metadata, Apple-friendly capture UX, and accessibility/polish.
 
 Exit criteria:
-- Packetry feels native, efficient, and comfortable for long analysis sessions.
+- TCP Viewer feels native, efficient, and comfortable for long analysis sessions.
 
 ### v0.9 Scale, Export, And Automation
 Harden the app for big traces and handoff workflows with performance work, timeline graphs, export surfaces, TLS decryption, and a CLI companion.

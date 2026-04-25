@@ -1,7 +1,7 @@
 # v0.5.1 First Usable Release Path
 
 ## Summary
-Define the minimum complete workflow for the first MVP desktop release so users can install Packetry, capture traffic, inspect packets, and save their work.
+Define the minimum complete workflow for the first MVP desktop release so users can install TCP Viewer, capture traffic, inspect packets, and save their work.
 
 ## What To Build
 - Stitch together the launch, capture, open/save, and analysis workflows into one coherent product path.
