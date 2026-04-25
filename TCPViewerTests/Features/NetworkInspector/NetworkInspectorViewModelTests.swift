@@ -333,6 +333,72 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.packetTableUpdatePlan == .append(1..<3))
     }
 
+    @Test func liveModelKeepsLargePacketNavigationAndSourceListShapeCompact() async {
+        let liveSession = InspectorFakeLiveSession()
+        let clientResolver = InspectorFakePacketClientResolver(defaultClient: nil)
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(
+                core: InspectorFakeCore(
+                    interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                    liveSession: liveSession
+                ),
+                packetMetadataEnricher: PacketMetadataEnrichmentService(clientResolver: clientResolver)
+            ),
+            userDefaults: isolatedDefaults()
+        )
+        var lastCheckpoint: UInt64 = 0
+
+        await viewModel.performInitialLoadIfNeeded()
+        await viewModel.toggleLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+
+        for checkpoint in [UInt64(10_000), 50_000, 100_000] {
+            let batch = makeLivePacketBatch(from: lastCheckpoint + 1, through: checkpoint)
+            liveSession.send(.packetBatch(batch, disposition: .append))
+
+            await waitUntil(timeoutNanoseconds: 15_000_000_000) {
+                viewModel.snapshot.totalPacketCount == Int(checkpoint) &&
+                    viewModel.snapshot.visiblePacketCount == Int(checkpoint) &&
+                    viewModel.snapshot.base.navigationState.visiblePacketIDs.count == Int(checkpoint)
+            }
+
+            #expect(viewModel.snapshot.packetRows.first?.id == 1)
+            #expect(viewModel.snapshot.packetRows.last?.id == checkpoint)
+            #expect(viewModel.snapshot.base.navigationState.visiblePacketIDs.first == 1)
+            #expect(viewModel.snapshot.base.navigationState.visiblePacketIDs.last == checkpoint)
+            #expect(viewModel.snapshot.sourceListSnapshot.item(for: .domains)?.count == Int(checkpoint))
+            #expect(viewModel.snapshot.sourceListSnapshot.item(for: .domain(.ipAddresses))?.count == Int(checkpoint))
+            #expect(viewModel.snapshot.sourceListSnapshot.item(for: .apps)?.count == 0)
+            lastCheckpoint = checkpoint
+        }
+
+        let navigationLabels = Set(Mirror(reflecting: viewModel.snapshot.base.navigationState).children.compactMap(\.label))
+        #expect(navigationLabels.contains("visiblePacketIDs"))
+        #expect(!navigationLabels.contains("visiblePackets"))
+
+        let selectedPacket = makePacket(packetNumber: 50_000, source: .live, transportHint: .tcp, streamID: nil)
+        liveSession.inspections[selectedPacket.id] = makeInspection(for: selectedPacket)
+        viewModel.selectPacket(selectedPacket.id)
+
+        await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+            viewModel.snapshot.base.inspectionState.inspection?.packetID == selectedPacket.id
+        }
+
+        #expect(viewModel.snapshot.selectedPacket?.id == selectedPacket.id)
+        #expect(viewModel.snapshot.selectedPacketRowIndex == 49_999)
+
+        viewModel.updateDisplayFilterText("protocol:tcp")
+        await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+            viewModel.snapshot.visiblePacketCount == 50_000
+        }
+
+        #expect(viewModel.snapshot.packetRows.count == 50_000)
+        #expect(viewModel.snapshot.packetRows.first?.id == 2)
+        #expect(viewModel.snapshot.packetRows.last?.id == 100_000)
+        #expect(viewModel.snapshot.base.navigationState.visiblePacketIDs.count == 100_000)
+        #expect(viewModel.snapshot.sourceListSnapshot.item(for: .domain(.ipAddresses))?.count == 100_000)
+    }
+
     @Test func metadataEnrichmentBackfillsSNIAndCachesLiveClient() async {
         let client = makeClient()
         let clientResolver = InspectorFakePacketClientResolver(defaultClient: client)
@@ -787,11 +853,22 @@ struct NetworkInspectorViewModelTests {
         )
     }
 
+    private func makeLivePacketBatch(from start: UInt64, through end: UInt64) -> [PacketSummary] {
+        (start...end).map { packetNumber in
+            makePacket(
+                packetNumber: packetNumber,
+                source: .live,
+                transportHint: packetNumber.isMultiple(of: 2) ? .tcp : .udp,
+                streamID: nil
+            )
+        }
+    }
+
     private func makeInspection(for packet: PacketSummary) -> PacketInspection {
         PacketInspection(
             packetID: packet.id,
             packetNumber: packet.packetNumber,
-            rawBytes: Data(repeating: UInt8(packet.packetNumber), count: 16),
+            rawBytes: Data(repeating: UInt8(packet.packetNumber % 256), count: 16),
             detailNodes: [
                 PacketDetailNode(id: "frame", name: "Frame", value: "Packet \(packet.packetNumber)", kind: .layer)
             ],

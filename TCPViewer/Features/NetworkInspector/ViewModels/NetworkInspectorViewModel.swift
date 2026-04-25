@@ -98,13 +98,9 @@ private struct PacketTableContentCache {
         sourceListSelection: PacketSourceListSelection
     ) -> PacketTableContent {
         var rows: [PacketTableRow] = []
-        var rowIDs: [PacketSummary.ID] = []
-        var visiblePacketsByID: [PacketSummary.ID: PacketSummary] = [:]
         var visiblePacketRowIndexByID: [PacketSummary.ID: Int] = [:]
         var malformedPacketCount = 0
         rows.reserveCapacity(ingestState.packets.count)
-        rowIDs.reserveCapacity(ingestState.packets.count)
-        visiblePacketsByID.reserveCapacity(ingestState.packets.count)
         visiblePacketRowIndexByID.reserveCapacity(ingestState.packets.count)
 
         for packet in ingestState.packets {
@@ -119,8 +115,6 @@ private struct PacketTableContentCache {
 
             let rowIndex = rows.count
             rows.append(PacketTableRow(packet: packet))
-            rowIDs.append(packet.id)
-            visiblePacketsByID[packet.id] = packet
             visiblePacketRowIndexByID[packet.id] = rowIndex
         }
 
@@ -130,11 +124,9 @@ private struct PacketTableContentCache {
             displayFilter: displayFilter,
             displayFilterChips: displayFilter.chips,
             rows: rows,
-            rowIDs: rowIDs,
             generation: generation,
             updatePlan: updatePlan,
             malformedPacketCount: malformedPacketCount,
-            visiblePacketsByID: visiblePacketsByID,
             visiblePacketRowIndexByID: visiblePacketRowIndexByID
         )
         return store(
@@ -162,15 +154,11 @@ private struct PacketTableContentCache {
         }
 
         var rows = cachedContent.rows
-        var rowIDs = cachedContent.rowIDs
-        var visiblePacketsByID = cachedContent.visiblePacketsByID
         var visiblePacketRowIndexByID = cachedContent.visiblePacketRowIndexByID
         var malformedPacketCount = cachedContent.malformedPacketCount
         let appendStartIndex = rows.count
 
         rows.reserveCapacity(rows.count + newPackets.count)
-        rowIDs.reserveCapacity(rowIDs.count + newPackets.count)
-        visiblePacketsByID.reserveCapacity(visiblePacketsByID.count + newPackets.count)
         visiblePacketRowIndexByID.reserveCapacity(visiblePacketRowIndexByID.count + newPackets.count)
 
         for packet in newPackets {
@@ -185,8 +173,6 @@ private struct PacketTableContentCache {
 
             let rowIndex = rows.count
             rows.append(PacketTableRow(packet: packet))
-            rowIDs.append(packet.id)
-            visiblePacketsByID[packet.id] = packet
             visiblePacketRowIndexByID[packet.id] = rowIndex
         }
 
@@ -199,11 +185,9 @@ private struct PacketTableContentCache {
             displayFilter: displayFilter,
             displayFilterChips: displayFilter.chips,
             rows: rows,
-            rowIDs: rowIDs,
             generation: generation,
             updatePlan: didAppendVisibleRows ? .append(appendStartIndex..<rows.count) : .none,
             malformedPacketCount: malformedPacketCount,
-            visiblePacketsByID: visiblePacketsByID,
             visiblePacketRowIndexByID: visiblePacketRowIndexByID
         )
         return store(

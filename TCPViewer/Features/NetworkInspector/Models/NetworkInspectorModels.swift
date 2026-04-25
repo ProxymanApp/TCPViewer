@@ -123,7 +123,7 @@ struct PacketTag: Identifiable, Sendable, Hashable {
 
 struct PacketTableRow: Identifiable, Sendable, Hashable {
     let id: PacketSummary.ID
-    let packet: PacketSummary
+    let client: PacketClient?
     let numberText: String
     let timeText: String
     let sourceText: String
@@ -138,7 +138,7 @@ struct PacketTableRow: Identifiable, Sendable, Hashable {
 
     init(packet: PacketSummary) {
         self.id = packet.id
-        self.packet = packet
+        self.client = packet.client
         self.numberText = "\(packet.packetNumber)"
         self.timeText = NetworkInspectorFormatters.packetTime.string(from: packet.timestamp)
         self.sourceText = NetworkInspectorFormatters.endpointLabel(packet.endpoints.source)
@@ -339,7 +339,6 @@ struct NetworkInspectorSnapshot: Equatable {
     var displayFilter: PacketDisplayFilter
     var displayFilterChips: [PacketFilterChip]
     var packetRows: [PacketTableRow]
-    var packetRowIDs: [PacketSummary.ID]
     var packetTableGeneration: UInt64
     var packetTableUpdatePlan: PacketTableUpdatePlan
     var malformedPacketCount: Int
@@ -371,11 +370,12 @@ struct NetworkInspectorSnapshot: Equatable {
             displayFilter: packetTableContent.displayFilter,
             displayFilterChips: packetTableContent.displayFilterChips,
             packetRows: packetTableContent.rows,
-            packetRowIDs: packetTableContent.rowIDs,
             packetTableGeneration: packetTableContent.generation,
             packetTableUpdatePlan: packetTableContent.updatePlan,
             malformedPacketCount: packetTableContent.malformedPacketCount,
-            selectedPacket: packetTableContent.selectedPacket(id: base.selectedPacketID),
+            selectedPacket: packetTableContent.selectedRowIndex(id: base.selectedPacketID) == nil
+                ? nil
+                : base.packetIngestState.packet(withID: base.selectedPacketID),
             selectedPacketRowIndex: packetTableContent.selectedRowIndex(id: base.selectedPacketID)
         )
     }
@@ -429,22 +429,18 @@ struct PacketTableContent: Sendable {
     let displayFilter: PacketDisplayFilter
     let displayFilterChips: [PacketFilterChip]
     let rows: [PacketTableRow]
-    let rowIDs: [PacketSummary.ID]
     let generation: UInt64
     let updatePlan: PacketTableUpdatePlan
     let malformedPacketCount: Int
-    let visiblePacketsByID: [PacketSummary.ID: PacketSummary]
     let visiblePacketRowIndexByID: [PacketSummary.ID: Int]
 
     static let empty = PacketTableContent(
         displayFilter: PacketDisplayFilter(""),
         displayFilterChips: [],
         rows: [],
-        rowIDs: [],
         generation: 0,
         updatePlan: .none,
         malformedPacketCount: 0,
-        visiblePacketsByID: [:],
         visiblePacketRowIndexByID: [:]
     )
 
@@ -452,30 +448,18 @@ struct PacketTableContent: Sendable {
         displayFilter: PacketDisplayFilter,
         displayFilterChips: [PacketFilterChip],
         rows: [PacketTableRow],
-        rowIDs: [PacketSummary.ID],
         generation: UInt64,
         updatePlan: PacketTableUpdatePlan,
         malformedPacketCount: Int,
-        visiblePacketsByID: [PacketSummary.ID: PacketSummary],
         visiblePacketRowIndexByID: [PacketSummary.ID: Int]
     ) {
         self.displayFilter = displayFilter
         self.displayFilterChips = displayFilterChips
         self.rows = rows
-        self.rowIDs = rowIDs
         self.generation = generation
         self.updatePlan = updatePlan
         self.malformedPacketCount = malformedPacketCount
-        self.visiblePacketsByID = visiblePacketsByID
         self.visiblePacketRowIndexByID = visiblePacketRowIndexByID
-    }
-
-    func selectedPacket(id: PacketSummary.ID?) -> PacketSummary? {
-        guard let id else {
-            return nil
-        }
-
-        return visiblePacketsByID[id]
     }
 
     func selectedRowIndex(id: PacketSummary.ID?) -> Int? {

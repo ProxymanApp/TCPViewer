@@ -40,6 +40,16 @@ struct PacketIngestState: Sendable, Equatable {
         packets.count
     }
 
+    func packet(withID identifier: PacketSummary.ID?) -> PacketSummary? {
+        guard let identifier,
+              let packetIndex = packetIndexByID[identifier],
+              packets.indices.contains(packetIndex) else {
+            return nil
+        }
+
+        return packets[packetIndex]
+    }
+
     mutating func reset(source: CaptureSource? = nil, message: String) {
         self.source = source
         packets = []
@@ -364,22 +374,22 @@ struct PacketInspectionState: Sendable, Equatable {
 }
 
 struct PacketNavigationState: Sendable, Equatable {
-    var visiblePackets: [PacketSummary]
+    var visiblePacketIDs: [PacketSummary.ID]
     var jumpText: String
     var jumpErrorMessage: String?
     var statusMessage: String
 
     static let empty = PacketNavigationState(
-        visiblePackets: [],
+        visiblePacketIDs: [],
         jumpText: "",
         jumpErrorMessage: nil,
         statusMessage: "No packets available."
     )
 
     static func == (lhs: PacketNavigationState, rhs: PacketNavigationState) -> Bool {
-        lhs.visiblePackets.count == rhs.visiblePackets.count &&
-            lhs.visiblePackets.first?.id == rhs.visiblePackets.first?.id &&
-            lhs.visiblePackets.last?.id == rhs.visiblePackets.last?.id &&
+        lhs.visiblePacketIDs.count == rhs.visiblePacketIDs.count &&
+            lhs.visiblePacketIDs.first == rhs.visiblePacketIDs.first &&
+            lhs.visiblePacketIDs.last == rhs.visiblePacketIDs.last &&
             lhs.jumpText == rhs.jumpText &&
             lhs.jumpErrorMessage == rhs.jumpErrorMessage &&
             lhs.statusMessage == rhs.statusMessage
@@ -804,7 +814,7 @@ final class TCPViewerWorkspaceController {
             return
         }
 
-        guard let packet = snapshot.navigationState.visiblePackets.first(where: { $0.packetNumber == packetNumber }) else {
+        guard let packet = snapshot.packetIngestState.packets.first(where: { $0.packetNumber == packetNumber }) else {
             snapshot.navigationState.jumpErrorMessage = "Packet \(packetNumber) is not visible right now."
             return
         }
@@ -818,16 +828,16 @@ final class TCPViewerWorkspaceController {
             return
         }
 
-        selectPacket(snapshot.navigationState.visiblePackets[currentIndex - 1].id)
+        selectPacket(snapshot.navigationState.visiblePacketIDs[currentIndex - 1])
     }
 
     func selectNextPacket() {
         guard let currentIndex = selectedVisiblePacketIndex(),
-              currentIndex < snapshot.navigationState.visiblePackets.count - 1 else {
+              currentIndex < snapshot.navigationState.visiblePacketIDs.count - 1 else {
             return
         }
 
-        selectPacket(snapshot.navigationState.visiblePackets[currentIndex + 1].id)
+        selectPacket(snapshot.navigationState.visiblePacketIDs[currentIndex + 1])
     }
 
     func selectDetailNode(_ identifier: String?) {
@@ -1182,7 +1192,7 @@ final class TCPViewerWorkspaceController {
         let source = snapshot.packetIngestState.source
         snapshot.packetIngestState.reset(source: source, message: "Cleared.")
         snapshot.navigationState = PacketNavigationState(
-            visiblePackets: [],
+            visiblePacketIDs: [],
             jumpText: "",
             jumpErrorMessage: nil,
             statusMessage: "Cleared."
@@ -1741,20 +1751,20 @@ final class TCPViewerWorkspaceController {
         var shouldValidateSelection = true
 
         if case .append(let range) = mutation,
-           snapshot.navigationState.visiblePackets.count == range.lowerBound,
+           snapshot.navigationState.visiblePacketIDs.count == range.lowerBound,
            range.upperBound <= snapshot.packetIngestState.packets.count {
-            snapshot.navigationState.visiblePackets.append(
-                contentsOf: snapshot.packetIngestState.packets[range]
+            snapshot.navigationState.visiblePacketIDs.append(
+                contentsOf: snapshot.packetIngestState.packets[range].map(\.id)
             )
             shouldValidateSelection = false
         } else {
-            snapshot.navigationState.visiblePackets = snapshot.packetIngestState.packets
+            snapshot.navigationState.visiblePacketIDs = snapshot.packetIngestState.packets.map(\.id)
         }
         snapshot.navigationState.statusMessage = message
 
         if shouldValidateSelection,
            let selectedPacketID = snapshot.selectedPacketID,
-           !snapshot.navigationState.visiblePackets.contains(where: { $0.id == selectedPacketID }) {
+           !snapshot.navigationState.visiblePacketIDs.contains(selectedPacketID) {
             resetInspectionState()
         }
     }
@@ -1770,7 +1780,7 @@ final class TCPViewerWorkspaceController {
             return nil
         }
 
-        return snapshot.navigationState.visiblePackets.firstIndex(where: { $0.id == selectedPacketID })
+        return snapshot.navigationState.visiblePacketIDs.firstIndex(of: selectedPacketID)
     }
 
     private func scheduleInspection(for identifier: PacketSummary.ID?) {
@@ -1791,9 +1801,8 @@ final class TCPViewerWorkspaceController {
 
         let liveSession = self.liveSession
         let document = self.document
-        let visiblePackets = snapshot.navigationState.visiblePackets
-
-        guard let packet = visiblePackets.first(where: { $0.id == identifier }) else {
+        guard let packet = snapshot.packetIngestState.packet(withID: identifier),
+              snapshot.navigationState.visiblePacketIDs.contains(identifier) else {
             return
         }
 
