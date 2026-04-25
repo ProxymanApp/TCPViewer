@@ -42,9 +42,16 @@ final class PacketInspectorPanelViewModel {
         packetTableContent: .empty
     ))
 
-    // Extract inspector-only state so the controller can render without touching root state.
-    func render(snapshot: NetworkInspectorSnapshot) {
-        state = PacketInspectorRenderState(snapshot: snapshot)
+    // Extract inspector-only state and report whether the inspector actually changed.
+    @discardableResult
+    func render(snapshot: NetworkInspectorSnapshot) -> Bool {
+        let nextState = PacketInspectorRenderState(snapshot: snapshot)
+        guard nextState != state else {
+            return false
+        }
+
+        state = nextState
+        return true
     }
 }
 
@@ -74,7 +81,11 @@ final class PacketInspectorViewController: NSViewController {
     }
 
     func render(snapshot: NetworkInspectorSnapshot) {
-        viewModel.render(snapshot: snapshot)
+        let didChange = viewModel.render(snapshot: snapshot)
+        guard didChange || currentContentView == nil else {
+            return
+        }
+
         let state = viewModel.state
         logSelectedPacketRender(state: state)
         tabControl.selectedSegment = PacketInspectorTab.allCases.firstIndex(of: state.inspectorTab) ?? 0

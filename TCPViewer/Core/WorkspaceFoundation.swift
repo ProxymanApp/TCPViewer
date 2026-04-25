@@ -547,6 +547,16 @@ protocol TCPViewerWorkspaceControllerDelegate: AnyObject {
     func tcpViewerWorkspaceControllerDidChange(_ controller: TCPViewerWorkspaceController)
 }
 
+#if DEBUG
+struct TCPViewerWorkspaceMemoryDebugSnapshot: Equatable {
+    let ingestPacketCount: Int
+    let packetIndexCount: Int
+    let navigationVisibleIDCount: Int
+    let metadata: PacketMetadataEnrichmentDebugSnapshot
+    let liveSession: LiveCaptureSessionDebugSnapshot?
+}
+#endif
+
 final class TCPViewerWorkspaceController {
     weak var delegate: TCPViewerWorkspaceControllerDelegate?
 
@@ -1190,6 +1200,8 @@ final class TCPViewerWorkspaceController {
 
     func clearPackets() {
         let source = snapshot.packetIngestState.source
+        let shouldReleaseStoppedLiveSession = snapshot.sessionState.phase == .stopped ||
+            snapshot.sessionState.phase == .failed
         snapshot.packetIngestState.reset(source: source, message: "Cleared.")
         snapshot.navigationState = PacketNavigationState(
             visiblePacketIDs: [],
@@ -1201,7 +1213,22 @@ final class TCPViewerWorkspaceController {
         snapshot.documentState.packetCount = 0
         snapshot.sessionState.capturedPacketCount = 0
         services.packetMetadataEnricher.reset()
+        if shouldReleaseStoppedLiveSession {
+            releaseLiveSession()
+        }
     }
+
+    #if DEBUG
+    func debugMemorySnapshot() -> TCPViewerWorkspaceMemoryDebugSnapshot {
+        TCPViewerWorkspaceMemoryDebugSnapshot(
+            ingestPacketCount: snapshot.packetIngestState.packets.count,
+            packetIndexCount: snapshot.packetIngestState.packetIndexByID.count,
+            navigationVisibleIDCount: snapshot.navigationState.visiblePacketIDs.count,
+            metadata: services.packetMetadataEnricher.debugMemorySnapshot(),
+            liveSession: liveSession?.debugMemorySnapshot()
+        )
+    }
+    #endif
 
     func presentOpenCapturePanel() {
         let panel = NSOpenPanel()

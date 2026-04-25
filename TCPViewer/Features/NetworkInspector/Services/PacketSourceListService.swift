@@ -239,6 +239,26 @@ final class PacketSourceListService {
     private var domainBuckets: [PacketSourceDomainKey: PacketSourceListTreeBuilder.DomainBucket] = [:]
     private var domainOrder: [PacketSourceDomainKey] = []
 
+    func reset() {
+        packetRevision = nil
+        packetLineageRevision = nil
+        sourcePacketCount = 0
+        cachedSnapshot = .empty
+        appBuckets.removeAll(keepingCapacity: false)
+        appOrder.removeAll(keepingCapacity: false)
+        domainBuckets.removeAll(keepingCapacity: false)
+        domainOrder.removeAll(keepingCapacity: false)
+    }
+
+    #if DEBUG
+    func debugMemorySnapshot() -> PacketSourceListDebugSnapshot {
+        PacketSourceListDebugSnapshot(
+            appBucketCount: appBuckets.count,
+            domainBucketCount: domainBuckets.count
+        )
+    }
+    #endif
+
     // Keep the tree in sync with packet mutations, using append when packet lineage is unchanged.
     func snapshot(for ingestState: PacketIngestState) -> PacketSourceListSnapshot {
         guard packetRevision != ingestState.packetRevision else {
@@ -300,6 +320,13 @@ final class PacketSourceListService {
         return cachedSnapshot
     }
 }
+
+#if DEBUG
+struct PacketSourceListDebugSnapshot: Equatable {
+    let appBucketCount: Int
+    let domainBucketCount: Int
+}
+#endif
 
 enum PacketSourceListTreeBuilder {
     struct AppBucket: Equatable, Sendable {

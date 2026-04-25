@@ -54,6 +54,12 @@ struct InspectorPipelineTests {
         #expect(buffer.append([6]) == nil)
         #expect(buffer.flush() == [6])
         #expect(buffer.flush() == nil)
+
+        #expect(buffer.append([7, 8]) == nil)
+        #expect(buffer.pendingCount == 2)
+        buffer.discardPending(releasingCapacity: true)
+        #expect(buffer.isEmpty)
+        #expect(buffer.flush() == nil)
     }
 
     @Test func generatedCaptureInspectionCoversCoreProtocolsAndExactByteRanges() async throws {
