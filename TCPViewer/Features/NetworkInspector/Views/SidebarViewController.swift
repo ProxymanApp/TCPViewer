@@ -426,6 +426,14 @@ extension SidebarViewController: NSOutlineViewDataSource, NSOutlineViewDelegate 
             )
             cell.render(item: item, iconCache: iconCache)
             return cell
+        case .pin:
+            let cell = reusedCell(
+                identifier: SidebarPinCell.reuseIdentifier,
+                in: outlineView,
+                make: { SidebarPinCell(frame: .zero) }
+            )
+            cell.render(item: item, iconCache: iconCache)
+            return cell
         }
     }
 
@@ -588,6 +596,10 @@ private final class SidebarAppCell: SidebarIconCountCell {
 
 private final class SidebarDomainCell: SidebarIconCountCell {
     static let reuseIdentifier = NSUserInterfaceItemIdentifier("SidebarDomainCell")
+}
+
+private final class SidebarPinCell: SidebarIconCountCell {
+    static let reuseIdentifier = NSUserInterfaceItemIdentifier("SidebarPinCell")
 }
 
 private final class SidebarIconCache {

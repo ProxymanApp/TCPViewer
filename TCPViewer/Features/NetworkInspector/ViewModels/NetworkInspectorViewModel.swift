@@ -54,6 +54,8 @@ private struct PacketTableContentCache {
     private var sourcePacketCount = 0
     private var displayFilterText: String?
     private var sourceListSelection: PacketSourceListSelection?
+    private var pinnedItems: [PacketPin] = []
+    private var savedRecords: [SavedPacketRecord] = []
     private var generation: UInt64 = 0
     private var cachedContent = PacketTableContent.empty
 
@@ -63,6 +65,8 @@ private struct PacketTableContentCache {
         sourcePacketCount = 0
         displayFilterText = nil
         sourceListSelection = nil
+        pinnedItems = []
+        savedRecords = []
         generation &+= 1
         cachedContent = .empty
     }
@@ -79,17 +83,26 @@ private struct PacketTableContentCache {
     mutating func content(
         for ingestState: PacketIngestState,
         displayFilterText: String,
-        sourceListSelection: PacketSourceListSelection
+        sourceListSelection: PacketSourceListSelection,
+        pinnedItems: [PacketPin],
+        savedRecords: [SavedPacketRecord]
     ) -> PacketTableContent {
-        guard packetRevision != ingestState.packetRevision ||
-                self.displayFilterText != displayFilterText ||
-                self.sourceListSelection != sourceListSelection else {
+        guard shouldRebuildContent(
+            ingestState: ingestState,
+            displayFilterText: displayFilterText,
+            sourceListSelection: sourceListSelection,
+            pinnedItems: pinnedItems,
+            savedRecords: savedRecords
+        ) else {
             return cachedContent
         }
 
         let displayFilter = PacketDisplayFilter(displayFilterText)
-        if self.displayFilterText == displayFilterText,
+        if sourceListSelection != .saved,
+           self.displayFilterText == displayFilterText,
            self.sourceListSelection == sourceListSelection,
+           self.pinnedItems == pinnedItems,
+           self.savedRecords == savedRecords,
            packetLineageRevision == ingestState.packetLineageRevision,
            sourcePacketCount <= ingestState.packets.count,
            case .append = ingestState.lastMutation {
@@ -98,7 +111,9 @@ private struct PacketTableContentCache {
                 ingestState: ingestState,
                 displayFilter: displayFilter,
                 displayFilterText: displayFilterText,
-                sourceListSelection: sourceListSelection
+                sourceListSelection: sourceListSelection,
+                pinnedItems: pinnedItems,
+                savedRecords: savedRecords
             )
         }
 
@@ -106,28 +121,53 @@ private struct PacketTableContentCache {
             from: ingestState,
             displayFilter: displayFilter,
             displayFilterText: displayFilterText,
-            sourceListSelection: sourceListSelection
+            sourceListSelection: sourceListSelection,
+            pinnedItems: pinnedItems,
+            savedRecords: savedRecords
         )
+    }
+
+    private func shouldRebuildContent(
+        ingestState: PacketIngestState,
+        displayFilterText: String,
+        sourceListSelection: PacketSourceListSelection,
+        pinnedItems: [PacketPin],
+        savedRecords: [SavedPacketRecord]
+    ) -> Bool {
+        let dependsOnIngestPackets = sourceListSelection != .saved
+        return (dependsOnIngestPackets && packetRevision != ingestState.packetRevision) ||
+            self.displayFilterText != displayFilterText ||
+            self.sourceListSelection != sourceListSelection ||
+            self.pinnedItems != pinnedItems ||
+            self.savedRecords != savedRecords
     }
 
     private mutating func rebuildContent(
         from ingestState: PacketIngestState,
         displayFilter: PacketDisplayFilter,
         displayFilterText: String,
-        sourceListSelection: PacketSourceListSelection
+        sourceListSelection: PacketSourceListSelection,
+        pinnedItems: [PacketPin],
+        savedRecords: [SavedPacketRecord]
     ) -> PacketTableContent {
         var rows: [PacketTableRow] = []
         var visiblePacketRowIndexByID: [PacketSummary.ID: Int] = [:]
         var malformedPacketCount = 0
-        rows.reserveCapacity(ingestState.packets.count)
-        visiblePacketRowIndexByID.reserveCapacity(ingestState.packets.count)
+        let sourcePackets = packets(
+            from: ingestState,
+            sourceListSelection: sourceListSelection,
+            pinnedItems: pinnedItems,
+            savedRecords: savedRecords
+        )
+        rows.reserveCapacity(sourcePackets.count)
+        visiblePacketRowIndexByID.reserveCapacity(sourcePackets.count)
 
-        for packet in ingestState.packets {
+        for packet in sourcePackets {
             if NetworkInspectorFormatters.severity(for: packet) == .malformed {
                 malformedPacketCount += 1
             }
 
-            guard PacketSourceListClassifier.matches(packet, selection: sourceListSelection),
+            guard matches(packet, selection: sourceListSelection, pinnedItems: pinnedItems),
                   displayFilter.isEmpty || displayFilter.matches(packet) else {
                 continue
             }
@@ -152,7 +192,9 @@ private struct PacketTableContentCache {
             content,
             ingestState: ingestState,
             displayFilterText: displayFilterText,
-            sourceListSelection: sourceListSelection
+            sourceListSelection: sourceListSelection,
+            pinnedItems: pinnedItems,
+            savedRecords: savedRecords
         )
     }
 
@@ -161,14 +203,18 @@ private struct PacketTableContentCache {
         ingestState: PacketIngestState,
         displayFilter: PacketDisplayFilter,
         displayFilterText: String,
-        sourceListSelection: PacketSourceListSelection
+        sourceListSelection: PacketSourceListSelection,
+        pinnedItems: [PacketPin],
+        savedRecords: [SavedPacketRecord]
     ) -> PacketTableContent {
         guard !newPackets.isEmpty else {
             return store(
                 cachedContent,
                 ingestState: ingestState,
                 displayFilterText: displayFilterText,
-                sourceListSelection: sourceListSelection
+                sourceListSelection: sourceListSelection,
+                pinnedItems: pinnedItems,
+                savedRecords: savedRecords
             )
         }
 
@@ -185,7 +231,7 @@ private struct PacketTableContentCache {
                 malformedPacketCount += 1
             }
 
-            guard PacketSourceListClassifier.matches(packet, selection: sourceListSelection),
+            guard matches(packet, selection: sourceListSelection, pinnedItems: pinnedItems),
                   displayFilter.isEmpty || displayFilter.matches(packet) else {
                 continue
             }
@@ -213,7 +259,9 @@ private struct PacketTableContentCache {
             content,
             ingestState: ingestState,
             displayFilterText: displayFilterText,
-            sourceListSelection: sourceListSelection
+            sourceListSelection: sourceListSelection,
+            pinnedItems: pinnedItems,
+            savedRecords: savedRecords
         )
     }
 
@@ -221,15 +269,55 @@ private struct PacketTableContentCache {
         _ content: PacketTableContent,
         ingestState: PacketIngestState,
         displayFilterText: String,
-        sourceListSelection: PacketSourceListSelection
+        sourceListSelection: PacketSourceListSelection,
+        pinnedItems: [PacketPin],
+        savedRecords: [SavedPacketRecord]
     ) -> PacketTableContent {
         packetRevision = ingestState.packetRevision
         packetLineageRevision = ingestState.packetLineageRevision
         sourcePacketCount = ingestState.packets.count
         self.displayFilterText = displayFilterText
         self.sourceListSelection = sourceListSelection
+        self.pinnedItems = pinnedItems
+        self.savedRecords = savedRecords
         cachedContent = content
         return content
+    }
+
+    private func packets(
+        from ingestState: PacketIngestState,
+        sourceListSelection: PacketSourceListSelection,
+        pinnedItems: [PacketPin],
+        savedRecords: [SavedPacketRecord]
+    ) -> [PacketSummary] {
+        switch sourceListSelection {
+        case .saved:
+            return savedRecords.map(\.packet)
+        case .pinned, .pinnedItem:
+            return ingestState.packets.filter { matches($0, selection: sourceListSelection, pinnedItems: pinnedItems) }
+        default:
+            return ingestState.packets
+        }
+    }
+
+    private func matches(
+        _ packet: PacketSummary,
+        selection: PacketSourceListSelection,
+        pinnedItems: [PacketPin]
+    ) -> Bool {
+        switch selection {
+        case .pinned:
+            return pinnedItems.contains { PacketPinMatcher.matches(packet, pin: $0) }
+        case .pinnedItem(let pinID):
+            guard let pin = pinnedItems.first(where: { $0.id == pinID }) else {
+                return false
+            }
+            return PacketPinMatcher.matches(packet, pin: pin)
+        case .saved:
+            return true
+        default:
+            return PacketSourceListClassifier.matches(packet, selection: selection)
+        }
     }
 }
 
@@ -287,6 +375,8 @@ final class NetworkInspectorViewModel {
     private let controller: TCPViewerWorkspaceController
     private let preferences: NetworkInspectorPreferences
     private let sourceListService = PacketSourceListService()
+    private let pinService: PacketPinService
+    private let savedPacketService: SavedPacketService
     private var packetTableContentCache = PacketTableContentCache()
     private var hasPerformedInitialLoad = false
 
@@ -303,19 +393,32 @@ final class NetworkInspectorViewModel {
         self.init(services: .foundation, userDefaults: userDefaults)
     }
 
-    init(services: TCPViewerServiceRegistry, userDefaults: UserDefaults = .standard) {
+    init(
+        services: TCPViewerServiceRegistry,
+        userDefaults: UserDefaults = .standard,
+        pinService: PacketPinService = PacketPinService(),
+        savedPacketService: SavedPacketService = SavedPacketService()
+    ) {
         self.controller = TCPViewerWorkspaceController(
             services: services,
             userDefaults: userDefaults
         )
         self.preferences = NetworkInspectorPreferences(defaults: userDefaults)
+        self.pinService = pinService
+        self.savedPacketService = savedPacketService
         self.isInspectorVisible = preferences.isInspectorVisible
         self.displayFilterText = preferences.displayFilterText
-        let sourceListSnapshot = sourceListService.snapshot(for: controller.snapshot.packetIngestState)
+        let sourceListSnapshot = sourceListService.snapshot(
+            for: controller.snapshot.packetIngestState,
+            pinnedItems: pinService.pins(),
+            savedPacketCount: savedPacketService.records().count
+        )
         let packetTableContent = packetTableContentCache.content(
             for: controller.snapshot.packetIngestState,
             displayFilterText: displayFilterText,
-            sourceListSelection: selectedSourceListSelection
+            sourceListSelection: selectedSourceListSelection,
+            pinnedItems: pinService.pins(),
+            savedRecords: savedPacketService.records()
         )
         self.snapshot = NetworkInspectorSnapshot.make(
             base: controller.snapshot,
@@ -472,6 +575,49 @@ final class NetworkInspectorViewModel {
         #endif
     }
 
+    func pinPacket(_ identifier: PacketSummary.ID, kind: PacketPinCreationKind, clickedColumn: PacketTableColumnRole) {
+        guard let packet = packet(withID: identifier),
+              let pin = try? pinService.upsertPin(from: packet, kind: kind, clickedColumn: clickedColumn) else {
+            return
+        }
+
+        selectedSourceListSelection = .pinnedItem(pin.id)
+        workspaceMode = .packets
+        rebuildSnapshot()
+    }
+
+    func savePackets(_ identifiers: [PacketSummary.ID]) {
+        let packets = packets(withIDs: identifiers)
+        guard !packets.isEmpty, (try? savedPacketService.save(packets)) != nil else {
+            return
+        }
+
+        rebuildSnapshot()
+    }
+
+    func deletePackets(_ identifiers: [PacketSummary.ID]) {
+        let packetIDs = Set(identifiers)
+        guard !packetIDs.isEmpty else {
+            return
+        }
+
+        let nextSelectionID = nextVisiblePacketIDAfterDeleting(packetIDs)
+        if selectedSourceListSelection == .saved {
+            guard (try? savedPacketService.deletePacketIDs(packetIDs)) != nil else {
+                return
+            }
+        } else {
+            controller.deletePackets(packetIDs)
+            packetTableContentCache.reset()
+        }
+
+        if let nextSelectionID,
+           controller.snapshot.packetIngestState.packet(withID: nextSelectionID) != nil {
+            controller.selectPacket(nextSelectionID)
+        }
+        rebuildSnapshot()
+    }
+
     func updateCaptureFilterText(_ text: String) {
         controller.updateCaptureFilterText(text)
         rebuildSnapshot()
@@ -611,7 +757,13 @@ final class NetworkInspectorViewModel {
     }
 
     private func rebuildSnapshot() {
-        let sourceListSnapshot = sourceListService.snapshot(for: controller.snapshot.packetIngestState)
+        let pinnedItems = pinService.pins()
+        let savedRecords = savedPacketService.records()
+        let sourceListSnapshot = sourceListService.snapshot(
+            for: controller.snapshot.packetIngestState,
+            pinnedItems: pinnedItems,
+            savedPacketCount: savedRecords.count
+        )
         if !sourceListSnapshot.contains(selection: selectedSourceListSelection) {
             selectedSourceListSelection = .allPackets
         }
@@ -619,7 +771,9 @@ final class NetworkInspectorViewModel {
         let packetTableContent = packetTableContentCache.content(
             for: controller.snapshot.packetIngestState,
             displayFilterText: displayFilterText,
-            sourceListSelection: selectedSourceListSelection
+            sourceListSelection: selectedSourceListSelection,
+            pinnedItems: pinnedItems,
+            savedRecords: savedRecords
         )
         let updatedSnapshot = NetworkInspectorSnapshot.make(
             base: controller.snapshot,
@@ -638,6 +792,41 @@ final class NetworkInspectorViewModel {
         }
 
         snapshot = updatedSnapshot
+    }
+
+    private func packet(withID identifier: PacketSummary.ID) -> PacketSummary? {
+        controller.snapshot.packetIngestState.packet(withID: identifier) ??
+            savedPacketService.records().first { $0.packet.id == identifier }?.packet
+    }
+
+    private func packets(withIDs identifiers: [PacketSummary.ID]) -> [PacketSummary] {
+        var packetsByID: [PacketSummary.ID: PacketSummary] = [:]
+        for packet in controller.snapshot.packetIngestState.packets {
+            packetsByID[packet.id] = packet
+        }
+        for record in savedPacketService.records() {
+            packetsByID[record.packet.id] = record.packet
+        }
+
+        return identifiers.compactMap { packetsByID[$0] }
+    }
+
+    private func nextVisiblePacketIDAfterDeleting(_ packetIDs: Set<PacketSummary.ID>) -> PacketSummary.ID? {
+        // Prefer the row after the deleted range, then fall back to the previous remaining row.
+        let rows = snapshot.packetRows
+        let deletedIndexes = rows.indices.filter { packetIDs.contains(rows[$0].id) }
+        guard let lastDeletedIndex = deletedIndexes.last else {
+            return nil
+        }
+
+        let nextIndex = lastDeletedIndex + 1
+        if rows.indices.contains(nextIndex) {
+            return rows[nextIndex].id
+        }
+
+        return rows.indices.reversed()
+            .first { $0 < lastDeletedIndex && !packetIDs.contains(rows[$0].id) }
+            .map { rows[$0].id }
     }
 
     #if DEBUG

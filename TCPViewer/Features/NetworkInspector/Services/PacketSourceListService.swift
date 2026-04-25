@@ -15,6 +15,7 @@ struct PacketSourceDomainKey: Hashable, Sendable {
 enum PacketSourceListSelection: Hashable, Sendable {
     case allPackets
     case pinned
+    case pinnedItem(PacketPinID)
     case saved
     case apps
     case app(PacketSourceClientKey)
@@ -28,6 +29,7 @@ enum PacketSourceListItemKind: Hashable, Sendable {
     case folder
     case app
     case domain
+    case pin
 }
 
 struct PacketSourceListItem: Identifiable, Equatable, Sendable {
@@ -56,10 +58,14 @@ struct PacketSourceListItem: Identifiable, Equatable, Sendable {
 struct PacketSourceListSnapshot: Equatable, Sendable {
     let roots: [PacketSourceListItem]
 
-    static let empty = PacketSourceListSnapshot(roots: PacketSourceListTreeBuilder.makeRoots(
-        appBuckets: [],
-        domainBuckets: []
-    ))
+    static let empty = PacketSourceListSnapshot(
+        roots: PacketSourceListTreeBuilder.makeRoots(
+            appBuckets: [],
+            domainBuckets: [],
+            pinnedBuckets: [],
+            savedPacketCount: 0
+        )
+    )
 
     // Return a display-only filtered tree while preserving ancestors for matching children.
     func filtered(matching filterText: String) -> PacketSourceListSnapshot {
@@ -202,7 +208,7 @@ enum PacketSourceListClassifier {
         switch selection {
         case .allPackets:
             return true
-        case .pinned, .saved:
+        case .pinned, .pinnedItem, .saved:
             return false
         case .apps:
             return clientIdentity(for: packet) != nil
@@ -238,6 +244,8 @@ final class PacketSourceListService {
     private var appOrder: [PacketSourceClientKey] = []
     private var domainBuckets: [PacketSourceDomainKey: PacketSourceListTreeBuilder.DomainBucket] = [:]
     private var domainOrder: [PacketSourceDomainKey] = []
+    private var pinnedItems: [PacketPin] = []
+    private var savedPacketCount = 0
 
     func reset() {
         packetRevision = nil
@@ -248,6 +256,8 @@ final class PacketSourceListService {
         appOrder.removeAll(keepingCapacity: false)
         domainBuckets.removeAll(keepingCapacity: false)
         domainOrder.removeAll(keepingCapacity: false)
+        pinnedItems = []
+        savedPacketCount = 0
     }
 
     #if DEBUG
@@ -260,10 +270,19 @@ final class PacketSourceListService {
     #endif
 
     // Keep the tree in sync with packet mutations, using append when packet lineage is unchanged.
-    func snapshot(for ingestState: PacketIngestState) -> PacketSourceListSnapshot {
-        guard packetRevision != ingestState.packetRevision else {
+    func snapshot(
+        for ingestState: PacketIngestState,
+        pinnedItems: [PacketPin] = [],
+        savedPacketCount: Int = 0
+    ) -> PacketSourceListSnapshot {
+        guard packetRevision != ingestState.packetRevision ||
+                self.pinnedItems != pinnedItems ||
+                self.savedPacketCount != savedPacketCount else {
             return cachedSnapshot
         }
+
+        self.pinnedItems = pinnedItems
+        self.savedPacketCount = savedPacketCount
 
         if packetLineageRevision == ingestState.packetLineageRevision,
            sourcePacketCount <= ingestState.packets.count,
@@ -315,7 +334,18 @@ final class PacketSourceListService {
         sourcePacketCount = ingestState.packets.count
         cachedSnapshot = PacketSourceListTreeBuilder.makeSnapshot(
             appBuckets: appOrder.compactMap { appBuckets[$0] },
-            domainBuckets: domainOrder.compactMap { domainBuckets[$0] }
+            domainBuckets: domainOrder.compactMap { domainBuckets[$0] },
+            pinnedBuckets: pinnedItems.map { pin in
+                PacketSourceListTreeBuilder.PinnedBucket(
+                    pin: pin,
+                    packetCount: ingestState.packets.reduce(into: 0) { count, packet in
+                        if PacketPinMatcher.matches(packet, pin: pin) {
+                            count += 1
+                        }
+                    }
+                )
+            },
+            savedPacketCount: savedPacketCount
         )
         return cachedSnapshot
     }
@@ -339,23 +369,47 @@ enum PacketSourceListTreeBuilder {
         var packetCount = 0
     }
 
+    struct PinnedBucket: Equatable, Sendable {
+        let pin: PacketPin
+        var packetCount = 0
+    }
+
     static let favoritesGroupID = "group:favorites"
     static let allGroupID = "group:all"
+    static let pinnedFolderID = "favorite:pinned"
     static let appsFolderID = "folder:apps"
     static let domainsFolderID = "folder:domains"
 
     static let defaultExpandedItemIDs: Set<String> = [
         favoritesGroupID,
         allGroupID,
+        pinnedFolderID,
         appsFolderID,
         domainsFolderID,
     ]
 
-    static func makeSnapshot(appBuckets: [AppBucket], domainBuckets: [DomainBucket]) -> PacketSourceListSnapshot {
-        PacketSourceListSnapshot(roots: makeRoots(appBuckets: appBuckets, domainBuckets: domainBuckets))
+    static func makeSnapshot(
+        appBuckets: [AppBucket],
+        domainBuckets: [DomainBucket],
+        pinnedBuckets: [PinnedBucket] = [],
+        savedPacketCount: Int = 0
+    ) -> PacketSourceListSnapshot {
+        PacketSourceListSnapshot(
+            roots: makeRoots(
+                appBuckets: appBuckets,
+                domainBuckets: domainBuckets,
+                pinnedBuckets: pinnedBuckets,
+                savedPacketCount: savedPacketCount
+            )
+        )
     }
 
-    static func makeRoots(appBuckets: [AppBucket], domainBuckets: [DomainBucket]) -> [PacketSourceListItem] {
+    static func makeRoots(
+        appBuckets: [AppBucket],
+        domainBuckets: [DomainBucket],
+        pinnedBuckets: [PinnedBucket] = [],
+        savedPacketCount: Int = 0
+    ) -> [PacketSourceListItem] {
         let appItems = appBuckets.map { bucket in
             PacketSourceListItem(
                 id: "app:\(bucket.identity.key.rawValue)",
@@ -380,6 +434,18 @@ enum PacketSourceListTreeBuilder {
                 children: []
             )
         }
+        let pinnedItems = pinnedBuckets.map { bucket in
+            PacketSourceListItem(
+                id: "pin:\(bucket.pin.id.rawValue)",
+                title: bucket.pin.title,
+                systemImageName: systemImageName(for: bucket.pin),
+                iconFilePath: bucket.pin.clientIconFilePath,
+                count: bucket.packetCount,
+                kind: .pin,
+                selection: .pinnedItem(bucket.pin.id),
+                children: []
+            )
+        }
 
         return [
             PacketSourceListItem(
@@ -392,21 +458,21 @@ enum PacketSourceListTreeBuilder {
                 selection: nil,
                 children: [
                     PacketSourceListItem(
-                        id: "favorite:pinned",
+                        id: pinnedFolderID,
                         title: "Pinned",
                         systemImageName: "pin.fill",
                         iconFilePath: nil,
-                        count: nil,
-                        kind: .favorite,
+                        count: pinnedBuckets.reduce(0) { $0 + $1.packetCount },
+                        kind: .folder,
                         selection: .pinned,
-                        children: []
+                        children: pinnedItems
                     ),
                     PacketSourceListItem(
                         id: "favorite:saved",
                         title: "Saved",
                         systemImageName: "tray.and.arrow.down",
                         iconFilePath: nil,
-                        count: nil,
+                        count: savedPacketCount,
                         kind: .favorite,
                         selection: .saved,
                         children: []
@@ -445,5 +511,16 @@ enum PacketSourceListTreeBuilder {
                 ]
             ),
         ]
+    }
+
+    private static func systemImageName(for pin: PacketPin) -> String {
+        switch pin.kind {
+        case .domain:
+            return "globe"
+        case .ip:
+            return "network"
+        case .client:
+            return "app"
+        }
     }
 }

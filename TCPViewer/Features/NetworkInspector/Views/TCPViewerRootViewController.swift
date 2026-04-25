@@ -209,6 +209,23 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didSelectPacket identifier: PacketSummary.ID?) {
         viewModel.selectPacket(identifier)
     }
+
+    func packetWorkspaceViewController(
+        _ controller: PacketWorkspaceViewController,
+        didRequestPin kind: PacketPinCreationKind,
+        packetID: PacketSummary.ID,
+        clickedColumn: PacketTableColumnRole
+    ) {
+        viewModel.pinPacket(packetID, kind: kind, clickedColumn: clickedColumn)
+    }
+
+    func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestSavePackets identifiers: [PacketSummary.ID]) {
+        viewModel.savePackets(identifiers)
+    }
+
+    func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestDeletePackets identifiers: [PacketSummary.ID]) {
+        viewModel.deletePackets(identifiers)
+    }
 }
 
 extension TCPViewerRootViewController: PacketInspectorViewControllerDelegate {

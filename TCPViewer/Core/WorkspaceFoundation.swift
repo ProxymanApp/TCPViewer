@@ -97,6 +97,30 @@ struct PacketIngestState: Sendable, Equatable {
         }
     }
 
+    mutating func delete(packetIDs: Set<PacketSummary.ID>, message: String? = nil) {
+        guard !packetIDs.isEmpty else {
+            lastMutation = .none
+            return
+        }
+
+        let originalCount = packets.count
+        packets.removeAll { packetIDs.contains($0.id) }
+        guard packets.count != originalCount else {
+            lastMutation = .none
+            return
+        }
+
+        rebuildPacketIndex()
+        packetRevision &+= 1
+        packetLineageRevision &+= 1
+        lastMutation = .replace
+        lastBatchCount = 0
+        recalculateCounters()
+        if let message {
+            statusMessage = message
+        }
+    }
+
     mutating func applyMetadataUpdates(_ updates: [PacketMetadataUpdate]) {
         var didUpdate = false
         for update in updates {
@@ -1236,6 +1260,29 @@ final class TCPViewerWorkspaceController {
         services.packetMetadataEnricher.reset()
         if shouldReleaseStoppedLiveSession {
             releaseLiveSession()
+        }
+    }
+
+    func deletePackets(_ packetIDs: Set<PacketSummary.ID>) {
+        guard !packetIDs.isEmpty else {
+            return
+        }
+
+        batchSnapshotUpdates {
+            let source = snapshot.packetIngestState.source
+            snapshot.packetIngestState.delete(packetIDs: packetIDs, message: "Deleted \(packetIDs.count) packet(s).")
+            synchronizeVisiblePackets(message: snapshot.packetIngestState.statusMessage)
+
+            switch source {
+            case .some(.live):
+                snapshot.sessionState.capturedPacketCount = snapshot.packetIngestState.totalPacketCount
+            case .some(.offline):
+                snapshot.documentState.packetCount = snapshot.packetIngestState.totalPacketCount
+            case nil:
+                break
+            case .some:
+                break
+            }
         }
     }
 

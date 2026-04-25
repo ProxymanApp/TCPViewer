@@ -197,35 +197,35 @@ struct NetworkInspectorViewModelTests {
             rows: rows,
             selectedPacketID: packets[1].id,
             selectedRowIndex: 1,
-            tableSelectedRow: 1
+            tableSelectedRowIndexes: IndexSet(integer: 1)
         ) == .none)
 
         #expect(PacketTableSelectionSyncPlanner.action(
             rows: rows,
             selectedPacketID: packets[1].id,
             selectedRowIndex: 1,
-            tableSelectedRow: -1
+            tableSelectedRowIndexes: []
         ) == .select(1))
 
         #expect(PacketTableSelectionSyncPlanner.action(
             rows: rows,
             selectedPacketID: packets[1].id,
             selectedRowIndex: 1,
-            tableSelectedRow: 0
+            tableSelectedRowIndexes: IndexSet(integer: 0)
         ) == .select(1))
 
         #expect(PacketTableSelectionSyncPlanner.action(
             rows: rows,
             selectedPacketID: nil,
             selectedRowIndex: nil,
-            tableSelectedRow: 1
+            tableSelectedRowIndexes: IndexSet(integer: 1)
         ) == .deselect)
 
         #expect(PacketTableSelectionSyncPlanner.action(
             rows: rows,
             selectedPacketID: packets[1].id,
             selectedRowIndex: nil,
-            tableSelectedRow: -1
+            tableSelectedRowIndexes: []
         ) == .none)
     }
 
@@ -913,11 +913,112 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[1].id])
     }
 
+    @Test func pinnedAndSavedSelectionsFilterRowsAndReloadFromDisk() async throws {
+        let directory = temporaryDirectory()
+        let pinURL = directory.appendingPathComponent("Pins.json")
+        let savedURL = directory.appendingPathComponent("Saved.json")
+        let pinService = PacketPinService(storageURL: pinURL)
+        let savedService = SavedPacketService(storageURL: savedURL)
+        let packets = [
+            makePacket(packetNumber: 1, source: .offline, transportHint: .tcp, streamID: nil, sniDomainName: "api.example.com"),
+            makePacket(packetNumber: 2, source: .offline, transportHint: .udp, streamID: nil, sniDomainName: "openai.com"),
+        ]
+        let openURL = URL(fileURLWithPath: "/tmp/pinned-saved-fixture.pcapng")
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                document: InspectorFakeDocument(url: openURL, packets: packets)
+            )),
+            userDefaults: isolatedDefaults(),
+            pinService: pinService,
+            savedPacketService: savedService
+        )
+
+        await viewModel.openDocument(at: openURL)
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == 2
+        }
+
+        viewModel.pinPacket(packets[0].id, kind: .domain, clickedColumn: .domain)
+        let pinID = try #require(pinService.pins().first?.id)
+        #expect(viewModel.snapshot.selectedSourceListSelection == .pinnedItem(pinID))
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[0].id])
+        #expect(viewModel.snapshot.sourceListSnapshot.item(for: .pinned)?.count == 1)
+
+        viewModel.savePackets([packets[1].id])
+        viewModel.selectSourceList(.saved)
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[1].id])
+        #expect(viewModel.snapshot.sourceListSnapshot.item(for: .saved)?.count == 1)
+
+        let reloadedPinService = PacketPinService(storageURL: pinURL)
+        let reloadedSavedService = SavedPacketService(storageURL: savedURL)
+        let reloaded = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")]
+            )),
+            userDefaults: isolatedDefaults(),
+            pinService: reloadedPinService,
+            savedPacketService: reloadedSavedService
+        )
+
+        #expect(reloaded.snapshot.sourceListSnapshot.item(for: .pinnedItem(pinID))?.count == 0)
+        reloaded.selectSourceList(.saved)
+        #expect(reloaded.snapshot.packetRows.map(\.id) == [packets[1].id])
+
+        reloaded.deletePackets([packets[1].id])
+        #expect(reloaded.snapshot.packetRows.isEmpty)
+        #expect(reloadedSavedService.records().isEmpty)
+    }
+
+    @Test func deletingRowsSelectsRowAfterLastDeletedVisibleIndex() async {
+        let packets = (1...5).map {
+            makePacket(packetNumber: UInt64($0), source: .offline, transportHint: .tcp)
+        }
+        let viewModel = makeOfflineViewModel(packets: packets)
+
+        await viewModel.openDocument(at: URL(fileURLWithPath: "/tmp/delete-next-selection.pcapng"))
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == packets.count
+        }
+
+        viewModel.selectPacket(packets[1].id)
+        viewModel.deletePackets([packets[1].id, packets[2].id])
+
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[0].id, packets[3].id, packets[4].id])
+        #expect(viewModel.snapshot.selectedPacket?.id == packets[3].id)
+        #expect(viewModel.snapshot.selectedPacketRowIndex == 1)
+    }
+
+    @Test func deletingLastRowsSelectsPreviousRemainingRow() async {
+        let packets = (1...5).map {
+            makePacket(packetNumber: UInt64($0), source: .offline, transportHint: .tcp)
+        }
+        let viewModel = makeOfflineViewModel(packets: packets)
+
+        await viewModel.openDocument(at: URL(fileURLWithPath: "/tmp/delete-end-selection.pcapng"))
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == packets.count
+        }
+
+        viewModel.selectPacket(packets[3].id)
+        viewModel.deletePackets([packets[3].id, packets[4].id])
+
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[0].id, packets[1].id, packets[2].id])
+        #expect(viewModel.snapshot.selectedPacket?.id == packets[2].id)
+        #expect(viewModel.snapshot.selectedPacketRowIndex == 2)
+    }
+
     private func isolatedDefaults() -> UserDefaults {
         let suiteName = "TCPViewer.NetworkInspectorTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
         return defaults
+    }
+
+    private func temporaryDirectory() -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
     }
 
     private func makeOfflineViewModel(packets: [PacketSummary]) -> NetworkInspectorViewModel {
