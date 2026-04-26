@@ -113,8 +113,17 @@ final class PacketTableViewController: NSViewController {
     private var isRestoringColumnLayout = false
     private var selectionCallbackSuppressionDepth = 0
     private var lastAppliedSelectedPacketID: PacketSummary.ID?
+    private var pendingUserSelection: PendingUserSelection?
     private var clickedRowIndex: Int?
     private var clickedColumnIdentifier: String?
+
+    // Wraps Optional<ID> so we can distinguish "no pending intent" from a
+    // pending user-driven deselect. A pending intent means the user has just
+    // changed the selection visually and we are waiting for the snapshot
+    // round-trip to acknowledge it.
+    private struct PendingUserSelection {
+        let id: PacketSummary.ID?
+    }
 
     private var rows: [PacketTableRow] {
         viewModel.rows
@@ -372,6 +381,36 @@ final class PacketTableViewController: NSViewController {
     }
 
     private func syncSelection() {
+        let visualRow = tableView.selectedRowIndexes.first ?? -1
+        let visualID: PacketSummary.ID? = rows.indices.contains(visualRow) ? rows[visualRow].id : nil
+
+        // Detect a user click whose `tableViewSelectionDidChange` notification
+        // hasn't been delivered yet. NSTableView updates the visual selection
+        // synchronously on click, but if a packet-burst-driven render arrives
+        // between the click and the notification, our subsequent programmatic
+        // `selectRowIndexes` here would coalesce away the pending notification.
+        // The user's intent would be silently dropped. Fire the delegate now
+        // so the snapshot catches up to the visual instead.
+        if visualID != viewModel.selectedPacketID,
+           visualID != lastAppliedSelectedPacketID {
+            pendingUserSelection = PendingUserSelection(id: visualID)
+            lastAppliedSelectedPacketID = visualID
+            delegate?.packetTableViewController(self, didSelectPacket: visualID)
+            return
+        }
+
+        // Honor a pending user click until the snapshot reflects it. Without
+        // this, a snapshot mutation that arrives between the click and the
+        // controller-side update can yank the visual selection back to the
+        // previous packet.
+        if let pending = pendingUserSelection {
+            if pending.id == viewModel.selectedPacketID {
+                pendingUserSelection = nil
+            } else {
+                return
+            }
+        }
+
         let action = PacketTableSelectionSyncPlanner.action(
             rows: rows,
             selectedPacketID: viewModel.selectedPacketID,
@@ -603,16 +642,22 @@ extension PacketTableViewController: NSTableViewDataSource, NSTableViewDelegate 
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
-        guard !isSuppressingSelectionCallbacks else {
+        let selectedRow = tableView.selectedRowIndexes.first ?? -1
+        let selectedID = rows.indices.contains(selectedRow) ? rows[selectedRow].id : nil
+
+        // Suppress only when the change is the echo of a programmatic update
+        // we just applied. A genuine user click during a render burst still
+        // needs to round-trip through the delegate, otherwise the selection
+        // would be silently dropped.
+        if isSuppressingSelectionCallbacks, selectedID == viewModel.selectedPacketID {
             return
         }
 
-        let selectedRow = tableView.selectedRowIndexes.first ?? -1
-        let selectedID = rows.indices.contains(selectedRow) ? rows[selectedRow].id : nil
         guard selectedID != lastAppliedSelectedPacketID else {
             return
         }
 
+        pendingUserSelection = PendingUserSelection(id: selectedID)
         lastAppliedSelectedPacketID = selectedID
         delegate?.packetTableViewController(self, didSelectPacket: selectedID)
     }
