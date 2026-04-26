@@ -137,7 +137,7 @@ enum PacketTableCopyFormatter {
     }
 
     private static let copyColumns: [CopyColumn] = [
-        CopyColumn(role: .number, title: "No."),
+        CopyColumn(role: .number, title: "#"),
         CopyColumn(role: .time, title: "Time"),
         CopyColumn(role: .source, title: "Source"),
         CopyColumn(role: .destination, title: "Destination"),

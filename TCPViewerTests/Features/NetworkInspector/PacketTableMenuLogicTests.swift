@@ -88,12 +88,12 @@ struct PacketTableMenuLogicTests {
         #expect(jsonRows[1]["summary"] == "Line\nBreak")
 
         let markdown = PacketTableCopyFormatter.rows(rows, format: .markdownTable)
-        #expect(markdown.contains("| No. | Time | Source | Destination | Domain | Client | Protocol | Length | Summary | Tags |"))
+        #expect(markdown.contains("| # | Time | Source | Destination | Domain | Client | Protocol | Length | Summary | Tags |"))
         #expect(markdown.contains("Hello, world \\| alpha"))
         #expect(markdown.contains("Line Break"))
 
         let csvWithHeader = PacketTableCopyFormatter.rows(rows, format: .csvWithHeader)
-        #expect(csvWithHeader.hasPrefix("No.,Time,Source,Destination,Domain,Client,Protocol,Length,Summary,Tags\n"))
+        #expect(csvWithHeader.hasPrefix("#,Time,Source,Destination,Domain,Client,Protocol,Length,Summary,Tags\n"))
         #expect(csvWithHeader.contains("\"Hello, world | alpha\""))
         #expect(csvWithHeader.contains("\"Line\nBreak\""))
     }

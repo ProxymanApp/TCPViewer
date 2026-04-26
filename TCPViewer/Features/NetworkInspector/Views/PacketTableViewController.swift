@@ -192,7 +192,7 @@ final class PacketTableViewController: NSViewController {
         contextMenuController.stateProvider = self
         tableView.menu = contextMenuController.makeMenu()
         
-        addColumn("number", title: " No.", width: 68, minWidth: 52, cell: PacketTextCell())
+        addColumn("number", title: " #", width: 68, minWidth: 52, cell: PacketTextCell())
         addColumn("time", title: " Time", width: 112, minWidth: 96, cell: PacketTextCell())
         addColumn("source", title: " Source", width: 180, minWidth: 130, cell: PacketTextCell())
         addColumn("destination", title: " Destination", width: 180, minWidth: 130, cell: PacketTextCell())
