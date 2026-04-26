@@ -98,6 +98,8 @@ final class PacketTableViewModel {
 }
 
 final class PacketTableViewController: NSViewController {
+    static let columnAutosaveName: NSTableView.AutosaveName = "TCPViewer.PacketTable.Columns"
+
     weak var delegate: PacketTableViewControllerDelegate?
 
     private let configuration: AppConfiguration
@@ -176,6 +178,7 @@ final class PacketTableViewController: NSViewController {
     }
 
     private func setupTable() {
+        // Configure the packet table and persist user-controlled column layout.
         tableView.delegate = self
         tableView.dataSource = self
         tableView.keyboardActionHandler = self
@@ -185,6 +188,8 @@ final class PacketTableViewController: NSViewController {
         tableView.rowHeight = configuration.packetRowHeight
         tableView.intercellSpacing = NSSize(width: 0, height: 0)
         tableView.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        tableView.allowsColumnReordering = true
+        tableView.allowsColumnResizing = true
         tableView.selectionHighlightStyle = .regular
         tableView.style = .fullWidth
         tableView.focusRingType = .none
@@ -194,14 +199,16 @@ final class PacketTableViewController: NSViewController {
         
         addColumn("number", title: " #", width: 68, minWidth: 52, cell: PacketTextCell())
         addColumn("time", title: " Time", width: 112, minWidth: 96, cell: PacketTextCell())
-        addColumn("source", title: " Source", width: 180, minWidth: 130, cell: PacketTextCell())
-        addColumn("destination", title: " Destination", width: 180, minWidth: 130, cell: PacketTextCell())
-        addColumn("domain", title: " Domain", width: 180, minWidth: 120, cell: PacketTextCell())
-        addColumn("client", title: " Client", width: 160, minWidth: 120, cell: PacketClientCell())
+        addColumn("source", title: " Source", width: 180, minWidth: 100, cell: PacketTextCell())
+        addColumn("destination", title: " Destination", width: 180, minWidth: 100, cell: PacketTextCell())
         addColumn("protocol", title: " Protocol", width: 96, minWidth: 82, cell: PacketProtocolCell())
+        addColumn("client", title: " Client", width: 140, minWidth: 60, cell: PacketClientCell())
+        addColumn("domain", title: " Domain", width: 150, minWidth: 60, cell: PacketTextCell())
         addColumn("length", title: " Length", width: 80, minWidth: 68, cell: PacketTextCell())
-        addColumn("summary", title: " Summary", width: 320, minWidth: 180, cell: PacketTextCell())
+        addColumn("summary", title: " Summary", width: 320, minWidth: 120, cell: PacketTextCell())
         addColumn("tags", title: " Tags", width: 140, minWidth: 90, cell: PacketTextCell())
+        tableView.autosaveName = Self.columnAutosaveName
+        tableView.autosaveTableColumns = true
 
         scrollView.documentView = tableView
         scrollView.hasVerticalScroller = true

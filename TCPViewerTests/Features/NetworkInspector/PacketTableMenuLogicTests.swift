@@ -122,6 +122,22 @@ struct PacketTableMenuLogicTests {
     }
 
     @MainActor
+    @Test func packetTablePersistsUserColumnLayout() throws {
+        let controller = PacketTableViewController(configuration: AppConfiguration(defaults: Self.makeUserDefaults()))
+        controller.loadViewIfNeeded()
+
+        let scrollView = try #require(controller.view as? NSScrollView)
+        let tableView = try #require(scrollView.documentView as? NSTableView)
+        let columnIdentifiers = Set(tableView.tableColumns.map { $0.identifier.rawValue })
+
+        #expect(tableView.autosaveName == PacketTableViewController.columnAutosaveName)
+        #expect(tableView.autosaveTableColumns)
+        #expect(tableView.allowsColumnReordering)
+        #expect(tableView.allowsColumnResizing)
+        #expect(columnIdentifiers == Set(PacketTableColumnRole.visibleColumnIdentifiers))
+    }
+
+    @MainActor
     @Test func contextMenuItemsIncludeCopyRowsAsSubmenuAndTooltips() throws {
         let controller = PacketTableContextMenuController()
         let stateProvider = MenuStateProvider(state: PacketTableMenuState(
@@ -192,6 +208,13 @@ struct PacketTableMenuLogicTests {
             bundleIdentifier: "com.example.app",
             bundlePath: "/Applications/Example.app"
         )
+    }
+
+    private static func makeUserDefaults() -> UserDefaults {
+        let suiteName = "PacketTableMenuLogicTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        return defaults
     }
 }
 

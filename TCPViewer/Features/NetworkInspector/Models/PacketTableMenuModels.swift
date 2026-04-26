@@ -13,6 +13,19 @@ enum PacketTableColumnRole: String, Equatable, Sendable {
     case tags
     case unknown
 
+    static let visibleColumnIdentifiers = [
+        Self.number.rawValue,
+        Self.time.rawValue,
+        Self.source.rawValue,
+        Self.destination.rawValue,
+        Self.protocol.rawValue,
+        Self.client.rawValue,
+        Self.domain.rawValue,
+        Self.length.rawValue,
+        Self.summary.rawValue,
+        Self.tags.rawValue,
+    ]
+
     init(columnIdentifier: String?) {
         guard let columnIdentifier else {
             self = .unknown
