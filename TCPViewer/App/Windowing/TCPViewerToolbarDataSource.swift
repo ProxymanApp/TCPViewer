@@ -192,18 +192,16 @@ final class TCPViewerToolbarDataSource: NSObject {
         let recentInterfaces = viewModel.lastUsedInterfaceIDs.compactMap { identifier in
             viewModel.interfaces.first { $0.id == identifier }
         }
-        let recentInterfaceIDs = Set(recentInterfaces.map(\.id))
-        let remainingInterfaces = viewModel.interfaces.filter { !recentInterfaceIDs.contains($0.id) }
 
         if !recentInterfaces.isEmpty {
             addInterfaceGroupHeader("Last used")
             recentInterfaces.forEach(addInterfaceItem)
-            if !remainingInterfaces.isEmpty {
+            if !viewModel.interfaces.isEmpty {
                 interfacePopup.menu?.addItem(.separator())
             }
         }
 
-        remainingInterfaces.forEach(addInterfaceItem)
+        viewModel.interfaces.forEach(addInterfaceItem)
         if !selectInterfaceItem(with: viewModel.selectedInterfaceID) {
             selectFirstInterfaceItem()
         }

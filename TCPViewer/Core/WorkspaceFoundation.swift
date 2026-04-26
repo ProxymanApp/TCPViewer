@@ -1591,9 +1591,11 @@ final class TCPViewerWorkspaceController {
     }
 
     private func preferredInterface(from selectableInterfaces: [CaptureInterfaceSummary]) -> CaptureInterfaceSummary? {
-        // Pick the newest persisted capture-start interface before falling back to inventory order.
+        // Honor the most recent persisted capture-start interface even when its link
+        // is momentarily down, so the popup keeps reflecting the user's last choice.
+        let inventory = snapshot.sessionState.interfaceInventory
         for interfaceID in snapshot.sessionState.lastUsedInterfaceIDs {
-            if let interface = selectableInterfaces.first(where: { $0.id == interfaceID }) {
+            if let interface = inventory.first(where: { $0.id == interfaceID }) {
                 return interface
             }
         }

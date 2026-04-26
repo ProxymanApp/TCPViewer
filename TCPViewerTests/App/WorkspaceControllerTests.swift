@@ -56,7 +56,7 @@ struct WindowControllerTests {
         await tearDown(controller)
     }
 
-    @Test func initialLoadSkipsUnavailableRecentInterface() async {
+    @Test func initialLoadKeepsRecentInterfaceEvenWhenUnavailable() async {
         let suiteName = "TCPViewerTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defer {
@@ -67,6 +67,30 @@ struct WindowControllerTests {
             interfaceInventories: [[
                 makeInterface(id: "en0", displayName: "Wi-Fi"),
                 makeInterface(id: "en9", displayName: "Old Interface", availability: .unavailable, canCapture: false),
+            ]]
+        )
+        let controller = TCPViewerWorkspaceController(
+            services: TCPViewerServiceRegistry(core: fakeCore),
+            userDefaults: defaults
+        )
+
+        await controller.performInitialLoadIfNeeded()
+
+        #expect(controller.snapshot.sessionState.selectedInterfaceID == "en9")
+
+        await tearDown(controller)
+    }
+
+    @Test func initialLoadFallsBackWhenRecentInterfaceMissingFromInventory() async {
+        let suiteName = "TCPViewerTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+        defaults.set(["en9"], forKey: InterfaceSelectionHistoryStore.storageKey)
+        let fakeCore = FakeTCPViewerCore(
+            interfaceInventories: [[
+                makeInterface(id: "en0", displayName: "Wi-Fi"),
             ]]
         )
         let controller = TCPViewerWorkspaceController(
