@@ -139,7 +139,11 @@ struct NetworkInspectorViewModelTests {
             transportHint: .http1,
             destinationPort: 80,
             sniDomainName: "api.example.com",
-            client: client
+            client: client,
+            direction: .outbound,
+            tcpFlags: "SYN, ACK",
+            tcpPayloadLength: 42,
+            interfaceName: "en0"
         )
         let malformed = makePacket(
             packetNumber: 2,
@@ -168,6 +172,16 @@ struct NetworkInspectorViewModelTests {
         #expect(healthyRow.lengthText == "128 B")
         #expect(healthyRow.domainText == "api.example.com")
         #expect(healthyRow.clientText == "Example")
+        #expect(healthyRow.text(for: .sourcePort) == "1234")
+        #expect(healthyRow.text(for: .destinationPort) == "80")
+        #expect(healthyRow.text(for: .streamID) == "7")
+        #expect(healthyRow.text(for: .direction) == "Outbound")
+        #expect(healthyRow.text(for: .tcpFlags) == "SYN, ACK")
+        #expect(healthyRow.text(for: .tcpPayloadBytes) == "42 B")
+        #expect(healthyRow.text(for: .pid) == "123")
+        #expect(healthyRow.text(for: .bundleIdentifier) == "com.example.app")
+        #expect(healthyRow.text(for: .decodeStatus) == "Complete")
+        #expect(healthyRow.text(for: .interface) == "en0")
         #expect(malformedRow.severity == .malformed)
         #expect(malformedRow.tags.map(\.label) == ["Malformed"])
         #expect(PacketTableRow(packet: tls).protocolText == "TLSv1.2")
@@ -185,13 +199,27 @@ struct NetworkInspectorViewModelTests {
         #expect(PacketTableUpdatePlanner.plan(previousGeneration: 1, currentGeneration: 1, proposedPlan: .reload) == .none)
     }
 
+    @Test func packetTableRowsFormatGlobalAndStreamDeltas() {
+        var timingState = PacketTableRowTimingState()
+        let first = timingState.row(for: makePacket(packetNumber: 1, source: .live, transportHint: .tcp, streamID: 10))
+        let second = timingState.row(for: makePacket(packetNumber: 2, source: .live, transportHint: .tcp, streamID: 10))
+        let third = timingState.row(for: makePacket(packetNumber: 3, source: .live, transportHint: .tcp, streamID: 11))
+
+        #expect(first.text(for: .deltaTime) == "-")
+        #expect(first.text(for: .streamDeltaTime) == "-")
+        #expect(second.text(for: .deltaTime) == "1.000 s")
+        #expect(second.text(for: .streamDeltaTime) == "1.000 s")
+        #expect(third.text(for: .deltaTime) == "1.000 s")
+        #expect(third.text(for: .streamDeltaTime) == "-")
+    }
+
     @Test func packetTableSelectionSyncOnlyTouchesStaleVisualSelection() {
         let packets = [
             makePacket(packetNumber: 1, source: .live, transportHint: .tcp),
             makePacket(packetNumber: 2, source: .live, transportHint: .udp),
             makePacket(packetNumber: 3, source: .live, transportHint: .dns),
         ]
-        let rows = packets.map(PacketTableRow.init)
+        let rows = packets.map(PacketTableRow.init(packet:))
 
         #expect(PacketTableSelectionSyncPlanner.action(
             rows: rows,
@@ -353,6 +381,52 @@ struct NetworkInspectorViewModelTests {
 
         #expect(viewModel.canCancelLoad)
         #expect(!viewModel.canClear)
+    }
+
+    @Test func statusStripClearUsesVisibleTableRows() {
+        var base = TCPViewerWindowSnapshot.foundation
+        let packet = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp)
+        base.packetIngestState.replace(with: [packet], source: .offline)
+        let snapshot = NetworkInspectorSnapshot.make(
+            base: base,
+            selectedSidebar: .liveCapture,
+            selectedSourceListSelection: .allPackets,
+            sourceListSnapshot: .empty,
+            sourceListFilterText: "",
+            workspaceMode: .packets,
+            inspectorTab: .summary,
+            isInspectorVisible: true,
+            displayFilterText: "protocol:udp",
+            packetTableContent: .empty
+        )
+        let viewModel = StatusStripViewModel()
+
+        viewModel.render(snapshot: snapshot)
+
+        #expect(viewModel.totalText == "1 packet")
+        #expect(!viewModel.canClear)
+    }
+
+    @Test func statusStripUsesPacketCaptureLanguageWhileRunning() {
+        var base = TCPViewerWindowSnapshot.foundation
+        base.sessionState.phase = .running
+        let snapshot = NetworkInspectorSnapshot.make(
+            base: base,
+            selectedSidebar: .liveCapture,
+            selectedSourceListSelection: .allPackets,
+            sourceListSnapshot: .empty,
+            sourceListFilterText: "",
+            workspaceMode: .packets,
+            inspectorTab: .summary,
+            isInspectorVisible: true,
+            displayFilterText: "",
+            packetTableContent: .empty
+        )
+        let viewModel = StatusStripViewModel()
+
+        viewModel.render(snapshot: snapshot)
+
+        #expect(viewModel.statusText == "Capturing")
     }
 
     @Test func packetRowsAreCachedAcrossNonPacketUpdates() async {
@@ -913,6 +987,127 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[1].id])
     }
 
+    @Test func sessionExportUsesAllActivePacketsIgnoringSelectionAndFilter() async {
+        let client = makeClient(displayName: "Example", bundleIdentifier: "com.example.app")
+        let packets = [
+            makePacket(packetNumber: 1, source: .offline, transportHint: .tcp, streamID: nil, sniDomainName: "example.com", client: client),
+            makePacket(packetNumber: 2, source: .offline, transportHint: .udp, streamID: nil, sniDomainName: "example.com", client: client),
+            makePacket(packetNumber: 3, source: .offline, transportHint: .dns, streamID: nil, sniDomainName: "api.example.com", client: nil),
+        ]
+        let document = InspectorFakeDocument(url: URL(fileURLWithPath: "/tmp/export-source.pcapng"), packets: packets)
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                document: document
+            )),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.openDocument(at: document.currentURL())
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == 3
+        }
+
+        viewModel.selectSourceList(.apps)
+        viewModel.updateDisplayFilterText("protocol:udp")
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[1].id])
+
+        let result = await viewModel.exportSession(to: URL(fileURLWithPath: "/tmp/session-export.pcapng"), format: .pcapng)
+
+        guard case .success = result else {
+            Issue.record("Expected session export to succeed.")
+            return
+        }
+        #expect(document.exportRequests.count == 1)
+        #expect(document.exportRequests.first?.0 == packets.map(\.id))
+        #expect(document.exportRequests.first?.2 == .pcapng)
+    }
+
+    @Test func clearTablePacketsRemovesOnlyVisibleRows() async {
+        let packets = [
+            makePacket(packetNumber: 1, source: .offline, transportHint: .tcp),
+            makePacket(packetNumber: 2, source: .offline, transportHint: .udp),
+            makePacket(packetNumber: 3, source: .offline, transportHint: .dns),
+        ]
+        let viewModel = makeOfflineViewModel(packets: packets)
+
+        await viewModel.openDocument(at: URL(fileURLWithPath: "/tmp/clear-table-filter.pcapng"))
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == packets.count
+        }
+
+        viewModel.updateDisplayFilterText("protocol:udp")
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[1].id])
+
+        viewModel.clearTablePackets()
+
+        #expect(viewModel.snapshot.totalPacketCount == 2)
+        #expect(viewModel.snapshot.base.packetIngestState.packets.map(\.id) == [packets[0].id, packets[2].id])
+        #expect(viewModel.snapshot.packetRows.isEmpty)
+
+        viewModel.clearDisplayFilter()
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[0].id, packets[2].id])
+    }
+
+    @Test func savedExportRequiresCurrentRawBacking() async throws {
+        let directory = temporaryDirectory()
+        let savedURL = directory.appendingPathComponent("Saved.json")
+        let savedService = SavedPacketService(storageURL: savedURL)
+        let packet = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp, streamID: nil)
+        let document = InspectorFakeDocument(url: URL(fileURLWithPath: "/tmp/current-backed.pcapng"), packets: [packet])
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                document: document
+            )),
+            userDefaults: isolatedDefaults(),
+            savedPacketService: savedService
+        )
+
+        await viewModel.openDocument(at: document.currentURL())
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == 1
+        }
+
+        viewModel.savePackets([packet.id])
+        let savedBackingIdentity = savedService.records().first?.backingIdentity
+        #expect(savedBackingIdentity != nil)
+
+        let success = await viewModel.exportSourceList(.saved, to: URL(fileURLWithPath: "/tmp/saved-current.pcap"), format: .pcap)
+        guard case .success = success else {
+            Issue.record("Expected current-backed saved export to succeed.")
+            return
+        }
+        #expect(document.exportRequests.first?.0 == [packet.id])
+        #expect(document.exportRequests.first?.2 == .pcap)
+
+        let staleSavedURL = directory.appendingPathComponent("StaleSaved.json")
+        let staleSavedService = SavedPacketService(storageURL: staleSavedURL)
+        try staleSavedService.save([packet], backingIdentity: "old-backing")
+        let staleDocument = InspectorFakeDocument(url: URL(fileURLWithPath: "/tmp/stale-backing.pcapng"), packets: [packet])
+        let reloaded = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                document: staleDocument
+            )),
+            userDefaults: isolatedDefaults(),
+            savedPacketService: staleSavedService
+        )
+
+        await reloaded.openDocument(at: staleDocument.currentURL())
+        await waitUntil {
+            reloaded.snapshot.packetRows.count == 1
+        }
+
+        let failure = await reloaded.exportSourceList(.saved, to: URL(fileURLWithPath: "/tmp/saved-old.pcapng"), format: .pcapng)
+        guard case .failure(let error as TCPViewerCoreError) = failure else {
+            Issue.record("Expected saved export without current backing to fail.")
+            return
+        }
+        #expect(error.code == .offlineFileSaveFailed)
+        #expect(staleDocument.exportRequests.isEmpty)
+    }
+
     @Test func pinnedAndSavedSelectionsFilterRowsAndReloadFromDisk() async throws {
         let directory = temporaryDirectory()
         let pinURL = directory.appendingPathComponent("Pins.json")
@@ -1190,6 +1385,10 @@ struct NetworkInspectorViewModelTests {
         decodeStatus: PacketDecodeStatus = PacketDecodeStatus(kind: .complete),
         sniDomainName: String? = nil,
         client: PacketClient? = nil,
+        direction: PacketDirection? = nil,
+        tcpFlags: String? = nil,
+        tcpPayloadLength: Int? = nil,
+        interfaceName: String? = nil,
         transportDetailSummary: String? = nil,
         transportLayerName: String? = nil
     ) -> PacketSummary {
@@ -1206,13 +1405,16 @@ struct NetworkInspectorViewModelTests {
             originalLength: 128,
             capturedLength: 128,
             streamID: streamID,
+            direction: direction,
+            tcpFlags: tcpFlags,
+            tcpPayloadLength: tcpPayloadLength,
             infoSummary: "Packet \(packetNumber)",
             layers: [
                 PacketLayer(name: "Ethernet"),
                 PacketLayer(name: transportLayerName ?? transportHint.rawValue.uppercased(), detailSummary: transportDetailSummary),
             ],
             decodeStatus: decodeStatus,
-            captureMetadata: PacketCaptureMetadata(linkType: .ethernet, isTruncated: false),
+            captureMetadata: PacketCaptureMetadata(linkType: .ethernet, isTruncated: false, interfaceName: interfaceName),
             sniDomainName: sniDomainName,
             client: client
         )
@@ -1367,6 +1569,7 @@ private final class InspectorFakeLiveSession: LiveCaptureSessionProviding, @unch
     var inspections: [PacketSummary.ID: PacketInspection] = [:]
     private(set) var startCount = 0
     private(set) var stopCount = 0
+    private(set) var exportRequests: [([PacketSummary.ID], URL, CaptureFileFormat)] = []
 
     func start(completion: @escaping TCPViewerVoidCompletion) {
         startCount += 1
@@ -1399,6 +1602,24 @@ private final class InspectorFakeLiveSession: LiveCaptureSessionProviding, @unch
         completion(.empty)
     }
 
+    func exportPackets(
+        withIDs identifiers: [PacketSummary.ID],
+        to url: URL,
+        format: CaptureFileFormat,
+        progress: PacketExportProgressHandler?,
+        shouldCancel: PacketExportCancellationCheck?,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        if shouldCancel?() == true {
+            completion(.failure(TCPViewerCoreError(code: .operationCancelled, message: "Packet export was cancelled.")))
+            return
+        }
+
+        progress?(PacketExportProgress(exportedPacketCount: identifiers.count, totalPacketCount: identifiers.count))
+        exportRequests.append((identifiers, url, format))
+        completion(.success(()))
+    }
+
     func send(_ event: PacketIngestEvent) {
         eventHandler?(.success(event))
     }
@@ -1411,6 +1632,7 @@ private final class InspectorFakeDocument: OfflineCaptureDocumentProviding, @unc
     private(set) var metadata: CaptureDocumentMetadata
     private(set) var saveCount = 0
     private(set) var saveAsRequests: [(URL, CaptureFileFormat)] = []
+    private(set) var exportRequests: [([PacketSummary.ID], URL, CaptureFileFormat)] = []
     private var progress: PacketLoadProgress = .idle
 
     init(url: URL, packets: [PacketSummary]) {
@@ -1468,6 +1690,30 @@ private final class InspectorFakeDocument: OfflineCaptureDocumentProviding, @unc
         saveAsRequests.append((url, format))
         self.url = url
         metadata = CaptureDocumentMetadata(format: format)
+        completion(.success(()))
+    }
+
+    func exportPackets(
+        withIDs identifiers: [PacketSummary.ID],
+        to url: URL,
+        format: CaptureFileFormat,
+        progress: PacketExportProgressHandler?,
+        shouldCancel: PacketExportCancellationCheck?,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        if shouldCancel?() == true {
+            completion(.failure(TCPViewerCoreError(code: .operationCancelled, message: "Packet export was cancelled.")))
+            return
+        }
+
+        let knownIDs = Set(packets.map(\.id))
+        guard identifiers.allSatisfy({ knownIDs.contains($0) }) else {
+            completion(.failure(TCPViewerCoreError(code: .offlineFileSaveFailed, message: "Missing packet export backing.")))
+            return
+        }
+
+        progress?(PacketExportProgress(exportedPacketCount: identifiers.count, totalPacketCount: identifiers.count))
+        exportRequests.append((identifiers, url, format))
         completion(.success(()))
     }
 

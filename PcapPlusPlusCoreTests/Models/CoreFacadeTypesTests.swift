@@ -130,6 +130,26 @@ struct CoreFacadeTypesTests {
         #expect(ring.normalizedForLiveCapture().fileWriting.format == .pcapng)
     }
 
+    @Test func exportFormatNormalizationFallsBackToPcapng() {
+        #expect(CaptureFileFormat(exportRawValue: "pcap") == .pcap)
+        #expect(CaptureFileFormat(exportRawValue: "PCAPNG") == .pcapng)
+        #expect(CaptureFileFormat(exportRawValue: nil) == .pcapng)
+        #expect(CaptureFileFormat(exportRawValue: "bad-format") == .pcapng)
+    }
+
+    @Test func liveCaptureDurationTimerPreservesRemainingTimeAcrossPause() {
+        let start = Date(timeIntervalSince1970: 1_000)
+        var timer = LiveCaptureDurationStopTimer(durationMilliseconds: 10_000)
+
+        #expect(timer.scheduleDelay(now: start) == 10_000)
+        #expect(timer.pause(now: start.addingTimeInterval(3)) == 7_000)
+        #expect(timer.scheduleDelay(now: start.addingTimeInterval(20)) == 7_000)
+
+        #expect(timer.pause(now: start.addingTimeInterval(24)) == 3_000)
+        timer.reset()
+        #expect(timer.scheduleDelay(now: start.addingTimeInterval(30)) == 10_000)
+    }
+
     @Test func interfaceSortingPrefersSelectableEthernetThenLoopbackThenUnavailable() {
         let sorted = NativeBridgeMapper.sortedInterfaces([
             makeInterface(
@@ -167,6 +187,50 @@ struct CoreFacadeTypesTests {
         ])
 
         #expect(sorted.map(\.id) == ["en0", "lo0", "bridge0", "utun0", "awdl0"])
+    }
+
+    @Test func friendlyInterfaceNamePrefersSystemNameAndKeepsBSDName() {
+        let name = NativeBridgeMapper.friendlyInterfaceName(
+            technicalName: "en0",
+            pcapDescription: "en0",
+            isLoopback: false,
+            linkType: .ethernet,
+            systemInterfaceName: "Wi-Fi"
+        )
+
+        #expect(name == "Wi-Fi (en0)")
+    }
+
+    @Test func friendlyInterfaceNameFallsBackToCaptureDescription() {
+        let name = NativeBridgeMapper.friendlyInterfaceName(
+            technicalName: "en5",
+            pcapDescription: "USB 10/100/1000 LAN",
+            isLoopback: false,
+            linkType: .ethernet
+        )
+
+        #expect(name == "USB 10/100/1000 LAN (en5)")
+    }
+
+    @Test func friendlyInterfaceNameNamesCommonGroupedAndVirtualInterfaces() {
+        #expect(NativeBridgeMapper.friendlyInterfaceName(
+            technicalName: "pktap0",
+            pcapDescription: nil,
+            isLoopback: false,
+            linkType: .ethernet
+        ) == "All Interfaces (pktap0)")
+        #expect(NativeBridgeMapper.friendlyInterfaceName(
+            technicalName: "utun2",
+            pcapDescription: nil,
+            isLoopback: false,
+            linkType: .raw
+        ) == "VPN Tunnel (utun2)")
+        #expect(NativeBridgeMapper.friendlyInterfaceName(
+            technicalName: "lo0",
+            pcapDescription: nil,
+            isLoopback: true,
+            linkType: .loopback
+        ) == "Loopback (lo0)")
     }
 
     @Test func unconfiguredCoreDeclaresOfflineFormats() {

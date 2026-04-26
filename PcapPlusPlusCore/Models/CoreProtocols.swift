@@ -3,6 +3,26 @@ import Foundation
 public typealias TCPViewerCompletion<Value> = (Result<Value, Error>) -> Void
 public typealias TCPViewerVoidCompletion = (Result<Void, Error>) -> Void
 public typealias PacketIngestEventHandler = (Result<PacketIngestEvent, Error>) -> Void
+public typealias PacketExportProgressHandler = (PacketExportProgress) -> Void
+public typealias PacketExportCancellationCheck = () -> Bool
+
+public struct PacketExportProgress: Equatable, Sendable {
+    public let exportedPacketCount: Int
+    public let totalPacketCount: Int
+
+    public init(exportedPacketCount: Int, totalPacketCount: Int) {
+        self.exportedPacketCount = exportedPacketCount
+        self.totalPacketCount = totalPacketCount
+    }
+
+    public var fractionCompleted: Double {
+        guard totalPacketCount > 0 else {
+            return 0
+        }
+
+        return min(max(Double(exportedPacketCount) / Double(totalPacketCount), 0), 1)
+    }
+}
 
 #if DEBUG
 public struct LiveCaptureSessionDebugSnapshot: Equatable, Sendable {
@@ -37,6 +57,14 @@ public protocol LiveCaptureSessionProviding: AnyObject {
     func resume(completion: @escaping TCPViewerVoidCompletion)
     func stop(completion: @escaping TCPViewerVoidCompletion)
     func inspectPacket(id: PacketSummary.ID, completion: @escaping TCPViewerCompletion<PacketInspection>)
+    func exportPackets(
+        withIDs identifiers: [PacketSummary.ID],
+        to url: URL,
+        format: CaptureFileFormat,
+        progress: PacketExportProgressHandler?,
+        shouldCancel: PacketExportCancellationCheck?,
+        completion: @escaping TCPViewerVoidCompletion
+    )
     func healthSnapshot(completion: @escaping (CaptureHealthSnapshot) -> Void)
     #if DEBUG
     func debugMemorySnapshot() -> LiveCaptureSessionDebugSnapshot
@@ -60,10 +88,30 @@ public protocol OfflineCaptureDocumentProviding: AnyObject {
     func inspectPacket(id: PacketSummary.ID, completion: @escaping TCPViewerCompletion<PacketInspection>)
     func save(completion: @escaping TCPViewerVoidCompletion)
     func save(to url: URL, format: CaptureFileFormat, completion: @escaping TCPViewerVoidCompletion)
+    func exportPackets(
+        withIDs identifiers: [PacketSummary.ID],
+        to url: URL,
+        format: CaptureFileFormat,
+        progress: PacketExportProgressHandler?,
+        shouldCancel: PacketExportCancellationCheck?,
+        completion: @escaping TCPViewerVoidCompletion
+    )
     func currentURL() -> URL
     func currentMetadata() -> CaptureDocumentMetadata
     func packetSummaries() -> [PacketSummary]
     func loadProgress() -> PacketLoadProgress
+}
+
+public extension LiveCaptureSessionProviding {
+    func exportPackets(withIDs identifiers: [PacketSummary.ID], to url: URL, format: CaptureFileFormat, completion: @escaping TCPViewerVoidCompletion) {
+        exportPackets(withIDs: identifiers, to: url, format: format, progress: nil, shouldCancel: nil, completion: completion)
+    }
+}
+
+public extension OfflineCaptureDocumentProviding {
+    func exportPackets(withIDs identifiers: [PacketSummary.ID], to url: URL, format: CaptureFileFormat, completion: @escaping TCPViewerVoidCompletion) {
+        exportPackets(withIDs: identifiers, to: url, format: format, progress: nil, shouldCancel: nil, completion: completion)
+    }
 }
 
 public protocol LiveCaptureProviding {
@@ -177,6 +225,22 @@ public final class UnconfiguredLiveCaptureSession: LiveCaptureSessionProviding {
         completion(.failure(TCPViewerCoreError(code: .integrationMisconfigured, message: "Packet inspection is not wired into PcapPlusPlusCore yet.")))
     }
 
+    public func exportPackets(
+        withIDs identifiers: [PacketSummary.ID],
+        to url: URL,
+        format: CaptureFileFormat,
+        progress: PacketExportProgressHandler?,
+        shouldCancel: PacketExportCancellationCheck?,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        _ = identifiers
+        _ = url
+        _ = format
+        _ = progress
+        _ = shouldCancel
+        completion(.failure(TCPViewerCoreError(code: .integrationMisconfigured, message: "Packet export is not wired into PcapPlusPlusCore yet.")))
+    }
+
     public func healthSnapshot(completion: @escaping (CaptureHealthSnapshot) -> Void) {
         completion(.empty)
     }
@@ -215,6 +279,22 @@ public final class UnconfiguredOfflineCaptureDocument: OfflineCaptureDocumentPro
         _ = url
         _ = format
         completion(.failure(TCPViewerCoreError(code: .integrationMisconfigured, message: "Native offline capture documents are not wired into PcapPlusPlusCore yet for \(fileURL.lastPathComponent).")))
+    }
+
+    public func exportPackets(
+        withIDs identifiers: [PacketSummary.ID],
+        to url: URL,
+        format: CaptureFileFormat,
+        progress: PacketExportProgressHandler?,
+        shouldCancel: PacketExportCancellationCheck?,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        _ = identifiers
+        _ = url
+        _ = format
+        _ = progress
+        _ = shouldCancel
+        completion(.failure(TCPViewerCoreError(code: .integrationMisconfigured, message: "Packet export is not wired into PcapPlusPlusCore yet for \(fileURL.lastPathComponent).")))
     }
 
     public func currentURL() -> URL {

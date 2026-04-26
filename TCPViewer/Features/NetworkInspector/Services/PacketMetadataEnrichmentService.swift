@@ -12,6 +12,7 @@ struct PacketMetadataUpdate {
     let packetIDs: [PacketSummary.ID]
     let sniDomainName: String?
     let client: PacketClient?
+    let direction: PacketDirection?
 }
 
 #if DEBUG
@@ -61,9 +62,21 @@ protocol PacketMetadataEnriching: AnyObject {
 protocol PacketClientResolving: AnyObject {
     func reset()
     func client(for packet: PacketSummary) -> PacketClient?
+    func resolution(for packet: PacketSummary) -> PacketClientResolution?
     #if DEBUG
     func debugMemorySnapshot() -> PacketClientResolverDebugSnapshot
     #endif
+}
+
+struct PacketClientResolution {
+    let client: PacketClient
+    let direction: PacketDirection?
+}
+
+extension PacketClientResolving {
+    func resolution(for packet: PacketSummary) -> PacketClientResolution? {
+        client(for: packet).map { PacketClientResolution(client: $0, direction: nil) }
+    }
 }
 
 #if DEBUG
@@ -78,6 +91,7 @@ final class PacketMetadataEnrichmentService: PacketMetadataEnriching {
     private struct FlowMetadata {
         var sniDomainName: String?
         var client: PacketClient?
+        var direction: PacketDirection?
         var pendingPacketIDs: [PacketSummary.ID] = []
         var lastSeen: Date
     }
@@ -127,8 +141,12 @@ final class PacketMetadataEnrichmentService: PacketMetadataEnriching {
 
         for packet in packets {
             guard let streamID = packet.streamID else {
-                let client = source == .live ? clientResolver.client(for: packet) : nil
-                enrichedPackets.append(packet.tcpviewerApplying(sniDomainName: packet.sniDomainName, client: client))
+                let resolution = source == .live ? clientResolver.resolution(for: packet) : nil
+                enrichedPackets.append(packet.tcpviewerApplying(
+                    sniDomainName: packet.sniDomainName,
+                    client: resolution?.client,
+                    direction: resolution?.direction
+                ))
                 continue
             }
 
@@ -140,8 +158,9 @@ final class PacketMetadataEnrichmentService: PacketMetadataEnriching {
                 shouldBackfill = true
             }
 
-            if source == .live, metadata.client == nil, let client = clientResolver.client(for: packet) {
-                metadata.client = client
+            if source == .live, metadata.client == nil, let resolution = clientResolver.resolution(for: packet) {
+                metadata.client = resolution.client
+                metadata.direction = resolution.direction
                 shouldBackfill = true
             }
 
@@ -149,13 +168,15 @@ final class PacketMetadataEnrichmentService: PacketMetadataEnriching {
                 updates.append(PacketMetadataUpdate(
                     packetIDs: metadata.pendingPacketIDs,
                     sniDomainName: metadata.sniDomainName,
-                    client: metadata.client
+                    client: metadata.client,
+                    direction: metadata.direction
                 ))
             }
 
             let enrichedPacket = packet.tcpviewerApplying(
                 sniDomainName: metadata.sniDomainName ?? packet.sniDomainName,
-                client: metadata.client
+                client: metadata.client,
+                direction: metadata.direction
             )
             rememberPendingBackfillIfNeeded(packet.id, packet: packet, source: source, metadata: &metadata)
             metadata.lastSeen = packet.timestamp
@@ -367,6 +388,10 @@ final class MacOSPacketClientResolver: PacketClientResolving {
 
     // Resolve a packet to the current macOS process that owns its local socket.
     func client(for packet: PacketSummary) -> PacketClient? {
+        resolution(for: packet)?.client
+    }
+
+    func resolution(for packet: PacketSummary) -> PacketClientResolution? {
         guard let lookupKey = PacketLookupKey(packet: packet) else {
             return nil
         }
@@ -378,22 +403,22 @@ final class MacOSPacketClientResolver: PacketClientResolving {
 
         refreshSnapshotIfNeeded(now: now)
 
-        if let client = client(for: lookupKey) {
+        if let resolution = resolution(for: lookupKey) {
             negativeLookups.removeValue(forKey: lookupKey)
-            return client
+            return resolution
         }
 
         rememberNegativeLookup(lookupKey, now: now)
         return nil
     }
 
-    private func client(for lookupKey: PacketLookupKey) -> PacketClient? {
+    private func resolution(for lookupKey: PacketLookupKey) -> PacketClientResolution? {
         if let client = clientsBySocketKey[SocketKey(
             transport: lookupKey.transport,
             local: lookupKey.source,
             remote: lookupKey.destination
         )] {
-            return client
+            return PacketClientResolution(client: client, direction: .outbound)
         }
 
         if let client = clientsBySocketKey[SocketKey(
@@ -401,19 +426,32 @@ final class MacOSPacketClientResolver: PacketClientResolving {
             local: lookupKey.destination,
             remote: lookupKey.source
         )] {
-            return client
+            return PacketClientResolution(client: client, direction: .inbound)
         }
 
-        if let client = clientsByLocalEndpointKey[LocalEndpointKey(transport: lookupKey.transport, endpoint: lookupKey.source)] {
-            return client
+        let sourceClient = clientsByLocalEndpointKey[LocalEndpointKey(transport: lookupKey.transport, endpoint: lookupKey.source)]
+        let destinationClient = clientsByLocalEndpointKey[LocalEndpointKey(transport: lookupKey.transport, endpoint: lookupKey.destination)]
+        if let sourceClient, destinationClient != nil {
+            return PacketClientResolution(client: sourceClient, direction: .local)
         }
 
-        if let client = clientsByLocalEndpointKey[LocalEndpointKey(transport: lookupKey.transport, endpoint: lookupKey.destination)] {
-            return client
+        if let sourceClient {
+            return PacketClientResolution(client: sourceClient, direction: .outbound)
         }
 
-        return clientsByLocalPortKey[LocalPortKey(transport: lookupKey.transport, port: lookupKey.source.port)] ??
-            clientsByLocalPortKey[LocalPortKey(transport: lookupKey.transport, port: lookupKey.destination.port)]
+        if let destinationClient {
+            return PacketClientResolution(client: destinationClient, direction: .inbound)
+        }
+
+        if let client = clientsByLocalPortKey[LocalPortKey(transport: lookupKey.transport, port: lookupKey.source.port)] {
+            return PacketClientResolution(client: client, direction: .outbound)
+        }
+
+        if let client = clientsByLocalPortKey[LocalPortKey(transport: lookupKey.transport, port: lookupKey.destination.port)] {
+            return PacketClientResolution(client: client, direction: .inbound)
+        }
+
+        return nil
     }
 
     private func refreshSnapshotIfNeeded(now: Date) {
@@ -686,7 +724,11 @@ private extension MacOSPacketClientResolver.SocketTransport {
 }
 
 extension PacketSummary {
-    func tcpviewerApplying(sniDomainName: String? = nil, client: PacketClient? = nil) -> PacketSummary {
+    func tcpviewerApplying(
+        sniDomainName: String? = nil,
+        client: PacketClient? = nil,
+        direction: PacketDirection? = nil
+    ) -> PacketSummary {
         PacketSummary(
             id: id,
             packetNumber: packetNumber,
@@ -698,6 +740,9 @@ extension PacketSummary {
             originalLength: originalLength,
             capturedLength: capturedLength,
             streamID: streamID,
+            direction: direction ?? self.direction,
+            tcpFlags: tcpFlags,
+            tcpPayloadLength: tcpPayloadLength,
             infoSummary: infoSummary,
             layers: layers,
             decodeStatus: decodeStatus,

@@ -1,9 +1,11 @@
 import AppKit
+import PcapPlusPlusCore
 
 protocol SidebarViewControllerDelegate: AnyObject {
     func sidebarViewController(_ controller: SidebarViewController, didSelect selection: PacketSourceListSelection?)
     func sidebarViewController(_ controller: SidebarViewController, didUpdateFilterText text: String)
     func sidebarViewController(_ controller: SidebarViewController, didRequestDelete action: PacketSourceListDeletionAction)
+    func sidebarViewController(_ controller: SidebarViewController, didRequestExport selection: PacketSourceListSelection, format: CaptureFileFormat)
 }
 
 enum SidebarOutlineReloadTiming: Equatable {
@@ -173,7 +175,7 @@ private final class SidebarViewModel {
 }
 
 final class SidebarViewController: NSViewController {
-    private static let batchedReloadInterval: TimeInterval = 0.12
+    private static let batchedReloadInterval: TimeInterval = 0.5
 
     weak var delegate: SidebarViewControllerDelegate?
 
@@ -388,6 +390,10 @@ final class SidebarViewController: NSViewController {
         PacketSourceListDeletionPolicy.action(for: selectedSourceItem())
     }
 
+    private func selectedExportSelection() -> PacketSourceListSelection? {
+        PacketSourceListExportPolicy.selection(for: selectedSourceItem())
+    }
+
     private func updateSelectionFromCurrentMenuEvent() {
         guard let event = view.window?.currentEvent,
               event.type == .rightMouseDown || event.type == .leftMouseDown || event.type == .otherMouseDown else {
@@ -413,6 +419,22 @@ final class SidebarViewController: NSViewController {
         }
 
         delegate?.sidebarViewController(self, didRequestDelete: action)
+    }
+
+    @objc private func exportSelectedSourceListItemAsPcap(_ sender: Any?) {
+        exportSelectedSourceListItem(format: .pcap)
+    }
+
+    @objc private func exportSelectedSourceListItemAsPcapng(_ sender: Any?) {
+        exportSelectedSourceListItem(format: .pcapng)
+    }
+
+    private func exportSelectedSourceListItem(format: CaptureFileFormat) {
+        guard let selection = selectedExportSelection() else {
+            return
+        }
+
+        delegate?.sidebarViewController(self, didRequestExport: selection, format: format)
     }
 
     @objc private func searchFieldChanged(_ sender: NSSearchField) {
@@ -563,17 +585,41 @@ extension SidebarViewController: NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         updateSelectionFromCurrentMenuEvent()
         let action = selectedDeletionAction()
+        let exportSelection = selectedExportSelection()
 
         menu.removeAllItems()
-        guard action.isEnabled else {
+        guard action.isEnabled || exportSelection != nil else {
             return
         }
 
-        let deleteItem = NSMenuItem(title: "Delete", action: #selector(deleteSelectedSourceListItem(_:)), keyEquivalent: "\u{8}")
-        deleteItem.keyEquivalentModifierMask = [.command]
-        deleteItem.target = self
-        deleteItem.isEnabled = true
-        menu.addItem(deleteItem)
+        if exportSelection != nil {
+            let exportItem = NSMenuItem(title: "Export", action: nil, keyEquivalent: "")
+            let exportSubmenu = NSMenu(title: "Export")
+            let exportPcapItem = NSMenuItem(title: "as pcap...", action: #selector(exportSelectedSourceListItemAsPcap(_:)), keyEquivalent: "")
+            exportPcapItem.target = self
+            exportSubmenu.addItem(exportPcapItem)
+
+            let exportPcapngItem = NSMenuItem(title: "as pcapng...", action: #selector(exportSelectedSourceListItemAsPcapng(_:)), keyEquivalent: "")
+            exportPcapngItem.target = self
+            exportSubmenu.addItem(exportPcapngItem)
+
+            exportItem.submenu = exportSubmenu
+            exportItem.image = NSImage(systemSymbolName: "square.and.arrow.up", accessibilityDescription: "Export")
+            menu.addItem(exportItem)
+        }
+
+        if action.isEnabled {
+            if exportSelection != nil {
+                menu.addItem(.separator())
+            }
+
+            let deleteItem = NSMenuItem(title: "Delete", action: #selector(deleteSelectedSourceListItem(_:)), keyEquivalent: "\u{8}")
+            deleteItem.keyEquivalentModifierMask = [.command]
+            deleteItem.target = self
+            deleteItem.isEnabled = true
+            deleteItem.image = NSImage(systemSymbolName: "trash", accessibilityDescription: "Delete")
+            menu.addItem(deleteItem)
+        }
     }
 }
 

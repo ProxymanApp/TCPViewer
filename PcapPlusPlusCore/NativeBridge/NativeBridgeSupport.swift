@@ -1,4 +1,5 @@
 import Foundation
+import SystemConfiguration
 @_implementationOnly import TCPViewerNativeBridge
 
 final class EventCallbackBox<Element>: @unchecked Sendable {
@@ -167,15 +168,24 @@ enum NativeBridgeMapper {
     }
 
     static func interfaceSummary(_ descriptor: PCPPNativeInterfaceDescriptor) -> CaptureInterfaceSummary {
-        CaptureInterfaceSummary(
+        let mappedLinkType = linkType(descriptor.linkType)
+        let friendlyName = friendlyInterfaceName(
+            technicalName: descriptor.technicalName,
+            pcapDescription: descriptor.friendlyName ?? descriptor.interfaceDescription,
+            isLoopback: descriptor.loopback,
+            linkType: mappedLinkType,
+            systemInterfaceName: SystemNetworkInterfaceNameResolver.friendlyName(for: descriptor.technicalName)
+        )
+
+        return CaptureInterfaceSummary(
             id: descriptor.identifier,
             technicalName: descriptor.technicalName,
-            displayName: descriptor.displayName,
-            friendlyName: descriptor.friendlyName,
+            displayName: friendlyName,
+            friendlyName: friendlyName,
             interfaceDescription: descriptor.interfaceDescription,
             isLoopback: descriptor.loopback,
             addresses: descriptor.addresses.map(address),
-            linkType: linkType(descriptor.linkType),
+            linkType: mappedLinkType,
             availability: interfaceAvailability(descriptor.availability),
             availabilityReason: descriptor.availabilityReason,
             activityPreview: activityPreview(descriptor.activityPreview),
@@ -186,6 +196,92 @@ enum NativeBridgeMapper {
                 providesMacOSMetadata: descriptor.providesMacOSMetadata
             )
         )
+    }
+
+    static func friendlyInterfaceName(
+        technicalName: String,
+        pcapDescription: String?,
+        isLoopback: Bool,
+        linkType: CaptureLinkType,
+        systemInterfaceName: String? = nil
+    ) -> String {
+        // Prefer the macOS service/interface name, then fall back to packet-capture metadata and known BSD prefixes.
+        let normalizedTechnicalName = technicalName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseName = [
+            SystemNetworkInterfaceNameResolver.normalizedName(systemInterfaceName, technicalName: normalizedTechnicalName),
+            SystemNetworkInterfaceNameResolver.normalizedName(pcapDescription, technicalName: normalizedTechnicalName),
+        ]
+            .compactMap { $0 }
+            .first ?? fallbackInterfaceBaseName(
+                technicalName: normalizedTechnicalName,
+                isLoopback: isLoopback,
+                linkType: linkType
+            )
+
+        guard !normalizedTechnicalName.isEmpty else {
+            return baseName
+        }
+
+        if baseName.localizedCaseInsensitiveContains(normalizedTechnicalName) {
+            return baseName
+        }
+
+        return "\(baseName) (\(normalizedTechnicalName))"
+    }
+
+    private static func fallbackInterfaceBaseName(
+        technicalName: String,
+        isLoopback: Bool,
+        linkType: CaptureLinkType
+    ) -> String {
+        // Translate common macOS BSD interface prefixes into readable capture-picker names.
+        let lowercasedName = technicalName.localizedLowercase
+        if isLoopback || lowercasedName.hasPrefix("lo") {
+            return "Loopback"
+        }
+
+        if lowercasedName == "any" || lowercasedName.hasPrefix("pktap") {
+            return "All Interfaces"
+        }
+
+        if lowercasedName.hasPrefix("bridge") {
+            return "Bridge"
+        }
+
+        if lowercasedName.hasPrefix("utun") {
+            return "VPN Tunnel"
+        }
+
+        if lowercasedName.hasPrefix("ipsec") {
+            return "IPsec Tunnel"
+        }
+
+        if lowercasedName.hasPrefix("gif") {
+            return "Generic Tunnel"
+        }
+
+        if lowercasedName.hasPrefix("stf") {
+            return "IPv6 Tunnel"
+        }
+
+        if lowercasedName.hasPrefix("awdl") {
+            return "Apple Wireless Direct Link"
+        }
+
+        if lowercasedName.hasPrefix("llw") {
+            return "Low-Latency Wi-Fi"
+        }
+
+        switch linkType {
+        case .ethernet:
+            return "Ethernet"
+        case .loopback:
+            return "Loopback"
+        case .raw:
+            return "Raw IP"
+        case .unknown:
+            return "Interface"
+        }
     }
 
     static func packetEndpoint(_ descriptor: PCPPNativePacketEndpointDescriptor) -> PacketEndpoint {
@@ -270,6 +366,8 @@ enum NativeBridgeMapper {
             originalLength: descriptor.originalLength,
             capturedLength: descriptor.capturedLength,
             streamID: descriptor.streamIdentifier?.uint32Value,
+            tcpFlags: descriptor.tcpFlags,
+            tcpPayloadLength: descriptor.tcpPayloadLength?.intValue,
             infoSummary: descriptor.infoSummary,
             layers: descriptor.layers.map(packetLayer),
             decodeStatus: decodeStatus(descriptor.decodeStatus),
@@ -444,6 +542,86 @@ enum NativeBridgeMapper {
             interface.displayName.localizedLowercase,
             interface.technicalName.localizedLowercase
         )
+    }
+}
+
+private enum SystemNetworkInterfaceNameResolver {
+    static func friendlyName(for technicalName: String) -> String? {
+        // Resolve user-facing macOS network service names such as Wi-Fi for BSD names such as en0.
+        let normalizedTechnicalName = technicalName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedTechnicalName.isEmpty else {
+            return nil
+        }
+
+        if let serviceName = networkServiceName(for: normalizedTechnicalName) {
+            return serviceName
+        }
+
+        return hardwareInterfaceName(for: normalizedTechnicalName)
+    }
+
+    static func normalizedName(_ name: String?, technicalName: String) -> String? {
+        // Filter empty or purely technical labels so the caller can keep looking for a better name.
+        guard let trimmedName = name?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmedName.isEmpty else {
+            return nil
+        }
+
+        let lowercasedName = trimmedName.localizedLowercase
+        if lowercasedName == technicalName.localizedLowercase ||
+            lowercasedName == "no description available" {
+            return nil
+        }
+
+        return trimmedName
+    }
+
+    private static func networkServiceName(for technicalName: String) -> String? {
+        guard let preferences = SCPreferencesCreate(nil, "TCP Viewer" as CFString, nil),
+              let services = SCNetworkServiceCopyAll(preferences) as? [SCNetworkService] else {
+            return nil
+        }
+
+        for service in services where SCNetworkServiceGetEnabled(service) {
+            guard let interface = SCNetworkServiceGetInterface(service),
+                  Self.interface(interface, matches: technicalName),
+                  let serviceName = normalizedName(SCNetworkServiceGetName(service) as String?, technicalName: technicalName) else {
+                continue
+            }
+
+            return serviceName
+        }
+
+        return nil
+    }
+
+    private static func hardwareInterfaceName(for technicalName: String) -> String? {
+        guard let interfaces = SCNetworkInterfaceCopyAll() as? [SCNetworkInterface] else {
+            return nil
+        }
+
+        for interface in interfaces {
+            guard Self.interface(interface, matches: technicalName),
+                  let displayName = normalizedName(
+                    SCNetworkInterfaceGetLocalizedDisplayName(interface) as String?,
+                    technicalName: technicalName
+                  ) else {
+                continue
+            }
+
+            return displayName
+        }
+
+        return nil
+    }
+
+    private static func interface(_ interface: SCNetworkInterface, matches technicalName: String) -> Bool {
+        // Match only the BSD device itself so parent services do not rename their underlying interface.
+        guard let bsdName = SCNetworkInterfaceGetBSDName(interface) as String? else {
+            return false
+        }
+
+        return bsdName.caseInsensitiveCompare(technicalName) == .orderedSame
     }
 }
 

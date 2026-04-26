@@ -43,6 +43,14 @@ extension TCPViewerWorkspaceController {
         await waitForCompletion { saveDocument(to: url, format: format, completion: $0) }
     }
 
+    func exportPackets(withIDs identifiers: [PacketSummary.ID], to url: URL, format: CaptureFileFormat) async -> Result<Void, Error> {
+        await withCheckedContinuation { continuation in
+            exportPackets(withIDs: identifiers, to: url, format: format) { result in
+                continuation.resume(returning: result)
+            }
+        }
+    }
+
     func prepareForApplicationTermination() async -> Bool {
         await withCheckedContinuation { continuation in
             prepareForApplicationTermination { shouldTerminate in
@@ -72,12 +80,32 @@ extension NetworkInspectorViewModel {
     func saveDocument(to url: URL, format: CaptureFileFormat) async {
         await waitForCompletion { saveDocument(to: url, format: format, completion: $0) }
     }
+
+    func exportSession(to url: URL, format: CaptureFileFormat) async -> Result<Void, Error> {
+        await waitForResult { exportSession(to: url, format: format, completion: $0) }
+    }
+
+    func exportPackets(_ identifiers: [PacketSummary.ID], to url: URL, format: CaptureFileFormat) async -> Result<Void, Error> {
+        await waitForResult { exportPackets(identifiers, to: url, format: format, completion: $0) }
+    }
+
+    func exportSourceList(_ selection: PacketSourceListSelection, to url: URL, format: CaptureFileFormat) async -> Result<Void, Error> {
+        await waitForResult { exportSourceList(selection, to: url, format: format, completion: $0) }
+    }
 }
 
 private func waitForCompletion(_ start: (@escaping () -> Void) -> Void) async {
     await withCheckedContinuation { continuation in
         start {
             continuation.resume()
+        }
+    }
+}
+
+private func waitForResult(_ start: (@escaping TCPViewerVoidCompletion) -> Void) async -> Result<Void, Error> {
+    await withCheckedContinuation { continuation in
+        start { result in
+            continuation.resume(returning: result)
         }
     }
 }

@@ -54,12 +54,20 @@ final class TCPViewerRootViewController: NSViewController {
         viewModel.toggleLiveCapture()
     }
 
+    func clearAllPackets() {
+        viewModel.clearPackets()
+    }
+
     func saveDocument() {
         viewModel.saveDocument()
     }
 
     func exportDocument(format: CaptureFileFormat) {
         viewModel.presentSaveCapturePanel(format: format)
+    }
+
+    func exportSession(format: CaptureFileFormat) {
+        viewModel.presentSessionExportPanel(format: format, attachedTo: view.window)
     }
 
     func cancelDocumentLoading() {
@@ -207,6 +215,10 @@ extension TCPViewerRootViewController: SidebarViewControllerDelegate {
     func sidebarViewController(_ controller: SidebarViewController, didRequestDelete action: PacketSourceListDeletionAction) {
         viewModel.deleteSourceListItem(action)
     }
+
+    func sidebarViewController(_ controller: SidebarViewController, didRequestExport selection: PacketSourceListSelection, format: CaptureFileFormat) {
+        viewModel.presentSourceListExportPanel(selection: selection, format: format, attachedTo: view.window)
+    }
 }
 
 extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
@@ -225,6 +237,10 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
 
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestSavePackets identifiers: [PacketSummary.ID]) {
         viewModel.savePackets(identifiers)
+    }
+
+    func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestExportPackets identifiers: [PacketSummary.ID], format: CaptureFileFormat) {
+        viewModel.presentPacketExportPanel(identifiers: identifiers, format: format, attachedTo: view.window)
     }
 
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestDeletePackets identifiers: [PacketSummary.ID]) {
@@ -248,6 +264,6 @@ extension TCPViewerRootViewController: StatusStripViewControllerDelegate {
     }
 
     func statusStripViewControllerDidRequestClearPackets(_ controller: StatusStripViewController) {
-        viewModel.clearPackets()
+        viewModel.clearTablePackets()
     }
 }

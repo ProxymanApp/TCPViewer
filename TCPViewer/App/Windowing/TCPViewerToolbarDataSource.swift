@@ -4,6 +4,7 @@ import PcapPlusPlusCore
 private enum TCPViewerToolbarItemMetadata: String, CaseIterable {
     case captureSource = "CaptureSource"
     case captureToggle = "CaptureToggle"
+    case clearAll = "ClearAll"
     case status = "Status"
     case share = "Share"
     case inspector = "Inspector"
@@ -19,10 +20,17 @@ private enum TCPViewerToolbarItemMetadata: String, CaseIterable {
     }
 }
 
+private enum TCPViewerToolbarLayout {
+    static let interfacePopupMinimumWidth: CGFloat = 76
+    static let interfacePopupMaximumWidth: CGFloat = 260
+    static let interfacePopupTitlePadding: CGFloat = 48
+    static let toolbarControlHeight: CGFloat = 30
+}
+
 protocol TCPViewerToolbarDataSourceDelegate: AnyObject {
     func tcpviewerToolbarDataSource(_ dataSource: TCPViewerToolbarDataSource, didSelectInterface identifier: String)
     func tcpviewerToolbarDataSourceDidToggleCapture(_ dataSource: TCPViewerToolbarDataSource)
-    func tcpviewerToolbarDataSourceDidRequestSave(_ dataSource: TCPViewerToolbarDataSource)
+    func tcpviewerToolbarDataSourceDidRequestClearAllPackets(_ dataSource: TCPViewerToolbarDataSource)
     func tcpviewerToolbarDataSource(_ dataSource: TCPViewerToolbarDataSource, didRequestExport format: CaptureFileFormat)
     func tcpviewerToolbarDataSourceDidToggleInspector(_ dataSource: TCPViewerToolbarDataSource)
 }
@@ -32,16 +40,27 @@ final class TCPViewerToolbarDataSource: NSObject {
     weak var delegate: TCPViewerToolbarDataSourceDelegate?
 
     private let viewModel = TCPViewerToolbarViewModel()
-    private let interfacePopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 60, height: 30), pullsDown: false)
+    private let interfacePopup = NSPopUpButton(
+        frame: NSRect(
+            x: 0,
+            y: 0,
+            width: TCPViewerToolbarLayout.interfacePopupMinimumWidth,
+            height: TCPViewerToolbarLayout.toolbarControlHeight
+        ),
+        pullsDown: false
+    )
     private let captureButton = NSButton(frame: NSRect(x: 0, y: 0, width: 34, height: 30))
+    private let clearAllButton = NSButton(frame: NSRect(x: 0, y: 0, width: 34, height: 30))
     private let statusView = TCPViewerToolbarStatusView(frame: NSRect(x: 0, y: 0, width: 360, height: 28))
     private let sharePopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 42, height: 30), pullsDown: true)
     private let inspectorButton = NSButton(frame: NSRect(x: 0, y: 0, width: 34, height: 30))
+    private var interfacePopupWidthConstraint: NSLayoutConstraint?
 
     private var allowedItemIdentifiers: [NSToolbarItem.Identifier] {
         TCPViewerToolbarItemMetadata.allCases.map(\.identifier) + [
             .toggleSidebar,
             .sidebarTrackingSeparator,
+            .space,
         ]
     }
 
@@ -51,6 +70,8 @@ final class TCPViewerToolbarDataSource: NSObject {
             .sidebarTrackingSeparator,
             TCPViewerToolbarItemMetadata.captureSource.identifier,
             TCPViewerToolbarItemMetadata.captureToggle.identifier,
+            .space,
+            TCPViewerToolbarItemMetadata.clearAll.identifier,
             TCPViewerToolbarItemMetadata.flexibleSpace.identifier,
             TCPViewerToolbarItemMetadata.status.identifier,
             TCPViewerToolbarItemMetadata.flexibleSpace.identifier,
@@ -60,7 +81,7 @@ final class TCPViewerToolbarDataSource: NSObject {
     }
 
     override init() {
-        self.toolbar = NSToolbar(identifier: "TCPViewer.MainToolbar.v2")
+        self.toolbar = NSToolbar(identifier: "TCPViewer.MainToolbar.v3")
         super.init()
         configureToolbar()
         configureToolbarViews()
@@ -71,6 +92,7 @@ final class TCPViewerToolbarDataSource: NSObject {
         viewModel.render(snapshot: snapshot, viewModel: inspectorViewModel)
         renderInterfacePopup()
         renderCaptureButton()
+        renderClearAllButton()
         renderSharePopup()
         renderInspectorButton()
         statusView.render(viewModel: viewModel)
@@ -91,8 +113,9 @@ final class TCPViewerToolbarDataSource: NSObject {
     }
 
     private func configureToolbarViews() {
-        constrainToolbarView(interfacePopup, width: 60, height: 30)
+        constrainDynamicInterfacePopup()
         constrainToolbarView(captureButton, width: 34, height: 30)
+        constrainToolbarView(clearAllButton, width: 34, height: 30)
         constrainToolbarView(statusView, width: 360, height: 28)
         constrainToolbarView(sharePopup, width: 42, height: 30)
         constrainToolbarView(inspectorButton, width: 34, height: 30)
@@ -110,10 +133,17 @@ final class TCPViewerToolbarDataSource: NSObject {
         captureButton.title = ""
         captureButton.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .medium)
 
+        clearAllButton.target = self
+        clearAllButton.action = #selector(clearAllButtonPressed(_:))
+        clearAllButton.bezelStyle = .texturedRounded
+        clearAllButton.controlSize = .regular
+        clearAllButton.image = TCPViewerUI.image("trash")
+        clearAllButton.imagePosition = .imageOnly
+        clearAllButton.toolTip = "Clear All Packets"
+
         sharePopup.controlSize = .regular
         sharePopup.addItem(withTitle: "")
         sharePopup.item(at: 0)?.image = TCPViewerUI.image("square.and.arrow.up")
-        sharePopup.addItem(withTitle: "Save")
         sharePopup.addItem(withTitle: "Export as pcap")
         sharePopup.addItem(withTitle: "Export as pcapng")
         sharePopup.imagePosition = .imageOnly
@@ -137,34 +167,46 @@ final class TCPViewerToolbarDataSource: NSObject {
         ])
     }
 
+    private func constrainDynamicInterfacePopup() {
+        interfacePopup.translatesAutoresizingMaskIntoConstraints = false
+        let widthConstraint = interfacePopup.widthAnchor.constraint(
+            equalToConstant: TCPViewerToolbarLayout.interfacePopupMinimumWidth
+        )
+        NSLayoutConstraint.activate([
+            widthConstraint,
+            interfacePopup.heightAnchor.constraint(equalToConstant: TCPViewerToolbarLayout.toolbarControlHeight),
+        ])
+        interfacePopupWidthConstraint = widthConstraint
+    }
+
     private func renderInterfacePopup() {
         interfacePopup.removeAllItems()
         interfacePopup.menu?.autoenablesItems = false
         if viewModel.interfaces.isEmpty {
             interfacePopup.addItem(withTitle: "No Interfaces")
             interfacePopup.isEnabled = false
+            updateInterfacePopupWidth()
             return
         }
 
         let recentInterfaces = viewModel.lastUsedInterfaceIDs.compactMap { identifier in
             viewModel.interfaces.first { $0.id == identifier }
         }
-        let recentInterfaceIDs = Set(recentInterfaces.map(\.id))
-        let remainingInterfaces = viewModel.interfaces.filter { !recentInterfaceIDs.contains($0.id) }
 
         if !recentInterfaces.isEmpty {
             addInterfaceGroupHeader("Last used")
             recentInterfaces.forEach(addInterfaceItem)
-            if !remainingInterfaces.isEmpty {
+            if !viewModel.interfaces.isEmpty {
                 interfacePopup.menu?.addItem(.separator())
             }
         }
 
-        remainingInterfaces.forEach(addInterfaceItem)
+        viewModel.interfaces.forEach(addInterfaceItem)
         if !selectInterfaceItem(with: viewModel.selectedInterfaceID) {
             selectFirstInterfaceItem()
         }
         interfacePopup.isEnabled = !viewModel.isCaptureLocked
+        updateInterfacePopupWidth()
     }
 
     private func addInterfaceGroupHeader(_ title: String) {
@@ -198,6 +240,7 @@ final class TCPViewerToolbarDataSource: NSObject {
 
         for (index, item) in menu.items.enumerated() where item.representedObject as? String == identifier {
             interfacePopup.selectItem(at: index)
+            updateInterfacePopupWidth()
             return true
         }
 
@@ -212,8 +255,22 @@ final class TCPViewerToolbarDataSource: NSObject {
 
         for (index, item) in menu.items.enumerated() where item.representedObject is String {
             interfacePopup.selectItem(at: index)
+            updateInterfacePopupWidth()
             return
         }
+    }
+
+    private func updateInterfacePopupWidth() {
+        let title = interfacePopup.selectedItem?.title ?? interfacePopup.title
+        let font = interfacePopup.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        let measuredWidth = title.size(withAttributes: [.font: font]).width + TCPViewerToolbarLayout.interfacePopupTitlePadding
+        let width = ceil(min(
+            TCPViewerToolbarLayout.interfacePopupMaximumWidth,
+            max(TCPViewerToolbarLayout.interfacePopupMinimumWidth, measuredWidth)
+        ))
+        interfacePopupWidthConstraint?.constant = width
+        interfacePopup.setFrameSize(NSSize(width: width, height: TCPViewerToolbarLayout.toolbarControlHeight))
+        interfacePopup.superview?.layoutSubtreeIfNeeded()
     }
 
     private func renderCaptureButton() {
@@ -224,10 +281,14 @@ final class TCPViewerToolbarDataSource: NSObject {
         captureButton.alphaValue = viewModel.canUseCaptureButton ? 1 : 0.45
     }
 
+    private func renderClearAllButton() {
+        clearAllButton.isEnabled = viewModel.canClearAllPackets
+        clearAllButton.alphaValue = viewModel.canClearAllPackets ? 1 : 0.45
+    }
+
     private func renderSharePopup() {
-        sharePopup.item(at: 1)?.isEnabled = viewModel.canSave
-        sharePopup.item(at: 2)?.isEnabled = viewModel.canSaveAs
-        sharePopup.item(at: 3)?.isEnabled = viewModel.canSaveAs
+        sharePopup.item(at: 1)?.isEnabled = viewModel.canExport
+        sharePopup.item(at: 2)?.isEnabled = viewModel.canExport
         sharePopup.selectItem(at: 0)
     }
 
@@ -240,9 +301,11 @@ final class TCPViewerToolbarDataSource: NSObject {
             if !selectInterfaceItem(with: viewModel.selectedInterfaceID) {
                 selectFirstInterfaceItem()
             }
+            updateInterfacePopupWidth()
             return
         }
 
+        updateInterfacePopupWidth()
         delegate?.tcpviewerToolbarDataSource(self, didSelectInterface: identifier)
     }
 
@@ -250,13 +313,15 @@ final class TCPViewerToolbarDataSource: NSObject {
         delegate?.tcpviewerToolbarDataSourceDidToggleCapture(self)
     }
 
+    @objc private func clearAllButtonPressed(_ sender: NSButton) {
+        delegate?.tcpviewerToolbarDataSourceDidRequestClearAllPackets(self)
+    }
+
     @objc private func shareActionSelected(_ sender: NSPopUpButton) {
         switch sender.indexOfSelectedItem {
         case 1:
-            delegate?.tcpviewerToolbarDataSourceDidRequestSave(self)
-        case 2:
             delegate?.tcpviewerToolbarDataSource(self, didRequestExport: .pcap)
-        case 3:
+        case 2:
             delegate?.tcpviewerToolbarDataSource(self, didRequestExport: .pcapng)
         default:
             break
@@ -292,6 +357,11 @@ extension TCPViewerToolbarDataSource: NSToolbarDelegate {
             item.paletteLabel = "Capture"
             item.view = captureButton
             item.visibilityPriority = .high
+        case TCPViewerToolbarItemMetadata.clearAll.identifier:
+            item.label = "Clear All"
+            item.paletteLabel = "Clear All Packets"
+            item.view = clearAllButton
+            item.visibilityPriority = .high
         case TCPViewerToolbarItemMetadata.status.identifier:
             item.label = "Status"
             item.paletteLabel = "Status"
@@ -325,8 +395,10 @@ private final class TCPViewerToolbarViewModel {
     private(set) var captureButtonImageName = "play.fill"
     private(set) var captureButtonTint = NSColor.systemGreen
     private(set) var canUseCaptureButton = false
+    private(set) var canClearAllPackets = false
     private(set) var canSave = false
     private(set) var canSaveAs = false
+    private(set) var canExport = false
     private(set) var isInspectorVisible = true
     private(set) var statusText = "TCP Viewer | Idle"
     private(set) var emphasizedText: String?
@@ -344,8 +416,10 @@ private final class TCPViewerToolbarViewModel {
         captureButtonImageName = viewModel.captureButtonSystemImage()
         captureButtonTint = snapshot.base.sessionState.canStop ? .systemRed : .systemGreen
         canUseCaptureButton = snapshot.base.sessionState.canStart || snapshot.base.sessionState.canStop
+        canClearAllPackets = snapshot.totalPacketCount > 0 && !snapshot.base.loadState.canCancel
         canSave = snapshot.base.documentState.canSave
         canSaveAs = snapshot.base.documentState.canSaveAs
+        canExport = snapshot.totalPacketCount > 0 && snapshot.base.loadState.progress.phase != .loading
         isInspectorVisible = snapshot.isInspectorVisible
         statusTint = Self.tint(for: snapshot)
         statusText = Self.statusText(for: snapshot)
@@ -376,8 +450,17 @@ private final class TCPViewerToolbarViewModel {
     }
 
     private static func statusText(for snapshot: NetworkInspectorSnapshot) -> String {
-        if snapshot.base.sessionState.phase == .running {
-            return "TCP Viewer | Listening on"
+        switch snapshot.base.sessionState.phase {
+        case .running:
+            return "TCP Viewer | Capturing on"
+        case .paused:
+            return "TCP Viewer | Paused on"
+        case .starting:
+            return "TCP Viewer | Starting Capture"
+        case .stopping:
+            return "TCP Viewer | Stopping Capture"
+        case .idle, .ready, .stopped, .failed:
+            break
         }
 
         if snapshot.base.loadState.progress.phase == .loading {
@@ -392,17 +475,20 @@ private final class TCPViewerToolbarViewModel {
             return "TCP Viewer | Attention"
         }
 
-        return "TCP Viewer | \(snapshot.base.sessionState.phase.rawValue.capitalized)"
+        switch snapshot.base.sessionState.phase {
+        case .ready:
+            return "TCP Viewer | Ready"
+        case .stopped:
+            return "TCP Viewer | Stopped"
+        case .idle, .starting, .running, .paused, .stopping, .failed:
+            return "TCP Viewer | \(snapshot.base.sessionState.phase.rawValue.capitalized)"
+        }
     }
 
     private static func emphasizedText(for snapshot: NetworkInspectorSnapshot) -> String? {
-        if snapshot.base.sessionState.phase == .running {
+        if [.starting, .running, .paused, .stopping].contains(snapshot.base.sessionState.phase) {
             guard let interface = snapshot.base.sessionState.selectedInterface else {
                 return "selected interface"
-            }
-
-            if let ipv4Address = interface.addresses.first(where: { $0.family == .ipv4 })?.value {
-                return ipv4Address
             }
 
             return interface.friendlyName ?? interface.displayName

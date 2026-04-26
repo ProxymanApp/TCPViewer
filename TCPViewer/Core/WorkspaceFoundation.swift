@@ -13,6 +13,7 @@ enum PacketIngestMutation: Sendable, Equatable {
 
 struct PacketIngestState: Sendable, Equatable {
     var source: CaptureSource?
+    var backingIdentity: String?
     var packets: [PacketSummary]
     var packetIndexByID: [PacketSummary.ID: Int]
     var packetRevision: UInt64
@@ -25,6 +26,7 @@ struct PacketIngestState: Sendable, Equatable {
 
     static let empty = PacketIngestState(
         source: nil,
+        backingIdentity: nil,
         packets: [],
         packetIndexByID: [:],
         packetRevision: 0,
@@ -52,6 +54,7 @@ struct PacketIngestState: Sendable, Equatable {
 
     mutating func reset(source: CaptureSource? = nil, message: String) {
         self.source = source
+        backingIdentity = source == nil ? nil : UUID().uuidString
         packets = []
         packetIndexByID = [:]
         packetRevision &+= 1
@@ -132,7 +135,8 @@ struct PacketIngestState: Sendable, Equatable {
                 let currentPacket = packets[packetIndex]
                 let updatedPacket = currentPacket.tcpviewerApplying(
                     sniDomainName: update.sniDomainName,
-                    client: update.client
+                    client: update.client,
+                    direction: update.direction
                 )
                 guard updatedPacket != currentPacket else {
                     continue
@@ -1240,6 +1244,164 @@ final class TCPViewerWorkspaceController {
         }
     }
 
+    func exportPackets(
+        withIDs identifiers: [PacketSummary.ID],
+        to url: URL,
+        format: CaptureFileFormat,
+        progress: PacketExportProgressHandler? = nil,
+        shouldCancel: PacketExportCancellationCheck? = nil,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        guard !identifiers.isEmpty else {
+            completion(.failure(TCPViewerCoreError(code: .offlineFileSaveFailed, message: "There are no packets to export.")))
+            return
+        }
+
+        let cancellationCheck = shouldCancel ?? { false }
+        guard !cancellationCheck() else {
+            completion(.failure(Self.exportCancelledError()))
+            return
+        }
+
+        switch snapshot.packetIngestState.source {
+        case .live:
+            guard let liveSession else {
+                completion(.failure(TCPViewerCoreError(code: .offlineFileSaveFailed, message: "The live capture backing store is not available for export.")))
+                return
+            }
+
+            let shouldResumeCapture = snapshot.sessionState.phase == .running
+            let beginLiveExport = { [weak self] in
+                guard let self else {
+                    completion(.failure(Self.exportCancelledError()))
+                    return
+                }
+
+                guard !cancellationCheck() else {
+                    self.resumeLiveSessionAfterExportIfNeeded(liveSession, shouldResumeCapture: shouldResumeCapture, exportResult: .failure(Self.exportCancelledError()), url: url, completion: completion)
+                    return
+                }
+
+                self.snapshot.sessionState.statusMessage = "Exporting \(url.lastPathComponent)..."
+                liveSession.exportPackets(withIDs: identifiers, to: url, format: format, progress: progress, shouldCancel: cancellationCheck) { [weak self] result in
+                    DispatchQueue.main.async {
+                        self?.resumeLiveSessionAfterExportIfNeeded(liveSession, shouldResumeCapture: shouldResumeCapture, exportResult: result, url: url, completion: completion)
+                    }
+                }
+            }
+
+            guard shouldResumeCapture else {
+                beginLiveExport()
+                return
+            }
+
+            snapshot.sessionState.statusMessage = "Pausing capture for export..."
+            liveSession.pause { [weak self] result in
+                DispatchQueue.main.async {
+                    guard let self else {
+                        completion(result)
+                        return
+                    }
+
+                    switch result {
+                    case .success:
+                        beginLiveExport()
+                    case .failure(let error):
+                        let tcpviewerError = self.tcpviewerError(from: error, defaultCode: .liveSessionControlFailed)
+                        self.snapshot.sessionState.lastError = tcpviewerError
+                        self.snapshot.sessionState.statusMessage = tcpviewerError.message
+                        completion(.failure(tcpviewerError))
+                    }
+                }
+            }
+        case .offline:
+            guard let document else {
+                completion(.failure(TCPViewerCoreError(code: .offlineFileSaveFailed, message: "The capture document is not available for export.")))
+                return
+            }
+
+            snapshot.documentState.statusMessage = "Exporting \(url.lastPathComponent)..."
+            document.exportPackets(withIDs: identifiers, to: url, format: format, progress: progress, shouldCancel: cancellationCheck) { [weak self] result in
+                DispatchQueue.main.async {
+                    guard let self else {
+                        completion(result)
+                        return
+                    }
+
+                    switch result {
+                    case .success:
+                        self.snapshot.documentState.lastError = nil
+                        self.snapshot.documentState.statusMessage = "Exported \(url.lastPathComponent)."
+                    case .failure(let error):
+                        let tcpviewerError = self.tcpviewerError(from: error, defaultCode: .offlineFileSaveFailed)
+                        self.snapshot.documentState.lastError = tcpviewerError
+                        self.snapshot.documentState.statusMessage = tcpviewerError.message
+                        completion(.failure(tcpviewerError))
+                        return
+                    }
+                    completion(result)
+                }
+            }
+        case nil:
+            completion(.failure(TCPViewerCoreError(code: .offlineFileSaveFailed, message: "There is no active capture to export.")))
+        @unknown default:
+            completion(.failure(TCPViewerCoreError(code: .offlineFileSaveFailed, message: "TCP Viewer cannot export packets from this capture source.")))
+        }
+    }
+
+    private static func exportCancelledError() -> TCPViewerCoreError {
+        TCPViewerCoreError(code: .operationCancelled, message: "Packet export was cancelled.")
+    }
+
+    private func resumeLiveSessionAfterExportIfNeeded(
+        _ liveSession: any LiveCaptureSessionProviding,
+        shouldResumeCapture: Bool,
+        exportResult: Result<Void, Error>,
+        url: URL,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        guard shouldResumeCapture else {
+            completeLiveExport(exportResult, url: url, completion: completion)
+            return
+        }
+
+        snapshot.sessionState.statusMessage = "Resuming capture..."
+        liveSession.resume { [weak self] resumeResult in
+            DispatchQueue.main.async {
+                guard let self else {
+                    completion(exportResult)
+                    return
+                }
+
+                switch (exportResult, resumeResult) {
+                case (.success, .success):
+                    self.completeLiveExport(.success(()), url: url, completion: completion)
+                case (.failure, .success):
+                    self.completeLiveExport(exportResult, url: url, completion: completion)
+                case (.success, .failure(let resumeError)):
+                    let tcpviewerError = self.tcpviewerError(from: resumeError, defaultCode: .liveSessionControlFailed)
+                    self.completeLiveExport(.failure(tcpviewerError), url: url, completion: completion)
+                case (.failure(let exportError), .failure):
+                    self.completeLiveExport(.failure(exportError), url: url, completion: completion)
+                }
+            }
+        }
+    }
+
+    private func completeLiveExport(_ result: Result<Void, Error>, url: URL, completion: @escaping TCPViewerVoidCompletion) {
+        switch result {
+        case .success:
+            snapshot.sessionState.lastError = nil
+            snapshot.sessionState.statusMessage = "Exported \(url.lastPathComponent)."
+            completion(.success(()))
+        case .failure(let error):
+            let tcpviewerError = tcpviewerError(from: error, defaultCode: .offlineFileSaveFailed)
+            snapshot.sessionState.lastError = tcpviewerError
+            snapshot.sessionState.statusMessage = tcpviewerError.code == .operationCancelled ? "Export cancelled." : tcpviewerError.message
+            completion(.failure(tcpviewerError))
+        }
+    }
+
     func cancelDocumentLoading(completion: (() -> Void)? = nil) {
         guard let document else {
             completion?()
@@ -1384,6 +1546,7 @@ final class TCPViewerWorkspaceController {
     }
 
     private func applyInterfaceInventory(_ interfaces: [CaptureInterfaceSummary], previousSelectionID: String?) {
+        // Prefer a valid current selection, then the latest interface that actually started capture.
         snapshot.sessionState.interfaceInventory = interfaces
         snapshot.sessionState.lastError = nil
 
@@ -1400,10 +1563,11 @@ final class TCPViewerWorkspaceController {
             snapshot.sessionState.selectedInterfaceID = nil
             snapshot.sessionState.options = options(for: nil)
             snapshot.sessionState.statusMessage = "The previously selected interface is no longer available. Choose another interface before starting capture."
-        } else if snapshot.sessionState.selectedInterfaceID == nil, let firstSelectable = selectableInterfaces.first {
-            snapshot.sessionState.selectedInterfaceID = firstSelectable.id
-            snapshot.sessionState.options = options(for: firstSelectable)
-            snapshot.sessionState.statusMessage = "Discovered \(interfaces.count) interfaces. Selected \(displayName(for: firstSelectable))."
+        } else if snapshot.sessionState.selectedInterfaceID == nil,
+                  let preferredInterface = preferredInterface(from: selectableInterfaces) {
+            snapshot.sessionState.selectedInterfaceID = preferredInterface.id
+            snapshot.sessionState.options = options(for: preferredInterface)
+            snapshot.sessionState.statusMessage = "Discovered \(interfaces.count) interfaces. Selected \(displayName(for: preferredInterface))."
         } else if let selectedInterface = snapshot.sessionState.selectedInterface {
             snapshot.sessionState.options = options(for: selectedInterface)
             snapshot.sessionState.statusMessage = "Refreshed \(interfaces.count) interfaces."
@@ -1424,6 +1588,19 @@ final class TCPViewerWorkspaceController {
                 snapshot.sessionState.phase = .ready
             }
         }
+    }
+
+    private func preferredInterface(from selectableInterfaces: [CaptureInterfaceSummary]) -> CaptureInterfaceSummary? {
+        // Honor the most recent persisted capture-start interface even when its link
+        // is momentarily down, so the popup keeps reflecting the user's last choice.
+        let inventory = snapshot.sessionState.interfaceInventory
+        for interfaceID in snapshot.sessionState.lastUsedInterfaceIDs {
+            if let interface = inventory.first(where: { $0.id == interfaceID }) {
+                return interface
+            }
+        }
+
+        return selectableInterfaces.first
     }
 
     private func validatedOptions(_ options: CaptureOptions, for interface: CaptureInterfaceSummary?) -> CaptureOptions {

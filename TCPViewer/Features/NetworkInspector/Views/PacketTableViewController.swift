@@ -10,6 +10,7 @@ protocol PacketTableViewControllerDelegate: AnyObject {
         clickedColumn: PacketTableColumnRole
     )
     func packetTableViewController(_ controller: PacketTableViewController, didRequestSavePackets identifiers: [PacketSummary.ID])
+    func packetTableViewController(_ controller: PacketTableViewController, didRequestExportPackets identifiers: [PacketSummary.ID], format: CaptureFileFormat)
     func packetTableViewController(_ controller: PacketTableViewController, didRequestDeletePackets identifiers: [PacketSummary.ID])
 }
 
@@ -73,6 +74,25 @@ fileprivate final class PacketTableView: NSTableView {
 
         super.keyDown(with: event)
     }
+
+    // NSTableView's default treats an unmodified click on an already-selected
+    // row inside a multi-selection as a potential drag — the selection is not
+    // collapsed. Match Finder's behavior by collapsing it ourselves.
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let row = self.row(at: point)
+        let modifierFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let collapsingModifiers: NSEvent.ModifierFlags = [.shift, .command, .control, .option]
+
+        if row >= 0,
+           modifierFlags.intersection(collapsingModifiers).isEmpty,
+           selectedRowIndexes.count > 1,
+           selectedRowIndexes.contains(row) {
+            selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        }
+
+        super.mouseDown(with: event)
+    }
 }
 
 final class PacketTableViewModel {
@@ -97,16 +117,32 @@ final class PacketTableViewModel {
 }
 
 final class PacketTableViewController: NSViewController {
+    static let columnAutosaveName: NSTableView.AutosaveName = "TCPViewer.PacketTable.Columns"
+
     weak var delegate: PacketTableViewControllerDelegate?
 
     private let configuration: AppConfiguration
     private let tableView = PacketTableView()
     private let scrollView = NSScrollView()
     private let viewModel = PacketTableViewModel()
+    private let contextMenuController = PacketTableContextMenuController()
+    private let columnService: PacketTableColumnService
+    private let columnLayoutStore: PacketTableColumnLayoutStore
+    private let columnVisibilityMenuController: PacketTableColumnVisibilityMenuController
+    private var isRestoringColumnLayout = false
     private var selectionCallbackSuppressionDepth = 0
     private var lastAppliedSelectedPacketID: PacketSummary.ID?
+    private var pendingUserSelection: PendingUserSelection?
     private var clickedRowIndex: Int?
     private var clickedColumnIdentifier: String?
+
+    // Wraps Optional<ID> so we can distinguish "no pending intent" from a
+    // pending user-driven deselect. A pending intent means the user has just
+    // changed the selection visually and we are waiting for the snapshot
+    // round-trip to acknowledge it.
+    private struct PendingUserSelection {
+        let id: PacketSummary.ID?
+    }
 
     private var rows: [PacketTableRow] {
         viewModel.rows
@@ -118,6 +154,10 @@ final class PacketTableViewController: NSViewController {
 
     init(configuration: AppConfiguration) {
         self.configuration = configuration
+        let columnService = PacketTableColumnService()
+        self.columnService = columnService
+        self.columnLayoutStore = PacketTableColumnLayoutStore(defaults: configuration.userDefaults)
+        self.columnVisibilityMenuController = PacketTableColumnVisibilityMenuController(columnService: columnService)
         super.init(nibName: nil, bundle: nil)
         NotificationCenter.default.addObserver(
             self,
@@ -174,6 +214,7 @@ final class PacketTableViewController: NSViewController {
     }
 
     private func setupTable() {
+        // Configure the packet table and persist user-controlled column layout.
         tableView.delegate = self
         tableView.dataSource = self
         tableView.keyboardActionHandler = self
@@ -183,22 +224,26 @@ final class PacketTableViewController: NSViewController {
         tableView.rowHeight = configuration.packetRowHeight
         tableView.intercellSpacing = NSSize(width: 0, height: 0)
         tableView.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        tableView.allowsColumnReordering = true
+        tableView.allowsColumnResizing = true
         tableView.selectionHighlightStyle = .regular
         tableView.style = .fullWidth
         tableView.focusRingType = .none
-        tableView.menu = NSMenu()
-        tableView.menu?.delegate = self
-        
-        addColumn("number", title: " No.", width: 68, minWidth: 52, cell: PacketTextCell())
-        addColumn("time", title: " Time", width: 112, minWidth: 96, cell: PacketTextCell())
-        addColumn("source", title: " Source", width: 180, minWidth: 130, cell: PacketTextCell())
-        addColumn("destination", title: " Destination", width: 180, minWidth: 130, cell: PacketTextCell())
-        addColumn("domain", title: " Domain", width: 180, minWidth: 120, cell: PacketTextCell())
-        addColumn("client", title: " Client", width: 160, minWidth: 120, cell: PacketClientCell())
-        addColumn("protocol", title: " Protocol", width: 96, minWidth: 82, cell: PacketProtocolCell())
-        addColumn("length", title: " Length", width: 80, minWidth: 68, cell: PacketTextCell())
-        addColumn("summary", title: " Summary", width: 320, minWidth: 180, cell: PacketTextCell())
-        addColumn("tags", title: " Tags", width: 140, minWidth: 90, cell: PacketTextCell())
+        contextMenuController.actionHandler = self
+        contextMenuController.stateProvider = self
+        tableView.menu = contextMenuController.makeMenu()
+        columnVisibilityMenuController.actionHandler = self
+        tableView.headerView?.menu = columnVisibilityMenuController.makeMenu()
+
+        let restoredLayout = columnLayoutStore.load()
+        if let restoredLayout {
+            columnService.applyVisibility(from: restoredLayout)
+        }
+        columnService.definitions.forEach(addColumn(_:))
+        tableView.autosaveName = Self.columnAutosaveName
+        tableView.autosaveTableColumns = false
+        restoreColumnLayout(restoredLayout)
+        syncColumnVisibilityFromTable()
 
         scrollView.documentView = tableView
         scrollView.hasVerticalScroller = true
@@ -215,20 +260,126 @@ final class PacketTableViewController: NSViewController {
         }
     }
 
-    private func addColumn(
-        _ identifier: String,
-        title: String,
-        width: CGFloat,
-        minWidth: CGFloat,
-        cell: NSCell
-    ) {
-        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(identifier))
-        column.title = title
-        column.width = width
-        column.minWidth = minWidth
+    private func addColumn(_ definition: PacketTableColumnDefinition) {
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(definition.identifier))
+        column.title = definition.tableTitle
+        column.width = CGFloat(definition.defaultWidth)
+        column.minWidth = CGFloat(definition.minimumWidth)
         column.resizingMask = .userResizingMask
-        column.dataCell = cell
+        column.dataCell = cell(for: definition.cellKind)
+        column.isHidden = !columnService.isColumnVisible(identifier: definition.identifier)
         tableView.addTableColumn(column)
+    }
+
+    private func cell(for kind: PacketTableColumnCellKind) -> NSCell {
+        switch kind {
+        case .text:
+            PacketTextCell()
+        case .client:
+            PacketClientCell()
+        case .protocol:
+            PacketProtocolCell()
+        }
+    }
+
+    private func applyColumnVisibility(identifier: String) {
+        guard let column = tableView.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier(identifier)) else {
+            return
+        }
+
+        column.isHidden = !columnService.isColumnVisible(identifier: identifier)
+    }
+
+    private func syncColumnVisibilityFromTable() {
+        tableView.tableColumns.forEach { column in
+            columnService.syncColumnVisibility(
+                identifier: column.identifier.rawValue,
+                isVisible: !column.isHidden
+            )
+        }
+    }
+
+    private func restoreColumnLayout(_ layout: PacketTableColumnLayout?) {
+        guard let layout else {
+            return
+        }
+
+        isRestoringColumnLayout = true
+        defer { isRestoringColumnLayout = false }
+
+        layout.columns.enumerated().forEach { targetIndex, savedColumn in
+            guard let currentIndex = tableView.tableColumns.firstIndex(where: {
+                $0.identifier.rawValue == savedColumn.identifier
+            }) else {
+                return
+            }
+
+            if currentIndex != targetIndex, targetIndex < tableView.tableColumns.count {
+                tableView.moveColumn(currentIndex, toColumn: targetIndex)
+            }
+        }
+
+        layout.columns.forEach { savedColumn in
+            guard let column = tableView.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier(savedColumn.identifier)) else {
+                return
+            }
+
+            column.width = max(column.minWidth, CGFloat(savedColumn.width))
+            column.isHidden = !columnService.isColumnVisible(identifier: savedColumn.identifier)
+        }
+    }
+
+    private func restoreDefaultColumnLayout() {
+        isRestoringColumnLayout = true
+        defer { isRestoringColumnLayout = false }
+
+        columnService.definitions.enumerated().forEach { targetIndex, definition in
+            guard let currentIndex = tableView.tableColumns.firstIndex(where: {
+                $0.identifier.rawValue == definition.identifier
+            }) else {
+                return
+            }
+
+            if currentIndex != targetIndex {
+                tableView.moveColumn(currentIndex, toColumn: targetIndex)
+            }
+
+            if let column = tableView.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier(definition.identifier)) {
+                column.width = CGFloat(definition.defaultWidth)
+                column.isHidden = !columnService.isColumnVisible(identifier: definition.identifier)
+            }
+        }
+    }
+
+    private func currentColumnLayout() -> PacketTableColumnLayout {
+        PacketTableColumnLayout(columns: tableView.tableColumns.map { column in
+            PacketTableColumnLayout.Column(
+                identifier: column.identifier.rawValue,
+                isVisible: !column.isHidden,
+                width: Double(column.width)
+            )
+        })
+    }
+
+    private func saveColumnLayout() {
+        guard !isRestoringColumnLayout else {
+            return
+        }
+
+        syncColumnVisibilityFromTable()
+        columnLayoutStore.save(currentColumnLayout())
+    }
+
+    private func columnIdentifier(from sender: Any?) -> String? {
+        if let item = sender as? NSMenuItem {
+            return item.representedObject as? String
+        }
+
+        if let view = sender as? NSView {
+            return view.identifier?.rawValue
+        }
+
+        return nil
     }
 
     private func preserveScrollPosition(_ updates: () -> Void) {
@@ -249,6 +400,36 @@ final class PacketTableViewController: NSViewController {
     }
 
     private func syncSelection() {
+        let visualRow = tableView.selectedRowIndexes.first ?? -1
+        let visualID: PacketSummary.ID? = rows.indices.contains(visualRow) ? rows[visualRow].id : nil
+
+        // Detect a user click whose `tableViewSelectionDidChange` notification
+        // hasn't been delivered yet. NSTableView updates the visual selection
+        // synchronously on click, but if a packet-burst-driven render arrives
+        // between the click and the notification, our subsequent programmatic
+        // `selectRowIndexes` here would coalesce away the pending notification.
+        // The user's intent would be silently dropped. Fire the delegate now
+        // so the snapshot catches up to the visual instead.
+        if visualID != viewModel.selectedPacketID,
+           visualID != lastAppliedSelectedPacketID {
+            pendingUserSelection = PendingUserSelection(id: visualID)
+            lastAppliedSelectedPacketID = visualID
+            delegate?.packetTableViewController(self, didSelectPacket: visualID)
+            return
+        }
+
+        // Honor a pending user click until the snapshot reflects it. Without
+        // this, a snapshot mutation that arrives between the click and the
+        // controller-side update can yank the visual selection back to the
+        // previous packet.
+        if let pending = pendingUserSelection {
+            if pending.id == viewModel.selectedPacketID {
+                pendingUserSelection = nil
+            } else {
+                return
+            }
+        }
+
         let action = PacketTableSelectionSyncPlanner.action(
             rows: rows,
             selectedPacketID: viewModel.selectedPacketID,
@@ -277,7 +458,22 @@ final class PacketTableViewController: NSViewController {
             return .warning
         }
 
-        if column == "number" || column == "time" || column == "length" || column == "tags" {
+        if column == "number" ||
+            column == "time" ||
+            column == "sourcePort" ||
+            column == "destinationPort" ||
+            column == "streamID" ||
+            column == "direction" ||
+            column == "deltaTime" ||
+            column == "streamDeltaTime" ||
+            column == "tcpFlags" ||
+            column == "tcpPayloadBytes" ||
+            column == "pid" ||
+            column == "bundleIdentifier" ||
+            column == "decodeStatus" ||
+            column == "interface" ||
+            column == "length" ||
+            column == "tags" {
             return .secondary
         }
 
@@ -326,29 +522,49 @@ final class PacketTableViewController: NSViewController {
         NSPasteboard.general.setString(value, forType: .string)
     }
 
-    @objc private func copyRowsFromMenu(_ sender: Any?) {
-        copyTargetRows()
+    @objc func copyRowsFromMenu(_ sender: Any?) {
+        copyTargetRows(format: .csv)
     }
 
-    @objc private func copyCellFromMenu(_ sender: Any?) {
+    @objc func copyRowsAsPlainTextFromMenu(_ sender: Any?) {
+        copyTargetRows(format: .plainText)
+    }
+
+    @objc func copyRowsAsJSONFromMenu(_ sender: Any?) {
+        copyTargetRows(format: .json)
+    }
+
+    @objc func copyRowsAsMarkdownTableFromMenu(_ sender: Any?) {
+        copyTargetRows(format: .markdownTable)
+    }
+
+    @objc func copyRowsAsCSVFromMenu(_ sender: Any?) {
+        copyTargetRows(format: .csv)
+    }
+
+    @objc func copyRowsAsCSVWithHeaderFromMenu(_ sender: Any?) {
+        copyTargetRows(format: .csvWithHeader)
+    }
+
+    @objc func copyCellFromMenu(_ sender: Any?) {
         let state = menuState()
         let rows = state.targetRows.compactMap { self.rows.indices.contains($0) ? self.rows[$0] : nil }
         writeToPasteboard(PacketTableCopyFormatter.csvCells(rows, column: state.clickedColumn))
     }
 
-    @objc private func pinDomainFromMenu(_ sender: Any?) {
+    @objc func pinDomainFromMenu(_ sender: Any?) {
         requestPin(.domain)
     }
 
-    @objc private func pinIPFromMenu(_ sender: Any?) {
+    @objc func pinIPFromMenu(_ sender: Any?) {
         requestPin(.ip)
     }
 
-    @objc private func pinClientFromMenu(_ sender: Any?) {
+    @objc func pinClientFromMenu(_ sender: Any?) {
         requestPin(.client)
     }
 
-    @objc private func saveRowsFromMenu(_ sender: Any?) {
+    @objc func saveRowsFromMenu(_ sender: Any?) {
         let identifiers = targetPacketIDs()
         guard !identifiers.isEmpty else {
             return
@@ -357,12 +573,20 @@ final class PacketTableViewController: NSViewController {
         delegate?.packetTableViewController(self, didRequestSavePackets: identifiers)
     }
 
-    @objc private func deleteRowsFromMenu(_ sender: Any?) {
+    @objc func exportRowsAsPcapFromMenu(_ sender: Any?) {
+        exportTargetRows(format: .pcap)
+    }
+
+    @objc func exportRowsAsPcapngFromMenu(_ sender: Any?) {
+        exportTargetRows(format: .pcapng)
+    }
+
+    @objc func deleteRowsFromMenu(_ sender: Any?) {
         deleteTargetRows()
     }
 
-    private func copyTargetRows() {
-        writeToPasteboard(PacketTableCopyFormatter.csvRows(targetRows()))
+    private func copyTargetRows(format: PacketTableCopyFormat) {
+        writeToPasteboard(PacketTableCopyFormatter.rows(targetRows(), format: format))
     }
 
     private func deleteTargetRows() {
@@ -372,6 +596,15 @@ final class PacketTableViewController: NSViewController {
         }
 
         delegate?.packetTableViewController(self, didRequestDeletePackets: identifiers)
+    }
+
+    private func exportTargetRows(format: CaptureFileFormat) {
+        let identifiers = targetPacketIDs()
+        guard !identifiers.isEmpty else {
+            return
+        }
+
+        delegate?.packetTableViewController(self, didRequestExportPackets: identifiers, format: format)
     }
 
     private func requestPin(_ kind: PacketPinCreationKind) {
@@ -419,72 +652,33 @@ extension PacketTableViewController: NSTableViewDataSource, NSTableViewDelegate 
         }
     }
 
+    func tableViewColumnDidMove(_ notification: Notification) {
+        saveColumnLayout()
+    }
+
+    func tableViewColumnDidResize(_ notification: Notification) {
+        saveColumnLayout()
+    }
+
     func tableViewSelectionDidChange(_ notification: Notification) {
-        guard !isSuppressingSelectionCallbacks else {
+        let selectedRow = tableView.selectedRowIndexes.first ?? -1
+        let selectedID = rows.indices.contains(selectedRow) ? rows[selectedRow].id : nil
+
+        // Suppress only when the change is the echo of a programmatic update
+        // we just applied. A genuine user click during a render burst still
+        // needs to round-trip through the delegate, otherwise the selection
+        // would be silently dropped.
+        if isSuppressingSelectionCallbacks, selectedID == viewModel.selectedPacketID {
             return
         }
 
-        let selectedRow = tableView.selectedRowIndexes.first ?? -1
-        let selectedID = rows.indices.contains(selectedRow) ? rows[selectedRow].id : nil
         guard selectedID != lastAppliedSelectedPacketID else {
             return
         }
 
+        pendingUserSelection = PendingUserSelection(id: selectedID)
         lastAppliedSelectedPacketID = selectedID
         delegate?.packetTableViewController(self, didSelectPacket: selectedID)
-    }
-}
-
-extension PacketTableViewController: NSMenuDelegate {
-    func menuNeedsUpdate(_ menu: NSMenu) {
-        updateClickedPositionFromCurrentEvent()
-        let state = menuState()
-
-        menu.removeAllItems()
-        let copyRowItem = NSMenuItem(title: "Copy Row", action: #selector(copyRowsFromMenu(_:)), keyEquivalent: "c")
-        copyRowItem.target = self
-        copyRowItem.isEnabled = state.copyRowEnabled
-        menu.addItem(copyRowItem)
-
-        let copyCellItem = NSMenuItem(title: "Copy Cell", action: #selector(copyCellFromMenu(_:)), keyEquivalent: "")
-        copyCellItem.target = self
-        copyCellItem.isEnabled = state.copyCellEnabled
-        menu.addItem(copyCellItem)
-
-        menu.addItem(.separator())
-
-        let pinItem = NSMenuItem(title: "Pin", action: nil, keyEquivalent: "")
-        let pinSubmenu = NSMenu(title: "Pin")
-        let pinDomainItem = NSMenuItem(title: "Domain", action: #selector(pinDomainFromMenu(_:)), keyEquivalent: "")
-        pinDomainItem.target = self
-        pinDomainItem.isEnabled = state.pinDomainEnabled
-        pinSubmenu.addItem(pinDomainItem)
-
-        let pinIPItem = NSMenuItem(title: "IP", action: #selector(pinIPFromMenu(_:)), keyEquivalent: "")
-        pinIPItem.target = self
-        pinIPItem.isEnabled = state.pinIPEnabled
-        pinSubmenu.addItem(pinIPItem)
-
-        let pinClientItem = NSMenuItem(title: "Client", action: #selector(pinClientFromMenu(_:)), keyEquivalent: "")
-        pinClientItem.target = self
-        pinClientItem.isEnabled = state.pinClientEnabled
-        pinSubmenu.addItem(pinClientItem)
-
-        pinItem.submenu = pinSubmenu
-        pinItem.isEnabled = state.pinDomainEnabled || state.pinIPEnabled || state.pinClientEnabled
-        menu.addItem(pinItem)
-
-        let saveItem = NSMenuItem(title: "Save", action: #selector(saveRowsFromMenu(_:)), keyEquivalent: "")
-        saveItem.target = self
-        saveItem.isEnabled = state.saveEnabled
-        menu.addItem(saveItem)
-
-        menu.addItem(.separator())
-
-        let deleteItem = NSMenuItem(title: "Delete", action: #selector(deleteRowsFromMenu(_:)), keyEquivalent: "\u{8}")
-        deleteItem.target = self
-        deleteItem.isEnabled = state.deleteEnabled
-        menu.addItem(deleteItem)
     }
 }
 
@@ -492,7 +686,7 @@ extension PacketTableViewController: PacketTableKeyboardActionHandling {
     fileprivate func packetTableViewDidRequestCopyRowsFromKeyboard(_ tableView: PacketTableView) {
         clickedRowIndex = nil
         clickedColumnIdentifier = nil
-        copyTargetRows()
+        copyTargetRows(format: .csv)
     }
 
     fileprivate func packetTableViewDidRequestDeleteFromKeyboard(_ tableView: PacketTableView) {
@@ -502,266 +696,33 @@ extension PacketTableViewController: PacketTableKeyboardActionHandling {
     }
 }
 
-final class PacketTextCell: NSTextFieldCell {
-    enum Style {
-        case primary
-        case secondary
-        case warning
+extension PacketTableViewController: PacketTableContextMenuActionHandling, PacketTableContextMenuStateProviding {
+    func packetTableContextMenuWillOpen() {
+        updateClickedPositionFromCurrentEvent()
     }
 
-    override init(textCell string: String) {
-        super.init(textCell: string)
-        isEditable = false
-        isBordered = false
-        drawsBackground = false
-        lineBreakMode = .byTruncatingTail
-        truncatesLastVisibleLine = true
-    }
-
-    convenience init() {
-        self.init(textCell: "")
-    }
-
-    @available(*, unavailable)
-    required init(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    func configure(style: Style, configuration: AppConfiguration) {
-        font = configuration.packetFont(weight: .regular)
-
-        switch style {
-        case .primary:
-            textColor = .labelColor
-        case .secondary:
-            textColor = .secondaryLabelColor
-        case .warning:
-            textColor = .systemOrange
-        }
-    }
-
-    override func drawingRect(forBounds rect: NSRect) -> NSRect {
-        verticallyCenteredRect(forBounds: rect)
-    }
-
-    override func titleRect(forBounds rect: NSRect) -> NSRect {
-        verticallyCenteredRect(forBounds: rect)
-    }
-
-    private func verticallyCenteredRect(forBounds rect: NSRect) -> NSRect {
-        // Center text in compact rows so AppKit's default baseline does not sit high.
-        var drawingRect = super.drawingRect(forBounds: rect).insetBy(dx: 6, dy: 0)
-        let textHeight = cellSize(forBounds: drawingRect).height
-        drawingRect.origin.y += floor((drawingRect.height - textHeight) / 2)
-        drawingRect.size.height = textHeight
-        return drawingRect
+    func packetTableContextMenuState() -> PacketTableMenuState {
+        menuState()
     }
 }
 
-final class PacketProtocolCell: NSTextFieldCell {
-    private var protocolText = ""
-    private var severity: PacketSeverity = .normal
-
-    override init(textCell string: String) {
-        super.init(textCell: string)
-        alignment = .center
-        isEditable = false
-        isBordered = false
-        drawsBackground = false
-        lineBreakMode = .byTruncatingTail
-        truncatesLastVisibleLine = true
-    }
-
-    convenience init() {
-        self.init(textCell: "")
-    }
-
-    @available(*, unavailable)
-    required init(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    func configure(protocolText: String, severity: PacketSeverity, configuration: AppConfiguration) {
-        self.protocolText = protocolText
-        self.severity = severity
-        stringValue = protocolText
-        font = configuration.packetFont(weight: .semibold)
-        textColor = textColor(for: protocolText, severity: severity)
-    }
-
-    override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
-        // Draw protocol values as compact colored pills instead of plain table text.
-        let label = protocolText.isEmpty ? stringValue : protocolText
-        guard !label.isEmpty else {
+extension PacketTableViewController: PacketTableColumnVisibilityMenuActionHandling {
+    func togglePacketTableColumnVisibilityFromMenu(_ sender: Any?) {
+        guard let identifier = columnIdentifier(from: sender),
+              columnService.toggleColumnVisibility(identifier: identifier) else {
             return
         }
 
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: font ?? .monospacedSystemFont(ofSize: AppConfiguration.defaultPacketFontSize, weight: .semibold),
-            .foregroundColor: textColor ?? .labelColor,
-        ]
-        let textSize = label.size(withAttributes: attributes)
-        let pillWidth = min(max(textSize.width + 16, 42), cellFrame.width - 12)
-        let pillHeight = min(cellFrame.height - 4, max(18, ceil(textSize.height + 6)))
-        let pillRect = NSRect(
-            x: cellFrame.midX - pillWidth / 2,
-            y: cellFrame.midY - pillHeight / 2,
-            width: pillWidth,
-            height: pillHeight
-        )
-
-        backgroundColor(for: label, severity: severity).setFill()
-        NSBezierPath(roundedRect: pillRect, xRadius: pillHeight / 2, yRadius: pillHeight / 2).fill()
-
-        let textRect = NSRect(
-            x: pillRect.midX - textSize.width / 2,
-            y: pillRect.midY - textSize.height / 2 - 0.5,
-            width: textSize.width,
-            height: textSize.height
-        )
-        label.draw(in: textRect, withAttributes: attributes)
+        applyColumnVisibility(identifier: identifier)
+        saveColumnLayout()
+        tableView.headerView?.menu?.cancelTracking()
     }
 
-    private func backgroundColor(for protocolText: String, severity: PacketSeverity) -> NSColor {
-        if severity != .normal {
-            return .systemOrange.withAlphaComponent(0.18)
-        }
-
-        switch protocolText.uppercased() {
-        case "TCP":
-            return .systemOrange.withAlphaComponent(0.16)
-        case "UDP":
-            return .systemBlue.withAlphaComponent(0.16)
-        case "TLS", "SSL", "HTTPS":
-            return .systemGreen.withAlphaComponent(0.16)
-        case "HTTP":
-            return .systemPink.withAlphaComponent(0.16)
-        case "DNS":
-            return .systemPurple.withAlphaComponent(0.16)
-        case "ICMP":
-            return .systemRed.withAlphaComponent(0.14)
-        case "ARP":
-            return .systemTeal.withAlphaComponent(0.16)
-        default:
-            return .controlAccentColor.withAlphaComponent(0.14)
-        }
-    }
-
-    private func textColor(for protocolText: String, severity: PacketSeverity) -> NSColor {
-        if severity != .normal {
-            return .systemOrange
-        }
-
-        switch protocolText.uppercased() {
-        case "TCP":
-            return .systemOrange
-        case "UDP":
-            return .systemBlue
-        case "TLS", "SSL", "HTTPS":
-            return .systemGreen
-        case "HTTP":
-            return .systemPink
-        case "DNS":
-            return .systemPurple
-        case "ICMP":
-            return .systemRed
-        case "ARP":
-            return .systemTeal
-        default:
-            return .controlAccentColor
-        }
-    }
-}
-
-final class PacketClientIconCache {
-    private var imagesByKey: [String: NSImage] = [:]
-
-    // Return one shared icon instance per app path so repeated packet rows stay cheap.
-    func image(for client: PacketClient?) -> NSImage? {
-        guard let client else {
-            return nil
-        }
-
-        let key = client.bundlePath ?? client.executablePath ?? client.name
-        if let image = imagesByKey[key] {
-            return image
-        }
-
-        guard let path = client.bundlePath ?? client.executablePath else {
-            return nil
-        }
-
-        let image = NSWorkspace.shared.icon(forFile: path)
-        image.size = NSSize(width: 16, height: 16)
-        imagesByKey[key] = image
-        return image
-    }
-}
-
-final class PacketClientCell: NSTextFieldCell {
-    private static let iconCache = PacketClientIconCache()
-    private var client: PacketClient?
-
-    override init(textCell string: String) {
-        super.init(textCell: string)
-        isEditable = false
-        isBordered = false
-        drawsBackground = false
-        lineBreakMode = .byTruncatingTail
-        truncatesLastVisibleLine = true
-        textColor = .labelColor
-    }
-
-    convenience init() {
-        self.init(textCell: "")
-    }
-
-    @available(*, unavailable)
-    required init(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    // Configure the reused cell with the current row's client metadata.
-    func configure(client: PacketClient?, configuration: AppConfiguration) {
-        self.client = client
-        stringValue = client?.displayName ?? "-"
-        font = configuration.packetFont(weight: .regular)
-        textColor = client == nil ? .secondaryLabelColor : .labelColor
-    }
-
-    override func drawingRect(forBounds rect: NSRect) -> NSRect {
-        verticallyCenteredRect(forBounds: rect)
-    }
-
-    override func titleRect(forBounds rect: NSRect) -> NSRect {
-        verticallyCenteredRect(forBounds: rect)
-    }
-
-    private func verticallyCenteredRect(forBounds rect: NSRect) -> NSRect {
-        var drawingRect = super.drawingRect(forBounds: rect)
-        let textHeight = cellSize(forBounds: drawingRect).height
-        drawingRect.origin.y += floor((drawingRect.height - textHeight) / 2)
-        drawingRect.size.height = textHeight
-        return drawingRect
-    }
-
-    override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
-        guard let icon = Self.iconCache.image(for: client) else {
-            let textFrame = cellFrame.insetBy(dx: 6, dy: 0)
-            super.drawInterior(withFrame: textFrame, in: controlView)
-            return
-        }
-
-        let iconSize: CGFloat = 16
-        let iconFrame = NSRect(
-            x: cellFrame.minX + 6,
-            y: cellFrame.midY - iconSize / 2,
-            width: iconSize,
-            height: iconSize
-        )
-        icon.draw(in: iconFrame)
-
-        let textFrame = cellFrame.insetBy(dx: 6, dy: 0).offsetBy(dx: iconSize + 4, dy: 0)
-        super.drawInterior(withFrame: textFrame, in: controlView)
+    func resetPacketTableColumnsFromMenu(_ sender: Any?) {
+        columnService.resetToDefaults()
+        restoreDefaultColumnLayout()
+        columnLayoutStore.clear()
+        syncColumnVisibilityFromTable()
+        tableView.headerView?.menu?.cancelTracking()
     }
 }

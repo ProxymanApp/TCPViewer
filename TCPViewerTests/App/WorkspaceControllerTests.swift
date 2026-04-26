@@ -30,6 +30,81 @@ struct WindowControllerTests {
         await tearDown(controller)
     }
 
+    @Test func initialLoadSelectsMostRecentStartedInterfaceWhenAvailable() async {
+        let suiteName = "TCPViewerTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+        defaults.set(["en1", "en0"], forKey: InterfaceSelectionHistoryStore.storageKey)
+        let fakeCore = FakeTCPViewerCore(
+            interfaceInventories: [[
+                makeInterface(id: "en0", displayName: "Wi-Fi"),
+                makeInterface(id: "en1", displayName: "USB Ethernet"),
+            ]]
+        )
+        let controller = TCPViewerWorkspaceController(
+            services: TCPViewerServiceRegistry(core: fakeCore),
+            userDefaults: defaults
+        )
+
+        await controller.performInitialLoadIfNeeded()
+
+        #expect(controller.snapshot.sessionState.selectedInterfaceID == "en1")
+        #expect(controller.snapshot.sessionState.lastUsedInterfaceIDs == ["en1", "en0"])
+
+        await tearDown(controller)
+    }
+
+    @Test func initialLoadKeepsRecentInterfaceEvenWhenUnavailable() async {
+        let suiteName = "TCPViewerTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+        defaults.set(["en9", "en0"], forKey: InterfaceSelectionHistoryStore.storageKey)
+        let fakeCore = FakeTCPViewerCore(
+            interfaceInventories: [[
+                makeInterface(id: "en0", displayName: "Wi-Fi"),
+                makeInterface(id: "en9", displayName: "Old Interface", availability: .unavailable, canCapture: false),
+            ]]
+        )
+        let controller = TCPViewerWorkspaceController(
+            services: TCPViewerServiceRegistry(core: fakeCore),
+            userDefaults: defaults
+        )
+
+        await controller.performInitialLoadIfNeeded()
+
+        #expect(controller.snapshot.sessionState.selectedInterfaceID == "en9")
+
+        await tearDown(controller)
+    }
+
+    @Test func initialLoadFallsBackWhenRecentInterfaceMissingFromInventory() async {
+        let suiteName = "TCPViewerTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+        defaults.set(["en9"], forKey: InterfaceSelectionHistoryStore.storageKey)
+        let fakeCore = FakeTCPViewerCore(
+            interfaceInventories: [[
+                makeInterface(id: "en0", displayName: "Wi-Fi"),
+            ]]
+        )
+        let controller = TCPViewerWorkspaceController(
+            services: TCPViewerServiceRegistry(core: fakeCore),
+            userDefaults: defaults
+        )
+
+        await controller.performInitialLoadIfNeeded()
+
+        #expect(controller.snapshot.sessionState.selectedInterfaceID == "en0")
+
+        await tearDown(controller)
+    }
+
     @Test func refreshClearsStaleInterfaceSelectionWhenInventoryChanges() async {
         let fakeCore = FakeTCPViewerCore(
             interfaceInventories: [
@@ -368,6 +443,130 @@ struct WindowControllerTests {
         await tearDown(controller)
     }
 
+    @Test func exportPacketsDoesNotMutateDocumentURL() async {
+        let openURL = URL(fileURLWithPath: "/tmp/export-source.pcapng")
+        let exportURL = URL(fileURLWithPath: "/tmp/export-copy.pcap")
+        let packets = [
+            makePacket(packetNumber: 1, source: .offline, transportHint: .udp),
+            makePacket(packetNumber: 2, source: .offline, transportHint: .dns),
+        ]
+        let document = FakeOfflineDocument(
+            url: openURL,
+            metadata: CaptureDocumentMetadata(format: .pcapng),
+            openPlan: .completed(packets)
+        )
+        let controller = TCPViewerWorkspaceController(
+            services: TCPViewerServiceRegistry(core: FakeTCPViewerCore(
+                interfaceInventories: [[makeInterface(id: "en0", displayName: "Wi-Fi")]],
+                documentFactory: { _ in document }
+            ))
+        )
+
+        await controller.openDocument(at: openURL)
+        await waitUntil {
+            controller.snapshot.documentState.phase == .loaded
+        }
+
+        let result = await controller.exportPackets(withIDs: packets.map(\.id), to: exportURL, format: .pcap)
+
+        guard case .success = result else {
+            Issue.record("Expected export to succeed.")
+            return
+        }
+        #expect(document.exportRequests.count == 1)
+        #expect(document.exportRequests.first?.0 == packets.map(\.id))
+        #expect(document.exportRequests.first?.1 == exportURL)
+        #expect(document.exportRequests.first?.2 == .pcap)
+        #expect(controller.snapshot.documentState.fileURL == openURL)
+        #expect(controller.snapshot.documentState.format == .pcapng)
+
+        await tearDown(controller)
+    }
+
+    @Test func exportPacketsPausesAndResumesRunningLiveCapture() async {
+        let exportURL = URL(fileURLWithPath: "/tmp/live-export.pcapng")
+        let packets = [
+            makePacket(packetNumber: 1, source: .live, transportHint: .tcp),
+            makePacket(packetNumber: 2, source: .live, transportHint: .udp),
+        ]
+        let liveSession = FakeLiveSession()
+        let controller = TCPViewerWorkspaceController(
+            services: TCPViewerServiceRegistry(core: FakeTCPViewerCore(
+                interfaceInventories: [[makeInterface(id: "en0", displayName: "Wi-Fi")]],
+                liveSession: liveSession
+            ))
+        )
+
+        await controller.refreshInterfaces()
+        await controller.startLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        liveSession.send(.packetBatch(packets, disposition: .append))
+        await waitUntil {
+            controller.snapshot.sessionState.phase == .running &&
+            controller.snapshot.packetIngestState.totalPacketCount == packets.count
+        }
+
+        let result = await controller.exportPackets(withIDs: packets.map(\.id), to: exportURL, format: .pcapng)
+
+        guard case .success = result else {
+            Issue.record("Expected live export to succeed.")
+            return
+        }
+        #expect(liveSession.pauseCount == 1)
+        #expect(liveSession.resumeCount == 1)
+        #expect(liveSession.exportRequests.first?.0 == packets.map(\.id))
+        #expect(liveSession.exportRequests.first?.1 == exportURL)
+
+        await tearDown(controller)
+    }
+
+    @Test func exportPacketsResumesRunningLiveCaptureAfterCancellation() async {
+        let exportURL = URL(fileURLWithPath: "/tmp/live-export-cancelled.pcapng")
+        let packets = [makePacket(packetNumber: 1, source: .live, transportHint: .tcp)]
+        let liveSession = FakeLiveSession()
+        let controller = TCPViewerWorkspaceController(
+            services: TCPViewerServiceRegistry(core: FakeTCPViewerCore(
+                interfaceInventories: [[makeInterface(id: "en0", displayName: "Wi-Fi")]],
+                liveSession: liveSession
+            ))
+        )
+
+        await controller.refreshInterfaces()
+        await controller.startLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        liveSession.send(.packetBatch(packets, disposition: .append))
+        await waitUntil {
+            controller.snapshot.sessionState.phase == .running &&
+            controller.snapshot.packetIngestState.totalPacketCount == packets.count
+        }
+
+        var cancellationChecks = 0
+        let result = await withCheckedContinuation { continuation in
+            controller.exportPackets(
+                withIDs: packets.map(\.id),
+                to: exportURL,
+                format: .pcapng,
+                shouldCancel: {
+                    cancellationChecks += 1
+                    return cancellationChecks > 1
+                }
+            ) { result in
+                continuation.resume(returning: result)
+            }
+        }
+
+        guard case .failure(let error as TCPViewerCoreError) = result else {
+            Issue.record("Expected live export cancellation.")
+            return
+        }
+        #expect(error.code == .operationCancelled)
+        #expect(liveSession.pauseCount == 1)
+        #expect(liveSession.resumeCount == 1)
+        #expect(liveSession.exportRequests.isEmpty)
+
+        await tearDown(controller)
+    }
+
     @Test func openingNewDocumentIgnoresEventsFromPreviousDocumentStream() async {
         let firstURL = URL(fileURLWithPath: "/tmp/first-stream.pcapng")
         let secondURL = URL(fileURLWithPath: "/tmp/second-stream.pcapng")
@@ -655,12 +854,13 @@ struct WindowControllerTests {
         await tearDown(controller)
     }
 
-    @Test func liveCapturePersistsStartedInterfaceAsLastUsed() async {
+    @Test func liveCapturePersistsStartedInterfaceAsMostRecentLastUsed() async {
         let suiteName = "TCPViewerTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defer {
             defaults.removePersistentDomain(forName: suiteName)
         }
+        defaults.set(["en0"], forKey: InterfaceSelectionHistoryStore.storageKey)
 
         let liveSession = FakeLiveSession()
         let fakeCore = FakeTCPViewerCore(
@@ -675,15 +875,43 @@ struct WindowControllerTests {
             userDefaults: defaults
         )
 
-        #expect(controller.snapshot.sessionState.lastUsedInterfaceIDs.isEmpty)
+        #expect(controller.snapshot.sessionState.lastUsedInterfaceIDs == ["en0"])
 
         await controller.refreshInterfaces()
         controller.selectInterface("en1")
         await controller.startLiveCapture()
 
         #expect(liveSession.startCount == 1)
-        #expect(controller.snapshot.sessionState.lastUsedInterfaceIDs == ["en1"])
-        #expect(defaults.stringArray(forKey: InterfaceSelectionHistoryStore.storageKey) == ["en1"])
+        #expect(controller.snapshot.sessionState.lastUsedInterfaceIDs == ["en1", "en0"])
+        #expect(defaults.stringArray(forKey: InterfaceSelectionHistoryStore.storageKey) == ["en1", "en0"])
+
+        await tearDown(controller)
+    }
+
+    @Test func selectingInterfaceWithoutStartingCaptureDoesNotPersistLastUsed() async {
+        let suiteName = "TCPViewerTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let fakeCore = FakeTCPViewerCore(
+            interfaceInventories: [[
+                makeInterface(id: "en0", displayName: "Wi-Fi"),
+                makeInterface(id: "en1", displayName: "USB Ethernet"),
+            ]]
+        )
+        let controller = TCPViewerWorkspaceController(
+            services: TCPViewerServiceRegistry(core: fakeCore),
+            userDefaults: defaults
+        )
+
+        await controller.refreshInterfaces()
+        controller.selectInterface("en1")
+
+        #expect(controller.snapshot.sessionState.selectedInterfaceID == "en1")
+        #expect(controller.snapshot.sessionState.lastUsedInterfaceIDs.isEmpty)
+        #expect(defaults.stringArray(forKey: InterfaceSelectionHistoryStore.storageKey) == nil)
 
         await tearDown(controller)
     }
@@ -987,6 +1215,7 @@ private final class FakeLiveSession: LiveCaptureSessionProviding, @unchecked Sen
     private(set) var pauseCount = 0
     private(set) var resumeCount = 0
     private(set) var stopCount = 0
+    private(set) var exportRequests: [([PacketSummary.ID], URL, CaptureFileFormat)] = []
     private(set) var latestHealthSnapshot = CaptureHealthSnapshot.empty
 
     func start(completion: @escaping TCPViewerVoidCompletion) {
@@ -1019,6 +1248,24 @@ private final class FakeLiveSession: LiveCaptureSessionProviding, @unchecked Sen
             return
         }
         completion(.success(inspection))
+    }
+
+    func exportPackets(
+        withIDs identifiers: [PacketSummary.ID],
+        to url: URL,
+        format: CaptureFileFormat,
+        progress: PacketExportProgressHandler?,
+        shouldCancel: PacketExportCancellationCheck?,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        if shouldCancel?() == true {
+            completion(.failure(TCPViewerCoreError(code: .operationCancelled, message: "Packet export was cancelled.")))
+            return
+        }
+
+        progress?(PacketExportProgress(exportedPacketCount: identifiers.count, totalPacketCount: identifiers.count))
+        exportRequests.append((identifiers, url, format))
+        completion(.success(()))
     }
 
     func healthSnapshot(completion: @escaping (CaptureHealthSnapshot) -> Void) {
@@ -1061,6 +1308,7 @@ private final class FakeOfflineDocument: OfflineCaptureDocumentProviding, @unche
 
     private(set) var saveCount = 0
     private(set) var saveAsRequests: [(URL, CaptureFileFormat)] = []
+    private(set) var exportRequests: [([PacketSummary.ID], URL, CaptureFileFormat)] = []
     private(set) var cancelLoadingCount = 0
     private(set) var currentProgress: PacketLoadProgress = .idle
 
@@ -1149,6 +1397,30 @@ private final class FakeOfflineDocument: OfflineCaptureDocumentProviding, @unche
 
         send(.documentMetadataChanged(metadata))
         send(.documentStateChanged(phase: .saved, message: "Saved as \(url.lastPathComponent)."))
+        completion(.success(()))
+    }
+
+    func exportPackets(
+        withIDs identifiers: [PacketSummary.ID],
+        to url: URL,
+        format: CaptureFileFormat,
+        progress: PacketExportProgressHandler?,
+        shouldCancel: PacketExportCancellationCheck?,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        if shouldCancel?() == true {
+            completion(.failure(TCPViewerCoreError(code: .operationCancelled, message: "Packet export was cancelled.")))
+            return
+        }
+
+        let knownIDs = Set(packets.map(\.id))
+        guard identifiers.allSatisfy({ knownIDs.contains($0) }) else {
+            completion(.failure(TCPViewerCoreError(code: .offlineFileSaveFailed, message: "Missing packet export backing.")))
+            return
+        }
+
+        progress?(PacketExportProgress(exportedPacketCount: identifiers.count, totalPacketCount: identifiers.count))
+        exportRequests.append((identifiers, url, format))
         completion(.success(()))
     }
 

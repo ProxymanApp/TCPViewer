@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import Testing
 import PcapPlusPlusCore
 @testable import TCPViewer
@@ -27,6 +28,7 @@ struct PacketTableMenuLogicTests {
         #expect(!state.pinIPEnabled)
         #expect(!state.pinClientEnabled)
         #expect(state.saveEnabled)
+        #expect(state.exportEnabled)
         #expect(state.deleteEnabled)
     }
 
@@ -48,6 +50,7 @@ struct PacketTableMenuLogicTests {
         #expect(state.pinDomainEnabled)
         #expect(state.pinIPEnabled)
         #expect(state.pinClientEnabled)
+        #expect(state.exportEnabled)
     }
 
     @Test func copyFormatterUsesCSVRowsAndClickedColumnCells() {
@@ -56,7 +59,7 @@ struct PacketTableMenuLogicTests {
             PacketTableRow(packet: makePacket(packetNumber: 2, infoSummary: "Plain")),
         ]
 
-        let rowCopy = PacketTableCopyFormatter.csvRows(rows)
+        let rowCopy = PacketTableCopyFormatter.rows(rows, format: .csv)
         let cellCopy = PacketTableCopyFormatter.csvCells(rows, column: .summary)
 
         #expect(rowCopy.contains("\"Hello, world\""))
@@ -67,13 +70,41 @@ struct PacketTableMenuLogicTests {
         """)
     }
 
+    @Test func copyFormatterSupportsRowsAsFormatsForMultipleSelections() throws {
+        let rows = [
+            PacketTableRow(packet: makePacket(packetNumber: 1, infoSummary: "Hello, world | alpha")),
+            PacketTableRow(packet: makePacket(packetNumber: 3, infoSummary: "Line\nBreak")),
+        ]
+
+        let plainText = PacketTableCopyFormatter.rows(rows, format: .plainText)
+        #expect(plainText.split(separator: "\n").count == 2)
+        #expect(plainText.contains("\t"))
+        #expect(plainText.contains("Line Break"))
+
+        let jsonData = try #require(PacketTableCopyFormatter.rows(rows, format: .json).data(using: .utf8))
+        let jsonRows = try #require(JSONSerialization.jsonObject(with: jsonData) as? [[String: String]])
+        #expect(jsonRows.count == 2)
+        #expect(jsonRows[0]["summary"] == "Hello, world | alpha")
+        #expect(jsonRows[1]["summary"] == "Line\nBreak")
+
+        let markdown = PacketTableCopyFormatter.rows(rows, format: .markdownTable)
+        #expect(markdown.contains("| # | Time | Source | Destination | Domain | Client | Protocol | Length | Summary | Tags |"))
+        #expect(markdown.contains("Hello, world \\| alpha"))
+        #expect(markdown.contains("Line Break"))
+
+        let csvWithHeader = PacketTableCopyFormatter.rows(rows, format: .csvWithHeader)
+        #expect(csvWithHeader.hasPrefix("#,Time,Source,Destination,Domain,Client,Protocol,Length,Summary,Tags\n"))
+        #expect(csvWithHeader.contains("\"Hello, world | alpha\""))
+        #expect(csvWithHeader.contains("\"Line\nBreak\""))
+    }
+
     @Test func selectionSyncUsesFirstSelectedRowForInspector() {
         let packets = [
             makePacket(packetNumber: 1),
             makePacket(packetNumber: 2),
             makePacket(packetNumber: 3),
         ]
-        let rows = packets.map(PacketTableRow.init)
+        let rows = packets.map(PacketTableRow.init(packet:))
 
         #expect(PacketTableSelectionSyncPlanner.action(
             rows: rows,
@@ -88,6 +119,109 @@ struct PacketTableMenuLogicTests {
             selectedRowIndex: 2,
             tableSelectedRowIndexes: IndexSet([0, 2])
         ) == .select(2))
+    }
+
+    @MainActor
+    @Test func packetTablePersistsUserColumnLayout() throws {
+        let defaults = Self.makeUserDefaults()
+        let controller = PacketTableViewController(configuration: AppConfiguration(defaults: defaults))
+        controller.loadViewIfNeeded()
+
+        let tableView = try Self.tableView(in: controller)
+        let columnIdentifiers = Set(tableView.tableColumns.map { $0.identifier.rawValue })
+        let hiddenColumnIdentifiers = Set(tableView.tableColumns.filter { $0.isHidden }.map { $0.identifier.rawValue })
+        let defaultHiddenColumnIdentifiers = Set(PacketTableColumnService.defaultDefinitions
+            .filter { !$0.isDefaultVisible }
+            .map(\.identifier))
+
+        #expect(tableView.autosaveName == PacketTableViewController.columnAutosaveName)
+        #expect(!tableView.autosaveTableColumns)
+        #expect(tableView.allowsColumnReordering)
+        #expect(tableView.allowsColumnResizing)
+        #expect(columnIdentifiers == Set(PacketTableColumnService.defaultDefinitions.map(\.identifier)))
+        #expect(hiddenColumnIdentifiers == defaultHiddenColumnIdentifiers)
+
+        controller.togglePacketTableColumnVisibilityFromMenu(Self.columnSender("sourcePort"))
+        controller.togglePacketTableColumnVisibilityFromMenu(Self.columnSender("tags"))
+
+        let sourcePortColumn = try #require(tableView.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier("sourcePort")))
+        sourcePortColumn.width = 144
+        controller.tableViewColumnDidResize(Notification(name: Notification.Name("PacketTableColumnResizeTest"), object: tableView))
+
+        let sourcePortIndex = try #require(tableView.tableColumns.firstIndex(where: {
+            $0.identifier.rawValue == "sourcePort"
+        }))
+        tableView.moveColumn(sourcePortIndex, toColumn: 1)
+        controller.tableViewColumnDidMove(Notification(name: Notification.Name("PacketTableColumnMoveTest"), object: tableView))
+
+        let restoredController = PacketTableViewController(configuration: AppConfiguration(defaults: defaults))
+        restoredController.loadViewIfNeeded()
+        let restoredTableView = try Self.tableView(in: restoredController)
+        let restoredSourcePortColumn = try #require(restoredTableView.tableColumn(
+            withIdentifier: NSUserInterfaceItemIdentifier("sourcePort")
+        ))
+        let restoredTagsColumn = try #require(restoredTableView.tableColumn(
+            withIdentifier: NSUserInterfaceItemIdentifier("tags")
+        ))
+
+        #expect(restoredTableView.tableColumns[1].identifier.rawValue == "sourcePort")
+        #expect(!restoredSourcePortColumn.isHidden)
+        #expect(restoredTagsColumn.isHidden)
+        #expect(abs(restoredSourcePortColumn.width - 144) < 0.5)
+
+        restoredController.resetPacketTableColumnsFromMenu(nil)
+
+        let resetController = PacketTableViewController(configuration: AppConfiguration(defaults: defaults))
+        resetController.loadViewIfNeeded()
+        let resetTableView = try Self.tableView(in: resetController)
+        let resetSourcePortColumn = try #require(resetTableView.tableColumn(
+            withIdentifier: NSUserInterfaceItemIdentifier("sourcePort")
+        ))
+        let resetTagsColumn = try #require(resetTableView.tableColumn(
+            withIdentifier: NSUserInterfaceItemIdentifier("tags")
+        ))
+        let defaultSourcePortIndex = try #require(PacketTableColumnService.defaultDefinitions.firstIndex {
+            $0.identifier == "sourcePort"
+        })
+
+        #expect(resetTableView.tableColumns[defaultSourcePortIndex].identifier.rawValue == "sourcePort")
+        #expect(resetSourcePortColumn.isHidden)
+        #expect(!resetTagsColumn.isHidden)
+        #expect(abs(resetSourcePortColumn.width - 92) < 0.5)
+    }
+
+    @MainActor
+    @Test func contextMenuItemsIncludeCopyRowsAsSubmenuAndTooltips() throws {
+        let controller = PacketTableContextMenuController()
+        let stateProvider = MenuStateProvider(state: PacketTableMenuState(
+            targetRows: [0],
+            clickedColumn: .source,
+            copyRowEnabled: true,
+            copyCellEnabled: true,
+            pinDomainEnabled: true,
+            pinIPEnabled: true,
+            pinClientEnabled: true,
+            saveEnabled: true,
+            exportEnabled: true,
+            deleteEnabled: true
+        ))
+        let actionHandler = MenuActionHandler()
+        controller.stateProvider = stateProvider
+        controller.actionHandler = actionHandler
+
+        let menu = controller.makeMenu()
+        controller.menuNeedsUpdate(menu)
+        let items = menu.nonSeparatorItemsIncludingSubmenus()
+        let copyRowsAsItem = try #require(menu.items.first { $0.title == "Copy Rows As" })
+        let copyRowsAsSubmenu = try #require(copyRowsAsItem.submenu)
+        let copyRowsAsTitles = copyRowsAsSubmenu.items.compactMap { item in
+            item.isSeparatorItem ? nil : item.title
+        }
+
+        #expect(copyRowsAsTitles == ["Plain text", "JSON", "Markdown Table", "CSV", "CSV with Header"])
+        #expect(copyRowsAsSubmenu.items.filter(\.isSeparatorItem).count == 2)
+        #expect(!items.isEmpty)
+        #expect(items.allSatisfy { item in item.toolTip?.isEmpty == false })
     }
 
     private func makePacket(
@@ -127,5 +261,68 @@ struct PacketTableMenuLogicTests {
             bundleIdentifier: "com.example.app",
             bundlePath: "/Applications/Example.app"
         )
+    }
+
+    private static func makeUserDefaults() -> UserDefaults {
+        let suiteName = "PacketTableMenuLogicTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        return defaults
+    }
+
+    @MainActor
+    private static func tableView(in controller: PacketTableViewController) throws -> NSTableView {
+        let scrollView = try #require(controller.view as? NSScrollView)
+        return try #require(scrollView.documentView as? NSTableView)
+    }
+
+    @MainActor
+    private static func columnSender(_ identifier: String) -> NSView {
+        let view = NSView(frame: .zero)
+        view.identifier = NSUserInterfaceItemIdentifier(identifier)
+        return view
+    }
+}
+
+private final class MenuStateProvider: PacketTableContextMenuStateProviding {
+    private let state: PacketTableMenuState
+
+    init(state: PacketTableMenuState) {
+        self.state = state
+    }
+
+    func packetTableContextMenuWillOpen() {}
+
+    func packetTableContextMenuState() -> PacketTableMenuState {
+        state
+    }
+}
+
+private final class MenuActionHandler: NSObject, PacketTableContextMenuActionHandling {
+    func copyRowsFromMenu(_ sender: Any?) {}
+    func copyRowsAsPlainTextFromMenu(_ sender: Any?) {}
+    func copyRowsAsJSONFromMenu(_ sender: Any?) {}
+    func copyRowsAsMarkdownTableFromMenu(_ sender: Any?) {}
+    func copyRowsAsCSVFromMenu(_ sender: Any?) {}
+    func copyRowsAsCSVWithHeaderFromMenu(_ sender: Any?) {}
+    func copyCellFromMenu(_ sender: Any?) {}
+    func pinDomainFromMenu(_ sender: Any?) {}
+    func pinIPFromMenu(_ sender: Any?) {}
+    func pinClientFromMenu(_ sender: Any?) {}
+    func saveRowsFromMenu(_ sender: Any?) {}
+    func exportRowsAsPcapFromMenu(_ sender: Any?) {}
+    func exportRowsAsPcapngFromMenu(_ sender: Any?) {}
+    func deleteRowsFromMenu(_ sender: Any?) {}
+}
+
+private extension NSMenu {
+    func nonSeparatorItemsIncludingSubmenus() -> [NSMenuItem] {
+        items.flatMap { item -> [NSMenuItem] in
+            guard !item.isSeparatorItem else {
+                return []
+            }
+
+            return [item] + (item.submenu?.nonSeparatorItemsIncludingSubmenus() ?? [])
+        }
     }
 }

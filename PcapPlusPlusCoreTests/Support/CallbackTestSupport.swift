@@ -88,6 +88,12 @@ extension LiveCaptureSessionProviding {
         }
     }
 
+    func exportPackets(withIDs identifiers: [PacketSummary.ID], to url: URL, format: CaptureFileFormat) async throws {
+        try await waitForResult { completion in
+            exportPackets(withIDs: identifiers, to: url, format: format, completion: completion)
+        }
+    }
+
     func healthSnapshot() async -> CaptureHealthSnapshot {
         await withCheckedContinuation { continuation in
             healthSnapshot { health in
@@ -138,6 +144,12 @@ extension OfflineCaptureDocumentProviding {
     func save(to url: URL, format: CaptureFileFormat) async throws {
         try await waitForResult { completion in
             save(to: url, format: format, completion: completion)
+        }
+    }
+
+    func exportPackets(withIDs identifiers: [PacketSummary.ID], to url: URL, format: CaptureFileFormat) async throws {
+        try await waitForResult { completion in
+            exportPackets(withIDs: identifiers, to: url, format: format, completion: completion)
         }
     }
 

@@ -187,6 +187,13 @@ public struct PacketDecodeStatus: Sendable, Codable, Hashable {
     }
 }
 
+public enum PacketDirection: String, Sendable, Codable, Hashable {
+    case inbound
+    case outbound
+    case local
+    case unknown
+}
+
 public struct PacketCaptureMetadata: Sendable, Codable, Hashable {
     public let linkType: CaptureLinkType
     public let isTruncated: Bool
@@ -242,6 +249,9 @@ public struct PacketSummary: Identifiable, Sendable, Codable, Hashable {
     public let originalLength: Int
     public let capturedLength: Int
     public let streamID: UInt32?
+    public let direction: PacketDirection?
+    public let tcpFlags: String?
+    public let tcpPayloadLength: Int?
     public let infoSummary: String
     public let layers: [PacketLayer]
     public let decodeStatus: PacketDecodeStatus
@@ -260,6 +270,9 @@ public struct PacketSummary: Identifiable, Sendable, Codable, Hashable {
         originalLength: Int,
         capturedLength: Int,
         streamID: UInt32? = nil,
+        direction: PacketDirection? = nil,
+        tcpFlags: String? = nil,
+        tcpPayloadLength: Int? = nil,
         infoSummary: String,
         layers: [PacketLayer],
         decodeStatus: PacketDecodeStatus,
@@ -277,6 +290,9 @@ public struct PacketSummary: Identifiable, Sendable, Codable, Hashable {
         self.originalLength = originalLength
         self.capturedLength = capturedLength
         self.streamID = streamID
+        self.direction = direction
+        self.tcpFlags = tcpFlags
+        self.tcpPayloadLength = tcpPayloadLength
         self.infoSummary = infoSummary
         self.layers = layers
         self.decodeStatus = decodeStatus

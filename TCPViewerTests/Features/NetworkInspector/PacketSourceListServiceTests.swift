@@ -106,6 +106,40 @@ struct PacketSourceListServiceTests {
         #expect(PacketSourceListDeletionPolicy.action(for: snapshot.item(for: .ipAddress(ipKey))) == .deletePackets(.ipAddress(ipKey)))
     }
 
+    @Test func exportPolicyAllowsNonEmptyExportableFoldersAndLeaves() {
+        let client = makeClient(displayName: "Example", bundleIdentifier: "com.example.app")
+        let pinID = PacketPinID(rawValue: "domain:api.example.com")
+        let pin = PacketPin(
+            id: pinID,
+            kind: .domain,
+            title: "api.example.com",
+            createdAt: Date(timeIntervalSince1970: 10),
+            domain: "api.example.com",
+            ipAddress: nil,
+            clientKey: nil,
+            clientDisplayName: nil,
+            clientIconFilePath: nil
+        )
+        var state = PacketIngestState.empty
+        state.append([
+            makePacket(packetNumber: 1, sniDomainName: "api.example.com", client: client),
+            makePacket(packetNumber: 2, sniDomainName: nil),
+        ], source: .live)
+
+        let snapshot = PacketSourceListService().snapshot(for: state, pinnedItems: [pin], savedPacketCount: 1)
+        let appKey = PacketSourceClientKey(rawValue: "bundleIdentifier:com.example.app")
+        let domainKey = PacketSourceDomainKey(rawValue: "api.example.com", isMissingDomain: false)
+
+        #expect(PacketSourceListExportPolicy.selection(for: snapshot.item(for: .pinned)) == .pinned)
+        #expect(PacketSourceListExportPolicy.selection(for: snapshot.item(for: .pinnedItem(pinID))) == .pinnedItem(pinID))
+        #expect(PacketSourceListExportPolicy.selection(for: snapshot.item(for: .saved)) == .saved)
+        #expect(PacketSourceListExportPolicy.selection(for: snapshot.item(for: .apps)) == .apps)
+        #expect(PacketSourceListExportPolicy.selection(for: snapshot.item(for: .app(appKey))) == .app(appKey))
+        #expect(PacketSourceListExportPolicy.selection(for: snapshot.item(for: .domains)) == .domains)
+        #expect(PacketSourceListExportPolicy.selection(for: snapshot.item(for: .domain(domainKey))) == .domain(domainKey))
+        #expect(PacketSourceListExportPolicy.selection(for: PacketSourceListSnapshot.empty.item(for: .saved)) == nil)
+    }
+
     @Test func clientIdentityFallsBackThroughAvailableFields() {
         let clients = [
             makeClient(displayName: "Bundle", bundleIdentifier: "com.example.bundle", bundlePath: "/Applications/Bundle.app", executablePath: "/Applications/Bundle.app/Contents/MacOS/Bundle"),
@@ -135,6 +169,42 @@ struct PacketSourceListServiceTests {
         ])
     }
 
+    @Test func clientIdentityKeepsKeyButUsesResolvedIconPath() throws {
+        let executablePath = "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/123.0.0/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper"
+        let client = makeClient(
+            displayName: "Google Chrome Helper",
+            name: "Google Chrome Helper",
+            bundleIdentifier: "com.google.Chrome.helper",
+            bundlePath: "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/123.0.0/Helpers/Google Chrome Helper.app",
+            executablePath: executablePath
+        )
+        let packet = makePacket(packetNumber: 1, client: client)
+
+        let identity = try #require(PacketSourceListClassifier.clientIdentity(for: packet))
+
+        #expect(identity.key.rawValue == "bundleIdentifier:com.google.Chrome.helper")
+        #expect(identity.iconFilePath == "/Applications/Google Chrome.app")
+    }
+
+    @Test func pinnedClientRowsNormalizeStoredNestedIconPath() {
+        let pinID = PacketPinID(rawValue: "client:bundleIdentifier:com.google.Chrome.helper")
+        let pin = PacketPin(
+            id: pinID,
+            kind: .client,
+            title: "Google Chrome Helper",
+            createdAt: Date(timeIntervalSince1970: 10),
+            domain: nil,
+            ipAddress: nil,
+            clientKey: "bundleIdentifier:com.google.Chrome.helper",
+            clientDisplayName: "Google Chrome Helper",
+            clientIconFilePath: "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/123.0.0/Helpers/Google Chrome Helper.app"
+        )
+
+        let snapshot = PacketSourceListService().snapshot(for: .empty, pinnedItems: [pin])
+
+        #expect(snapshot.item(for: .pinnedItem(pinID))?.iconFilePath == "/Applications/Google Chrome.app")
+    }
+
     @Test func resetReplaceAndMetadataUpdatesRebuildTree() {
         let service = PacketSourceListService()
         let client = makeClient(displayName: "Example", bundleIdentifier: "com.example.app")
@@ -147,7 +217,7 @@ struct PacketSourceListServiceTests {
         #expect(snapshot.item(for: .domain(.ipAddresses))?.count == 1)
 
         state.applyMetadataUpdates([
-            PacketMetadataUpdate(packetIDs: [packet.id], sniDomainName: "api.example.com", client: client)
+            PacketMetadataUpdate(packetIDs: [packet.id], sniDomainName: "api.example.com", client: client, direction: .outbound)
         ])
         snapshot = service.snapshot(for: state)
         #expect(snapshot.item(for: .apps)?.children.map(\.title) == ["Example"])

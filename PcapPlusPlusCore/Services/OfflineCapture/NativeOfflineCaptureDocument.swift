@@ -38,6 +38,17 @@ public final class NativeOfflineCaptureDocument: OfflineCaptureDocumentProviding
         state.save(to: url, format: format, completion: completion)
     }
 
+    public func exportPackets(
+        withIDs identifiers: [PacketSummary.ID],
+        to url: URL,
+        format: CaptureFileFormat,
+        progress: PacketExportProgressHandler?,
+        shouldCancel: PacketExportCancellationCheck?,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        state.exportPackets(withIDs: identifiers, to: url, format: format, progress: progress, shouldCancel: shouldCancel, completion: completion)
+    }
+
     public func currentURL() -> URL {
         state.currentURL()
     }
@@ -235,6 +246,42 @@ private final class NativeOfflineCaptureDocumentState: @unchecked Sendable {
                     self.eventBox.yield(.documentStateChanged(phase: .saved, message: "Saved as \(url.lastPathComponent)."))
                 } catch {
                     throw self.handleFailure(error, code: .offlineFileSaveFailed)
+                }
+            })
+        }
+    }
+
+    func exportPackets(
+        withIDs identifiers: [PacketSummary.ID],
+        to url: URL,
+        format: CaptureFileFormat,
+        progress: PacketExportProgressHandler?,
+        shouldCancel: PacketExportCancellationCheck?,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        stateQueue.async {
+            completion(Result {
+                guard !identifiers.isEmpty else {
+                    throw TCPViewerCoreError(code: .offlineFileSaveFailed, message: "There are no packets to export.")
+                }
+
+                do {
+                    try self.nativeDocument.exportPackets(
+                        withIdentifiers: identifiers.map { NSNumber(value: $0) },
+                        to: url,
+                        format: format.rawValue,
+                        progressHandler: { exportedPacketCount, totalPacketCount in
+                            progress?(PacketExportProgress(
+                                exportedPacketCount: Int(exportedPacketCount),
+                                totalPacketCount: Int(totalPacketCount)
+                            ))
+                        },
+                        cancellationCheck: shouldCancel.map { check in
+                            { check() }
+                        }
+                    )
+                } catch {
+                    throw NativeBridgeMapper.coreError(error, defaultCode: .offlineFileSaveFailed)
                 }
             })
         }
