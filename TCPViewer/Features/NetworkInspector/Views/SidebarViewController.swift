@@ -175,7 +175,7 @@ private final class SidebarViewModel {
 }
 
 final class SidebarViewController: NSViewController {
-    private static let batchedReloadInterval: TimeInterval = 0.12
+    private static let batchedReloadInterval: TimeInterval = 0.5
 
     weak var delegate: SidebarViewControllerDelegate?
 
