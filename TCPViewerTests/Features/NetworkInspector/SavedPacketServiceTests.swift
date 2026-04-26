@@ -12,16 +12,19 @@ struct SavedPacketServiceTests {
         let first = makePacket(packetNumber: 1, infoSummary: "First")
         let second = makePacket(packetNumber: 2, infoSummary: "Second")
 
-        try service.save([first, second], now: Date(timeIntervalSince1970: 20))
+        try service.save([first, second], backingIdentity: "backing-a", now: Date(timeIntervalSince1970: 20))
         #expect(service.records().map { $0.packet.id } == [first.id, second.id])
+        #expect(service.records().map(\.backingIdentity) == ["backing-a", "backing-a"])
 
         let reloaded = SavedPacketService(storageURL: storageURL)
         #expect(reloaded.records().map { $0.packet.infoSummary } == ["First", "Second"])
+        #expect(reloaded.records().map(\.backingIdentity) == ["backing-a", "backing-a"])
 
         let updatedFirst = makePacket(packetNumber: 1, infoSummary: "Updated")
-        try reloaded.save([updatedFirst], now: Date(timeIntervalSince1970: 30))
+        try reloaded.save([updatedFirst], backingIdentity: "backing-b", now: Date(timeIntervalSince1970: 30))
         #expect(reloaded.records().count == 2)
         #expect(reloaded.records().first?.packet.infoSummary == "Updated")
+        #expect(reloaded.records().first?.backingIdentity == "backing-b")
 
         try reloaded.deletePacketIDs([first.id])
         #expect(reloaded.records().map { $0.packet.id } == [second.id])

@@ -137,6 +137,19 @@ struct CoreFacadeTypesTests {
         #expect(CaptureFileFormat(exportRawValue: "bad-format") == .pcapng)
     }
 
+    @Test func liveCaptureDurationTimerPreservesRemainingTimeAcrossPause() {
+        let start = Date(timeIntervalSince1970: 1_000)
+        var timer = LiveCaptureDurationStopTimer(durationMilliseconds: 10_000)
+
+        #expect(timer.scheduleDelay(now: start) == 10_000)
+        #expect(timer.pause(now: start.addingTimeInterval(3)) == 7_000)
+        #expect(timer.scheduleDelay(now: start.addingTimeInterval(20)) == 7_000)
+
+        #expect(timer.pause(now: start.addingTimeInterval(24)) == 3_000)
+        timer.reset()
+        #expect(timer.scheduleDelay(now: start.addingTimeInterval(30)) == 10_000)
+    }
+
     @Test func interfaceSortingPrefersSelectableEthernetThenLoopbackThenUnavailable() {
         let sorted = NativeBridgeMapper.sortedInterfaces([
             makeInterface(

@@ -32,6 +32,16 @@ struct PacketExportServiceTests {
         #expect(service.lastDirectoryURL()?.path == "/tmp/TCPViewerExports")
     }
 
+    @Test func cancellationTokenReportsCancellation() {
+        let token = PacketExportCancellationToken()
+
+        #expect(!token.isCancelled())
+
+        token.cancel()
+
+        #expect(token.isCancelled())
+    }
+
     private static func makeDefaults() -> UserDefaults {
         let suiteName = "TCPViewer.PacketExportServiceTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

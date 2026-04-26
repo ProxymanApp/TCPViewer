@@ -408,6 +408,90 @@ struct WindowControllerTests {
         await tearDown(controller)
     }
 
+    @Test func exportPacketsPausesAndResumesRunningLiveCapture() async {
+        let exportURL = URL(fileURLWithPath: "/tmp/live-export.pcapng")
+        let packets = [
+            makePacket(packetNumber: 1, source: .live, transportHint: .tcp),
+            makePacket(packetNumber: 2, source: .live, transportHint: .udp),
+        ]
+        let liveSession = FakeLiveSession()
+        let controller = TCPViewerWorkspaceController(
+            services: TCPViewerServiceRegistry(core: FakeTCPViewerCore(
+                interfaceInventories: [[makeInterface(id: "en0", displayName: "Wi-Fi")]],
+                liveSession: liveSession
+            ))
+        )
+
+        await controller.refreshInterfaces()
+        await controller.startLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        liveSession.send(.packetBatch(packets, disposition: .append))
+        await waitUntil {
+            controller.snapshot.sessionState.phase == .running &&
+            controller.snapshot.packetIngestState.totalPacketCount == packets.count
+        }
+
+        let result = await controller.exportPackets(withIDs: packets.map(\.id), to: exportURL, format: .pcapng)
+
+        guard case .success = result else {
+            Issue.record("Expected live export to succeed.")
+            return
+        }
+        #expect(liveSession.pauseCount == 1)
+        #expect(liveSession.resumeCount == 1)
+        #expect(liveSession.exportRequests.first?.0 == packets.map(\.id))
+        #expect(liveSession.exportRequests.first?.1 == exportURL)
+
+        await tearDown(controller)
+    }
+
+    @Test func exportPacketsResumesRunningLiveCaptureAfterCancellation() async {
+        let exportURL = URL(fileURLWithPath: "/tmp/live-export-cancelled.pcapng")
+        let packets = [makePacket(packetNumber: 1, source: .live, transportHint: .tcp)]
+        let liveSession = FakeLiveSession()
+        let controller = TCPViewerWorkspaceController(
+            services: TCPViewerServiceRegistry(core: FakeTCPViewerCore(
+                interfaceInventories: [[makeInterface(id: "en0", displayName: "Wi-Fi")]],
+                liveSession: liveSession
+            ))
+        )
+
+        await controller.refreshInterfaces()
+        await controller.startLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        liveSession.send(.packetBatch(packets, disposition: .append))
+        await waitUntil {
+            controller.snapshot.sessionState.phase == .running &&
+            controller.snapshot.packetIngestState.totalPacketCount == packets.count
+        }
+
+        var cancellationChecks = 0
+        let result = await withCheckedContinuation { continuation in
+            controller.exportPackets(
+                withIDs: packets.map(\.id),
+                to: exportURL,
+                format: .pcapng,
+                shouldCancel: {
+                    cancellationChecks += 1
+                    return cancellationChecks > 1
+                }
+            ) { result in
+                continuation.resume(returning: result)
+            }
+        }
+
+        guard case .failure(let error as TCPViewerCoreError) = result else {
+            Issue.record("Expected live export cancellation.")
+            return
+        }
+        #expect(error.code == .operationCancelled)
+        #expect(liveSession.pauseCount == 1)
+        #expect(liveSession.resumeCount == 1)
+        #expect(liveSession.exportRequests.isEmpty)
+
+        await tearDown(controller)
+    }
+
     @Test func openingNewDocumentIgnoresEventsFromPreviousDocumentStream() async {
         let firstURL = URL(fileURLWithPath: "/tmp/first-stream.pcapng")
         let secondURL = URL(fileURLWithPath: "/tmp/second-stream.pcapng")
@@ -1062,7 +1146,20 @@ private final class FakeLiveSession: LiveCaptureSessionProviding, @unchecked Sen
         completion(.success(inspection))
     }
 
-    func exportPackets(withIDs identifiers: [PacketSummary.ID], to url: URL, format: CaptureFileFormat, completion: @escaping TCPViewerVoidCompletion) {
+    func exportPackets(
+        withIDs identifiers: [PacketSummary.ID],
+        to url: URL,
+        format: CaptureFileFormat,
+        progress: PacketExportProgressHandler?,
+        shouldCancel: PacketExportCancellationCheck?,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        if shouldCancel?() == true {
+            completion(.failure(TCPViewerCoreError(code: .operationCancelled, message: "Packet export was cancelled.")))
+            return
+        }
+
+        progress?(PacketExportProgress(exportedPacketCount: identifiers.count, totalPacketCount: identifiers.count))
         exportRequests.append((identifiers, url, format))
         completion(.success(()))
     }
@@ -1199,13 +1296,26 @@ private final class FakeOfflineDocument: OfflineCaptureDocumentProviding, @unche
         completion(.success(()))
     }
 
-    func exportPackets(withIDs identifiers: [PacketSummary.ID], to url: URL, format: CaptureFileFormat, completion: @escaping TCPViewerVoidCompletion) {
+    func exportPackets(
+        withIDs identifiers: [PacketSummary.ID],
+        to url: URL,
+        format: CaptureFileFormat,
+        progress: PacketExportProgressHandler?,
+        shouldCancel: PacketExportCancellationCheck?,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        if shouldCancel?() == true {
+            completion(.failure(TCPViewerCoreError(code: .operationCancelled, message: "Packet export was cancelled.")))
+            return
+        }
+
         let knownIDs = Set(packets.map(\.id))
         guard identifiers.allSatisfy({ knownIDs.contains($0) }) else {
             completion(.failure(TCPViewerCoreError(code: .offlineFileSaveFailed, message: "Missing packet export backing.")))
             return
         }
 
+        progress?(PacketExportProgress(exportedPacketCount: identifiers.count, totalPacketCount: identifiers.count))
         exportRequests.append((identifiers, url, format))
         completion(.success(()))
     }

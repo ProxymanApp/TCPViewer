@@ -22,7 +22,6 @@ private enum TCPViewerToolbarItemMetadata: String, CaseIterable {
 protocol TCPViewerToolbarDataSourceDelegate: AnyObject {
     func tcpviewerToolbarDataSource(_ dataSource: TCPViewerToolbarDataSource, didSelectInterface identifier: String)
     func tcpviewerToolbarDataSourceDidToggleCapture(_ dataSource: TCPViewerToolbarDataSource)
-    func tcpviewerToolbarDataSourceDidRequestSave(_ dataSource: TCPViewerToolbarDataSource)
     func tcpviewerToolbarDataSource(_ dataSource: TCPViewerToolbarDataSource, didRequestExport format: CaptureFileFormat)
     func tcpviewerToolbarDataSourceDidToggleInspector(_ dataSource: TCPViewerToolbarDataSource)
 }
@@ -113,7 +112,6 @@ final class TCPViewerToolbarDataSource: NSObject {
         sharePopup.controlSize = .regular
         sharePopup.addItem(withTitle: "")
         sharePopup.item(at: 0)?.image = TCPViewerUI.image("square.and.arrow.up")
-        sharePopup.addItem(withTitle: "Save")
         sharePopup.addItem(withTitle: "Export as pcap")
         sharePopup.addItem(withTitle: "Export as pcapng")
         sharePopup.imagePosition = .imageOnly
@@ -225,9 +223,8 @@ final class TCPViewerToolbarDataSource: NSObject {
     }
 
     private func renderSharePopup() {
-        sharePopup.item(at: 1)?.isEnabled = viewModel.canSave
+        sharePopup.item(at: 1)?.isEnabled = viewModel.canExport
         sharePopup.item(at: 2)?.isEnabled = viewModel.canExport
-        sharePopup.item(at: 3)?.isEnabled = viewModel.canExport
         sharePopup.selectItem(at: 0)
     }
 
@@ -253,10 +250,8 @@ final class TCPViewerToolbarDataSource: NSObject {
     @objc private func shareActionSelected(_ sender: NSPopUpButton) {
         switch sender.indexOfSelectedItem {
         case 1:
-            delegate?.tcpviewerToolbarDataSourceDidRequestSave(self)
-        case 2:
             delegate?.tcpviewerToolbarDataSource(self, didRequestExport: .pcap)
-        case 3:
+        case 2:
             delegate?.tcpviewerToolbarDataSource(self, didRequestExport: .pcapng)
         default:
             break
@@ -378,8 +373,17 @@ private final class TCPViewerToolbarViewModel {
     }
 
     private static func statusText(for snapshot: NetworkInspectorSnapshot) -> String {
-        if snapshot.base.sessionState.phase == .running {
-            return "TCP Viewer | Listening on"
+        switch snapshot.base.sessionState.phase {
+        case .running:
+            return "TCP Viewer | Capturing on"
+        case .paused:
+            return "TCP Viewer | Paused on"
+        case .starting:
+            return "TCP Viewer | Starting Capture"
+        case .stopping:
+            return "TCP Viewer | Stopping Capture"
+        case .idle, .ready, .stopped, .failed:
+            break
         }
 
         if snapshot.base.loadState.progress.phase == .loading {
@@ -394,17 +398,20 @@ private final class TCPViewerToolbarViewModel {
             return "TCP Viewer | Attention"
         }
 
-        return "TCP Viewer | \(snapshot.base.sessionState.phase.rawValue.capitalized)"
+        switch snapshot.base.sessionState.phase {
+        case .ready:
+            return "TCP Viewer | Ready"
+        case .stopped:
+            return "TCP Viewer | Stopped"
+        case .idle, .starting, .running, .paused, .stopping, .failed:
+            return "TCP Viewer | \(snapshot.base.sessionState.phase.rawValue.capitalized)"
+        }
     }
 
     private static func emphasizedText(for snapshot: NetworkInspectorSnapshot) -> String? {
-        if snapshot.base.sessionState.phase == .running {
+        if [.starting, .running, .paused, .stopping].contains(snapshot.base.sessionState.phase) {
             guard let interface = snapshot.base.sessionState.selectedInterface else {
                 return "selected interface"
-            }
-
-            if let ipv4Address = interface.addresses.first(where: { $0.family == .ipv4 })?.value {
-                return ipv4Address
             }
 
             return interface.friendlyName ?? interface.displayName

@@ -30,11 +30,11 @@ final class StatusStripViewModel {
     private func title(for phase: CaptureSessionState.Phase) -> String {
         switch phase {
         case .idle: "Idle"
-        case .ready: "Ready"
-        case .starting: "Starting"
-        case .running: "Active"
+        case .ready: "Ready to Capture"
+        case .starting: "Starting Capture"
+        case .running: "Capturing"
         case .paused: "Paused"
-        case .stopping: "Stopping"
+        case .stopping: "Stopping Capture"
         case .stopped: "Stopped"
         case .failed: "Failed"
         }

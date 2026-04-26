@@ -38,8 +38,15 @@ public final class NativeLiveCaptureSession: LiveCaptureSessionProviding, @unche
         state.inspectPacket(id: id, completion: completion)
     }
 
-    public func exportPackets(withIDs identifiers: [PacketSummary.ID], to url: URL, format: CaptureFileFormat, completion: @escaping TCPViewerVoidCompletion) {
-        state.exportPackets(withIDs: identifiers, to: url, format: format, completion: completion)
+    public func exportPackets(
+        withIDs identifiers: [PacketSummary.ID],
+        to url: URL,
+        format: CaptureFileFormat,
+        progress: PacketExportProgressHandler?,
+        shouldCancel: PacketExportCancellationCheck?,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        state.exportPackets(withIDs: identifiers, to: url, format: format, progress: progress, shouldCancel: shouldCancel, completion: completion)
     }
 
     public func healthSnapshot(completion: @escaping (CaptureHealthSnapshot) -> Void) {
@@ -97,6 +104,41 @@ struct LivePacketBatchBuffer<Element: Sendable>: Sendable {
     }
 }
 
+struct LiveCaptureDurationStopTimer: Sendable {
+    let durationMilliseconds: UInt64
+    private var deadline: Date?
+    private var pausedRemainingMilliseconds: UInt64?
+
+    init(durationMilliseconds: UInt64) {
+        self.durationMilliseconds = durationMilliseconds
+    }
+
+    mutating func scheduleDelay(now: Date = Date()) -> UInt64 {
+        let delay = max(pausedRemainingMilliseconds ?? durationMilliseconds, 1)
+        pausedRemainingMilliseconds = nil
+        deadline = now.addingTimeInterval(Double(delay) / 1000)
+        return delay
+    }
+
+    @discardableResult
+    mutating func pause(now: Date = Date()) -> UInt64? {
+        guard let deadline else {
+            return nil
+        }
+
+        let milliseconds = ceil(deadline.timeIntervalSince(now) * 1000)
+        let remaining = UInt64(max(milliseconds, 1))
+        self.deadline = nil
+        pausedRemainingMilliseconds = remaining
+        return remaining
+    }
+
+    mutating func reset() {
+        deadline = nil
+        pausedRemainingMilliseconds = nil
+    }
+}
+
 private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     private static let maxLivePacketBatchSize = 256
     private static let livePacketBatchInterval: DispatchTimeInterval = .milliseconds(100)
@@ -113,10 +155,14 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     private var packetBatchBuffer = LivePacketBatchBuffer<PacketSummary>(maxBatchSize: maxLivePacketBatchSize)
     private var packetBatchFlushWorkItem: DispatchWorkItem?
     private var durationStopWorkItem: DispatchWorkItem?
+    private var durationStopTimer: LiveCaptureDurationStopTimer?
 
     init(interfaceID: String, options: CaptureOptions, eventBox: EventCallbackBox<PacketIngestEvent>) throws {
         self.eventBox = eventBox
         self.stopCondition = options.stopCondition
+        if case .durationMilliseconds(let duration) = options.stopCondition {
+            self.durationStopTimer = LiveCaptureDurationStopTimer(durationMilliseconds: duration)
+        }
         var nativeError: NSError?
         self.nativeSession = PCPPNativeLiveSession(
             interfaceIdentifier: interfaceID,
@@ -203,7 +249,14 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
         }
     }
 
-    func exportPackets(withIDs identifiers: [PacketSummary.ID], to url: URL, format: CaptureFileFormat, completion: @escaping TCPViewerVoidCompletion) {
+    func exportPackets(
+        withIDs identifiers: [PacketSummary.ID],
+        to url: URL,
+        format: CaptureFileFormat,
+        progress: PacketExportProgressHandler?,
+        shouldCancel: PacketExportCancellationCheck?,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
         queue.async {
             completion(Result {
                 guard !identifiers.isEmpty else {
@@ -211,7 +264,20 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
                 }
 
                 do {
-                    try self.nativeSession.exportPackets(withIdentifiers: identifiers.map { NSNumber(value: $0) }, to: url, format: format.rawValue)
+                    try self.nativeSession.exportPackets(
+                        withIdentifiers: identifiers.map { NSNumber(value: $0) },
+                        to: url,
+                        format: format.rawValue,
+                        progressHandler: { exportedPacketCount, totalPacketCount in
+                            progress?(PacketExportProgress(
+                                exportedPacketCount: Int(exportedPacketCount),
+                                totalPacketCount: Int(totalPacketCount)
+                            ))
+                        },
+                        cancellationCheck: shouldCancel.map { check in
+                            { check() }
+                        }
+                    )
                 } catch {
                     throw NativeBridgeMapper.coreError(error, defaultCode: .offlineFileSaveFailed)
                 }
@@ -254,13 +320,16 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     }
 
     private func pauseOnQueue() throws {
-        cancelDurationStopWorkItem()
+        let didPauseTimer = pauseDurationStopTimerIfNeeded()
         flushPendingPacketBatch()
 
         do {
             try nativeSession.pause()
             flushPendingPacketBatch()
         } catch {
+            if didPauseTimer {
+                scheduleDurationStopIfNeeded()
+            }
             throw NativeBridgeMapper.coreError(error, defaultCode: .liveSessionControlFailed)
         }
     }
@@ -386,16 +455,29 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     }
 
     private func scheduleDurationStopIfNeeded() {
-        guard case .durationMilliseconds(let duration) = stopCondition else {
+        guard var timer = durationStopTimer else {
             return
         }
 
-        cancelDurationStopWorkItem()
+        cancelDurationStopWorkItem(resetTimer: false)
+        let delay = timer.scheduleDelay()
+        durationStopTimer = timer
         let workItem = DispatchWorkItem { [weak self] in
-            self?.stopAfterDuration(duration)
+            self?.stopAfterDuration(timer.durationMilliseconds)
         }
         durationStopWorkItem = workItem
-        queue.asyncAfter(deadline: .now() + .milliseconds(Int(min(duration, UInt64(Int.max)))), execute: workItem)
+        queue.asyncAfter(deadline: .now() + .milliseconds(Int(min(delay, UInt64(Int.max)))), execute: workItem)
+    }
+
+    private func pauseDurationStopTimerIfNeeded() -> Bool {
+        guard var timer = durationStopTimer,
+              timer.pause() != nil else {
+            return false
+        }
+
+        durationStopTimer = timer
+        cancelDurationStopWorkItem(resetTimer: false)
+        return true
     }
 
     private func stopAfterDuration(_ duration: UInt64) {
@@ -410,8 +492,11 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
         }
     }
 
-    private func cancelDurationStopWorkItem() {
+    private func cancelDurationStopWorkItem(resetTimer: Bool = true) {
         durationStopWorkItem?.cancel()
         durationStopWorkItem = nil
+        if resetTimer {
+            durationStopTimer?.reset()
+        }
     }
 }

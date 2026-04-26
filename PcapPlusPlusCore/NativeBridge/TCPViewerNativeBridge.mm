@@ -1943,7 +1943,13 @@ private:
 };
 
 bool AppendLivePacket(OfflineDocumentSaveSnapshot &snapshot, LivePacketDiskStore &packetStore, unsigned long long identifier, NSError **error);
-bool SavePacketsToURL(const OfflineDocumentSaveSnapshot &state, NSURL *targetURL, const std::string &format, NSError **error);
+bool SavePacketsToURL(const OfflineDocumentSaveSnapshot &state,
+                      NSURL *targetURL,
+                      const std::string &format,
+                      PCPPNativePacketExportProgressHandler progressHandler,
+                      PCPPNativeCancellationHandler cancellationCheck,
+                      NSError **error);
+bool IsExportCancelled(PCPPNativeCancellationHandler cancellationCheck, NSError **error);
 
 class CaptureFileWriter {
 public:
@@ -2800,6 +2806,8 @@ static void OnLiveStatsUpdate(pcpp::IPcapDevice::PcapStats &stats, void *userCoo
 - (BOOL)exportPacketsWithIdentifiers:(NSArray<NSNumber *> *)identifiers
                                 toURL:(NSURL *)url
                                format:(NSString *)format
+                      progressHandler:(PCPPNativePacketExportProgressHandler)progressHandler
+                    cancellationCheck:(PCPPNativeCancellationHandler)cancellationCheck
                                 error:(NSError **)error
 {
     OfflineDocumentSaveSnapshot snapshot;
@@ -2818,13 +2826,17 @@ static void OnLiveStatsUpdate(pcpp::IPcapDevice::PcapStats &stats, void *userCoo
         snapshot.packets.reserve(identifiers.count);
 
         for (NSNumber *boxedIdentifier in identifiers) {
+            if (IsExportCancelled(cancellationCheck, error)) {
+                return NO;
+            }
+
             if (!AppendLivePacket(snapshot, _state->packetStore, boxedIdentifier.unsignedLongLongValue, error)) {
                 return NO;
             }
         }
     }
 
-    return SavePacketsToURL(snapshot, url, MakeStdString(format), error);
+    return SavePacketsToURL(snapshot, url, MakeStdString(format), progressHandler, cancellationCheck, error);
 }
 
 - (void)dealloc
@@ -3030,6 +3042,25 @@ std::string NormalizedFormatForURL(NSURL *url)
     return "pcapng";
 }
 
+bool IsExportCancelled(PCPPNativeCancellationHandler cancellationCheck, NSError **error)
+{
+    if (cancellationCheck == nil || !cancellationCheck()) {
+        return false;
+    }
+
+    if (error != nullptr) {
+        *error = MakeError(TCPViewerNativeErrorCodeOperationCancelled, @"Packet export was cancelled.");
+    }
+    return true;
+}
+
+void EmitExportProgress(PCPPNativePacketExportProgressHandler progressHandler, NSUInteger exportedPacketCount, NSUInteger totalPacketCount)
+{
+    if (progressHandler != nil) {
+        progressHandler(exportedPacketCount, totalPacketCount);
+    }
+}
+
 PCPPNativeCaptureDocumentMetadataDescriptor *MakeMetadata(const OfflineDocumentState &state)
 {
     const std::string format = state.format.empty() ? NormalizedFormatForURL(state.currentURL) : state.format;
@@ -3196,6 +3227,7 @@ bool AppendLivePacket(OfflineDocumentSaveSnapshot &snapshot, LivePacketDiskStore
 bool PopulateOfflineExportSnapshotLocked(OfflineDocumentSaveSnapshot &snapshot,
                                          const OfflineDocumentState &state,
                                          NSArray<NSNumber *> *identifiers,
+                                         PCPPNativeCancellationHandler cancellationCheck,
                                          NSError **error)
 {
     if (identifiers.count == 0) {
@@ -3214,6 +3246,10 @@ bool PopulateOfflineExportSnapshotLocked(OfflineDocumentSaveSnapshot &snapshot,
     snapshot.packets.reserve(identifiers.count);
 
     for (NSNumber *boxedIdentifier in identifiers) {
+        if (IsExportCancelled(cancellationCheck, error)) {
+            return false;
+        }
+
         const unsigned long long identifier = boxedIdentifier.unsignedLongLongValue;
         if (identifier == 0 || identifier > state.packets.size()) {
             if (error != nullptr) {
@@ -3440,7 +3476,12 @@ NSArray<PCPPNativePacketSummaryDescriptor *> *LoadPacketsFromURLIncrementally(Of
     return packets;
 }
 
-bool SavePacketsToURL(const OfflineDocumentSaveSnapshot &state, NSURL *targetURL, const std::string &format, NSError **error)
+bool SavePacketsToURL(const OfflineDocumentSaveSnapshot &state,
+                      NSURL *targetURL,
+                      const std::string &format,
+                      PCPPNativePacketExportProgressHandler progressHandler,
+                      PCPPNativeCancellationHandler cancellationCheck,
+                      NSError **error)
 {
     if (targetURL == nil) {
         if (error != nullptr) {
@@ -3463,6 +3504,9 @@ bool SavePacketsToURL(const OfflineDocumentSaveSnapshot &state, NSURL *targetURL
     const std::string normalizedFormat = NormalizedCaptureFileFormat(format);
     NSURL *temporaryURL = TemporarySaveURL(targetURL);
     RemoveTemporaryItem(temporaryURL);
+    const NSUInteger totalPacketCount = state.packets.size();
+    NSUInteger exportedPacketCount = 0;
+    EmitExportProgress(progressHandler, exportedPacketCount, totalPacketCount);
 
     if (normalizedFormat == "pcapng") {
         pcpp::PcapNgFileWriterDevice writer(MakeStdString(temporaryURL.path));
@@ -3475,6 +3519,12 @@ bool SavePacketsToURL(const OfflineDocumentSaveSnapshot &state, NSURL *targetURL
         }
 
         for (const auto &packet : state.packets) {
+            if (IsExportCancelled(cancellationCheck, error)) {
+                writer.close();
+                RemoveTemporaryItem(temporaryURL);
+                return false;
+            }
+
             if (packet.rawPacket == nullptr) {
                 if (error != nullptr) {
                     *error = MakeError(TCPViewerNativeErrorCodeFileWriteFailed, @"TCP Viewer could not export a missing packet.");
@@ -3492,6 +3542,9 @@ bool SavePacketsToURL(const OfflineDocumentSaveSnapshot &state, NSURL *targetURL
                 RemoveTemporaryItem(temporaryURL);
                 return false;
             }
+
+            exportedPacketCount += 1;
+            EmitExportProgress(progressHandler, exportedPacketCount, totalPacketCount);
         }
 
         writer.close();
@@ -3508,6 +3561,11 @@ bool SavePacketsToURL(const OfflineDocumentSaveSnapshot &state, NSURL *targetURL
 
     const pcpp::LinkLayerType linkType = state.packets.front().rawPacket->getLinkLayerType();
     for (const auto &packet : state.packets) {
+        if (IsExportCancelled(cancellationCheck, error)) {
+            RemoveTemporaryItem(temporaryURL);
+            return false;
+        }
+
         if (packet.rawPacket == nullptr) {
             if (error != nullptr) {
                 *error = MakeError(TCPViewerNativeErrorCodeFileWriteFailed, @"TCP Viewer could not export a missing packet.");
@@ -3535,6 +3593,12 @@ bool SavePacketsToURL(const OfflineDocumentSaveSnapshot &state, NSURL *targetURL
     }
 
     for (const auto &packet : state.packets) {
+        if (IsExportCancelled(cancellationCheck, error)) {
+            writer.close();
+            RemoveTemporaryItem(temporaryURL);
+            return false;
+        }
+
         if (!writer.writePacket(*packet.rawPacket)) {
             if (error != nullptr) {
                 *error = MakeError(TCPViewerNativeErrorCodeFileWriteFailed, @"TCP Viewer could not write all packets into the pcap destination.");
@@ -3543,6 +3607,9 @@ bool SavePacketsToURL(const OfflineDocumentSaveSnapshot &state, NSURL *targetURL
             RemoveTemporaryItem(temporaryURL);
             return false;
         }
+
+        exportedPacketCount += 1;
+        EmitExportProgress(progressHandler, exportedPacketCount, totalPacketCount);
     }
 
     writer.close();
@@ -3685,7 +3752,7 @@ bool SavePacketsToURL(const OfflineDocumentSaveSnapshot &state, NSURL *targetURL
         snapshot = MakeSaveSnapshotLocked(*_state);
     }
 
-    if (!SavePacketsToURL(snapshot, snapshot.currentURL, snapshot.format, error)) {
+    if (!SavePacketsToURL(snapshot, snapshot.currentURL, snapshot.format, nil, nil, error)) {
         return NO;
     }
 
@@ -3720,7 +3787,7 @@ bool SavePacketsToURL(const OfflineDocumentSaveSnapshot &state, NSURL *targetURL
 
     std::string normalizedFormat = NormalizedCaptureFileFormat(MakeStdString(format));
 
-    if (!SavePacketsToURL(snapshot, url, normalizedFormat, error)) {
+    if (!SavePacketsToURL(snapshot, url, normalizedFormat, nil, nil, error)) {
         return NO;
     }
 
@@ -3742,17 +3809,19 @@ bool SavePacketsToURL(const OfflineDocumentSaveSnapshot &state, NSURL *targetURL
 - (BOOL)exportPacketsWithIdentifiers:(NSArray<NSNumber *> *)identifiers
                                 toURL:(NSURL *)url
                                format:(NSString *)format
+                      progressHandler:(PCPPNativePacketExportProgressHandler)progressHandler
+                    cancellationCheck:(PCPPNativeCancellationHandler)cancellationCheck
                                 error:(NSError **)error
 {
     OfflineDocumentSaveSnapshot snapshot;
     {
         std::lock_guard<std::mutex> lock(_state->mutex);
-        if (!PopulateOfflineExportSnapshotLocked(snapshot, *_state, identifiers, error)) {
+        if (!PopulateOfflineExportSnapshotLocked(snapshot, *_state, identifiers, cancellationCheck, error)) {
             return NO;
         }
     }
 
-    return SavePacketsToURL(snapshot, url, MakeStdString(format), error);
+    return SavePacketsToURL(snapshot, url, MakeStdString(format), progressHandler, cancellationCheck, error);
 }
 
 @end

@@ -156,10 +156,6 @@ extension TCPViewerWindowController: TCPViewerToolbarDataSourceDelegate {
         rootViewController.toggleLiveCapture()
     }
 
-    func tcpviewerToolbarDataSourceDidRequestSave(_ dataSource: TCPViewerToolbarDataSource) {
-        rootViewController.saveDocument()
-    }
-
     func tcpviewerToolbarDataSource(_ dataSource: TCPViewerToolbarDataSource, didRequestExport format: CaptureFileFormat) {
         rootViewController.exportSession(format: format)
     }

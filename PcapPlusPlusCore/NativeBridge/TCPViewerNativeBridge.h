@@ -349,6 +349,7 @@ typedef void (^PCPPNativeSessionPhaseHandler)(PCPPNativeLiveSessionPhase phase, 
 typedef void (^PCPPNativeHealthHandler)(PCPPNativeCaptureHealthDescriptor *health);
 typedef void (^PCPPNativeErrorHandler)(NSError *error);
 typedef void (^PCPPNativeLoadProgressHandler)(PCPPNativePacketLoadProgressDescriptor *progress);
+typedef void (^PCPPNativePacketExportProgressHandler)(NSUInteger exportedPacketCount, NSUInteger totalPacketCount);
 typedef BOOL (^PCPPNativeCancellationHandler)(void);
 
 @interface PCPPNativeLiveSession : NSObject
@@ -372,7 +373,9 @@ typedef BOOL (^PCPPNativeCancellationHandler)(void);
 - (BOOL)exportPacketsWithIdentifiers:(NSArray<NSNumber *> *)identifiers
                                 toURL:(NSURL *)url
                                format:(NSString *)format
-                                error:(NSError **)error NS_SWIFT_NAME(exportPackets(withIdentifiers:to:format:));
+                      progressHandler:(nullable PCPPNativePacketExportProgressHandler)progressHandler
+                    cancellationCheck:(nullable PCPPNativeCancellationHandler)cancellationCheck
+                                error:(NSError **)error NS_SWIFT_NAME(exportPackets(withIdentifiers:to:format:progressHandler:cancellationCheck:));
 
 @end
 
@@ -404,7 +407,9 @@ typedef BOOL (^PCPPNativeCancellationHandler)(void);
 - (BOOL)exportPacketsWithIdentifiers:(NSArray<NSNumber *> *)identifiers
                                 toURL:(NSURL *)url
                                format:(NSString *)format
-                                error:(NSError **)error NS_SWIFT_NAME(exportPackets(withIdentifiers:to:format:));
+                      progressHandler:(nullable PCPPNativePacketExportProgressHandler)progressHandler
+                    cancellationCheck:(nullable PCPPNativeCancellationHandler)cancellationCheck
+                                error:(NSError **)error NS_SWIFT_NAME(exportPackets(withIdentifiers:to:format:progressHandler:cancellationCheck:));
 
 @end
 

@@ -615,7 +615,11 @@ final class NetworkInspectorViewModel {
 
     func savePackets(_ identifiers: [PacketSummary.ID]) {
         let packets = packets(withIDs: identifiers)
-        guard !packets.isEmpty, (try? savedPacketService.save(packets)) != nil else {
+        let activePacketIDs = Set(controller.snapshot.packetIngestState.packets.map(\.id))
+        let backingIdentity = identifiers.allSatisfy { activePacketIDs.contains($0) }
+            ? controller.snapshot.packetIngestState.backingIdentity
+            : nil
+        guard !packets.isEmpty, (try? savedPacketService.save(packets, backingIdentity: backingIdentity)) != nil else {
             return
         }
 
@@ -660,7 +664,8 @@ final class NetworkInspectorViewModel {
         identifiers: [PacketSummary.ID],
         scopeName: String,
         format: CaptureFileFormat,
-        requiresSavedBacking: Bool
+        requiresSavedBacking: Bool,
+        attachedTo window: NSWindow?
     ) {
         do {
             let identifiers = try validatedExportPacketIDs(identifiers, requiresSavedBacking: requiresSavedBacking)
@@ -672,14 +677,34 @@ final class NetworkInspectorViewModel {
                 return
             }
 
+            let cancellationToken = PacketExportCancellationToken()
+            let progressSheet = packetExportService.showProgressSheet(
+                attachedTo: window,
+                fileName: destination.url.lastPathComponent
+            ) {
+                cancellationToken.cancel()
+            }
+
             exportPackets(
                 identifiers,
                 to: destination.url,
                 format: destination.format,
-                requiresSavedBacking: false
+                requiresSavedBacking: requiresSavedBacking,
+                progress: { progress in
+                    DispatchQueue.main.async {
+                        progressSheet.update(progress)
+                    }
+                },
+                shouldCancel: {
+                    cancellationToken.isCancelled()
+                }
             ) { [weak self] result in
-                if case .failure(let error) = result {
-                    self?.packetExportService.presentFailure(error)
+                DispatchQueue.main.async {
+                    progressSheet.dismiss()
+                    if case .failure(let error) = result,
+                       self?.isExportCancellation(error) != true {
+                        self?.packetExportService.presentFailure(error)
+                    }
                 }
             }
         } catch {
@@ -692,6 +717,8 @@ final class NetworkInspectorViewModel {
         to url: URL,
         format: CaptureFileFormat,
         requiresSavedBacking: Bool,
+        progress: PacketExportProgressHandler? = nil,
+        shouldCancel: PacketExportCancellationCheck? = nil,
         completion: @escaping TCPViewerVoidCompletion
     ) {
         do {
@@ -701,7 +728,13 @@ final class NetworkInspectorViewModel {
                 return
             }
 
-            controller.exportPackets(withIDs: identifiers, to: url, format: format) { [weak self] result in
+            controller.exportPackets(
+                withIDs: identifiers,
+                to: url,
+                format: format,
+                progress: progress,
+                shouldCancel: shouldCancel
+            ) { [weak self] result in
                 if case .success = result {
                     self?.packetExportService.rememberDestination(url)
                 }
@@ -727,9 +760,14 @@ final class NetworkInspectorViewModel {
             return identifiers
         }
 
+        guard let activeBackingIdentity = controller.snapshot.packetIngestState.backingIdentity else {
+            throw TCPViewerCoreError(code: .offlineFileSaveFailed, message: "Saved packets from another session cannot be exported because their raw bytes are not available.")
+        }
+
         let savedRecordsByPacketID = Dictionary(uniqueKeysWithValues: savedPacketService.records().map { ($0.packet.id, $0) })
         for identifier in identifiers {
             guard let record = savedRecordsByPacketID[identifier],
+                  record.backingIdentity == activeBackingIdentity,
                   let activePacket = activePacketsByID[identifier],
                   activePacket.backsSavedPacket(record.packet) else {
                 throw TCPViewerCoreError(code: .offlineFileSaveFailed, message: "Saved packets from another session cannot be exported because their raw bytes are not available.")
@@ -737,6 +775,10 @@ final class NetworkInspectorViewModel {
         }
 
         return identifiers
+    }
+
+    private func isExportCancellation(_ error: Error) -> Bool {
+        (error as? TCPViewerCoreError)?.code == .operationCancelled
     }
 
     private func exportPacketIDs(matching selection: PacketSourceListSelection) throws -> [PacketSummary.ID] {
@@ -861,59 +903,86 @@ final class NetworkInspectorViewModel {
         rebuildSnapshot()
     }
 
-    func presentSessionExportPanel(format: CaptureFileFormat) {
+    func presentSessionExportPanel(format: CaptureFileFormat, attachedTo window: NSWindow?) {
         presentExportPanel(
             identifiers: controller.snapshot.packetIngestState.packets.map(\.id),
             scopeName: "TCPViewer-Session",
             format: format,
-            requiresSavedBacking: false
+            requiresSavedBacking: false,
+            attachedTo: window
         )
     }
 
-    func presentPacketExportPanel(identifiers: [PacketSummary.ID], format: CaptureFileFormat) {
+    func presentPacketExportPanel(identifiers: [PacketSummary.ID], format: CaptureFileFormat, attachedTo window: NSWindow?) {
         presentExportPanel(
             identifiers: identifiers,
             scopeName: "TCPViewer-Selection",
             format: format,
-            requiresSavedBacking: selectedSourceListSelection == .saved
+            requiresSavedBacking: selectedSourceListSelection == .saved,
+            attachedTo: window
         )
     }
 
-    func presentSourceListExportPanel(selection: PacketSourceListSelection, format: CaptureFileFormat) {
+    func presentSourceListExportPanel(selection: PacketSourceListSelection, format: CaptureFileFormat, attachedTo window: NSWindow?) {
         do {
             let identifiers = try exportPacketIDs(matching: selection)
             presentExportPanel(
                 identifiers: identifiers,
                 scopeName: exportScopeName(for: selection),
                 format: format,
-                requiresSavedBacking: selection == .saved
+                requiresSavedBacking: selection == .saved,
+                attachedTo: window
             )
         } catch {
             packetExportService.presentFailure(error)
         }
     }
 
-    func exportSession(to url: URL, format: CaptureFileFormat, completion: @escaping TCPViewerVoidCompletion) {
+    func exportSession(
+        to url: URL,
+        format: CaptureFileFormat,
+        progress: PacketExportProgressHandler? = nil,
+        shouldCancel: PacketExportCancellationCheck? = nil,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
         exportPackets(
             controller.snapshot.packetIngestState.packets.map(\.id),
             to: url,
             format: format,
             requiresSavedBacking: false,
+            progress: progress,
+            shouldCancel: shouldCancel,
             completion: completion
         )
     }
 
-    func exportPackets(_ identifiers: [PacketSummary.ID], to url: URL, format: CaptureFileFormat, completion: @escaping TCPViewerVoidCompletion) {
+    func exportPackets(
+        _ identifiers: [PacketSummary.ID],
+        to url: URL,
+        format: CaptureFileFormat,
+        progress: PacketExportProgressHandler? = nil,
+        shouldCancel: PacketExportCancellationCheck? = nil,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
         exportPackets(
             identifiers,
             to: url,
             format: format,
             requiresSavedBacking: selectedSourceListSelection == .saved,
+            progress: progress,
+            shouldCancel: shouldCancel,
             completion: completion
         )
     }
 
-    func exportSourceList(_ selection: PacketSourceListSelection, to url: URL, format: CaptureFileFormat, completion: @escaping TCPViewerVoidCompletion) {
+    func exportSourceList(
+        _ selection: PacketSourceListSelection,
+        to url: URL,
+        format: CaptureFileFormat,
+        progress: PacketExportProgressHandler? = nil,
+        shouldCancel: PacketExportCancellationCheck? = nil,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
         do {
             let identifiers = try exportPacketIDs(matching: selection)
             exportPackets(
@@ -921,6 +990,8 @@ final class NetworkInspectorViewModel {
                 to: url,
                 format: format,
                 requiresSavedBacking: selection == .saved,
+                progress: progress,
+                shouldCancel: shouldCancel,
                 completion: completion
             )
         } catch {
@@ -1025,11 +1096,11 @@ final class NetworkInspectorViewModel {
 
     private func packets(withIDs identifiers: [PacketSummary.ID]) -> [PacketSummary] {
         var packetsByID: [PacketSummary.ID: PacketSummary] = [:]
-        for packet in controller.snapshot.packetIngestState.packets {
-            packetsByID[packet.id] = packet
-        }
         for record in savedPacketService.records() {
             packetsByID[record.packet.id] = record.packet
+        }
+        for packet in controller.snapshot.packetIngestState.packets {
+            packetsByID[packet.id] = packet
         }
 
         return identifiers.compactMap { packetsByID[$0] }

@@ -63,7 +63,7 @@ final class TCPViewerRootViewController: NSViewController {
     }
 
     func exportSession(format: CaptureFileFormat) {
-        viewModel.presentSessionExportPanel(format: format)
+        viewModel.presentSessionExportPanel(format: format, attachedTo: view.window)
     }
 
     func cancelDocumentLoading() {
@@ -213,7 +213,7 @@ extension TCPViewerRootViewController: SidebarViewControllerDelegate {
     }
 
     func sidebarViewController(_ controller: SidebarViewController, didRequestExport selection: PacketSourceListSelection, format: CaptureFileFormat) {
-        viewModel.presentSourceListExportPanel(selection: selection, format: format)
+        viewModel.presentSourceListExportPanel(selection: selection, format: format, attachedTo: view.window)
     }
 }
 
@@ -236,7 +236,7 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
     }
 
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestExportPackets identifiers: [PacketSummary.ID], format: CaptureFileFormat) {
-        viewModel.presentPacketExportPanel(identifiers: identifiers, format: format)
+        viewModel.presentPacketExportPanel(identifiers: identifiers, format: format, attachedTo: view.window)
     }
 
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestDeletePackets identifiers: [PacketSummary.ID]) {

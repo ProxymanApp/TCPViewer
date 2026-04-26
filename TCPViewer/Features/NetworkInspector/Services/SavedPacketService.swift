@@ -4,6 +4,7 @@ import PcapPlusPlusCore
 struct SavedPacketRecord: Identifiable, Codable, Hashable, Sendable {
     let id: String
     var savedAt: Date
+    var backingIdentity: String?
     var packet: PacketSummary
 }
 
@@ -36,7 +37,7 @@ final class SavedPacketService {
 
     // Persist selected packet summaries without storing raw packet bytes.
     @discardableResult
-    func save(_ packets: [PacketSummary], now: Date = Date()) throws -> [SavedPacketRecord] {
+    func save(_ packets: [PacketSummary], backingIdentity: String? = nil, now: Date = Date()) throws -> [SavedPacketRecord] {
         guard !packets.isEmpty else {
             return []
         }
@@ -45,10 +46,11 @@ final class SavedPacketService {
         for packet in packets {
             if let index = cachedRecords.firstIndex(where: { $0.packet.id == packet.id }) {
                 cachedRecords[index].savedAt = now
+                cachedRecords[index].backingIdentity = backingIdentity
                 cachedRecords[index].packet = packet
                 savedRecords.append(cachedRecords[index])
             } else {
-                let record = SavedPacketRecord(id: UUID().uuidString, savedAt: now, packet: packet)
+                let record = SavedPacketRecord(id: UUID().uuidString, savedAt: now, backingIdentity: backingIdentity, packet: packet)
                 cachedRecords.append(record)
                 savedRecords.append(record)
             }

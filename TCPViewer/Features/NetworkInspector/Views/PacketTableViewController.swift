@@ -497,6 +497,8 @@ extension PacketTableViewController: NSMenuDelegate {
         saveItem.isEnabled = state.saveEnabled
         menu.addItem(saveItem)
 
+        menu.addItem(.separator())
+
         let exportItem = NSMenuItem(title: "Export", action: nil, keyEquivalent: "")
         let exportSubmenu = NSMenu(title: "Export")
         let exportPcapItem = NSMenuItem(title: "as pcap...", action: #selector(exportRowsAsPcapFromMenu(_:)), keyEquivalent: "")
