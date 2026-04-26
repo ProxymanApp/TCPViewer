@@ -19,6 +19,13 @@ private enum TCPViewerToolbarItemMetadata: String, CaseIterable {
     }
 }
 
+private enum TCPViewerToolbarLayout {
+    static let interfacePopupMinimumWidth: CGFloat = 76
+    static let interfacePopupMaximumWidth: CGFloat = 260
+    static let interfacePopupTitlePadding: CGFloat = 48
+    static let toolbarControlHeight: CGFloat = 30
+}
+
 protocol TCPViewerToolbarDataSourceDelegate: AnyObject {
     func tcpviewerToolbarDataSource(_ dataSource: TCPViewerToolbarDataSource, didSelectInterface identifier: String)
     func tcpviewerToolbarDataSourceDidToggleCapture(_ dataSource: TCPViewerToolbarDataSource)
@@ -31,11 +38,20 @@ final class TCPViewerToolbarDataSource: NSObject {
     weak var delegate: TCPViewerToolbarDataSourceDelegate?
 
     private let viewModel = TCPViewerToolbarViewModel()
-    private let interfacePopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 60, height: 30), pullsDown: false)
+    private let interfacePopup = NSPopUpButton(
+        frame: NSRect(
+            x: 0,
+            y: 0,
+            width: TCPViewerToolbarLayout.interfacePopupMinimumWidth,
+            height: TCPViewerToolbarLayout.toolbarControlHeight
+        ),
+        pullsDown: false
+    )
     private let captureButton = NSButton(frame: NSRect(x: 0, y: 0, width: 34, height: 30))
     private let statusView = TCPViewerToolbarStatusView(frame: NSRect(x: 0, y: 0, width: 360, height: 28))
     private let sharePopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 42, height: 30), pullsDown: true)
     private let inspectorButton = NSButton(frame: NSRect(x: 0, y: 0, width: 34, height: 30))
+    private var interfacePopupWidthConstraint: NSLayoutConstraint?
 
     private var allowedItemIdentifiers: [NSToolbarItem.Identifier] {
         TCPViewerToolbarItemMetadata.allCases.map(\.identifier) + [
@@ -90,7 +106,7 @@ final class TCPViewerToolbarDataSource: NSObject {
     }
 
     private func configureToolbarViews() {
-        constrainToolbarView(interfacePopup, width: 60, height: 30)
+        constrainDynamicInterfacePopup()
         constrainToolbarView(captureButton, width: 34, height: 30)
         constrainToolbarView(statusView, width: 360, height: 28)
         constrainToolbarView(sharePopup, width: 42, height: 30)
@@ -135,12 +151,25 @@ final class TCPViewerToolbarDataSource: NSObject {
         ])
     }
 
+    private func constrainDynamicInterfacePopup() {
+        interfacePopup.translatesAutoresizingMaskIntoConstraints = false
+        let widthConstraint = interfacePopup.widthAnchor.constraint(
+            equalToConstant: TCPViewerToolbarLayout.interfacePopupMinimumWidth
+        )
+        NSLayoutConstraint.activate([
+            widthConstraint,
+            interfacePopup.heightAnchor.constraint(equalToConstant: TCPViewerToolbarLayout.toolbarControlHeight),
+        ])
+        interfacePopupWidthConstraint = widthConstraint
+    }
+
     private func renderInterfacePopup() {
         interfacePopup.removeAllItems()
         interfacePopup.menu?.autoenablesItems = false
         if viewModel.interfaces.isEmpty {
             interfacePopup.addItem(withTitle: "No Interfaces")
             interfacePopup.isEnabled = false
+            updateInterfacePopupWidth()
             return
         }
 
@@ -163,6 +192,7 @@ final class TCPViewerToolbarDataSource: NSObject {
             selectFirstInterfaceItem()
         }
         interfacePopup.isEnabled = !viewModel.isCaptureLocked
+        updateInterfacePopupWidth()
     }
 
     private func addInterfaceGroupHeader(_ title: String) {
@@ -196,6 +226,7 @@ final class TCPViewerToolbarDataSource: NSObject {
 
         for (index, item) in menu.items.enumerated() where item.representedObject as? String == identifier {
             interfacePopup.selectItem(at: index)
+            updateInterfacePopupWidth()
             return true
         }
 
@@ -210,8 +241,22 @@ final class TCPViewerToolbarDataSource: NSObject {
 
         for (index, item) in menu.items.enumerated() where item.representedObject is String {
             interfacePopup.selectItem(at: index)
+            updateInterfacePopupWidth()
             return
         }
+    }
+
+    private func updateInterfacePopupWidth() {
+        let title = interfacePopup.selectedItem?.title ?? interfacePopup.title
+        let font = interfacePopup.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        let measuredWidth = title.size(withAttributes: [.font: font]).width + TCPViewerToolbarLayout.interfacePopupTitlePadding
+        let width = ceil(min(
+            TCPViewerToolbarLayout.interfacePopupMaximumWidth,
+            max(TCPViewerToolbarLayout.interfacePopupMinimumWidth, measuredWidth)
+        ))
+        interfacePopupWidthConstraint?.constant = width
+        interfacePopup.setFrameSize(NSSize(width: width, height: TCPViewerToolbarLayout.toolbarControlHeight))
+        interfacePopup.superview?.layoutSubtreeIfNeeded()
     }
 
     private func renderCaptureButton() {
@@ -237,9 +282,11 @@ final class TCPViewerToolbarDataSource: NSObject {
             if !selectInterfaceItem(with: viewModel.selectedInterfaceID) {
                 selectFirstInterfaceItem()
             }
+            updateInterfacePopupWidth()
             return
         }
 
+        updateInterfacePopupWidth()
         delegate?.tcpviewerToolbarDataSource(self, didSelectInterface: identifier)
     }
 
