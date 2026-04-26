@@ -111,23 +111,54 @@ private struct PacketTableContentCache {
         }
 
         let displayFilter = PacketDisplayFilter(displayFilterText)
-        if sourceListSelection != .saved,
-           self.displayFilterText == displayFilterText,
-           self.sourceListSelection == sourceListSelection,
-           self.pinnedItems == pinnedItems,
-           self.savedRecords == savedRecords,
-           packetLineageRevision == ingestState.packetLineageRevision,
-           sourcePacketCount <= ingestState.packets.count,
-           case .append = ingestState.lastMutation {
-            return appendContent(
-                from: ingestState.packets[sourcePacketCount...],
-                ingestState: ingestState,
-                displayFilter: displayFilter,
-                displayFilterText: displayFilterText,
-                sourceListSelection: sourceListSelection,
-                pinnedItems: pinnedItems,
-                savedRecords: savedRecords
-            )
+        let isStateStable = sourceListSelection != .saved &&
+            self.displayFilterText == displayFilterText &&
+            self.sourceListSelection == sourceListSelection &&
+            self.pinnedItems == pinnedItems &&
+            self.savedRecords == savedRecords &&
+            packetLineageRevision == ingestState.packetLineageRevision &&
+            sourcePacketCount <= ingestState.packets.count
+
+        if isStateStable {
+            switch ingestState.lastMutation {
+            case .append:
+                return appendContent(
+                    from: ingestState.packets[sourcePacketCount...],
+                    ingestState: ingestState,
+                    displayFilter: displayFilter,
+                    displayFilterText: displayFilterText,
+                    sourceListSelection: sourceListSelection,
+                    pinnedItems: pinnedItems,
+                    savedRecords: savedRecords
+                )
+            case .appendWithMetadataUpdates(_, let updatedIDs):
+                if let content = appendAndUpdateContent(
+                    from: ingestState.packets[sourcePacketCount...],
+                    updatedPacketIDs: updatedIDs,
+                    ingestState: ingestState,
+                    displayFilter: displayFilter,
+                    displayFilterText: displayFilterText,
+                    sourceListSelection: sourceListSelection,
+                    pinnedItems: pinnedItems,
+                    savedRecords: savedRecords
+                ) {
+                    return content
+                }
+            case .metadataUpdate(let updatedIDs):
+                if let content = updateContent(
+                    updatedPacketIDs: updatedIDs,
+                    ingestState: ingestState,
+                    displayFilter: displayFilter,
+                    displayFilterText: displayFilterText,
+                    sourceListSelection: sourceListSelection,
+                    pinnedItems: pinnedItems,
+                    savedRecords: savedRecords
+                ) {
+                    return content
+                }
+            default:
+                break
+            }
         }
 
         return rebuildContent(
@@ -163,8 +194,9 @@ private struct PacketTableContentCache {
         pinnedItems: [PacketPin],
         savedRecords: [SavedPacketRecord]
     ) -> PacketTableContent {
-        var rows: [PacketTableRow] = []
-        var visiblePacketRowIndexByID: [PacketSummary.ID: Int] = [:]
+        // Allocate a fresh store so any snapshots still referencing the previous one keep showing
+        // their old rows until the new snapshot is published downstream.
+        let newStore = PacketTableRowStore()
         var malformedPacketCount = 0
         let sourcePackets = packets(
             from: ingestState,
@@ -172,8 +204,8 @@ private struct PacketTableContentCache {
             pinnedItems: pinnedItems,
             savedRecords: savedRecords
         )
-        rows.reserveCapacity(sourcePackets.count)
-        visiblePacketRowIndexByID.reserveCapacity(sourcePackets.count)
+        newStore.rows.reserveCapacity(sourcePackets.count)
+        newStore.visiblePacketRowIndexByID.reserveCapacity(sourcePackets.count)
         var rowTimingState = PacketTableRowTimingState()
 
         for packet in sourcePackets {
@@ -186,21 +218,20 @@ private struct PacketTableContentCache {
                 continue
             }
 
-            let rowIndex = rows.count
-            rows.append(rowTimingState.row(for: packet))
-            visiblePacketRowIndexByID[packet.id] = rowIndex
+            let rowIndex = newStore.rows.count
+            newStore.rows.append(rowTimingState.row(for: packet))
+            newStore.visiblePacketRowIndexByID[packet.id] = rowIndex
         }
 
         generation &+= 1
-        let updatePlan: PacketTableUpdatePlan = rows.isEmpty ? .none : .reload
+        let updatePlan: PacketTableUpdatePlan = newStore.rows.isEmpty ? .none : .reload
         let content = PacketTableContent(
             displayFilter: displayFilter,
             displayFilterChips: displayFilter.chips,
-            rows: rows,
+            store: newStore,
             generation: generation,
             updatePlan: updatePlan,
-            malformedPacketCount: malformedPacketCount,
-            visiblePacketRowIndexByID: visiblePacketRowIndexByID
+            malformedPacketCount: malformedPacketCount
         )
         return store(
             content,
@@ -233,14 +264,16 @@ private struct PacketTableContentCache {
             )
         }
 
-        var rows = cachedContent.rows
-        var visiblePacketRowIndexByID = cachedContent.visiblePacketRowIndexByID
+        // Mutate the store in place. The store class is the only owner of its rows array, so
+        // append doesn't trigger Swift's Array CoW even though many `PacketTableContent` values
+        // (and the published snapshot) reference the same store.
+        let store = cachedContent.store
         var malformedPacketCount = cachedContent.malformedPacketCount
         var rowTimingState = cachedRowTimingState
-        let appendStartIndex = rows.count
+        let appendStartIndex = store.rows.count
 
-        rows.reserveCapacity(rows.count + newPackets.count)
-        visiblePacketRowIndexByID.reserveCapacity(visiblePacketRowIndexByID.count + newPackets.count)
+        store.rows.reserveCapacity(store.rows.count + newPackets.count)
+        store.visiblePacketRowIndexByID.reserveCapacity(store.visiblePacketRowIndexByID.count + newPackets.count)
 
         for packet in newPackets {
             if NetworkInspectorFormatters.severity(for: packet) == .malformed {
@@ -252,12 +285,12 @@ private struct PacketTableContentCache {
                 continue
             }
 
-            let rowIndex = rows.count
-            rows.append(rowTimingState.row(for: packet))
-            visiblePacketRowIndexByID[packet.id] = rowIndex
+            let rowIndex = store.rows.count
+            store.rows.append(rowTimingState.row(for: packet))
+            store.visiblePacketRowIndexByID[packet.id] = rowIndex
         }
 
-        let didAppendVisibleRows = rows.count > appendStartIndex
+        let didAppendVisibleRows = store.rows.count > appendStartIndex
         if didAppendVisibleRows {
             generation &+= 1
         }
@@ -265,11 +298,57 @@ private struct PacketTableContentCache {
         let content = PacketTableContent(
             displayFilter: displayFilter,
             displayFilterChips: displayFilter.chips,
-            rows: rows,
+            store: store,
             generation: generation,
-            updatePlan: didAppendVisibleRows ? .append(appendStartIndex..<rows.count) : .none,
-            malformedPacketCount: malformedPacketCount,
-            visiblePacketRowIndexByID: visiblePacketRowIndexByID
+            updatePlan: didAppendVisibleRows ? .append(appendStartIndex..<store.rows.count) : .none,
+            malformedPacketCount: malformedPacketCount
+        )
+        return self.store(
+            content,
+            ingestState: ingestState,
+            displayFilterText: displayFilterText,
+            sourceListSelection: sourceListSelection,
+            pinnedItems: pinnedItems,
+            savedRecords: savedRecords,
+            rowTimingState: rowTimingState
+        )
+    }
+
+    // Apply in-place row updates for a metadata back-fill batch. Returns nil if visibility flipped
+    // for any affected packet (caller must fall back to rebuildContent).
+    private mutating func updateContent(
+        updatedPacketIDs: [PacketSummary.ID],
+        ingestState: PacketIngestState,
+        displayFilter: PacketDisplayFilter,
+        displayFilterText: String,
+        sourceListSelection: PacketSourceListSelection,
+        pinnedItems: [PacketPin],
+        savedRecords: [SavedPacketRecord]
+    ) -> PacketTableContent? {
+        guard let result = computeRowUpdates(
+            updatedPacketIDs: updatedPacketIDs,
+            ingestState: ingestState,
+            displayFilter: displayFilter,
+            sourceListSelection: sourceListSelection,
+            pinnedItems: pinnedItems,
+            store: cachedContent.store,
+            existingTimingState: cachedRowTimingState
+        ) else {
+            return nil
+        }
+
+        let didChange = !result.reloadIndexes.isEmpty
+        if didChange {
+            generation &+= 1
+        }
+
+        let content = PacketTableContent(
+            displayFilter: displayFilter,
+            displayFilterChips: displayFilter.chips,
+            store: cachedContent.store,
+            generation: generation,
+            updatePlan: didChange ? .reloadRows(result.reloadIndexes) : .none,
+            malformedPacketCount: cachedContent.malformedPacketCount
         )
         return store(
             content,
@@ -278,6 +357,130 @@ private struct PacketTableContentCache {
             sourceListSelection: sourceListSelection,
             pinnedItems: pinnedItems,
             savedRecords: savedRecords,
+            rowTimingState: result.rowTimingState
+        )
+    }
+
+    private mutating func appendAndUpdateContent(
+        from newPackets: ArraySlice<PacketSummary>,
+        updatedPacketIDs: [PacketSummary.ID],
+        ingestState: PacketIngestState,
+        displayFilter: PacketDisplayFilter,
+        displayFilterText: String,
+        sourceListSelection: PacketSourceListSelection,
+        pinnedItems: [PacketPin],
+        savedRecords: [SavedPacketRecord]
+    ) -> PacketTableContent? {
+        // Run the existing append path first so older-row updates apply on top of the new rows.
+        let appendedContent = appendContent(
+            from: newPackets,
+            ingestState: ingestState,
+            displayFilter: displayFilter,
+            displayFilterText: displayFilterText,
+            sourceListSelection: sourceListSelection,
+            pinnedItems: pinnedItems,
+            savedRecords: savedRecords
+        )
+
+        guard !updatedPacketIDs.isEmpty else {
+            return appendedContent
+        }
+
+        guard let result = computeRowUpdates(
+            updatedPacketIDs: updatedPacketIDs,
+            ingestState: ingestState,
+            displayFilter: displayFilter,
+            sourceListSelection: sourceListSelection,
+            pinnedItems: pinnedItems,
+            store: appendedContent.store,
+            existingTimingState: cachedRowTimingState
+        ) else {
+            return nil
+        }
+
+        let appendRange: Range<Int>?
+        if case .append(let range) = appendedContent.updatePlan {
+            appendRange = range
+        } else {
+            appendRange = nil
+        }
+
+        let didReloadAny = !result.reloadIndexes.isEmpty
+        if didReloadAny {
+            generation &+= 1
+        }
+
+        let plan: PacketTableUpdatePlan
+        switch (appendRange, didReloadAny) {
+        case (nil, false):
+            plan = .none
+        case (let range?, false):
+            plan = .append(range)
+        case (nil, true):
+            plan = .reloadRows(result.reloadIndexes)
+        case (let range?, true):
+            plan = .appendAndReloadRows(append: range, reload: result.reloadIndexes)
+        }
+
+        let content = PacketTableContent(
+            displayFilter: displayFilter,
+            displayFilterChips: displayFilter.chips,
+            store: appendedContent.store,
+            generation: generation,
+            updatePlan: plan,
+            malformedPacketCount: appendedContent.malformedPacketCount
+        )
+        return store(
+            content,
+            ingestState: ingestState,
+            displayFilterText: displayFilterText,
+            sourceListSelection: sourceListSelection,
+            pinnedItems: pinnedItems,
+            savedRecords: savedRecords,
+            rowTimingState: result.rowTimingState
+        )
+    }
+
+    private struct RowUpdateResult {
+        var reloadIndexes: IndexSet
+        var rowTimingState: PacketTableRowTimingState
+    }
+
+    // Walk the affected packet IDs once and update the store's rows in place. Returns nil if any
+    // update would flip visibility under the current selection/filter (caller falls back to
+    // rebuild). The store may be partially mutated when nil is returned; the caller is expected
+    // to discard it via rebuildContent, which allocates a fresh store from scratch.
+    private func computeRowUpdates(
+        updatedPacketIDs: [PacketSummary.ID],
+        ingestState: PacketIngestState,
+        displayFilter: PacketDisplayFilter,
+        sourceListSelection: PacketSourceListSelection,
+        pinnedItems: [PacketPin],
+        store: PacketTableRowStore,
+        existingTimingState: PacketTableRowTimingState
+    ) -> RowUpdateResult? {
+        var reloadIndexes = IndexSet()
+        var rowTimingState = existingTimingState
+
+        for packetID in updatedPacketIDs {
+            guard let packet = ingestState.packet(withID: packetID) else {
+                continue
+            }
+            let isVisibleNow = matches(packet, selection: sourceListSelection, pinnedItems: pinnedItems) &&
+                (displayFilter.isEmpty || displayFilter.matches(packet))
+            let wasVisible = store.visiblePacketRowIndexByID[packetID] != nil
+            guard wasVisible == isVisibleNow else {
+                return nil  // visibility flipped — caller falls back to rebuild
+            }
+            guard isVisibleNow, let rowIndex = store.visiblePacketRowIndexByID[packetID] else {
+                continue
+            }
+            store.rows[rowIndex] = rowTimingState.row(for: packet)
+            reloadIndexes.insert(rowIndex)
+        }
+
+        return RowUpdateResult(
+            reloadIndexes: reloadIndexes,
             rowTimingState: rowTimingState
         )
     }
@@ -401,6 +604,12 @@ final class NetworkInspectorViewModel {
     private let packetExportService: PacketExportService
     private var packetTableContentCache = PacketTableContentCache()
     private var hasPerformedInitialLoad = false
+    private var pendingRebuildWorkItem: DispatchWorkItem?
+
+    // Trailing-edge debounce for delegate-driven rebuilds. Live ingest fires the controller delegate
+    // up to ~10 Hz; coalescing to ~12 Hz keeps the UI feeling live without burning CPU on redundant
+    // rebuilds. User-driven actions bypass this and rebuild synchronously.
+    private static let rebuildCoalesceInterval: TimeInterval = 0.08
 
     private var selectedSidebar: NetworkInspectorSidebarSelection = .liveCapture
     private var selectedSourceListSelection: PacketSourceListSelection = .allPackets
@@ -1067,6 +1276,7 @@ final class NetworkInspectorViewModel {
     }
 
     private func rebuildSnapshot() {
+        cancelPendingRebuild()
         let pinnedItems = pinService.pins()
         let savedRecords = savedPacketService.records()
         let sourceListSnapshot = sourceListService.snapshot(
@@ -1103,6 +1313,43 @@ final class NetworkInspectorViewModel {
 
         snapshot = updatedSnapshot
     }
+
+    private func scheduleCoalescedRebuild() {
+        guard pendingRebuildWorkItem == nil else {
+            return
+        }
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else {
+                return
+            }
+            self.pendingRebuildWorkItem = nil
+            self.rebuildSnapshot()
+        }
+        pendingRebuildWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.rebuildCoalesceInterval, execute: workItem)
+    }
+
+    private func cancelPendingRebuild() {
+        pendingRebuildWorkItem?.cancel()
+        pendingRebuildWorkItem = nil
+    }
+
+    deinit {
+        pendingRebuildWorkItem?.cancel()
+    }
+
+    #if DEBUG
+    var hasPendingCoalescedRebuildForTesting: Bool {
+        pendingRebuildWorkItem != nil
+    }
+
+    func flushPendingCoalescedRebuildForTesting() {
+        guard pendingRebuildWorkItem != nil else {
+            return
+        }
+        rebuildSnapshot()
+    }
+    #endif
 
     private func packet(withID identifier: PacketSummary.ID) -> PacketSummary? {
         controller.snapshot.packetIngestState.packet(withID: identifier) ??
@@ -1166,6 +1413,6 @@ final class NetworkInspectorViewModel {
 
 extension NetworkInspectorViewModel: TCPViewerWorkspaceControllerDelegate {
     func tcpViewerWorkspaceControllerDidChange(_ controller: TCPViewerWorkspaceController) {
-        rebuildSnapshot()
+        scheduleCoalescedRebuild()
     }
 }

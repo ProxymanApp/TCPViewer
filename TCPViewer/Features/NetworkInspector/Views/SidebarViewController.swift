@@ -69,7 +69,7 @@ enum SidebarOutlineReloadPolicy {
 private extension PacketIngestMutation {
     var isBatchableSidebarMutation: Bool {
         switch self {
-        case .append, .metadataUpdate:
+        case .append, .appendWithMetadataUpdates, .metadataUpdate:
             return true
         case .none, .reset, .replace:
             return false

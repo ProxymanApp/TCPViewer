@@ -229,6 +229,88 @@ struct PacketSourceListServiceTests {
         #expect(snapshot.item(for: .domains)?.children.isEmpty == true)
     }
 
+    @Test func metadataUpdateMovesPacketBetweenDomainBucketsWithoutFullRebuild() {
+        let service = PacketSourceListService()
+        var state = PacketIngestState.empty
+        let unresolved = makePacket(packetNumber: 1)
+        let alreadyResolved = makePacket(packetNumber: 2, sniDomainName: "stable.example.com")
+        state.append([unresolved, alreadyResolved], source: .live)
+
+        var snapshot = service.snapshot(for: state)
+        #expect(snapshot.item(for: .domain(.ipAddresses))?.count == 1)
+        #expect(snapshot.item(for: .domain(domainKey("stable.example.com")))?.count == 1)
+
+        state.applyMetadataUpdates([
+            PacketMetadataUpdate(
+                packetIDs: [unresolved.id],
+                sniDomainName: "api.example.com",
+                client: nil,
+                direction: nil
+            )
+        ])
+        snapshot = service.snapshot(for: state)
+
+        // The previously-unresolved packet leaves the IP-Addresses bucket and joins a new domain
+        // bucket; the unrelated packet's bucket count stays put.
+        #expect(snapshot.item(for: .domain(.ipAddresses)) == nil)
+        #expect(snapshot.item(for: .domain(domainKey("api.example.com")))?.count == 1)
+        #expect(snapshot.item(for: .domain(domainKey("stable.example.com")))?.count == 1)
+    }
+
+    @Test func metadataUpdateMovesPacketIntoAppBucketIncrementally() {
+        let service = PacketSourceListService()
+        var state = PacketIngestState.empty
+        let firstUnresolved = makePacket(packetNumber: 1)
+        let secondUnresolved = makePacket(packetNumber: 2)
+        state.append([firstUnresolved, secondUnresolved], source: .live)
+
+        _ = service.snapshot(for: state)
+
+        let client = makeClient(displayName: "Example", bundleIdentifier: "com.example.app")
+        state.applyMetadataUpdates([
+            PacketMetadataUpdate(
+                packetIDs: [firstUnresolved.id],
+                sniDomainName: nil,
+                client: client,
+                direction: .outbound
+            )
+        ])
+        let snapshot = service.snapshot(for: state)
+
+        #expect(snapshot.item(for: .apps)?.children.map(\.title) == ["Example"])
+        #expect(snapshot.item(for: .apps)?.children.first?.count == 1)
+    }
+
+    @Test func appendAfterMetadataResolutionPicksUpResolvedBucketsWithoutDoubleCounting() {
+        let service = PacketSourceListService()
+        var state = PacketIngestState.empty
+        let firstPacket = makePacket(packetNumber: 1)
+        state.append([firstPacket], source: .live)
+        _ = service.snapshot(for: state)
+
+        let client = makeClient(displayName: "Example", bundleIdentifier: "com.example.app")
+        state.applyMetadataUpdates([
+            PacketMetadataUpdate(
+                packetIDs: [firstPacket.id],
+                sniDomainName: "api.example.com",
+                client: client,
+                direction: .outbound
+            )
+        ])
+        _ = service.snapshot(for: state)
+
+        let secondPacket = makePacket(packetNumber: 2, sniDomainName: "api.example.com", client: client)
+        state.append([secondPacket], source: .live)
+        let snapshot = service.snapshot(for: state)
+
+        #expect(snapshot.item(for: .domain(domainKey("api.example.com")))?.count == 2)
+        #expect(snapshot.item(for: .apps)?.children.first?.count == 2)
+    }
+
+    private func domainKey(_ name: String) -> PacketSourceDomainKey {
+        PacketSourceDomainKey(rawValue: name.lowercased(), isMissingDomain: false)
+    }
+
     @Test func filteringKeepsMatchingDescendantsAndAncestors() {
         var state = PacketIngestState.empty
         state.append([
