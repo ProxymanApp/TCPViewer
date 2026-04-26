@@ -604,6 +604,7 @@ extension SidebarViewController: NSMenuDelegate {
             exportSubmenu.addItem(exportPcapngItem)
 
             exportItem.submenu = exportSubmenu
+            exportItem.image = NSImage(systemSymbolName: "square.and.arrow.up", accessibilityDescription: "Export")
             menu.addItem(exportItem)
         }
 
@@ -616,6 +617,7 @@ extension SidebarViewController: NSMenuDelegate {
             deleteItem.keyEquivalentModifierMask = [.command]
             deleteItem.target = self
             deleteItem.isEnabled = true
+            deleteItem.image = NSImage(systemSymbolName: "trash", accessibilityDescription: "Delete")
             menu.addItem(deleteItem)
         }
     }

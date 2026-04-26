@@ -30,6 +30,57 @@ struct WindowControllerTests {
         await tearDown(controller)
     }
 
+    @Test func initialLoadSelectsMostRecentStartedInterfaceWhenAvailable() async {
+        let suiteName = "TCPViewerTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+        defaults.set(["en1", "en0"], forKey: InterfaceSelectionHistoryStore.storageKey)
+        let fakeCore = FakeTCPViewerCore(
+            interfaceInventories: [[
+                makeInterface(id: "en0", displayName: "Wi-Fi"),
+                makeInterface(id: "en1", displayName: "USB Ethernet"),
+            ]]
+        )
+        let controller = TCPViewerWorkspaceController(
+            services: TCPViewerServiceRegistry(core: fakeCore),
+            userDefaults: defaults
+        )
+
+        await controller.performInitialLoadIfNeeded()
+
+        #expect(controller.snapshot.sessionState.selectedInterfaceID == "en1")
+        #expect(controller.snapshot.sessionState.lastUsedInterfaceIDs == ["en1", "en0"])
+
+        await tearDown(controller)
+    }
+
+    @Test func initialLoadSkipsUnavailableRecentInterface() async {
+        let suiteName = "TCPViewerTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+        defaults.set(["en9", "en0"], forKey: InterfaceSelectionHistoryStore.storageKey)
+        let fakeCore = FakeTCPViewerCore(
+            interfaceInventories: [[
+                makeInterface(id: "en0", displayName: "Wi-Fi"),
+                makeInterface(id: "en9", displayName: "Old Interface", availability: .unavailable, canCapture: false),
+            ]]
+        )
+        let controller = TCPViewerWorkspaceController(
+            services: TCPViewerServiceRegistry(core: fakeCore),
+            userDefaults: defaults
+        )
+
+        await controller.performInitialLoadIfNeeded()
+
+        #expect(controller.snapshot.sessionState.selectedInterfaceID == "en0")
+
+        await tearDown(controller)
+    }
+
     @Test func refreshClearsStaleInterfaceSelectionWhenInventoryChanges() async {
         let fakeCore = FakeTCPViewerCore(
             interfaceInventories: [
@@ -779,12 +830,13 @@ struct WindowControllerTests {
         await tearDown(controller)
     }
 
-    @Test func liveCapturePersistsStartedInterfaceAsLastUsed() async {
+    @Test func liveCapturePersistsStartedInterfaceAsMostRecentLastUsed() async {
         let suiteName = "TCPViewerTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defer {
             defaults.removePersistentDomain(forName: suiteName)
         }
+        defaults.set(["en0"], forKey: InterfaceSelectionHistoryStore.storageKey)
 
         let liveSession = FakeLiveSession()
         let fakeCore = FakeTCPViewerCore(
@@ -799,15 +851,43 @@ struct WindowControllerTests {
             userDefaults: defaults
         )
 
-        #expect(controller.snapshot.sessionState.lastUsedInterfaceIDs.isEmpty)
+        #expect(controller.snapshot.sessionState.lastUsedInterfaceIDs == ["en0"])
 
         await controller.refreshInterfaces()
         controller.selectInterface("en1")
         await controller.startLiveCapture()
 
         #expect(liveSession.startCount == 1)
-        #expect(controller.snapshot.sessionState.lastUsedInterfaceIDs == ["en1"])
-        #expect(defaults.stringArray(forKey: InterfaceSelectionHistoryStore.storageKey) == ["en1"])
+        #expect(controller.snapshot.sessionState.lastUsedInterfaceIDs == ["en1", "en0"])
+        #expect(defaults.stringArray(forKey: InterfaceSelectionHistoryStore.storageKey) == ["en1", "en0"])
+
+        await tearDown(controller)
+    }
+
+    @Test func selectingInterfaceWithoutStartingCaptureDoesNotPersistLastUsed() async {
+        let suiteName = "TCPViewerTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let fakeCore = FakeTCPViewerCore(
+            interfaceInventories: [[
+                makeInterface(id: "en0", displayName: "Wi-Fi"),
+                makeInterface(id: "en1", displayName: "USB Ethernet"),
+            ]]
+        )
+        let controller = TCPViewerWorkspaceController(
+            services: TCPViewerServiceRegistry(core: fakeCore),
+            userDefaults: defaults
+        )
+
+        await controller.refreshInterfaces()
+        controller.selectInterface("en1")
+
+        #expect(controller.snapshot.sessionState.selectedInterfaceID == "en1")
+        #expect(controller.snapshot.sessionState.lastUsedInterfaceIDs.isEmpty)
+        #expect(defaults.stringArray(forKey: InterfaceSelectionHistoryStore.storageKey) == nil)
 
         await tearDown(controller)
     }

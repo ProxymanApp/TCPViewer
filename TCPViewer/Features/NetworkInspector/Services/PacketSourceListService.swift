@@ -246,7 +246,7 @@ enum PacketSourceListClassifier {
         return PacketSourceClientIdentity(
             key: PacketSourceClientKey(rawValue: "\(keyPrefix):\(identityValue)"),
             displayName: displayName,
-            iconFilePath: firstNonEmpty([client.bundlePath, client.executablePath])
+            iconFilePath: PacketClientIconPathResolver.iconFilePath(for: client)
         )
     }
 
@@ -560,7 +560,10 @@ enum PacketSourceListTreeBuilder {
                 id: "pin:\(bucket.pin.id.rawValue)",
                 title: bucket.pin.title,
                 systemImageName: systemImageName(for: bucket.pin),
-                iconFilePath: bucket.pin.clientIconFilePath,
+                iconFilePath: PacketClientIconPathResolver.iconFilePath(
+                    bundlePath: bucket.pin.clientIconFilePath,
+                    executablePath: nil
+                ),
                 count: bucket.packetCount,
                 kind: .pin,
                 selection: .pinnedItem(bucket.pin.id),

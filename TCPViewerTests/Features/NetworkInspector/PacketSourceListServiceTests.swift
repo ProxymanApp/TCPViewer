@@ -169,6 +169,42 @@ struct PacketSourceListServiceTests {
         ])
     }
 
+    @Test func clientIdentityKeepsKeyButUsesResolvedIconPath() throws {
+        let executablePath = "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/123.0.0/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper"
+        let client = makeClient(
+            displayName: "Google Chrome Helper",
+            name: "Google Chrome Helper",
+            bundleIdentifier: "com.google.Chrome.helper",
+            bundlePath: "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/123.0.0/Helpers/Google Chrome Helper.app",
+            executablePath: executablePath
+        )
+        let packet = makePacket(packetNumber: 1, client: client)
+
+        let identity = try #require(PacketSourceListClassifier.clientIdentity(for: packet))
+
+        #expect(identity.key.rawValue == "bundleIdentifier:com.google.Chrome.helper")
+        #expect(identity.iconFilePath == "/Applications/Google Chrome.app")
+    }
+
+    @Test func pinnedClientRowsNormalizeStoredNestedIconPath() {
+        let pinID = PacketPinID(rawValue: "client:bundleIdentifier:com.google.Chrome.helper")
+        let pin = PacketPin(
+            id: pinID,
+            kind: .client,
+            title: "Google Chrome Helper",
+            createdAt: Date(timeIntervalSince1970: 10),
+            domain: nil,
+            ipAddress: nil,
+            clientKey: "bundleIdentifier:com.google.Chrome.helper",
+            clientDisplayName: "Google Chrome Helper",
+            clientIconFilePath: "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/123.0.0/Helpers/Google Chrome Helper.app"
+        )
+
+        let snapshot = PacketSourceListService().snapshot(for: .empty, pinnedItems: [pin])
+
+        #expect(snapshot.item(for: .pinnedItem(pinID))?.iconFilePath == "/Applications/Google Chrome.app")
+    }
+
     @Test func resetReplaceAndMetadataUpdatesRebuildTree() {
         let service = PacketSourceListService()
         let client = makeClient(displayName: "Example", bundleIdentifier: "com.example.app")

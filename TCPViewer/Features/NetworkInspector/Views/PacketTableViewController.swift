@@ -104,6 +104,7 @@ final class PacketTableViewController: NSViewController {
     private let tableView = PacketTableView()
     private let scrollView = NSScrollView()
     private let viewModel = PacketTableViewModel()
+    private let contextMenuController = PacketTableContextMenuController()
     private var selectionCallbackSuppressionDepth = 0
     private var lastAppliedSelectedPacketID: PacketSummary.ID?
     private var clickedRowIndex: Int?
@@ -187,8 +188,9 @@ final class PacketTableViewController: NSViewController {
         tableView.selectionHighlightStyle = .regular
         tableView.style = .fullWidth
         tableView.focusRingType = .none
-        tableView.menu = NSMenu()
-        tableView.menu?.delegate = self
+        contextMenuController.actionHandler = self
+        contextMenuController.stateProvider = self
+        tableView.menu = contextMenuController.makeMenu()
         
         addColumn("number", title: " No.", width: 68, minWidth: 52, cell: PacketTextCell())
         addColumn("time", title: " Time", width: 112, minWidth: 96, cell: PacketTextCell())
@@ -327,29 +329,49 @@ final class PacketTableViewController: NSViewController {
         NSPasteboard.general.setString(value, forType: .string)
     }
 
-    @objc private func copyRowsFromMenu(_ sender: Any?) {
-        copyTargetRows()
+    @objc func copyRowsFromMenu(_ sender: Any?) {
+        copyTargetRows(format: .csv)
     }
 
-    @objc private func copyCellFromMenu(_ sender: Any?) {
+    @objc func copyRowsAsPlainTextFromMenu(_ sender: Any?) {
+        copyTargetRows(format: .plainText)
+    }
+
+    @objc func copyRowsAsJSONFromMenu(_ sender: Any?) {
+        copyTargetRows(format: .json)
+    }
+
+    @objc func copyRowsAsMarkdownTableFromMenu(_ sender: Any?) {
+        copyTargetRows(format: .markdownTable)
+    }
+
+    @objc func copyRowsAsCSVFromMenu(_ sender: Any?) {
+        copyTargetRows(format: .csv)
+    }
+
+    @objc func copyRowsAsCSVWithHeaderFromMenu(_ sender: Any?) {
+        copyTargetRows(format: .csvWithHeader)
+    }
+
+    @objc func copyCellFromMenu(_ sender: Any?) {
         let state = menuState()
         let rows = state.targetRows.compactMap { self.rows.indices.contains($0) ? self.rows[$0] : nil }
         writeToPasteboard(PacketTableCopyFormatter.csvCells(rows, column: state.clickedColumn))
     }
 
-    @objc private func pinDomainFromMenu(_ sender: Any?) {
+    @objc func pinDomainFromMenu(_ sender: Any?) {
         requestPin(.domain)
     }
 
-    @objc private func pinIPFromMenu(_ sender: Any?) {
+    @objc func pinIPFromMenu(_ sender: Any?) {
         requestPin(.ip)
     }
 
-    @objc private func pinClientFromMenu(_ sender: Any?) {
+    @objc func pinClientFromMenu(_ sender: Any?) {
         requestPin(.client)
     }
 
-    @objc private func saveRowsFromMenu(_ sender: Any?) {
+    @objc func saveRowsFromMenu(_ sender: Any?) {
         let identifiers = targetPacketIDs()
         guard !identifiers.isEmpty else {
             return
@@ -358,20 +380,20 @@ final class PacketTableViewController: NSViewController {
         delegate?.packetTableViewController(self, didRequestSavePackets: identifiers)
     }
 
-    @objc private func exportRowsAsPcapFromMenu(_ sender: Any?) {
+    @objc func exportRowsAsPcapFromMenu(_ sender: Any?) {
         exportTargetRows(format: .pcap)
     }
 
-    @objc private func exportRowsAsPcapngFromMenu(_ sender: Any?) {
+    @objc func exportRowsAsPcapngFromMenu(_ sender: Any?) {
         exportTargetRows(format: .pcapng)
     }
 
-    @objc private func deleteRowsFromMenu(_ sender: Any?) {
+    @objc func deleteRowsFromMenu(_ sender: Any?) {
         deleteTargetRows()
     }
 
-    private func copyTargetRows() {
-        writeToPasteboard(PacketTableCopyFormatter.csvRows(targetRows()))
+    private func copyTargetRows(format: PacketTableCopyFormat) {
+        writeToPasteboard(PacketTableCopyFormatter.rows(targetRows(), format: format))
     }
 
     private func deleteTargetRows() {
@@ -453,82 +475,11 @@ extension PacketTableViewController: NSTableViewDataSource, NSTableViewDelegate 
     }
 }
 
-extension PacketTableViewController: NSMenuDelegate {
-    func menuNeedsUpdate(_ menu: NSMenu) {
-        updateClickedPositionFromCurrentEvent()
-        let state = menuState()
-
-        menu.removeAllItems()
-        let copyRowItem = NSMenuItem(title: "Copy Row", action: #selector(copyRowsFromMenu(_:)), keyEquivalent: "c")
-        copyRowItem.target = self
-        copyRowItem.isEnabled = state.copyRowEnabled
-        menu.addItem(copyRowItem)
-
-        let copyCellItem = NSMenuItem(title: "Copy Cell", action: #selector(copyCellFromMenu(_:)), keyEquivalent: "")
-        copyCellItem.target = self
-        copyCellItem.isEnabled = state.copyCellEnabled
-        menu.addItem(copyCellItem)
-
-        menu.addItem(.separator())
-
-        let pinItem = NSMenuItem(title: "Pin", action: nil, keyEquivalent: "")
-        let pinSubmenu = NSMenu(title: "Pin")
-        let pinDomainItem = NSMenuItem(title: "Domain", action: #selector(pinDomainFromMenu(_:)), keyEquivalent: "")
-        pinDomainItem.target = self
-        pinDomainItem.isEnabled = state.pinDomainEnabled
-        pinSubmenu.addItem(pinDomainItem)
-
-        let pinIPItem = NSMenuItem(title: "IP", action: #selector(pinIPFromMenu(_:)), keyEquivalent: "")
-        pinIPItem.target = self
-        pinIPItem.isEnabled = state.pinIPEnabled
-        pinSubmenu.addItem(pinIPItem)
-
-        let pinClientItem = NSMenuItem(title: "Client", action: #selector(pinClientFromMenu(_:)), keyEquivalent: "")
-        pinClientItem.target = self
-        pinClientItem.isEnabled = state.pinClientEnabled
-        pinSubmenu.addItem(pinClientItem)
-
-        pinItem.submenu = pinSubmenu
-        pinItem.isEnabled = state.pinDomainEnabled || state.pinIPEnabled || state.pinClientEnabled
-        menu.addItem(pinItem)
-
-        let saveItem = NSMenuItem(title: "Save", action: #selector(saveRowsFromMenu(_:)), keyEquivalent: "")
-        saveItem.target = self
-        saveItem.isEnabled = state.saveEnabled
-        menu.addItem(saveItem)
-
-        menu.addItem(.separator())
-
-        let exportItem = NSMenuItem(title: "Export", action: nil, keyEquivalent: "")
-        let exportSubmenu = NSMenu(title: "Export")
-        let exportPcapItem = NSMenuItem(title: "as pcap...", action: #selector(exportRowsAsPcapFromMenu(_:)), keyEquivalent: "")
-        exportPcapItem.target = self
-        exportPcapItem.isEnabled = state.exportEnabled
-        exportSubmenu.addItem(exportPcapItem)
-
-        let exportPcapngItem = NSMenuItem(title: "as pcapng...", action: #selector(exportRowsAsPcapngFromMenu(_:)), keyEquivalent: "")
-        exportPcapngItem.target = self
-        exportPcapngItem.isEnabled = state.exportEnabled
-        exportSubmenu.addItem(exportPcapngItem)
-
-        exportItem.submenu = exportSubmenu
-        exportItem.isEnabled = state.exportEnabled
-        menu.addItem(exportItem)
-
-        menu.addItem(.separator())
-
-        let deleteItem = NSMenuItem(title: "Delete", action: #selector(deleteRowsFromMenu(_:)), keyEquivalent: "\u{8}")
-        deleteItem.target = self
-        deleteItem.isEnabled = state.deleteEnabled
-        menu.addItem(deleteItem)
-    }
-}
-
 extension PacketTableViewController: PacketTableKeyboardActionHandling {
     fileprivate func packetTableViewDidRequestCopyRowsFromKeyboard(_ tableView: PacketTableView) {
         clickedRowIndex = nil
         clickedColumnIdentifier = nil
-        copyTargetRows()
+        copyTargetRows(format: .csv)
     }
 
     fileprivate func packetTableViewDidRequestDeleteFromKeyboard(_ tableView: PacketTableView) {
@@ -538,266 +489,12 @@ extension PacketTableViewController: PacketTableKeyboardActionHandling {
     }
 }
 
-final class PacketTextCell: NSTextFieldCell {
-    enum Style {
-        case primary
-        case secondary
-        case warning
+extension PacketTableViewController: PacketTableContextMenuActionHandling, PacketTableContextMenuStateProviding {
+    func packetTableContextMenuWillOpen() {
+        updateClickedPositionFromCurrentEvent()
     }
 
-    override init(textCell string: String) {
-        super.init(textCell: string)
-        isEditable = false
-        isBordered = false
-        drawsBackground = false
-        lineBreakMode = .byTruncatingTail
-        truncatesLastVisibleLine = true
-    }
-
-    convenience init() {
-        self.init(textCell: "")
-    }
-
-    @available(*, unavailable)
-    required init(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    func configure(style: Style, configuration: AppConfiguration) {
-        font = configuration.packetFont(weight: .regular)
-
-        switch style {
-        case .primary:
-            textColor = .labelColor
-        case .secondary:
-            textColor = .secondaryLabelColor
-        case .warning:
-            textColor = .systemOrange
-        }
-    }
-
-    override func drawingRect(forBounds rect: NSRect) -> NSRect {
-        verticallyCenteredRect(forBounds: rect)
-    }
-
-    override func titleRect(forBounds rect: NSRect) -> NSRect {
-        verticallyCenteredRect(forBounds: rect)
-    }
-
-    private func verticallyCenteredRect(forBounds rect: NSRect) -> NSRect {
-        // Center text in compact rows so AppKit's default baseline does not sit high.
-        var drawingRect = super.drawingRect(forBounds: rect).insetBy(dx: 6, dy: 0)
-        let textHeight = cellSize(forBounds: drawingRect).height
-        drawingRect.origin.y += floor((drawingRect.height - textHeight) / 2)
-        drawingRect.size.height = textHeight
-        return drawingRect
-    }
-}
-
-final class PacketProtocolCell: NSTextFieldCell {
-    private var protocolText = ""
-    private var severity: PacketSeverity = .normal
-
-    override init(textCell string: String) {
-        super.init(textCell: string)
-        alignment = .center
-        isEditable = false
-        isBordered = false
-        drawsBackground = false
-        lineBreakMode = .byTruncatingTail
-        truncatesLastVisibleLine = true
-    }
-
-    convenience init() {
-        self.init(textCell: "")
-    }
-
-    @available(*, unavailable)
-    required init(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    func configure(protocolText: String, severity: PacketSeverity, configuration: AppConfiguration) {
-        self.protocolText = protocolText
-        self.severity = severity
-        stringValue = protocolText
-        font = configuration.packetFont(weight: .semibold)
-        textColor = textColor(for: protocolText, severity: severity)
-    }
-
-    override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
-        // Draw protocol values as compact colored pills instead of plain table text.
-        let label = protocolText.isEmpty ? stringValue : protocolText
-        guard !label.isEmpty else {
-            return
-        }
-
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: font ?? .monospacedSystemFont(ofSize: AppConfiguration.defaultPacketFontSize, weight: .semibold),
-            .foregroundColor: textColor ?? .labelColor,
-        ]
-        let textSize = label.size(withAttributes: attributes)
-        let pillWidth = min(max(textSize.width + 16, 42), cellFrame.width - 12)
-        let pillHeight = min(cellFrame.height - 4, max(18, ceil(textSize.height + 6)))
-        let pillRect = NSRect(
-            x: cellFrame.midX - pillWidth / 2,
-            y: cellFrame.midY - pillHeight / 2,
-            width: pillWidth,
-            height: pillHeight
-        )
-
-        backgroundColor(for: label, severity: severity).setFill()
-        NSBezierPath(roundedRect: pillRect, xRadius: pillHeight / 2, yRadius: pillHeight / 2).fill()
-
-        let textRect = NSRect(
-            x: pillRect.midX - textSize.width / 2,
-            y: pillRect.midY - textSize.height / 2 - 0.5,
-            width: textSize.width,
-            height: textSize.height
-        )
-        label.draw(in: textRect, withAttributes: attributes)
-    }
-
-    private func backgroundColor(for protocolText: String, severity: PacketSeverity) -> NSColor {
-        if severity != .normal {
-            return .systemOrange.withAlphaComponent(0.18)
-        }
-
-        switch protocolText.uppercased() {
-        case "TCP":
-            return .systemOrange.withAlphaComponent(0.16)
-        case "UDP":
-            return .systemBlue.withAlphaComponent(0.16)
-        case "TLS", "SSL", "HTTPS":
-            return .systemGreen.withAlphaComponent(0.16)
-        case "HTTP":
-            return .systemPink.withAlphaComponent(0.16)
-        case "DNS":
-            return .systemPurple.withAlphaComponent(0.16)
-        case "ICMP":
-            return .systemRed.withAlphaComponent(0.14)
-        case "ARP":
-            return .systemTeal.withAlphaComponent(0.16)
-        default:
-            return .controlAccentColor.withAlphaComponent(0.14)
-        }
-    }
-
-    private func textColor(for protocolText: String, severity: PacketSeverity) -> NSColor {
-        if severity != .normal {
-            return .systemOrange
-        }
-
-        switch protocolText.uppercased() {
-        case "TCP":
-            return .systemOrange
-        case "UDP":
-            return .systemBlue
-        case "TLS", "SSL", "HTTPS":
-            return .systemGreen
-        case "HTTP":
-            return .systemPink
-        case "DNS":
-            return .systemPurple
-        case "ICMP":
-            return .systemRed
-        case "ARP":
-            return .systemTeal
-        default:
-            return .controlAccentColor
-        }
-    }
-}
-
-final class PacketClientIconCache {
-    private var imagesByKey: [String: NSImage] = [:]
-
-    // Return one shared icon instance per app path so repeated packet rows stay cheap.
-    func image(for client: PacketClient?) -> NSImage? {
-        guard let client else {
-            return nil
-        }
-
-        let key = client.bundlePath ?? client.executablePath ?? client.name
-        if let image = imagesByKey[key] {
-            return image
-        }
-
-        guard let path = client.bundlePath ?? client.executablePath else {
-            return nil
-        }
-
-        let image = NSWorkspace.shared.icon(forFile: path)
-        image.size = NSSize(width: 16, height: 16)
-        imagesByKey[key] = image
-        return image
-    }
-}
-
-final class PacketClientCell: NSTextFieldCell {
-    private static let iconCache = PacketClientIconCache()
-    private var client: PacketClient?
-
-    override init(textCell string: String) {
-        super.init(textCell: string)
-        isEditable = false
-        isBordered = false
-        drawsBackground = false
-        lineBreakMode = .byTruncatingTail
-        truncatesLastVisibleLine = true
-        textColor = .labelColor
-    }
-
-    convenience init() {
-        self.init(textCell: "")
-    }
-
-    @available(*, unavailable)
-    required init(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    // Configure the reused cell with the current row's client metadata.
-    func configure(client: PacketClient?, configuration: AppConfiguration) {
-        self.client = client
-        stringValue = client?.displayName ?? "-"
-        font = configuration.packetFont(weight: .regular)
-        textColor = client == nil ? .secondaryLabelColor : .labelColor
-    }
-
-    override func drawingRect(forBounds rect: NSRect) -> NSRect {
-        verticallyCenteredRect(forBounds: rect)
-    }
-
-    override func titleRect(forBounds rect: NSRect) -> NSRect {
-        verticallyCenteredRect(forBounds: rect)
-    }
-
-    private func verticallyCenteredRect(forBounds rect: NSRect) -> NSRect {
-        var drawingRect = super.drawingRect(forBounds: rect)
-        let textHeight = cellSize(forBounds: drawingRect).height
-        drawingRect.origin.y += floor((drawingRect.height - textHeight) / 2)
-        drawingRect.size.height = textHeight
-        return drawingRect
-    }
-
-    override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
-        guard let icon = Self.iconCache.image(for: client) else {
-            let textFrame = cellFrame.insetBy(dx: 6, dy: 0)
-            super.drawInterior(withFrame: textFrame, in: controlView)
-            return
-        }
-
-        let iconSize: CGFloat = 16
-        let iconFrame = NSRect(
-            x: cellFrame.minX + 6,
-            y: cellFrame.midY - iconSize / 2,
-            width: iconSize,
-            height: iconSize
-        )
-        icon.draw(in: iconFrame)
-
-        let textFrame = cellFrame.insetBy(dx: 6, dy: 0).offsetBy(dx: iconSize + 4, dy: 0)
-        super.drawInterior(withFrame: textFrame, in: controlView)
+    func packetTableContextMenuState() -> PacketTableMenuState {
+        menuState()
     }
 }

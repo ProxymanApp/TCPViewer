@@ -1545,6 +1545,7 @@ final class TCPViewerWorkspaceController {
     }
 
     private func applyInterfaceInventory(_ interfaces: [CaptureInterfaceSummary], previousSelectionID: String?) {
+        // Prefer a valid current selection, then the latest interface that actually started capture.
         snapshot.sessionState.interfaceInventory = interfaces
         snapshot.sessionState.lastError = nil
 
@@ -1561,10 +1562,11 @@ final class TCPViewerWorkspaceController {
             snapshot.sessionState.selectedInterfaceID = nil
             snapshot.sessionState.options = options(for: nil)
             snapshot.sessionState.statusMessage = "The previously selected interface is no longer available. Choose another interface before starting capture."
-        } else if snapshot.sessionState.selectedInterfaceID == nil, let firstSelectable = selectableInterfaces.first {
-            snapshot.sessionState.selectedInterfaceID = firstSelectable.id
-            snapshot.sessionState.options = options(for: firstSelectable)
-            snapshot.sessionState.statusMessage = "Discovered \(interfaces.count) interfaces. Selected \(displayName(for: firstSelectable))."
+        } else if snapshot.sessionState.selectedInterfaceID == nil,
+                  let preferredInterface = preferredInterface(from: selectableInterfaces) {
+            snapshot.sessionState.selectedInterfaceID = preferredInterface.id
+            snapshot.sessionState.options = options(for: preferredInterface)
+            snapshot.sessionState.statusMessage = "Discovered \(interfaces.count) interfaces. Selected \(displayName(for: preferredInterface))."
         } else if let selectedInterface = snapshot.sessionState.selectedInterface {
             snapshot.sessionState.options = options(for: selectedInterface)
             snapshot.sessionState.statusMessage = "Refreshed \(interfaces.count) interfaces."
@@ -1585,6 +1587,17 @@ final class TCPViewerWorkspaceController {
                 snapshot.sessionState.phase = .ready
             }
         }
+    }
+
+    private func preferredInterface(from selectableInterfaces: [CaptureInterfaceSummary]) -> CaptureInterfaceSummary? {
+        // Pick the newest persisted capture-start interface before falling back to inventory order.
+        for interfaceID in snapshot.sessionState.lastUsedInterfaceIDs {
+            if let interface = selectableInterfaces.first(where: { $0.id == interfaceID }) {
+                return interface
+            }
+        }
+
+        return selectableInterfaces.first
     }
 
     private func validatedOptions(_ options: CaptureOptions, for interface: CaptureInterfaceSummary?) -> CaptureOptions {

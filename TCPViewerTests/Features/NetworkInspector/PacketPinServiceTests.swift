@@ -75,6 +75,26 @@ struct PacketPinServiceTests {
         #expect(service.matchingPackets(in: [packet], for: .pinned).map(\.id) == [packet.id])
     }
 
+    @Test func clientPinStoresResolvedIconPath() throws {
+        let storageURL = temporaryDirectory().appendingPathComponent("Pins.json")
+        let service = PacketPinService(storageURL: storageURL)
+        let executablePath = "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/123.0.0/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper"
+        let client = PacketClient(
+            pid: 123,
+            name: "Google Chrome Helper",
+            displayName: "Google Chrome Helper",
+            executablePath: executablePath,
+            bundleIdentifier: "com.google.Chrome.helper",
+            bundlePath: "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/123.0.0/Helpers/Google Chrome Helper.app"
+        )
+        let packet = makePacket(packetNumber: 1, client: client)
+
+        let pin = try service.upsertPin(from: packet, kind: .client, clickedColumn: .client)
+
+        #expect(pin.clientKey == "bundleIdentifier:com.google.Chrome.helper")
+        #expect(pin.clientIconFilePath == "/Applications/Google Chrome.app")
+    }
+
     private func temporaryDirectory() -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
