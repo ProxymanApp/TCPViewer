@@ -129,7 +129,7 @@ struct PacketTableColumnServiceTests {
     }
 
     @MainActor
-    @Test func columnVisibilityMenuUsesSmallControlsAndResetAtBottom() throws {
+    @Test func columnVisibilityMenuUsesNativeCheckedItemsAndResetAtBottom() throws {
         let service = PacketTableColumnService(definitions: [
             .builtIn(.number, title: "#", defaultWidth: 68, minimumWidth: 52),
             .builtIn(.time, title: "Time", defaultWidth: 112, minimumWidth: 96, isDefaultVisible: false),
@@ -142,17 +142,23 @@ struct PacketTableColumnServiceTests {
         controller.menuNeedsUpdate(menu)
 
         let visibleTitles = menu.items.compactMap { $0.isSeparatorItem ? nil : $0.title }
-        let numberButton = try #require(menu.items[0].view as? NSButton)
-        let timeButton = try #require(menu.items[1].view as? NSButton)
-        let resetButton = try #require(menu.items.last?.view as? NSButton)
+        let numberItem = menu.items[0]
+        let timeItem = menu.items[1]
+        let resetItem = try #require(menu.items.last)
 
+        #expect(menu.showsStateColumn)
         #expect(visibleTitles == ["#", "Time", "Reset All Columns"])
         #expect(menu.items[2].isSeparatorItem)
-        #expect(numberButton.controlSize == .small)
-        #expect(timeButton.controlSize == .small)
-        #expect(resetButton.controlSize == .small)
-        #expect(numberButton.state == .on)
-        #expect(timeButton.state == .off)
+        #expect(numberItem.view == nil)
+        #expect(timeItem.view == nil)
+        #expect(resetItem.view == nil)
+        #expect(numberItem.state == .on)
+        #expect(timeItem.state == .off)
+        #expect(resetItem.state == .off)
+        #expect(numberItem.action == #selector(PacketTableColumnVisibilityMenuActionHandling.togglePacketTableColumnVisibilityFromMenu(_:)))
+        #expect(resetItem.action == #selector(PacketTableColumnVisibilityMenuActionHandling.resetPacketTableColumnsFromMenu(_:)))
+        #expect(numberItem.target === actionHandler)
+        #expect(resetItem.target === actionHandler)
     }
 }
 

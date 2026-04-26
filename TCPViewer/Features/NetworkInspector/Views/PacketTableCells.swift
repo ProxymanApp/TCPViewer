@@ -122,15 +122,11 @@ final class PacketProtocolCell: NSTextFieldCell {
     }
 
     private func backgroundColor(for protocolText: String, severity: PacketSeverity) -> NSColor {
-        if severity != .normal {
-            return .systemOrange.withAlphaComponent(0.18)
-        }
-
         switch protocolText.uppercased() {
         case "TCP":
             return .systemOrange.withAlphaComponent(0.16)
         case "UDP":
-            return .systemBlue.withAlphaComponent(0.16)
+            return .systemCyan.withAlphaComponent(0.18)
         case "TLS", "SSL", "HTTPS":
             return .systemGreen.withAlphaComponent(0.16)
         case "HTTP":
@@ -142,20 +138,20 @@ final class PacketProtocolCell: NSTextFieldCell {
         case "ARP":
             return .systemTeal.withAlphaComponent(0.16)
         default:
+            if severity != .normal {
+                return .systemOrange.withAlphaComponent(0.18)
+            }
+
             return .controlAccentColor.withAlphaComponent(0.14)
         }
     }
 
     private func textColor(for protocolText: String, severity: PacketSeverity) -> NSColor {
-        if severity != .normal {
-            return .systemOrange
-        }
-
         switch protocolText.uppercased() {
         case "TCP":
             return .systemOrange
         case "UDP":
-            return .systemBlue
+            return .systemCyan
         case "TLS", "SSL", "HTTPS":
             return .systemGreen
         case "HTTP":
@@ -167,6 +163,10 @@ final class PacketProtocolCell: NSTextFieldCell {
         case "ARP":
             return .systemTeal
         default:
+            if severity != .normal {
+                return .systemOrange
+            }
+
             return .controlAccentColor
         }
     }
@@ -200,7 +200,7 @@ final class PacketClientCell: NSTextFieldCell {
         self.client = client
         stringValue = client?.displayName ?? "-"
         font = configuration.packetFont(weight: .regular)
-        textColor = client == nil ? .secondaryLabelColor : .labelColor
+        textColor = .secondaryLabelColor
     }
 
     override func drawingRect(forBounds rect: NSRect) -> NSRect {

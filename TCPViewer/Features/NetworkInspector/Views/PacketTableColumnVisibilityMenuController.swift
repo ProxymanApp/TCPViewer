@@ -6,11 +6,6 @@ import AppKit
 }
 
 final class PacketTableColumnVisibilityMenuController: NSObject {
-    private enum Layout {
-        static let itemWidth: CGFloat = 220
-        static let itemHeight: CGFloat = 20
-    }
-
     weak var actionHandler: PacketTableColumnVisibilityMenuActionHandling?
 
     private let columnService: PacketTableColumnService
@@ -23,6 +18,7 @@ final class PacketTableColumnVisibilityMenuController: NSObject {
     func makeMenu() -> NSMenu {
         let menu = NSMenu(title: "Columns")
         menu.autoenablesItems = false
+        menu.showsStateColumn = true
         menu.delegate = self
         return menu
     }
@@ -40,46 +36,29 @@ final class PacketTableColumnVisibilityMenuController: NSObject {
 
     // Create a small checkbox row so the menu can fit more columns vertically.
     private func columnItem(_ entry: PacketTableColumnMenuEntry) -> NSMenuItem {
-        let menuItem = NSMenuItem(title: entry.title, action: nil, keyEquivalent: "")
+        let menuItem = NSMenuItem(
+            title: entry.title,
+            action: #selector(PacketTableColumnVisibilityMenuActionHandling.togglePacketTableColumnVisibilityFromMenu(_:)),
+            keyEquivalent: ""
+        )
+        menuItem.target = actionHandler
         menuItem.representedObject = entry.identifier
         menuItem.state = entry.isVisible ? .on : .off
         menuItem.isEnabled = entry.isEnabled
         menuItem.toolTip = "Show or hide the \(entry.title) column."
-
-        let button = NSButton(
-            checkboxWithTitle: entry.title,
-            target: actionHandler,
-            action: #selector(PacketTableColumnVisibilityMenuActionHandling.togglePacketTableColumnVisibilityFromMenu(_:))
-        )
-        button.identifier = NSUserInterfaceItemIdentifier(entry.identifier)
-        button.controlSize = .small
-        button.font = NSFont.menuFont(ofSize: NSFont.smallSystemFontSize)
-        button.state = entry.isVisible ? .on : .off
-        button.isEnabled = entry.isEnabled
-        button.toolTip = menuItem.toolTip
-        button.frame = NSRect(x: 0, y: 0, width: Layout.itemWidth, height: Layout.itemHeight)
-        menuItem.view = button
         return menuItem
     }
 
     // Create the bottom reset command for restoring default visibility.
     private func resetItem() -> NSMenuItem {
         let title = "Reset All Columns"
-        let menuItem = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        menuItem.toolTip = "Restore the default packet table columns."
-
-        let button = NSButton(
+        let menuItem = NSMenuItem(
             title: title,
-            target: actionHandler,
-            action: #selector(PacketTableColumnVisibilityMenuActionHandling.resetPacketTableColumnsFromMenu(_:))
+            action: #selector(PacketTableColumnVisibilityMenuActionHandling.resetPacketTableColumnsFromMenu(_:)),
+            keyEquivalent: ""
         )
-        button.controlSize = .small
-        button.font = NSFont.menuFont(ofSize: NSFont.smallSystemFontSize)
-        button.isBordered = false
-        button.alignment = .left
-        button.toolTip = menuItem.toolTip
-        button.frame = NSRect(x: 0, y: 0, width: Layout.itemWidth, height: Layout.itemHeight)
-        menuItem.view = button
+        menuItem.target = actionHandler
+        menuItem.toolTip = "Restore the default packet table columns."
         return menuItem
     }
 }
