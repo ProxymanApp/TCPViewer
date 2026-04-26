@@ -134,31 +134,77 @@ struct PacketTableRow: Identifiable, Sendable, Hashable {
     let sourceAddress: String?
     let destinationAddress: String?
     let sniDomainName: String?
+    let timestamp: Date
+    let streamID: UInt32?
     let numberText: String
     let timeText: String
     let sourceText: String
     let destinationText: String
+    let sourcePortText: String
+    let destinationPortText: String
     let domainText: String
     let clientText: String
     let protocolText: String
+    let streamIDText: String
+    let directionText: String
+    let deltaTimeText: String
+    let streamDeltaTimeText: String
+    let tcpFlagsText: String
+    let tcpPayloadBytesText: String
+    let pidText: String
+    let bundleIdentifierText: String
+    let decodeStatusText: String
+    let interfaceText: String
     let lengthText: String
     let summaryText: String
     let tags: [PacketTag]
     let severity: PacketSeverity
 
     init(packet: PacketSummary) {
+        self.init(
+            packet: packet,
+            previousVisiblePacketTimestamp: nil,
+            previousVisibleStreamPacketTimestamp: nil
+        )
+    }
+
+    init(
+        packet: PacketSummary,
+        previousVisiblePacketTimestamp: Date?,
+        previousVisibleStreamPacketTimestamp: Date?
+    ) {
         self.id = packet.id
         self.client = packet.client
         self.sourceAddress = packet.endpoints.source.address
         self.destinationAddress = packet.endpoints.destination.address
         self.sniDomainName = packet.sniDomainName
+        self.timestamp = packet.timestamp
+        self.streamID = packet.streamID
         self.numberText = "\(packet.packetNumber)"
         self.timeText = NetworkInspectorFormatters.packetTime.string(from: packet.timestamp)
         self.sourceText = NetworkInspectorFormatters.endpointLabel(packet.endpoints.source)
         self.destinationText = NetworkInspectorFormatters.endpointLabel(packet.endpoints.destination)
+        self.sourcePortText = NetworkInspectorFormatters.portLabel(packet.endpoints.source.port)
+        self.destinationPortText = NetworkInspectorFormatters.portLabel(packet.endpoints.destination.port)
         self.domainText = packet.sniDomainName ?? "-"
         self.clientText = packet.client?.displayName ?? "-"
         self.protocolText = NetworkInspectorFormatters.protocolLabel(for: packet)
+        self.streamIDText = packet.streamID.map(String.init) ?? "-"
+        self.directionText = NetworkInspectorFormatters.directionLabel(packet.direction)
+        self.deltaTimeText = NetworkInspectorFormatters.intervalLabel(
+            from: previousVisiblePacketTimestamp,
+            to: packet.timestamp
+        )
+        self.streamDeltaTimeText = NetworkInspectorFormatters.intervalLabel(
+            from: previousVisibleStreamPacketTimestamp,
+            to: packet.timestamp
+        )
+        self.tcpFlagsText = packet.tcpFlags ?? "-"
+        self.tcpPayloadBytesText = packet.tcpPayloadLength.map(NetworkInspectorFormatters.byteCount) ?? "-"
+        self.pidText = packet.client.map { String($0.pid) } ?? "-"
+        self.bundleIdentifierText = packet.client?.bundleIdentifier ?? "-"
+        self.decodeStatusText = NetworkInspectorFormatters.decodeStatusLabel(packet.decodeStatus)
+        self.interfaceText = packet.captureMetadata.interfaceName ?? packet.interfaceID ?? "-"
         self.lengthText = NetworkInspectorFormatters.byteCount(packet.capturedLength)
         self.summaryText = packet.infoSummary
         self.tags = NetworkInspectorFormatters.tags(for: packet)
@@ -198,12 +244,36 @@ struct PacketTableRow: Identifiable, Sendable, Hashable {
             sourceText
         case .destination:
             destinationText
+        case .sourcePort:
+            sourcePortText
+        case .destinationPort:
+            destinationPortText
         case .domain:
             domainText
         case .client:
             clientText
         case .protocol:
             protocolText
+        case .streamID:
+            streamIDText
+        case .direction:
+            directionText
+        case .deltaTime:
+            deltaTimeText
+        case .streamDeltaTime:
+            streamDeltaTimeText
+        case .tcpFlags:
+            tcpFlagsText
+        case .tcpPayloadBytes:
+            tcpPayloadBytesText
+        case .pid:
+            pidText
+        case .bundleIdentifier:
+            bundleIdentifierText
+        case .decodeStatus:
+            decodeStatusText
+        case .interface:
+            interfaceText
         case .length:
             lengthText
         case .summary:
@@ -213,6 +283,26 @@ struct PacketTableRow: Identifiable, Sendable, Hashable {
         case .unknown:
             ""
         }
+    }
+}
+
+struct PacketTableRowTimingState: Sendable, Hashable {
+    private var previousVisiblePacketTimestamp: Date?
+    private var previousVisibleStreamPacketTimestampByID: [UInt32: Date] = [:]
+
+    // Build a row with deltas from the previous visible packet and stream packet.
+    mutating func row(for packet: PacketSummary) -> PacketTableRow {
+        let streamTimestamp = packet.streamID.flatMap { previousVisibleStreamPacketTimestampByID[$0] }
+        let row = PacketTableRow(
+            packet: packet,
+            previousVisiblePacketTimestamp: previousVisiblePacketTimestamp,
+            previousVisibleStreamPacketTimestamp: streamTimestamp
+        )
+        previousVisiblePacketTimestamp = packet.timestamp
+        if let streamID = packet.streamID {
+            previousVisibleStreamPacketTimestampByID[streamID] = packet.timestamp
+        }
+        return row
     }
 }
 
@@ -549,6 +639,46 @@ enum NetworkInspectorFormatters {
         return "\(address):\(port)"
     }
 
+    static func portLabel(_ port: UInt16?) -> String {
+        port.map(String.init) ?? "-"
+    }
+
+    static func directionLabel(_ direction: PacketDirection?) -> String {
+        guard let direction else {
+            return "-"
+        }
+
+        switch direction {
+        case .inbound:
+            return "Inbound"
+        case .outbound:
+            return "Outbound"
+        case .local:
+            return "Local"
+        case .unknown:
+            return "Unknown"
+        @unknown default:
+            return "Unknown"
+        }
+    }
+
+    static func intervalLabel(from startDate: Date?, to endDate: Date) -> String {
+        guard let startDate else {
+            return "-"
+        }
+
+        let interval = endDate.timeIntervalSince(startDate)
+        guard interval >= 0 else {
+            return "-"
+        }
+
+        if interval < 1 {
+            return "\(Int((interval * 1_000).rounded())) ms"
+        }
+
+        return String(format: "%.3f s", interval)
+    }
+
     static func protocolLabel(for packet: PacketSummary) -> String {
         if packet.transportHint == .tls {
             return packet.layers.reversed()
@@ -572,6 +702,21 @@ enum NetworkInspectorFormatters {
 
     static func byteCount(_ bytes: Int) -> String {
         "\(bytes) B"
+    }
+
+    static func decodeStatusLabel(_ status: PacketDecodeStatus) -> String {
+        switch status.kind {
+        case .complete:
+            return "Complete"
+        case .partial:
+            return "Partial"
+        case .malformed:
+            return "Malformed"
+        case .unsupported:
+            return "Unsupported"
+        @unknown default:
+            return "Unsupported"
+        }
     }
 
     static func severity(for packet: PacketSummary) -> PacketSeverity {

@@ -466,6 +466,9 @@ NSArray<PCPPNativePacketLayerDescriptor *> *MapLayers(const pcpp::Packet &packet
     return layers;
 }
 
+NSString *TCPFlagsSummaryForPacket(const pcpp::Packet &packet);
+NSNumber *TCPPayloadLengthForPacket(const pcpp::Packet &packet);
+
 PCPPNativePacketEndpointDescriptor *MapSourceEndpoint(const pcpp::Packet &packet)
 {
     if (auto *ipv4Layer = packet.getLayerOfType<pcpp::IPv4Layer>()) {
@@ -808,6 +811,8 @@ PCPPNativePacketSummaryDescriptor *MakePacketSummary(const pcpp::RawPacket &rawP
                                                                originalLength:rawPacket.getFrameLength()
                                                                capturedLength:rawPacket.getRawDataLen()
                                                              streamIdentifier:streamIdentifier
+                                                                      tcpFlags:TCPFlagsSummaryForPacket(packet)
+                                                               tcpPayloadLength:TCPPayloadLengthForPacket(packet)
                                                                   infoSummary:InfoSummaryForPacket(packet, rawPacket)
                                                                       layers:MapLayers(packet)
                                                                  decodeStatus:decodeDescriptor
@@ -830,6 +835,8 @@ PCPPNativePacketSummaryDescriptor *MakePacketSummary(const pcpp::RawPacket &rawP
                                                                originalLength:rawPacket.getFrameLength()
                                                                capturedLength:rawPacket.getRawDataLen()
                                                              streamIdentifier:nil
+                                                                      tcpFlags:nil
+                                                               tcpPayloadLength:nil
                                                                   infoSummary:@"Packet decoding failed."
                                                                        layers:@[]
                                                                  decodeStatus:decodeDescriptor
@@ -992,6 +999,24 @@ NSString *TCPFlagsSummary(const pcpp::tcphdr *header)
     }
 
     return [flags componentsJoinedByString:@", "];
+}
+
+NSString *TCPFlagsSummaryForPacket(const pcpp::Packet &packet)
+{
+    if (auto *tcpLayer = packet.getLayerOfType<pcpp::TcpLayer>(true)) {
+        return TCPFlagsSummary(tcpLayer->getTcpHeader());
+    }
+
+    return nil;
+}
+
+NSNumber *TCPPayloadLengthForPacket(const pcpp::Packet &packet)
+{
+    if (auto *tcpLayer = packet.getLayerOfType<pcpp::TcpLayer>(true)) {
+        return @(tcpLayer->getLayerPayloadSize());
+    }
+
+    return nil;
 }
 
 uint16_t TCPFlagsValue(const pcpp::tcphdr *header)
@@ -2265,6 +2290,8 @@ PCPPNativeCaptureHealthDescriptor *MakeHealthDescriptor(const LiveCaptureState &
                      originalLength:(NSInteger)originalLength
                      capturedLength:(NSInteger)capturedLength
                    streamIdentifier:(NSNumber *)streamIdentifier
+                           tcpFlags:(NSString *)tcpFlags
+                    tcpPayloadLength:(NSNumber *)tcpPayloadLength
                         infoSummary:(NSString *)infoSummary
                              layers:(NSArray<PCPPNativePacketLayerDescriptor *> *)layers
                        decodeStatus:(PCPPNativeDecodeStatusDescriptor *)decodeStatus
@@ -2283,6 +2310,8 @@ PCPPNativeCaptureHealthDescriptor *MakeHealthDescriptor(const LiveCaptureState &
         _originalLength = originalLength;
         _capturedLength = capturedLength;
         _streamIdentifier = streamIdentifier;
+        _tcpFlags = [tcpFlags copy];
+        _tcpPayloadLength = tcpPayloadLength;
         _infoSummary = [infoSummary copy];
         _layers = [layers copy];
         _decodeStatus = decodeStatus;

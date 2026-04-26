@@ -170,6 +170,8 @@ typedef NS_ENUM(NSInteger, PCPPNativeLiveSessionPhase) {
 @property (nonatomic, readonly) NSInteger originalLength;
 @property (nonatomic, readonly) NSInteger capturedLength;
 @property (nonatomic, readonly, nullable) NSNumber *streamIdentifier;
+@property (nonatomic, copy, readonly, nullable) NSString *tcpFlags;
+@property (nonatomic, readonly, nullable) NSNumber *tcpPayloadLength;
 @property (nonatomic, copy, readonly) NSString *infoSummary;
 @property (nonatomic, copy, readonly) NSArray<PCPPNativePacketLayerDescriptor *> *layers;
 @property (nonatomic, strong, readonly) PCPPNativeDecodeStatusDescriptor *decodeStatus;
@@ -186,6 +188,8 @@ typedef NS_ENUM(NSInteger, PCPPNativeLiveSessionPhase) {
                      originalLength:(NSInteger)originalLength
                      capturedLength:(NSInteger)capturedLength
                    streamIdentifier:(nullable NSNumber *)streamIdentifier
+                           tcpFlags:(nullable NSString *)tcpFlags
+                    tcpPayloadLength:(nullable NSNumber *)tcpPayloadLength
                         infoSummary:(NSString *)infoSummary
                              layers:(NSArray<PCPPNativePacketLayerDescriptor *> *)layers
                        decodeStatus:(PCPPNativeDecodeStatusDescriptor *)decodeStatus

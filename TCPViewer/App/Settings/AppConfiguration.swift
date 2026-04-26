@@ -45,6 +45,7 @@ final class AppConfiguration: NSObject {
 
     private let defaults: UserDefaults
     let interfaceSelectionHistory: InterfaceSelectionHistoryStore
+    var userDefaults: UserDefaults { defaults }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults

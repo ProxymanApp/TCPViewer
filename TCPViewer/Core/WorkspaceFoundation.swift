@@ -135,7 +135,8 @@ struct PacketIngestState: Sendable, Equatable {
                 let currentPacket = packets[packetIndex]
                 let updatedPacket = currentPacket.tcpviewerApplying(
                     sniDomainName: update.sniDomainName,
-                    client: update.client
+                    client: update.client,
+                    direction: update.direction
                 )
                 guard updatedPacket != currentPacket else {
                     continue

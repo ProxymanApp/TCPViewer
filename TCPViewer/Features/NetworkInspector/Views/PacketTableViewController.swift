@@ -107,6 +107,10 @@ final class PacketTableViewController: NSViewController {
     private let scrollView = NSScrollView()
     private let viewModel = PacketTableViewModel()
     private let contextMenuController = PacketTableContextMenuController()
+    private let columnService: PacketTableColumnService
+    private let columnLayoutStore: PacketTableColumnLayoutStore
+    private let columnVisibilityMenuController: PacketTableColumnVisibilityMenuController
+    private var isRestoringColumnLayout = false
     private var selectionCallbackSuppressionDepth = 0
     private var lastAppliedSelectedPacketID: PacketSummary.ID?
     private var clickedRowIndex: Int?
@@ -122,6 +126,10 @@ final class PacketTableViewController: NSViewController {
 
     init(configuration: AppConfiguration) {
         self.configuration = configuration
+        let columnService = PacketTableColumnService()
+        self.columnService = columnService
+        self.columnLayoutStore = PacketTableColumnLayoutStore(defaults: configuration.userDefaults)
+        self.columnVisibilityMenuController = PacketTableColumnVisibilityMenuController(columnService: columnService)
         super.init(nibName: nil, bundle: nil)
         NotificationCenter.default.addObserver(
             self,
@@ -196,19 +204,18 @@ final class PacketTableViewController: NSViewController {
         contextMenuController.actionHandler = self
         contextMenuController.stateProvider = self
         tableView.menu = contextMenuController.makeMenu()
-        
-        addColumn("number", title: " #", width: 68, minWidth: 52, cell: PacketTextCell())
-        addColumn("time", title: " Time", width: 112, minWidth: 96, cell: PacketTextCell())
-        addColumn("source", title: " Source", width: 180, minWidth: 100, cell: PacketTextCell())
-        addColumn("destination", title: " Destination", width: 180, minWidth: 100, cell: PacketTextCell())
-        addColumn("protocol", title: " Protocol", width: 96, minWidth: 82, cell: PacketProtocolCell())
-        addColumn("client", title: " Client", width: 140, minWidth: 60, cell: PacketClientCell())
-        addColumn("domain", title: " Domain", width: 150, minWidth: 60, cell: PacketTextCell())
-        addColumn("length", title: " Length", width: 80, minWidth: 68, cell: PacketTextCell())
-        addColumn("summary", title: " Summary", width: 320, minWidth: 120, cell: PacketTextCell())
-        addColumn("tags", title: " Tags", width: 140, minWidth: 90, cell: PacketTextCell())
+        columnVisibilityMenuController.actionHandler = self
+        tableView.headerView?.menu = columnVisibilityMenuController.makeMenu()
+
+        let restoredLayout = columnLayoutStore.load()
+        if let restoredLayout {
+            columnService.applyVisibility(from: restoredLayout)
+        }
+        columnService.definitions.forEach(addColumn(_:))
         tableView.autosaveName = Self.columnAutosaveName
-        tableView.autosaveTableColumns = true
+        tableView.autosaveTableColumns = false
+        restoreColumnLayout(restoredLayout)
+        syncColumnVisibilityFromTable()
 
         scrollView.documentView = tableView
         scrollView.hasVerticalScroller = true
@@ -225,20 +232,126 @@ final class PacketTableViewController: NSViewController {
         }
     }
 
-    private func addColumn(
-        _ identifier: String,
-        title: String,
-        width: CGFloat,
-        minWidth: CGFloat,
-        cell: NSCell
-    ) {
-        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(identifier))
-        column.title = title
-        column.width = width
-        column.minWidth = minWidth
+    private func addColumn(_ definition: PacketTableColumnDefinition) {
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(definition.identifier))
+        column.title = definition.tableTitle
+        column.width = CGFloat(definition.defaultWidth)
+        column.minWidth = CGFloat(definition.minimumWidth)
         column.resizingMask = .userResizingMask
-        column.dataCell = cell
+        column.dataCell = cell(for: definition.cellKind)
+        column.isHidden = !columnService.isColumnVisible(identifier: definition.identifier)
         tableView.addTableColumn(column)
+    }
+
+    private func cell(for kind: PacketTableColumnCellKind) -> NSCell {
+        switch kind {
+        case .text:
+            PacketTextCell()
+        case .client:
+            PacketClientCell()
+        case .protocol:
+            PacketProtocolCell()
+        }
+    }
+
+    private func applyColumnVisibility(identifier: String) {
+        guard let column = tableView.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier(identifier)) else {
+            return
+        }
+
+        column.isHidden = !columnService.isColumnVisible(identifier: identifier)
+    }
+
+    private func syncColumnVisibilityFromTable() {
+        tableView.tableColumns.forEach { column in
+            columnService.syncColumnVisibility(
+                identifier: column.identifier.rawValue,
+                isVisible: !column.isHidden
+            )
+        }
+    }
+
+    private func restoreColumnLayout(_ layout: PacketTableColumnLayout?) {
+        guard let layout else {
+            return
+        }
+
+        isRestoringColumnLayout = true
+        defer { isRestoringColumnLayout = false }
+
+        layout.columns.enumerated().forEach { targetIndex, savedColumn in
+            guard let currentIndex = tableView.tableColumns.firstIndex(where: {
+                $0.identifier.rawValue == savedColumn.identifier
+            }) else {
+                return
+            }
+
+            if currentIndex != targetIndex, targetIndex < tableView.tableColumns.count {
+                tableView.moveColumn(currentIndex, toColumn: targetIndex)
+            }
+        }
+
+        layout.columns.forEach { savedColumn in
+            guard let column = tableView.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier(savedColumn.identifier)) else {
+                return
+            }
+
+            column.width = max(column.minWidth, CGFloat(savedColumn.width))
+            column.isHidden = !columnService.isColumnVisible(identifier: savedColumn.identifier)
+        }
+    }
+
+    private func restoreDefaultColumnLayout() {
+        isRestoringColumnLayout = true
+        defer { isRestoringColumnLayout = false }
+
+        columnService.definitions.enumerated().forEach { targetIndex, definition in
+            guard let currentIndex = tableView.tableColumns.firstIndex(where: {
+                $0.identifier.rawValue == definition.identifier
+            }) else {
+                return
+            }
+
+            if currentIndex != targetIndex {
+                tableView.moveColumn(currentIndex, toColumn: targetIndex)
+            }
+
+            if let column = tableView.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier(definition.identifier)) {
+                column.width = CGFloat(definition.defaultWidth)
+                column.isHidden = !columnService.isColumnVisible(identifier: definition.identifier)
+            }
+        }
+    }
+
+    private func currentColumnLayout() -> PacketTableColumnLayout {
+        PacketTableColumnLayout(columns: tableView.tableColumns.map { column in
+            PacketTableColumnLayout.Column(
+                identifier: column.identifier.rawValue,
+                isVisible: !column.isHidden,
+                width: Double(column.width)
+            )
+        })
+    }
+
+    private func saveColumnLayout() {
+        guard !isRestoringColumnLayout else {
+            return
+        }
+
+        syncColumnVisibilityFromTable()
+        columnLayoutStore.save(currentColumnLayout())
+    }
+
+    private func columnIdentifier(from sender: Any?) -> String? {
+        if let item = sender as? NSMenuItem {
+            return item.representedObject as? String
+        }
+
+        if let view = sender as? NSView {
+            return view.identifier?.rawValue
+        }
+
+        return nil
     }
 
     private func preserveScrollPosition(_ updates: () -> Void) {
@@ -287,7 +400,22 @@ final class PacketTableViewController: NSViewController {
             return .warning
         }
 
-        if column == "number" || column == "time" || column == "length" || column == "tags" {
+        if column == "number" ||
+            column == "time" ||
+            column == "sourcePort" ||
+            column == "destinationPort" ||
+            column == "streamID" ||
+            column == "direction" ||
+            column == "deltaTime" ||
+            column == "streamDeltaTime" ||
+            column == "tcpFlags" ||
+            column == "tcpPayloadBytes" ||
+            column == "pid" ||
+            column == "bundleIdentifier" ||
+            column == "decodeStatus" ||
+            column == "interface" ||
+            column == "length" ||
+            column == "tags" {
             return .secondary
         }
 
@@ -466,6 +594,14 @@ extension PacketTableViewController: NSTableViewDataSource, NSTableViewDelegate 
         }
     }
 
+    func tableViewColumnDidMove(_ notification: Notification) {
+        saveColumnLayout()
+    }
+
+    func tableViewColumnDidResize(_ notification: Notification) {
+        saveColumnLayout()
+    }
+
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard !isSuppressingSelectionCallbacks else {
             return
@@ -503,5 +639,26 @@ extension PacketTableViewController: PacketTableContextMenuActionHandling, Packe
 
     func packetTableContextMenuState() -> PacketTableMenuState {
         menuState()
+    }
+}
+
+extension PacketTableViewController: PacketTableColumnVisibilityMenuActionHandling {
+    func togglePacketTableColumnVisibilityFromMenu(_ sender: Any?) {
+        guard let identifier = columnIdentifier(from: sender),
+              columnService.toggleColumnVisibility(identifier: identifier) else {
+            return
+        }
+
+        applyColumnVisibility(identifier: identifier)
+        saveColumnLayout()
+        tableView.headerView?.menu?.cancelTracking()
+    }
+
+    func resetPacketTableColumnsFromMenu(_ sender: Any?) {
+        columnService.resetToDefaults()
+        restoreDefaultColumnLayout()
+        columnLayoutStore.clear()
+        syncColumnVisibilityFromTable()
+        tableView.headerView?.menu?.cancelTracking()
     }
 }

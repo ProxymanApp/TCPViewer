@@ -5,26 +5,29 @@ enum PacketTableColumnRole: String, Equatable, Sendable {
     case time
     case source
     case destination
+    case sourcePort
+    case destinationPort
     case domain
     case client
     case `protocol`
+    case streamID
+    case direction
+    case deltaTime
+    case streamDeltaTime
+    case tcpFlags
+    case tcpPayloadBytes
+    case pid
+    case bundleIdentifier
+    case decodeStatus
+    case interface
     case length
     case summary
     case tags
     case unknown
 
-    static let visibleColumnIdentifiers = [
-        Self.number.rawValue,
-        Self.time.rawValue,
-        Self.source.rawValue,
-        Self.destination.rawValue,
-        Self.protocol.rawValue,
-        Self.client.rawValue,
-        Self.domain.rawValue,
-        Self.length.rawValue,
-        Self.summary.rawValue,
-        Self.tags.rawValue,
-    ]
+    static let visibleColumnIdentifiers = PacketTableColumnService.defaultDefinitions
+        .filter(\.isDefaultVisible)
+        .map(\.identifier)
 
     init(columnIdentifier: String?) {
         guard let columnIdentifier else {

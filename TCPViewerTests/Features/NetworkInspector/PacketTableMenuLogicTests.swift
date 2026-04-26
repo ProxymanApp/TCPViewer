@@ -104,7 +104,7 @@ struct PacketTableMenuLogicTests {
             makePacket(packetNumber: 2),
             makePacket(packetNumber: 3),
         ]
-        let rows = packets.map(PacketTableRow.init)
+        let rows = packets.map(PacketTableRow.init(packet:))
 
         #expect(PacketTableSelectionSyncPlanner.action(
             rows: rows,
@@ -123,18 +123,71 @@ struct PacketTableMenuLogicTests {
 
     @MainActor
     @Test func packetTablePersistsUserColumnLayout() throws {
-        let controller = PacketTableViewController(configuration: AppConfiguration(defaults: Self.makeUserDefaults()))
+        let defaults = Self.makeUserDefaults()
+        let controller = PacketTableViewController(configuration: AppConfiguration(defaults: defaults))
         controller.loadViewIfNeeded()
 
-        let scrollView = try #require(controller.view as? NSScrollView)
-        let tableView = try #require(scrollView.documentView as? NSTableView)
+        let tableView = try Self.tableView(in: controller)
         let columnIdentifiers = Set(tableView.tableColumns.map { $0.identifier.rawValue })
+        let hiddenColumnIdentifiers = Set(tableView.tableColumns.filter { $0.isHidden }.map { $0.identifier.rawValue })
+        let defaultHiddenColumnIdentifiers = Set(PacketTableColumnService.defaultDefinitions
+            .filter { !$0.isDefaultVisible }
+            .map(\.identifier))
 
         #expect(tableView.autosaveName == PacketTableViewController.columnAutosaveName)
-        #expect(tableView.autosaveTableColumns)
+        #expect(!tableView.autosaveTableColumns)
         #expect(tableView.allowsColumnReordering)
         #expect(tableView.allowsColumnResizing)
-        #expect(columnIdentifiers == Set(PacketTableColumnRole.visibleColumnIdentifiers))
+        #expect(columnIdentifiers == Set(PacketTableColumnService.defaultDefinitions.map(\.identifier)))
+        #expect(hiddenColumnIdentifiers == defaultHiddenColumnIdentifiers)
+
+        controller.togglePacketTableColumnVisibilityFromMenu(Self.columnSender("sourcePort"))
+        controller.togglePacketTableColumnVisibilityFromMenu(Self.columnSender("tags"))
+
+        let sourcePortColumn = try #require(tableView.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier("sourcePort")))
+        sourcePortColumn.width = 144
+        controller.tableViewColumnDidResize(Notification(name: Notification.Name("PacketTableColumnResizeTest"), object: tableView))
+
+        let sourcePortIndex = try #require(tableView.tableColumns.firstIndex(where: {
+            $0.identifier.rawValue == "sourcePort"
+        }))
+        tableView.moveColumn(sourcePortIndex, toColumn: 1)
+        controller.tableViewColumnDidMove(Notification(name: Notification.Name("PacketTableColumnMoveTest"), object: tableView))
+
+        let restoredController = PacketTableViewController(configuration: AppConfiguration(defaults: defaults))
+        restoredController.loadViewIfNeeded()
+        let restoredTableView = try Self.tableView(in: restoredController)
+        let restoredSourcePortColumn = try #require(restoredTableView.tableColumn(
+            withIdentifier: NSUserInterfaceItemIdentifier("sourcePort")
+        ))
+        let restoredTagsColumn = try #require(restoredTableView.tableColumn(
+            withIdentifier: NSUserInterfaceItemIdentifier("tags")
+        ))
+
+        #expect(restoredTableView.tableColumns[1].identifier.rawValue == "sourcePort")
+        #expect(!restoredSourcePortColumn.isHidden)
+        #expect(restoredTagsColumn.isHidden)
+        #expect(abs(restoredSourcePortColumn.width - 144) < 0.5)
+
+        restoredController.resetPacketTableColumnsFromMenu(nil)
+
+        let resetController = PacketTableViewController(configuration: AppConfiguration(defaults: defaults))
+        resetController.loadViewIfNeeded()
+        let resetTableView = try Self.tableView(in: resetController)
+        let resetSourcePortColumn = try #require(resetTableView.tableColumn(
+            withIdentifier: NSUserInterfaceItemIdentifier("sourcePort")
+        ))
+        let resetTagsColumn = try #require(resetTableView.tableColumn(
+            withIdentifier: NSUserInterfaceItemIdentifier("tags")
+        ))
+        let defaultSourcePortIndex = try #require(PacketTableColumnService.defaultDefinitions.firstIndex {
+            $0.identifier == "sourcePort"
+        })
+
+        #expect(resetTableView.tableColumns[defaultSourcePortIndex].identifier.rawValue == "sourcePort")
+        #expect(resetSourcePortColumn.isHidden)
+        #expect(!resetTagsColumn.isHidden)
+        #expect(abs(resetSourcePortColumn.width - 92) < 0.5)
     }
 
     @MainActor
@@ -215,6 +268,19 @@ struct PacketTableMenuLogicTests {
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
         return defaults
+    }
+
+    @MainActor
+    private static func tableView(in controller: PacketTableViewController) throws -> NSTableView {
+        let scrollView = try #require(controller.view as? NSScrollView)
+        return try #require(scrollView.documentView as? NSTableView)
+    }
+
+    @MainActor
+    private static func columnSender(_ identifier: String) -> NSView {
+        let view = NSView(frame: .zero)
+        view.identifier = NSUserInterfaceItemIdentifier(identifier)
+        return view
     }
 }
 

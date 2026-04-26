@@ -69,6 +69,7 @@ private struct PacketTableContentCache {
     private var savedRecords: [SavedPacketRecord] = []
     private var generation: UInt64 = 0
     private var cachedContent = PacketTableContent.empty
+    private var cachedRowTimingState = PacketTableRowTimingState()
 
     mutating func reset() {
         packetRevision = nil
@@ -80,6 +81,7 @@ private struct PacketTableContentCache {
         savedRecords = []
         generation &+= 1
         cachedContent = .empty
+        cachedRowTimingState = PacketTableRowTimingState()
     }
 
     #if DEBUG
@@ -172,6 +174,7 @@ private struct PacketTableContentCache {
         )
         rows.reserveCapacity(sourcePackets.count)
         visiblePacketRowIndexByID.reserveCapacity(sourcePackets.count)
+        var rowTimingState = PacketTableRowTimingState()
 
         for packet in sourcePackets {
             if NetworkInspectorFormatters.severity(for: packet) == .malformed {
@@ -184,7 +187,7 @@ private struct PacketTableContentCache {
             }
 
             let rowIndex = rows.count
-            rows.append(PacketTableRow(packet: packet))
+            rows.append(rowTimingState.row(for: packet))
             visiblePacketRowIndexByID[packet.id] = rowIndex
         }
 
@@ -205,7 +208,8 @@ private struct PacketTableContentCache {
             displayFilterText: displayFilterText,
             sourceListSelection: sourceListSelection,
             pinnedItems: pinnedItems,
-            savedRecords: savedRecords
+            savedRecords: savedRecords,
+            rowTimingState: rowTimingState
         )
     }
 
@@ -232,6 +236,7 @@ private struct PacketTableContentCache {
         var rows = cachedContent.rows
         var visiblePacketRowIndexByID = cachedContent.visiblePacketRowIndexByID
         var malformedPacketCount = cachedContent.malformedPacketCount
+        var rowTimingState = cachedRowTimingState
         let appendStartIndex = rows.count
 
         rows.reserveCapacity(rows.count + newPackets.count)
@@ -248,7 +253,7 @@ private struct PacketTableContentCache {
             }
 
             let rowIndex = rows.count
-            rows.append(PacketTableRow(packet: packet))
+            rows.append(rowTimingState.row(for: packet))
             visiblePacketRowIndexByID[packet.id] = rowIndex
         }
 
@@ -272,7 +277,8 @@ private struct PacketTableContentCache {
             displayFilterText: displayFilterText,
             sourceListSelection: sourceListSelection,
             pinnedItems: pinnedItems,
-            savedRecords: savedRecords
+            savedRecords: savedRecords,
+            rowTimingState: rowTimingState
         )
     }
 
@@ -282,7 +288,8 @@ private struct PacketTableContentCache {
         displayFilterText: String,
         sourceListSelection: PacketSourceListSelection,
         pinnedItems: [PacketPin],
-        savedRecords: [SavedPacketRecord]
+        savedRecords: [SavedPacketRecord],
+        rowTimingState: PacketTableRowTimingState? = nil
     ) -> PacketTableContent {
         packetRevision = ingestState.packetRevision
         packetLineageRevision = ingestState.packetLineageRevision
@@ -292,6 +299,9 @@ private struct PacketTableContentCache {
         self.pinnedItems = pinnedItems
         self.savedRecords = savedRecords
         cachedContent = content
+        if let rowTimingState {
+            cachedRowTimingState = rowTimingState
+        }
         return content
     }
 

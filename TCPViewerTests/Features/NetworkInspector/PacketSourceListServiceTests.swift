@@ -217,7 +217,7 @@ struct PacketSourceListServiceTests {
         #expect(snapshot.item(for: .domain(.ipAddresses))?.count == 1)
 
         state.applyMetadataUpdates([
-            PacketMetadataUpdate(packetIDs: [packet.id], sniDomainName: "api.example.com", client: client)
+            PacketMetadataUpdate(packetIDs: [packet.id], sniDomainName: "api.example.com", client: client, direction: .outbound)
         ])
         snapshot = service.snapshot(for: state)
         #expect(snapshot.item(for: .apps)?.children.map(\.title) == ["Example"])

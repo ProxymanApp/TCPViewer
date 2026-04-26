@@ -366,6 +366,8 @@ enum NativeBridgeMapper {
             originalLength: descriptor.originalLength,
             capturedLength: descriptor.capturedLength,
             streamID: descriptor.streamIdentifier?.uint32Value,
+            tcpFlags: descriptor.tcpFlags,
+            tcpPayloadLength: descriptor.tcpPayloadLength?.intValue,
             infoSummary: descriptor.infoSummary,
             layers: descriptor.layers.map(packetLayer),
             decodeStatus: decodeStatus(descriptor.decodeStatus),

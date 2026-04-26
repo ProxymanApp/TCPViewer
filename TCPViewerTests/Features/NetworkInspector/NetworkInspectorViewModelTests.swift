@@ -139,7 +139,11 @@ struct NetworkInspectorViewModelTests {
             transportHint: .http1,
             destinationPort: 80,
             sniDomainName: "api.example.com",
-            client: client
+            client: client,
+            direction: .outbound,
+            tcpFlags: "SYN, ACK",
+            tcpPayloadLength: 42,
+            interfaceName: "en0"
         )
         let malformed = makePacket(
             packetNumber: 2,
@@ -168,6 +172,16 @@ struct NetworkInspectorViewModelTests {
         #expect(healthyRow.lengthText == "128 B")
         #expect(healthyRow.domainText == "api.example.com")
         #expect(healthyRow.clientText == "Example")
+        #expect(healthyRow.text(for: .sourcePort) == "1234")
+        #expect(healthyRow.text(for: .destinationPort) == "80")
+        #expect(healthyRow.text(for: .streamID) == "7")
+        #expect(healthyRow.text(for: .direction) == "Outbound")
+        #expect(healthyRow.text(for: .tcpFlags) == "SYN, ACK")
+        #expect(healthyRow.text(for: .tcpPayloadBytes) == "42 B")
+        #expect(healthyRow.text(for: .pid) == "123")
+        #expect(healthyRow.text(for: .bundleIdentifier) == "com.example.app")
+        #expect(healthyRow.text(for: .decodeStatus) == "Complete")
+        #expect(healthyRow.text(for: .interface) == "en0")
         #expect(malformedRow.severity == .malformed)
         #expect(malformedRow.tags.map(\.label) == ["Malformed"])
         #expect(PacketTableRow(packet: tls).protocolText == "TLSv1.2")
@@ -185,13 +199,27 @@ struct NetworkInspectorViewModelTests {
         #expect(PacketTableUpdatePlanner.plan(previousGeneration: 1, currentGeneration: 1, proposedPlan: .reload) == .none)
     }
 
+    @Test func packetTableRowsFormatGlobalAndStreamDeltas() {
+        var timingState = PacketTableRowTimingState()
+        let first = timingState.row(for: makePacket(packetNumber: 1, source: .live, transportHint: .tcp, streamID: 10))
+        let second = timingState.row(for: makePacket(packetNumber: 2, source: .live, transportHint: .tcp, streamID: 10))
+        let third = timingState.row(for: makePacket(packetNumber: 3, source: .live, transportHint: .tcp, streamID: 11))
+
+        #expect(first.text(for: .deltaTime) == "-")
+        #expect(first.text(for: .streamDeltaTime) == "-")
+        #expect(second.text(for: .deltaTime) == "1.000 s")
+        #expect(second.text(for: .streamDeltaTime) == "1.000 s")
+        #expect(third.text(for: .deltaTime) == "1.000 s")
+        #expect(third.text(for: .streamDeltaTime) == "-")
+    }
+
     @Test func packetTableSelectionSyncOnlyTouchesStaleVisualSelection() {
         let packets = [
             makePacket(packetNumber: 1, source: .live, transportHint: .tcp),
             makePacket(packetNumber: 2, source: .live, transportHint: .udp),
             makePacket(packetNumber: 3, source: .live, transportHint: .dns),
         ]
-        let rows = packets.map(PacketTableRow.init)
+        let rows = packets.map(PacketTableRow.init(packet:))
 
         #expect(PacketTableSelectionSyncPlanner.action(
             rows: rows,
@@ -1357,6 +1385,10 @@ struct NetworkInspectorViewModelTests {
         decodeStatus: PacketDecodeStatus = PacketDecodeStatus(kind: .complete),
         sniDomainName: String? = nil,
         client: PacketClient? = nil,
+        direction: PacketDirection? = nil,
+        tcpFlags: String? = nil,
+        tcpPayloadLength: Int? = nil,
+        interfaceName: String? = nil,
         transportDetailSummary: String? = nil,
         transportLayerName: String? = nil
     ) -> PacketSummary {
@@ -1373,13 +1405,16 @@ struct NetworkInspectorViewModelTests {
             originalLength: 128,
             capturedLength: 128,
             streamID: streamID,
+            direction: direction,
+            tcpFlags: tcpFlags,
+            tcpPayloadLength: tcpPayloadLength,
             infoSummary: "Packet \(packetNumber)",
             layers: [
                 PacketLayer(name: "Ethernet"),
                 PacketLayer(name: transportLayerName ?? transportHint.rawValue.uppercased(), detailSummary: transportDetailSummary),
             ],
             decodeStatus: decodeStatus,
-            captureMetadata: PacketCaptureMetadata(linkType: .ethernet, isTruncated: false),
+            captureMetadata: PacketCaptureMetadata(linkType: .ethernet, isTruncated: false, interfaceName: interfaceName),
             sniDomainName: sniDomainName,
             client: client
         )
