@@ -156,6 +156,10 @@ extension TCPViewerWindowController: TCPViewerToolbarDataSourceDelegate {
         rootViewController.toggleLiveCapture()
     }
 
+    func tcpviewerToolbarDataSourceDidRequestClearAllPackets(_ dataSource: TCPViewerToolbarDataSource) {
+        rootViewController.clearAllPackets()
+    }
+
     func tcpviewerToolbarDataSource(_ dataSource: TCPViewerToolbarDataSource, didRequestExport format: CaptureFileFormat) {
         rootViewController.exportSession(format: format)
     }

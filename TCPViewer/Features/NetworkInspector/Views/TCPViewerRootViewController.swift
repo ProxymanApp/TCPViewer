@@ -54,6 +54,10 @@ final class TCPViewerRootViewController: NSViewController {
         viewModel.toggleLiveCapture()
     }
 
+    func clearAllPackets() {
+        viewModel.clearPackets()
+    }
+
     func saveDocument() {
         viewModel.saveDocument()
     }
@@ -260,6 +264,6 @@ extension TCPViewerRootViewController: StatusStripViewControllerDelegate {
     }
 
     func statusStripViewControllerDidRequestClearPackets(_ controller: StatusStripViewController) {
-        viewModel.clearPackets()
+        viewModel.clearTablePackets()
     }
 }

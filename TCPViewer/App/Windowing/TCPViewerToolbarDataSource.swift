@@ -4,6 +4,7 @@ import PcapPlusPlusCore
 private enum TCPViewerToolbarItemMetadata: String, CaseIterable {
     case captureSource = "CaptureSource"
     case captureToggle = "CaptureToggle"
+    case clearAll = "ClearAll"
     case status = "Status"
     case share = "Share"
     case inspector = "Inspector"
@@ -29,6 +30,7 @@ private enum TCPViewerToolbarLayout {
 protocol TCPViewerToolbarDataSourceDelegate: AnyObject {
     func tcpviewerToolbarDataSource(_ dataSource: TCPViewerToolbarDataSource, didSelectInterface identifier: String)
     func tcpviewerToolbarDataSourceDidToggleCapture(_ dataSource: TCPViewerToolbarDataSource)
+    func tcpviewerToolbarDataSourceDidRequestClearAllPackets(_ dataSource: TCPViewerToolbarDataSource)
     func tcpviewerToolbarDataSource(_ dataSource: TCPViewerToolbarDataSource, didRequestExport format: CaptureFileFormat)
     func tcpviewerToolbarDataSourceDidToggleInspector(_ dataSource: TCPViewerToolbarDataSource)
 }
@@ -48,6 +50,7 @@ final class TCPViewerToolbarDataSource: NSObject {
         pullsDown: false
     )
     private let captureButton = NSButton(frame: NSRect(x: 0, y: 0, width: 34, height: 30))
+    private let clearAllButton = NSButton(frame: NSRect(x: 0, y: 0, width: 34, height: 30))
     private let statusView = TCPViewerToolbarStatusView(frame: NSRect(x: 0, y: 0, width: 360, height: 28))
     private let sharePopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 42, height: 30), pullsDown: true)
     private let inspectorButton = NSButton(frame: NSRect(x: 0, y: 0, width: 34, height: 30))
@@ -57,6 +60,7 @@ final class TCPViewerToolbarDataSource: NSObject {
         TCPViewerToolbarItemMetadata.allCases.map(\.identifier) + [
             .toggleSidebar,
             .sidebarTrackingSeparator,
+            .space,
         ]
     }
 
@@ -66,6 +70,8 @@ final class TCPViewerToolbarDataSource: NSObject {
             .sidebarTrackingSeparator,
             TCPViewerToolbarItemMetadata.captureSource.identifier,
             TCPViewerToolbarItemMetadata.captureToggle.identifier,
+            .space,
+            TCPViewerToolbarItemMetadata.clearAll.identifier,
             TCPViewerToolbarItemMetadata.flexibleSpace.identifier,
             TCPViewerToolbarItemMetadata.status.identifier,
             TCPViewerToolbarItemMetadata.flexibleSpace.identifier,
@@ -75,7 +81,7 @@ final class TCPViewerToolbarDataSource: NSObject {
     }
 
     override init() {
-        self.toolbar = NSToolbar(identifier: "TCPViewer.MainToolbar.v2")
+        self.toolbar = NSToolbar(identifier: "TCPViewer.MainToolbar.v3")
         super.init()
         configureToolbar()
         configureToolbarViews()
@@ -86,6 +92,7 @@ final class TCPViewerToolbarDataSource: NSObject {
         viewModel.render(snapshot: snapshot, viewModel: inspectorViewModel)
         renderInterfacePopup()
         renderCaptureButton()
+        renderClearAllButton()
         renderSharePopup()
         renderInspectorButton()
         statusView.render(viewModel: viewModel)
@@ -108,6 +115,7 @@ final class TCPViewerToolbarDataSource: NSObject {
     private func configureToolbarViews() {
         constrainDynamicInterfacePopup()
         constrainToolbarView(captureButton, width: 34, height: 30)
+        constrainToolbarView(clearAllButton, width: 34, height: 30)
         constrainToolbarView(statusView, width: 360, height: 28)
         constrainToolbarView(sharePopup, width: 42, height: 30)
         constrainToolbarView(inspectorButton, width: 34, height: 30)
@@ -124,6 +132,14 @@ final class TCPViewerToolbarDataSource: NSObject {
         captureButton.imagePosition = .imageOnly
         captureButton.title = ""
         captureButton.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .medium)
+
+        clearAllButton.target = self
+        clearAllButton.action = #selector(clearAllButtonPressed(_:))
+        clearAllButton.bezelStyle = .texturedRounded
+        clearAllButton.controlSize = .regular
+        clearAllButton.image = TCPViewerUI.image("trash")
+        clearAllButton.imagePosition = .imageOnly
+        clearAllButton.toolTip = "Clear All Packets"
 
         sharePopup.controlSize = .regular
         sharePopup.addItem(withTitle: "")
@@ -267,6 +283,11 @@ final class TCPViewerToolbarDataSource: NSObject {
         captureButton.alphaValue = viewModel.canUseCaptureButton ? 1 : 0.45
     }
 
+    private func renderClearAllButton() {
+        clearAllButton.isEnabled = viewModel.canClearAllPackets
+        clearAllButton.alphaValue = viewModel.canClearAllPackets ? 1 : 0.45
+    }
+
     private func renderSharePopup() {
         sharePopup.item(at: 1)?.isEnabled = viewModel.canExport
         sharePopup.item(at: 2)?.isEnabled = viewModel.canExport
@@ -292,6 +313,10 @@ final class TCPViewerToolbarDataSource: NSObject {
 
     @objc private func captureButtonPressed(_ sender: NSButton) {
         delegate?.tcpviewerToolbarDataSourceDidToggleCapture(self)
+    }
+
+    @objc private func clearAllButtonPressed(_ sender: NSButton) {
+        delegate?.tcpviewerToolbarDataSourceDidRequestClearAllPackets(self)
     }
 
     @objc private func shareActionSelected(_ sender: NSPopUpButton) {
@@ -334,6 +359,11 @@ extension TCPViewerToolbarDataSource: NSToolbarDelegate {
             item.paletteLabel = "Capture"
             item.view = captureButton
             item.visibilityPriority = .high
+        case TCPViewerToolbarItemMetadata.clearAll.identifier:
+            item.label = "Clear All"
+            item.paletteLabel = "Clear All Packets"
+            item.view = clearAllButton
+            item.visibilityPriority = .high
         case TCPViewerToolbarItemMetadata.status.identifier:
             item.label = "Status"
             item.paletteLabel = "Status"
@@ -367,6 +397,7 @@ private final class TCPViewerToolbarViewModel {
     private(set) var captureButtonImageName = "play.fill"
     private(set) var captureButtonTint = NSColor.systemGreen
     private(set) var canUseCaptureButton = false
+    private(set) var canClearAllPackets = false
     private(set) var canSave = false
     private(set) var canSaveAs = false
     private(set) var canExport = false
@@ -387,6 +418,7 @@ private final class TCPViewerToolbarViewModel {
         captureButtonImageName = viewModel.captureButtonSystemImage()
         captureButtonTint = snapshot.base.sessionState.canStop ? .systemRed : .systemGreen
         canUseCaptureButton = snapshot.base.sessionState.canStart || snapshot.base.sessionState.canStop
+        canClearAllPackets = snapshot.totalPacketCount > 0 && !snapshot.base.loadState.canCancel
         canSave = snapshot.base.documentState.canSave
         canSaveAs = snapshot.base.documentState.canSaveAs
         canExport = snapshot.totalPacketCount > 0 && snapshot.base.loadState.progress.phase != .loading

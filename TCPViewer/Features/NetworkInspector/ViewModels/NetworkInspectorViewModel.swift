@@ -602,6 +602,11 @@ final class NetworkInspectorViewModel {
         #endif
     }
 
+    func clearTablePackets() {
+        let identifiers = snapshot.packetRows.map(\.id)
+        deletePackets(identifiers)
+    }
+
     func pinPacket(_ identifier: PacketSummary.ID, kind: PacketPinCreationKind, clickedColumn: PacketTableColumnRole) {
         guard let packet = packet(withID: identifier),
               let pin = try? pinService.upsertPin(from: packet, kind: kind, clickedColumn: clickedColumn) else {

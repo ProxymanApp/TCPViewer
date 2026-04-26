@@ -19,7 +19,7 @@ final class StatusStripViewModel {
         let packetCount = snapshot.totalPacketCount
         totalText = packetCount == 1 ? "1 packet" : "\(packetCount) packets"
         canCancelLoad = snapshot.base.loadState.canCancel
-        canClear = packetCount > 0 && !canCancelLoad
+        canClear = snapshot.visiblePacketCount > 0 && !canCancelLoad
 
         let phase = snapshot.base.sessionState.phase
         statusText = title(for: phase)

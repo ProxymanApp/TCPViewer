@@ -355,6 +355,30 @@ struct NetworkInspectorViewModelTests {
         #expect(!viewModel.canClear)
     }
 
+    @Test func statusStripClearUsesVisibleTableRows() {
+        var base = TCPViewerWindowSnapshot.foundation
+        let packet = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp)
+        base.packetIngestState.replace(with: [packet], source: .offline)
+        let snapshot = NetworkInspectorSnapshot.make(
+            base: base,
+            selectedSidebar: .liveCapture,
+            selectedSourceListSelection: .allPackets,
+            sourceListSnapshot: .empty,
+            sourceListFilterText: "",
+            workspaceMode: .packets,
+            inspectorTab: .summary,
+            isInspectorVisible: true,
+            displayFilterText: "protocol:udp",
+            packetTableContent: .empty
+        )
+        let viewModel = StatusStripViewModel()
+
+        viewModel.render(snapshot: snapshot)
+
+        #expect(viewModel.totalText == "1 packet")
+        #expect(!viewModel.canClear)
+    }
+
     @Test func statusStripUsesPacketCaptureLanguageWhileRunning() {
         var base = TCPViewerWindowSnapshot.foundation
         base.sessionState.phase = .running
@@ -969,6 +993,32 @@ struct NetworkInspectorViewModelTests {
         #expect(document.exportRequests.count == 1)
         #expect(document.exportRequests.first?.0 == packets.map(\.id))
         #expect(document.exportRequests.first?.2 == .pcapng)
+    }
+
+    @Test func clearTablePacketsRemovesOnlyVisibleRows() async {
+        let packets = [
+            makePacket(packetNumber: 1, source: .offline, transportHint: .tcp),
+            makePacket(packetNumber: 2, source: .offline, transportHint: .udp),
+            makePacket(packetNumber: 3, source: .offline, transportHint: .dns),
+        ]
+        let viewModel = makeOfflineViewModel(packets: packets)
+
+        await viewModel.openDocument(at: URL(fileURLWithPath: "/tmp/clear-table-filter.pcapng"))
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == packets.count
+        }
+
+        viewModel.updateDisplayFilterText("protocol:udp")
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[1].id])
+
+        viewModel.clearTablePackets()
+
+        #expect(viewModel.snapshot.totalPacketCount == 2)
+        #expect(viewModel.snapshot.base.packetIngestState.packets.map(\.id) == [packets[0].id, packets[2].id])
+        #expect(viewModel.snapshot.packetRows.isEmpty)
+
+        viewModel.clearDisplayFilter()
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[0].id, packets[2].id])
     }
 
     @Test func savedExportRequiresCurrentRawBacking() async throws {
