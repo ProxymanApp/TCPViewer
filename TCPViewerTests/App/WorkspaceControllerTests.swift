@@ -1128,6 +1128,115 @@ struct WindowControllerTests {
     }
 }
 
+@Suite
+struct PacketIngestStateMutationTests {
+
+    @Test func appendAndApplyMetadataUpdatesEmitsAppendWhenNoUpdates() {
+        var state = PacketIngestState.empty
+        let packet = makePacket(packetNumber: 1)
+
+        state.appendAndApplyMetadataUpdates([packet], metadataUpdates: [], source: .live)
+
+        #expect(state.lastMutation == .append(0..<1))
+        #expect(state.packets.count == 1)
+    }
+
+    @Test func appendAndApplyMetadataUpdatesFoldsBackfillForNewlyAppendedPackets() {
+        var state = PacketIngestState.empty
+        let packet = makePacket(packetNumber: 1)
+        let updates = [
+            PacketMetadataUpdate(
+                packetIDs: [packet.id],
+                sniDomainName: "api.example.com",
+                client: nil,
+                direction: nil
+            )
+        ]
+
+        state.appendAndApplyMetadataUpdates([packet], metadataUpdates: updates, source: .live)
+
+        // The packet was just appended, so the back-fill applies in place but doesn't surface as
+        // a separate metadata mutation — visible identity for the new row is already correct.
+        #expect(state.lastMutation == .append(0..<1))
+        #expect(state.packets.first?.sniDomainName == "api.example.com")
+    }
+
+    @Test func appendAndApplyMetadataUpdatesEmitsCombinedCaseForOlderPackets() {
+        var state = PacketIngestState.empty
+        let firstPacket = makePacket(packetNumber: 1)
+        state.append([firstPacket], source: .live)
+        let secondPacket = makePacket(packetNumber: 2)
+        let updates = [
+            PacketMetadataUpdate(
+                packetIDs: [firstPacket.id],
+                sniDomainName: "api.example.com",
+                client: nil,
+                direction: nil
+            )
+        ]
+
+        state.appendAndApplyMetadataUpdates([secondPacket], metadataUpdates: updates, source: .live)
+
+        if case let .appendWithMetadataUpdates(range, ids) = state.lastMutation {
+            #expect(range == 1..<2)
+            #expect(ids == [firstPacket.id])
+        } else {
+            Issue.record("expected .appendWithMetadataUpdates, got \(state.lastMutation)")
+        }
+        #expect(state.packets.first?.sniDomainName == "api.example.com")
+    }
+
+    @Test func standaloneApplyMetadataUpdatesEmitsMetadataUpdateWithIDs() {
+        var state = PacketIngestState.empty
+        let packet = makePacket(packetNumber: 1)
+        state.append([packet], source: .live)
+
+        state.applyMetadataUpdates([
+            PacketMetadataUpdate(
+                packetIDs: [packet.id],
+                sniDomainName: "api.example.com",
+                client: nil,
+                direction: nil
+            )
+        ])
+
+        if case let .metadataUpdate(ids) = state.lastMutation {
+            #expect(ids == [packet.id])
+        } else {
+            Issue.record("expected .metadataUpdate, got \(state.lastMutation)")
+        }
+    }
+
+    @Test func appendAndApplyMetadataUpdatesIsNoOpForEmptyInputs() {
+        var state = PacketIngestState.empty
+        state.appendAndApplyMetadataUpdates([], metadataUpdates: [], source: .live)
+
+        #expect(state.lastMutation == .none)
+        #expect(state.packets.isEmpty)
+    }
+
+    private func makePacket(packetNumber: UInt64) -> PacketSummary {
+        PacketSummary(
+            packetNumber: packetNumber,
+            timestamp: Date(timeIntervalSince1970: TimeInterval(packetNumber)),
+            source: .live,
+            interfaceID: "en0",
+            transportHint: .tcp,
+            endpoints: PacketEndpoints(
+                source: PacketEndpoint(address: "10.0.0.1", port: 1234),
+                destination: PacketEndpoint(address: "10.0.0.2", port: 443)
+            ),
+            originalLength: 128,
+            capturedLength: 128,
+            streamID: 42,
+            infoSummary: "Packet \(packetNumber)",
+            layers: [PacketLayer(name: "Ethernet"), PacketLayer(name: "TCP")],
+            decodeStatus: PacketDecodeStatus(kind: .complete),
+            captureMetadata: PacketCaptureMetadata(linkType: .ethernet, isTruncated: false)
+        )
+    }
+}
+
 private final class FakeTCPViewerCore: TCPViewerCoreProviding, @unchecked Sendable {
     private let interfaceInventories: [[CaptureInterfaceSummary]]
     private let liveSession: FakeLiveSession

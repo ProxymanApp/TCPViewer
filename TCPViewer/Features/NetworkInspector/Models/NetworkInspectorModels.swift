@@ -463,6 +463,8 @@ enum PacketTableUpdatePlan: Equatable, Sendable {
     case none
     case append(Range<Int>)
     case reload
+    case reloadRows(IndexSet)
+    case appendAndReloadRows(append: Range<Int>, reload: IndexSet)
 }
 
 enum PacketTableUpdatePlanner {
@@ -487,12 +489,14 @@ struct NetworkInspectorSnapshot: Equatable {
     var displayFilterText: String
     var displayFilter: PacketDisplayFilter
     var displayFilterChips: [PacketFilterChip]
-    var packetRows: [PacketTableRow]
+    var packetTableRowStore: PacketTableRowStore
     var packetTableGeneration: UInt64
     var packetTableUpdatePlan: PacketTableUpdatePlan
     var malformedPacketCount: Int
     var selectedPacket: PacketSummary?
     var selectedPacketRowIndex: Int?
+
+    var packetRows: [PacketTableRow] { packetTableRowStore.rows }
 
     static func make(
         base: TCPViewerWindowSnapshot,
@@ -518,7 +522,7 @@ struct NetworkInspectorSnapshot: Equatable {
             displayFilterText: displayFilterText,
             displayFilter: packetTableContent.displayFilter,
             displayFilterChips: packetTableContent.displayFilterChips,
-            packetRows: packetTableContent.rows,
+            packetTableRowStore: packetTableContent.store,
             packetTableGeneration: packetTableContent.generation,
             packetTableUpdatePlan: packetTableContent.updatePlan,
             malformedPacketCount: packetTableContent.malformedPacketCount,
@@ -529,6 +533,9 @@ struct NetworkInspectorSnapshot: Equatable {
         )
     }
 
+    // Equatable uses generation as the proxy for content equality (it bumps on every visible row
+    // change), avoiding an O(N) row-array walk. Identity comparison on the store would also work,
+    // but generation is monotonic and survives in-place row mutations within the same store.
     static func == (lhs: NetworkInspectorSnapshot, rhs: NetworkInspectorSnapshot) -> Bool {
         lhs.base == rhs.base &&
             lhs.selectedSidebar == rhs.selectedSidebar &&
@@ -541,9 +548,6 @@ struct NetworkInspectorSnapshot: Equatable {
             lhs.displayFilterText == rhs.displayFilterText &&
             lhs.displayFilter == rhs.displayFilter &&
             lhs.displayFilterChips == rhs.displayFilterChips &&
-            lhs.packetRows.count == rhs.packetRows.count &&
-            lhs.packetRows.first?.id == rhs.packetRows.first?.id &&
-            lhs.packetRows.last?.id == rhs.packetRows.last?.id &&
             lhs.packetTableGeneration == rhs.packetTableGeneration &&
             lhs.packetTableUpdatePlan == rhs.packetTableUpdatePlan &&
             lhs.malformedPacketCount == rhs.malformedPacketCount &&
@@ -556,7 +560,7 @@ struct NetworkInspectorSnapshot: Equatable {
     }
 
     var visiblePacketCount: Int {
-        packetRows.count
+        packetTableRowStore.rows.count
     }
 
     var totalPacketCount: Int {
@@ -574,41 +578,58 @@ struct NetworkInspectorSnapshot: Equatable {
     }
 }
 
+// Class-backed storage for the table's row buffer so the content cache can append rows in place.
+// A struct-only design forces an Array CoW on every batch (~5.9 % of CPU at 50k rows in profiling
+// before this change) because the published snapshot keeps the rows array's buffer alive. Sharing
+// a class reference end-to-end keeps the buffer uniquely-owned by this store and lets the cache
+// mutate it without copying. Mutations only happen on the main thread, in the same runloop pass
+// that issues the corresponding NSTableView update, so AppKit never observes a torn read.
+final class PacketTableRowStore: @unchecked Sendable {
+    var rows: [PacketTableRow] = []
+    var visiblePacketRowIndexByID: [PacketSummary.ID: Int] = [:]
+
+    static let empty = PacketTableRowStore()
+
+    init(rows: [PacketTableRow] = [], visiblePacketRowIndexByID: [PacketSummary.ID: Int] = [:]) {
+        self.rows = rows
+        self.visiblePacketRowIndexByID = visiblePacketRowIndexByID
+    }
+}
+
 struct PacketTableContent: Sendable {
     let displayFilter: PacketDisplayFilter
     let displayFilterChips: [PacketFilterChip]
-    let rows: [PacketTableRow]
+    let store: PacketTableRowStore
     let generation: UInt64
     let updatePlan: PacketTableUpdatePlan
     let malformedPacketCount: Int
-    let visiblePacketRowIndexByID: [PacketSummary.ID: Int]
+
+    var rows: [PacketTableRow] { store.rows }
+    var visiblePacketRowIndexByID: [PacketSummary.ID: Int] { store.visiblePacketRowIndexByID }
 
     static let empty = PacketTableContent(
         displayFilter: PacketDisplayFilter(""),
         displayFilterChips: [],
-        rows: [],
+        store: PacketTableRowStore.empty,
         generation: 0,
         updatePlan: .none,
-        malformedPacketCount: 0,
-        visiblePacketRowIndexByID: [:]
+        malformedPacketCount: 0
     )
 
     init(
         displayFilter: PacketDisplayFilter,
         displayFilterChips: [PacketFilterChip],
-        rows: [PacketTableRow],
+        store: PacketTableRowStore,
         generation: UInt64,
         updatePlan: PacketTableUpdatePlan,
-        malformedPacketCount: Int,
-        visiblePacketRowIndexByID: [PacketSummary.ID: Int]
+        malformedPacketCount: Int
     ) {
         self.displayFilter = displayFilter
         self.displayFilterChips = displayFilterChips
-        self.rows = rows
+        self.store = store
         self.generation = generation
         self.updatePlan = updatePlan
         self.malformedPacketCount = malformedPacketCount
-        self.visiblePacketRowIndexByID = visiblePacketRowIndexByID
     }
 
     func selectedRowIndex(id: PacketSummary.ID?) -> Int? {
@@ -616,7 +637,7 @@ struct PacketTableContent: Sendable {
             return nil
         }
 
-        return visiblePacketRowIndexByID[id]
+        return store.visiblePacketRowIndexByID[id]
     }
 }
 

@@ -46,7 +46,7 @@ struct SidebarOutlineReloadPolicyTests {
         )
         let next = reloadState(
             sourceListSnapshot: snapshotWithApp(),
-            packetMutation: .metadataUpdate
+            packetMutation: .metadataUpdate(packetIDs: [])
         )
 
         #expect(SidebarOutlineReloadPolicy.timing(previous: previous, next: next) == .deferred)

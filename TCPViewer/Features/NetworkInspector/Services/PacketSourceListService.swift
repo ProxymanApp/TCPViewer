@@ -321,6 +321,12 @@ enum PacketSourceListClassifier {
 }
 
 final class PacketSourceListService {
+    fileprivate struct PacketBucketAssignment: Equatable {
+        var appIdentity: PacketSourceClientIdentity?
+        var domainIdentity: PacketSourceDomainIdentity
+        var ipAddressIdentities: [PacketSourceIPAddressIdentity]
+    }
+
     private var packetRevision: UInt64?
     private var packetLineageRevision: UInt64?
     private var sourcePacketCount = 0
@@ -331,6 +337,7 @@ final class PacketSourceListService {
     private var domainOrder: [PacketSourceDomainKey] = []
     private var ipAddressBuckets: [PacketSourceIPAddressKey: PacketSourceListTreeBuilder.IPAddressBucket] = [:]
     private var ipAddressOrder: [PacketSourceIPAddressKey] = []
+    private var packetAssignmentsByID: [PacketSummary.ID: PacketBucketAssignment] = [:]
     private var pinnedItems: [PacketPin] = []
     private var savedPacketCount = 0
 
@@ -345,6 +352,7 @@ final class PacketSourceListService {
         domainOrder.removeAll(keepingCapacity: false)
         ipAddressBuckets.removeAll(keepingCapacity: false)
         ipAddressOrder.removeAll(keepingCapacity: false)
+        packetAssignmentsByID.removeAll(keepingCapacity: false)
         pinnedItems = []
         savedPacketCount = 0
     }
@@ -374,9 +382,20 @@ final class PacketSourceListService {
         self.savedPacketCount = savedPacketCount
 
         if packetLineageRevision == ingestState.packetLineageRevision,
-           sourcePacketCount <= ingestState.packets.count,
-           case .append = ingestState.lastMutation {
-            return appendSnapshot(from: ingestState)
+           sourcePacketCount <= ingestState.packets.count {
+            switch ingestState.lastMutation {
+            case .append:
+                return appendSnapshot(from: ingestState)
+            case .appendWithMetadataUpdates(_, let updatedPacketIDs):
+                appendPackets(Array(ingestState.packets[sourcePacketCount...]))
+                applyMetadataUpdates(packetIDs: updatedPacketIDs, in: ingestState)
+                return storeSnapshot(for: ingestState)
+            case .metadataUpdate(let packetIDs):
+                applyMetadataUpdates(packetIDs: packetIDs, in: ingestState)
+                return storeSnapshot(for: ingestState)
+            default:
+                break
+            }
         }
 
         return rebuildSnapshot(from: ingestState)
@@ -389,6 +408,7 @@ final class PacketSourceListService {
         domainOrder = []
         ipAddressBuckets = [:]
         ipAddressOrder = []
+        packetAssignmentsByID.removeAll(keepingCapacity: true)
         appendPackets(ingestState.packets)
         return storeSnapshot(for: ingestState)
     }
@@ -400,30 +420,96 @@ final class PacketSourceListService {
 
     private func appendPackets(_ packets: [PacketSummary]) {
         for packet in packets {
-            if let clientIdentity = PacketSourceListClassifier.clientIdentity(for: packet) {
-                if appBuckets[clientIdentity.key] == nil {
-                    appOrder.append(clientIdentity.key)
-                    appBuckets[clientIdentity.key] = PacketSourceListTreeBuilder.AppBucket(identity: clientIdentity)
-                }
+            let assignment = makeAssignment(for: packet)
+            increment(for: assignment)
+            packetAssignmentsByID[packet.id] = assignment
+        }
+    }
 
-                appBuckets[clientIdentity.key]?.packetCount += 1
+    private func makeAssignment(for packet: PacketSummary) -> PacketBucketAssignment {
+        PacketBucketAssignment(
+            appIdentity: PacketSourceListClassifier.clientIdentity(for: packet),
+            domainIdentity: PacketSourceListClassifier.domainIdentity(for: packet),
+            ipAddressIdentities: PacketSourceListClassifier.ipAddressIdentities(for: packet)
+        )
+    }
+
+    // Apply only the assignments that actually changed for the affected packets. Each packet costs
+    // a constant number of dictionary ops, regardless of total packet count.
+    private func applyMetadataUpdates(packetIDs: [PacketSummary.ID], in ingestState: PacketIngestState) {
+        for packetID in packetIDs {
+            guard let updatedPacket = ingestState.packet(withID: packetID) else {
+                continue
             }
-
-            let domainIdentity = PacketSourceListClassifier.domainIdentity(for: packet)
-            if domainBuckets[domainIdentity.key] == nil {
-                domainOrder.append(domainIdentity.key)
-                domainBuckets[domainIdentity.key] = PacketSourceListTreeBuilder.DomainBucket(identity: domainIdentity)
-            }
-
-            domainBuckets[domainIdentity.key]?.packetCount += 1
-
-            for ipAddressIdentity in PacketSourceListClassifier.ipAddressIdentities(for: packet) {
-                if ipAddressBuckets[ipAddressIdentity.key] == nil {
-                    ipAddressOrder.append(ipAddressIdentity.key)
-                    ipAddressBuckets[ipAddressIdentity.key] = PacketSourceListTreeBuilder.IPAddressBucket(identity: ipAddressIdentity)
+            let newAssignment = makeAssignment(for: updatedPacket)
+            if let oldAssignment = packetAssignmentsByID[packetID] {
+                guard oldAssignment != newAssignment else {
+                    continue
                 }
+                decrement(for: oldAssignment)
+            }
+            increment(for: newAssignment)
+            packetAssignmentsByID[packetID] = newAssignment
+        }
+    }
 
-                ipAddressBuckets[ipAddressIdentity.key]?.packetCount += 1
+    private func increment(for assignment: PacketBucketAssignment) {
+        if let appIdentity = assignment.appIdentity {
+            if appBuckets[appIdentity.key] == nil {
+                appOrder.append(appIdentity.key)
+                appBuckets[appIdentity.key] = PacketSourceListTreeBuilder.AppBucket(identity: appIdentity)
+            }
+            appBuckets[appIdentity.key]?.packetCount += 1
+        }
+
+        let domainIdentity = assignment.domainIdentity
+        if domainBuckets[domainIdentity.key] == nil {
+            domainOrder.append(domainIdentity.key)
+            domainBuckets[domainIdentity.key] = PacketSourceListTreeBuilder.DomainBucket(identity: domainIdentity)
+        }
+        domainBuckets[domainIdentity.key]?.packetCount += 1
+
+        for ipAddressIdentity in assignment.ipAddressIdentities {
+            if ipAddressBuckets[ipAddressIdentity.key] == nil {
+                ipAddressOrder.append(ipAddressIdentity.key)
+                ipAddressBuckets[ipAddressIdentity.key] = PacketSourceListTreeBuilder.IPAddressBucket(identity: ipAddressIdentity)
+            }
+            ipAddressBuckets[ipAddressIdentity.key]?.packetCount += 1
+        }
+    }
+
+    private func decrement(for assignment: PacketBucketAssignment) {
+        if let appIdentity = assignment.appIdentity, var bucket = appBuckets[appIdentity.key] {
+            bucket.packetCount -= 1
+            if bucket.packetCount <= 0 {
+                appBuckets.removeValue(forKey: appIdentity.key)
+                appOrder.removeAll { $0 == appIdentity.key }
+            } else {
+                appBuckets[appIdentity.key] = bucket
+            }
+        }
+
+        let domainKey = assignment.domainIdentity.key
+        if var bucket = domainBuckets[domainKey] {
+            bucket.packetCount -= 1
+            if bucket.packetCount <= 0 {
+                domainBuckets.removeValue(forKey: domainKey)
+                domainOrder.removeAll { $0 == domainKey }
+            } else {
+                domainBuckets[domainKey] = bucket
+            }
+        }
+
+        for ipAddressIdentity in assignment.ipAddressIdentities {
+            let key = ipAddressIdentity.key
+            if var bucket = ipAddressBuckets[key] {
+                bucket.packetCount -= 1
+                if bucket.packetCount <= 0 {
+                    ipAddressBuckets.removeValue(forKey: key)
+                    ipAddressOrder.removeAll { $0 == key }
+                } else {
+                    ipAddressBuckets[key] = bucket
+                }
             }
         }
     }

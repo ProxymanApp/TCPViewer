@@ -96,10 +96,16 @@ fileprivate final class PacketTableView: NSTableView {
 }
 
 final class PacketTableViewModel {
-    private(set) var rows: [PacketTableRow] = []
+    // Holds the class reference, NOT a copy of the rows array. Copying the array would re-share
+    // its buffer with the cache and re-introduce the per-batch CoW we're trying to avoid.
+    private(set) var rowStore: PacketTableRowStore = .empty
     private(set) var contentGeneration: UInt64 = 0
     private(set) var selectedPacketID: PacketSummary.ID?
     private(set) var selectedRowIndex: Int?
+
+    var rows: [PacketTableRow] {
+        rowStore.rows
+    }
 
     // Store the latest render state so the controller can apply incremental table updates.
     func render(snapshot: NetworkInspectorSnapshot) -> PacketTableUpdatePlan {
@@ -108,7 +114,7 @@ final class PacketTableViewModel {
             currentGeneration: snapshot.packetTableGeneration,
             proposedPlan: snapshot.packetTableUpdatePlan
         )
-        rows = snapshot.packetRows
+        rowStore = snapshot.packetTableRowStore
         contentGeneration = snapshot.packetTableGeneration
         selectedPacketID = snapshot.selectedPacketID
         selectedRowIndex = snapshot.selectedPacketRowIndex
@@ -192,21 +198,43 @@ final class PacketTableViewController: NSViewController {
             case .none:
                 break
             case .append(let range):
-                if range.lowerBound == previousRowCount, range.upperBound <= rows.count {
-                    tableView.noteNumberOfRowsChanged()
-                } else {
-                    preserveScrollPosition {
-                        tableView.reloadData()
-                    }
-                }
+                applyAppendPlan(range: range, previousRowCount: previousRowCount)
             case .reload:
                 preserveScrollPosition {
                     tableView.reloadData()
                 }
+            case .reloadRows(let indexes):
+                reloadRowsIfPossible(indexes)
+            case .appendAndReloadRows(let range, let reloadIndexes):
+                applyAppendPlan(range: range, previousRowCount: previousRowCount)
+                reloadRowsIfPossible(reloadIndexes)
             }
 
             syncSelection()
         }
+    }
+
+    private func applyAppendPlan(range: Range<Int>, previousRowCount: Int) {
+        if range.lowerBound == previousRowCount, range.upperBound <= rows.count {
+            tableView.noteNumberOfRowsChanged()
+        } else {
+            preserveScrollPosition {
+                tableView.reloadData()
+            }
+        }
+    }
+
+    private func reloadRowsIfPossible(_ indexes: IndexSet) {
+        guard !indexes.isEmpty else {
+            return
+        }
+        let validRange = 0..<tableView.numberOfRows
+        let safeIndexes = IndexSet(indexes.filter { validRange.contains($0) })
+        guard !safeIndexes.isEmpty else {
+            return
+        }
+        let columnIndexes = IndexSet(0..<tableView.numberOfColumns)
+        tableView.reloadData(forRowIndexes: safeIndexes, columnIndexes: columnIndexes)
     }
 
     @objc private func appConfigurationDidChange(_ notification: Notification) {

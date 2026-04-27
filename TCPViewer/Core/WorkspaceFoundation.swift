@@ -8,7 +8,8 @@ enum PacketIngestMutation: Sendable, Equatable {
     case reset
     case replace
     case append(Range<Int>)
-    case metadataUpdate
+    case appendWithMetadataUpdates(range: Range<Int>, updatedPacketIDs: [PacketSummary.ID])
+    case metadataUpdate(packetIDs: [PacketSummary.ID])
 }
 
 struct PacketIngestState: Sendable, Equatable {
@@ -64,6 +65,18 @@ struct PacketIngestState: Sendable, Equatable {
         truncatedPacketCount = 0
         decodeIssueCount = 0
         statusMessage = message
+    }
+
+    // Replace and fold metadata back-fills into the same mutation, so consumers see one .replace
+    // event instead of a .replace immediately followed by a .metadataUpdate.
+    mutating func replaceAndApplyMetadataUpdates(
+        with batch: [PacketSummary],
+        metadataUpdates: [PacketMetadataUpdate],
+        source: CaptureSource,
+        message: String? = nil
+    ) {
+        replace(with: batch, source: source, message: message)
+        _ = applyMetadataUpdatesInPlace(metadataUpdates)
     }
 
     mutating func replace(with batch: [PacketSummary], source: CaptureSource, message: String? = nil) {
@@ -125,7 +138,75 @@ struct PacketIngestState: Sendable, Equatable {
     }
 
     mutating func applyMetadataUpdates(_ updates: [PacketMetadataUpdate]) {
-        var didUpdate = false
+        let updatedIDs = applyMetadataUpdatesInPlace(updates)
+        guard !updatedIDs.isEmpty else {
+            return
+        }
+
+        packetRevision &+= 1
+        lastMutation = .metadataUpdate(packetIDs: updatedIDs)
+    }
+
+    // Append a batch and fold metadata updates that target older packets into a single mutation,
+    // so consumers can take their cheap append paths without a redundant didSet fire.
+    mutating func appendAndApplyMetadataUpdates(
+        _ batch: [PacketSummary],
+        metadataUpdates: [PacketMetadataUpdate],
+        source: CaptureSource,
+        message: String? = nil
+    ) {
+        guard !batch.isEmpty || !metadataUpdates.isEmpty else {
+            lastMutation = .none
+            return
+        }
+
+        let appendStart = packets.count
+        let appendedIDs: Set<PacketSummary.ID>
+        let appendedRange: Range<Int>?
+        if !batch.isEmpty {
+            self.source = source
+            packets.append(contentsOf: batch)
+            for (offset, packet) in batch.enumerated() {
+                packetIndexByID[packet.id] = appendStart + offset
+            }
+            addCounters(for: batch)
+            appendedIDs = Set(batch.map(\.id))
+            appendedRange = appendStart..<packets.count
+            lastBatchCount = batch.count
+        } else {
+            appendedIDs = []
+            appendedRange = nil
+        }
+
+        let allUpdatedIDs = applyMetadataUpdatesInPlace(metadataUpdates)
+        // Updates that target packets just appended don't need to be reported as a separate
+        // metadata update — those packets are already in their correct buckets/rows.
+        let priorUpdatedIDs = allUpdatedIDs.filter { !appendedIDs.contains($0) }
+
+        if let appendedRange {
+            if priorUpdatedIDs.isEmpty {
+                lastMutation = .append(appendedRange)
+            } else {
+                lastMutation = .appendWithMetadataUpdates(range: appendedRange, updatedPacketIDs: priorUpdatedIDs)
+            }
+        } else if !priorUpdatedIDs.isEmpty {
+            lastMutation = .metadataUpdate(packetIDs: priorUpdatedIDs)
+        } else {
+            lastMutation = .none
+        }
+
+        if appendedRange != nil || !priorUpdatedIDs.isEmpty {
+            packetRevision &+= 1
+        }
+
+        if let message {
+            statusMessage = message
+        }
+    }
+
+    @discardableResult
+    private mutating func applyMetadataUpdatesInPlace(_ updates: [PacketMetadataUpdate]) -> [PacketSummary.ID] {
+        var updatedIDs: [PacketSummary.ID] = []
         for update in updates {
             for packetID in update.packetIDs {
                 guard let packetIndex = packetIndexByID[packetID] else {
@@ -143,16 +224,10 @@ struct PacketIngestState: Sendable, Equatable {
                 }
 
                 packets[packetIndex] = updatedPacket
-                didUpdate = true
+                updatedIDs.append(packetID)
             }
         }
-
-        guard didUpdate else {
-            return
-        }
-
-        packetRevision &+= 1
-        lastMutation = .metadataUpdate
+        return updatedIDs
     }
 
     static func == (lhs: PacketIngestState, rhs: PacketIngestState) -> Bool {
@@ -1800,32 +1875,35 @@ final class TCPViewerWorkspaceController {
                 )
                 if let source, !packets.isEmpty {
                     let enrichmentResult = services.packetMetadataEnricher.enrich(packets, source: source)
-                    snapshot.packetIngestState.replace(
+                    snapshot.packetIngestState.replaceAndApplyMetadataUpdates(
                         with: enrichmentResult.packets,
+                        metadataUpdates: enrichmentResult.updates,
                         source: source,
                         message: source == .live
                             ? "Captured \(packets.count) packets."
                             : "Loaded \(packets.count) packets from disk."
                     )
-                    snapshot.packetIngestState.applyMetadataUpdates(enrichmentResult.updates)
                 }
             case .append:
                 if let source {
                     let enrichmentResult = services.packetMetadataEnricher.enrich(packets, source: source)
-                    snapshot.packetIngestState.append(
+                    snapshot.packetIngestState.appendAndApplyMetadataUpdates(
                         enrichmentResult.packets,
+                        metadataUpdates: enrichmentResult.updates,
                         source: source,
                         message: source == .live
                             ? "Captured \(snapshot.packetIngestState.totalPacketCount + packets.count) packets."
                             : "Loaded \(snapshot.packetIngestState.totalPacketCount + packets.count) packets from disk."
                     )
-                    snapshot.packetIngestState.applyMetadataUpdates(enrichmentResult.updates)
                 }
             @unknown default:
                 if let source {
                     let enrichmentResult = services.packetMetadataEnricher.enrich(packets, source: source)
-                    snapshot.packetIngestState.append(enrichmentResult.packets, source: source)
-                    snapshot.packetIngestState.applyMetadataUpdates(enrichmentResult.updates)
+                    snapshot.packetIngestState.appendAndApplyMetadataUpdates(
+                        enrichmentResult.packets,
+                        metadataUpdates: enrichmentResult.updates,
+                        source: source
+                    )
                 }
             }
 
@@ -2036,7 +2114,17 @@ final class TCPViewerWorkspaceController {
         let mutation = snapshot.packetIngestState.lastMutation
         var shouldValidateSelection = true
 
-        if case .append(let range) = mutation,
+        let appendRange: Range<Int>?
+        switch mutation {
+        case .append(let range):
+            appendRange = range
+        case .appendWithMetadataUpdates(let range, _):
+            appendRange = range
+        default:
+            appendRange = nil
+        }
+
+        if let range = appendRange,
            snapshot.navigationState.visiblePacketIDs.count == range.lowerBound,
            range.upperBound <= snapshot.packetIngestState.packets.count {
             snapshot.navigationState.visiblePacketIDs.append(

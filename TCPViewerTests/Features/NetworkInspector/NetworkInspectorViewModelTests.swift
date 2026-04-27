@@ -650,7 +650,7 @@ struct NetworkInspectorViewModelTests {
         #expect(clientResolver.clientLookupCount == 1)
     }
 
-    @Test func metadataUpdateRebuildsRowsWhenVisibleRowCountDoesNotChange() async {
+    @Test func metadataUpdateAppliesInPlaceWhenVisibleRowCountDoesNotChange() async {
         let clientResolver = InspectorFakePacketClientResolver(defaultClient: makeClient())
         let liveSession = InspectorFakeLiveSession()
         let firstPacket = makePacket(
@@ -699,7 +699,199 @@ struct NetworkInspectorViewModelTests {
 
         #expect(viewModel.snapshot.totalPacketCount == 2)
         #expect(viewModel.snapshot.packetTableGeneration > generationAfterFilter)
+        // Back-fill targets the first packet (still visible under the port:80 filter); the
+        // newly-appended packet is filtered out, so the plan reduces to a row-targeted reload
+        // instead of a full table rebuild.
+        #expect(viewModel.snapshot.packetTableUpdatePlan == .reloadRows(IndexSet(integer: 0)))
+    }
+
+    @Test func metadataUpdateThatFlipsVisibilityFallsBackToFullReload() async {
+        let chromeClient = makeClient(displayName: "Google Chrome", bundleIdentifier: "com.google.Chrome")
+        let clientResolver = InspectorFakePacketClientResolver(defaultClient: chromeClient)
+        let liveSession = InspectorFakeLiveSession()
+        let firstPacket = makePacket(
+            packetNumber: 1,
+            source: .live,
+            transportHint: .tcp,
+            destinationPort: 80,
+            streamID: 99
+        )
+        // resolvingPacket carries the SNI for the same flow, which causes the enricher to back-fill
+        // firstPacket's SNI. The free-text filter "matchme" matches via packet.sniDomainName, so
+        // firstPacket flips from not-visible to visible after back-fill.
+        let resolvingPacket = makePacket(
+            packetNumber: 2,
+            source: .live,
+            transportHint: .tcp,
+            destinationPort: 80,
+            streamID: 99,
+            sniDomainName: "matchme.example.com"
+        )
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(
+                core: InspectorFakeCore(
+                    interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                    liveSession: liveSession
+                ),
+                packetMetadataEnricher: PacketMetadataEnrichmentService(clientResolver: clientResolver)
+            ),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.performInitialLoadIfNeeded()
+        await viewModel.toggleLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        liveSession.send(.packetBatch([firstPacket], disposition: .append))
+
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == 1
+        }
+
+        viewModel.updateDisplayFilterText("matchme")
+        await waitUntil {
+            viewModel.snapshot.visiblePacketCount == 0
+        }
+        let generationAfterFilter = viewModel.snapshot.packetTableGeneration
+        liveSession.send(.packetBatch([resolvingPacket], disposition: .append))
+
+        // Both packets become visible: resolvingPacket directly, firstPacket via SNI back-fill.
+        await waitUntil {
+            viewModel.snapshot.visiblePacketCount == 2
+        }
+
+        #expect(viewModel.snapshot.packetTableGeneration > generationAfterFilter)
         #expect(viewModel.snapshot.packetTableUpdatePlan == .reload)
+    }
+
+    @Test func appendMutationsReuseTheSameRowStoreInstance() async {
+        let liveSession = InspectorFakeLiveSession()
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(
+                core: InspectorFakeCore(
+                    interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                    liveSession: liveSession
+                )
+            ),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.performInitialLoadIfNeeded()
+        await viewModel.toggleLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        liveSession.send(.packetBatch([
+            makePacket(packetNumber: 1, source: .live, transportHint: .tcp)
+        ], disposition: .append))
+        await waitUntil { viewModel.snapshot.packetRows.count == 1 }
+
+        let storeAfterFirstAppend = viewModel.snapshot.packetTableRowStore
+
+        liveSession.send(.packetBatch([
+            makePacket(packetNumber: 2, source: .live, transportHint: .tcp)
+        ], disposition: .append))
+        await waitUntil { viewModel.snapshot.packetRows.count == 2 }
+
+        // Append-only batches keep the same store instance, so the rows array stays uniquely
+        // owned by the class and Swift's CoW doesn't fire on the next mutation.
+        #expect(viewModel.snapshot.packetTableRowStore === storeAfterFirstAppend)
+        #expect(viewModel.snapshot.packetRows.count == 2)
+    }
+
+    @Test func rebuildAllocatesAFreshRowStoreInstance() async {
+        let liveSession = InspectorFakeLiveSession()
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(
+                core: InspectorFakeCore(
+                    interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                    liveSession: liveSession
+                )
+            ),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.performInitialLoadIfNeeded()
+        await viewModel.toggleLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        liveSession.send(.packetBatch([
+            makePacket(packetNumber: 1, source: .live, transportHint: .tcp, destinationPort: 80),
+            makePacket(packetNumber: 2, source: .live, transportHint: .tcp, destinationPort: 443),
+        ], disposition: .append))
+        await waitUntil { viewModel.snapshot.packetRows.count == 2 }
+
+        let storeBeforeFilterChange = viewModel.snapshot.packetTableRowStore
+
+        // A filter change forces a full rebuild → a fresh store, leaving the old store untouched
+        // for any code still holding the previous snapshot.
+        viewModel.updateDisplayFilterText("port:80")
+
+        #expect(viewModel.snapshot.packetTableRowStore !== storeBeforeFilterChange)
+        #expect(storeBeforeFilterChange.rows.count == 2)
+        #expect(viewModel.snapshot.packetRows.count == 1)
+    }
+
+    @Test func liveIngestEventsCoalesceIntoTrailingEdgeRebuild() async {
+        let liveSession = InspectorFakeLiveSession()
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(
+                core: InspectorFakeCore(
+                    interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                    liveSession: liveSession
+                )
+            ),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.performInitialLoadIfNeeded()
+        await viewModel.toggleLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+
+        // Three back-to-back batches should leave exactly one pending coalesced rebuild work item.
+        let first = makePacket(packetNumber: 1, source: .live, transportHint: .tcp)
+        let second = makePacket(packetNumber: 2, source: .live, transportHint: .tcp)
+        let third = makePacket(packetNumber: 3, source: .live, transportHint: .tcp)
+        liveSession.send(.packetBatch([first], disposition: .append))
+        liveSession.send(.packetBatch([second], disposition: .append))
+        liveSession.send(.packetBatch([third], disposition: .append))
+
+        await waitUntil {
+            viewModel.hasPendingCoalescedRebuildForTesting
+        }
+        #expect(viewModel.snapshot.packetRows.count < 3)
+
+        viewModel.flushPendingCoalescedRebuildForTesting()
+        #expect(viewModel.snapshot.packetRows.count == 3)
+        #expect(viewModel.hasPendingCoalescedRebuildForTesting == false)
+    }
+
+    @Test func userDrivenFilterChangeFlushesPendingCoalescedRebuild() async {
+        let liveSession = InspectorFakeLiveSession()
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(
+                core: InspectorFakeCore(
+                    interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                    liveSession: liveSession
+                )
+            ),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.performInitialLoadIfNeeded()
+        await viewModel.toggleLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        liveSession.send(.packetBatch([
+            makePacket(packetNumber: 1, source: .live, transportHint: .tcp)
+        ], disposition: .append))
+
+        await waitUntil {
+            viewModel.hasPendingCoalescedRebuildForTesting
+        }
+
+        // A user-driven filter change must cancel the pending tick and rebuild synchronously, so
+        // the user sees the result immediately rather than 80 ms later.
+        viewModel.updateDisplayFilterText("port:9999")
+
+        #expect(viewModel.hasPendingCoalescedRebuildForTesting == false)
+        #expect(viewModel.snapshot.displayFilterText == "port:9999")
+        #expect(viewModel.snapshot.visiblePacketCount == 0)
     }
 
     @Test func metadataEnrichmentDoesNotResolveClientsForOfflinePackets() {
@@ -1352,14 +1544,14 @@ struct NetworkInspectorViewModelTests {
         let visibleIndex = Dictionary(uniqueKeysWithValues: rows.enumerated().map { index, row in
             (row.id, index)
         })
+        let store = PacketTableRowStore(rows: rows, visiblePacketRowIndexByID: visibleIndex)
         let tableContent = PacketTableContent(
             displayFilter: PacketDisplayFilter(""),
             displayFilterChips: [],
-            rows: rows,
+            store: store,
             generation: generation,
             updatePlan: updatePlan,
-            malformedPacketCount: 0,
-            visiblePacketRowIndexByID: visibleIndex
+            malformedPacketCount: 0
         )
         return NetworkInspectorSnapshot.make(
             base: base,
