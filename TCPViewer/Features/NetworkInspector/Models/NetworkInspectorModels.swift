@@ -72,23 +72,20 @@ private extension String {
 }
 
 enum PacketInspectorTab: String, CaseIterable, Identifiable, Sendable, Hashable {
-    case summary
-    case detail
+    case overview
+    case fields
     case raw
-    case hex
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .summary:
-            "Summary"
-        case .detail:
-            "Detail"
+        case .overview:
+            "Overview"
+        case .fields:
+            "Fields"
         case .raw:
             "Raw"
-        case .hex:
-            "Hex"
         }
     }
 }

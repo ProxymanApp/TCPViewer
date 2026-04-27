@@ -38,7 +38,7 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.base.sessionState.selectedInterfaceID == "en0")
         #expect(viewModel.snapshot.packetRows.first?.protocolText == "TCP")
         #expect(viewModel.snapshot.packetRows.first?.destinationText == "10.0.0.2:443")
-        #expect(viewModel.snapshot.inspectorTab == .summary)
+        #expect(viewModel.snapshot.inspectorTab == .overview)
 
         viewModel.selectPacket(packet.id)
         await waitUntil {
@@ -46,7 +46,7 @@ struct NetworkInspectorViewModelTests {
         }
 
         #expect(viewModel.snapshot.selectedPacket?.id == packet.id)
-        #expect(viewModel.snapshot.inspectorTab == .summary)
+        #expect(viewModel.snapshot.inspectorTab == .overview)
         #expect(viewModel.snapshot.base.inspectionState.inspection?.rawBytes.count == 16)
 
         viewModel.updateDisplayFilterText("protocol:tcp port:443")
@@ -258,7 +258,7 @@ struct NetworkInspectorViewModelTests {
     }
 
     @Test func inspectorTabsAndRawCopyFormatterMatchRedesignedInspector() {
-        #expect(PacketInspectorTab.allCases.map(\.title) == ["Summary", "Detail", "Raw", "Hex"])
+        #expect(PacketInspectorTab.allCases.map(\.title) == ["Overview", "Fields", "Raw"])
 
         let copyText = PacketDetailCopyFormatter.text(for: [
             PacketDetailCopyRow(depth: 0, name: "Transmission Control Protocol", value: "53845 → 62078"),
@@ -370,7 +370,7 @@ struct NetworkInspectorViewModelTests {
             sourceListSnapshot: .empty,
             sourceListFilterText: "",
             workspaceMode: .packets,
-            inspectorTab: .summary,
+            inspectorTab: .overview,
             isInspectorVisible: true,
             displayFilterText: "",
             packetTableContent: .empty
@@ -394,7 +394,7 @@ struct NetworkInspectorViewModelTests {
             sourceListSnapshot: .empty,
             sourceListFilterText: "",
             workspaceMode: .packets,
-            inspectorTab: .summary,
+            inspectorTab: .overview,
             isInspectorVisible: true,
             displayFilterText: "protocol:udp",
             packetTableContent: .empty
@@ -417,7 +417,7 @@ struct NetworkInspectorViewModelTests {
             sourceListSnapshot: .empty,
             sourceListFilterText: "",
             workspaceMode: .packets,
-            inspectorTab: .summary,
+            inspectorTab: .overview,
             isInspectorVisible: true,
             displayFilterText: "",
             packetTableContent: .empty
@@ -451,7 +451,7 @@ struct NetworkInspectorViewModelTests {
 
         let generationAfterPackets = viewModel.snapshot.packetTableGeneration
 
-        viewModel.selectInspectorTab(.hex)
+        viewModel.selectInspectorTab(.raw)
         #expect(viewModel.snapshot.packetTableGeneration == generationAfterPackets)
 
         liveSession.send(.healthChanged(CaptureHealthSnapshot(
@@ -1560,7 +1560,7 @@ struct NetworkInspectorViewModelTests {
             sourceListSnapshot: .empty,
             sourceListFilterText: "",
             workspaceMode: .packets,
-            inspectorTab: .summary,
+            inspectorTab: .overview,
             isInspectorVisible: true,
             displayFilterText: "",
             packetTableContent: tableContent
