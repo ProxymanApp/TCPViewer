@@ -110,7 +110,7 @@ final class PacketInspectorViewController: NSViewController {
     override func loadView() {
         view = NSView()
         view.wantsLayer = true
-        view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        view.layer?.backgroundColor = InspectorTheme.Palette.panelBackground.cgColor
         setupHeader()
         setupContentContainer()
     }
@@ -143,9 +143,10 @@ final class PacketInspectorViewController: NSViewController {
     }
 
     private func setupHeader() {
-        let header = NSView()
-        header.wantsLayer = true
-        header.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        let header = NSVisualEffectView()
+        header.material = .headerView
+        header.blendingMode = .withinWindow
+        header.state = .followsWindowActiveState
         header.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(header)
 
@@ -154,22 +155,15 @@ final class PacketInspectorViewController: NSViewController {
 
         header.addSubview(tabControl)
 
-        let separator = TCPViewerUI.separator()
-        header.addSubview(separator)
-
         NSLayoutConstraint.activate([
             header.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             header.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             header.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
-            header.heightAnchor.constraint(equalToConstant: 44),
+            header.heightAnchor.constraint(equalToConstant: 38),
 
             tabControl.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 14),
             tabControl.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -14),
             tabControl.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-
-            separator.leadingAnchor.constraint(equalTo: header.leadingAnchor),
-            separator.trailingAnchor.constraint(equalTo: header.trailingAnchor),
-            separator.bottomAnchor.constraint(equalTo: header.bottomAnchor),
         ])
     }
 
@@ -180,7 +174,7 @@ final class PacketInspectorViewController: NSViewController {
         NSLayoutConstraint.activate([
             contentContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             contentContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            contentContainer.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 44),
+            contentContainer.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 38),
             contentContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
     }
@@ -235,36 +229,91 @@ final class PacketInspectorViewController: NSViewController {
             )
         }
 
-        let title = TCPViewerUI.label(summarySentence(for: packet), font: configuration.packetFont(sizeDelta: 1, weight: .semibold))
-        title.maximumNumberOfLines = 3
-        title.lineBreakMode = .byWordWrapping
+        let hero = makeHero(packet: packet, inspection: state.inspection)
 
-        let badgeRow = NSStackView(views: summaryBadges(for: packet, inspection: state.inspection))
-        badgeRow.orientation = .horizontal
-        badgeRow.alignment = .leading
-        badgeRow.spacing = 6
+        let summaryCard = sectionCard(symbol: "doc.text.magnifyingglass", title: "Summary", rows: [
+            InspectorTheme.keyValueRow(label: "Packet", value: "#\(packet.packetNumber)", configuration: configuration),
+            InspectorTheme.keyValueRow(label: "Length", value: NetworkInspectorFormatters.byteCount(packet.capturedLength), configuration: configuration),
+            InspectorTheme.keyValueRow(label: "On Wire", value: NetworkInspectorFormatters.byteCount(packet.originalLength), configuration: configuration),
+            InspectorTheme.keyValueRow(label: "Protocol", value: NetworkInspectorFormatters.protocolLabel(for: packet), configuration: configuration),
+            InspectorTheme.keyValueRow(label: "Status", value: NetworkInspectorFormatters.severity(for: packet).label, configuration: configuration),
+            InspectorTheme.keyValueRow(label: "Info", value: packet.infoSummary, configuration: configuration),
+        ])
 
-        return scrollView(for: sectionStack([
-            NSStackView(views: [title, badgeRow], orientation: .vertical, spacing: 10),
-            section("Summary", rows: [
-                keyValue("Packet", "\(packet.packetNumber)"),
-                keyValue("Length", NetworkInspectorFormatters.byteCount(packet.capturedLength)),
-                keyValue("On Wire", NetworkInspectorFormatters.byteCount(packet.originalLength)),
-                keyValue("Protocol", NetworkInspectorFormatters.protocolLabel(for: packet)),
-                keyValue("Status", NetworkInspectorFormatters.severity(for: packet).label),
-                keyValue("Info", packet.infoSummary),
-            ]),
-            section("Source", rows: [
-                keyValue("Endpoint", NetworkInspectorFormatters.endpointLabel(packet.endpoints.source)),
-                keyValue("Interface", packet.captureMetadata.interfaceName ?? packet.interfaceID ?? "-"),
-            ]),
-            section("Destination", rows: [
-                keyValue("Endpoint", NetworkInspectorFormatters.endpointLabel(packet.endpoints.destination)),
-            ]),
-            section("Timing", rows: [
-                keyValue("Captured", NetworkInspectorFormatters.packetTime.string(from: packet.timestamp)),
-            ]),
-        ]))
+        let sourceCard = sectionCard(symbol: "arrow.up.right.circle", title: "Source", rows: [
+            InspectorTheme.keyValueRow(label: "Endpoint", value: NetworkInspectorFormatters.endpointLabel(packet.endpoints.source), configuration: configuration),
+            InspectorTheme.keyValueRow(label: "Interface", value: packet.captureMetadata.interfaceName ?? packet.interfaceID ?? "—", configuration: configuration),
+        ])
+
+        let destinationCard = sectionCard(symbol: "arrow.down.left.circle", title: "Destination", rows: [
+            InspectorTheme.keyValueRow(label: "Endpoint", value: NetworkInspectorFormatters.endpointLabel(packet.endpoints.destination), configuration: configuration),
+        ])
+
+        let timingCard = sectionCard(symbol: "clock", title: "Timing", rows: [
+            InspectorTheme.keyValueRow(label: "Captured", value: NetworkInspectorFormatters.packetTime.string(from: packet.timestamp), configuration: configuration),
+        ])
+
+        return scrollView(for: sectionStack([hero, summaryCard, sourceCard, destinationCard, timingCard]))
+    }
+
+    private func makeHero(packet: PacketSummary, inspection: PacketInspection?) -> NSView {
+        let title = TCPViewerUI.label(
+            "Packet #\(packet.packetNumber)",
+            font: InspectorTheme.heroTitleFont(configuration)
+        )
+        title.maximumNumberOfLines = 1
+
+        let subtitle = TCPViewerUI.label(
+            heroSubtitle(for: packet),
+            font: InspectorTheme.heroSubtitleFont(configuration),
+            color: .secondaryLabelColor
+        )
+        subtitle.maximumNumberOfLines = 2
+        subtitle.lineBreakMode = .byTruncatingMiddle
+
+        let layerNames = packet.layers.map(\.name)
+        let stackView = layerNames.isEmpty
+            ? NSView()
+            : InspectorTheme.protocolStack(layers: layerNames, configuration: configuration)
+
+        let statusChips = makeStatusChips(packet: packet, inspection: inspection)
+        let chipRow = NSStackView()
+        chipRow.orientation = .horizontal
+        chipRow.alignment = .centerY
+        chipRow.spacing = InspectorTheme.Spacing.chipSpacing
+        chipRow.addArrangedSubview(stackView)
+        for chip in statusChips {
+            chipRow.addArrangedSubview(chip)
+        }
+
+        let stack = NSStackView(views: [title, subtitle, chipRow])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 6
+        stack.setCustomSpacing(InspectorTheme.Spacing.heroSpacing, after: subtitle)
+        return stack
+    }
+
+    private func heroSubtitle(for packet: PacketSummary) -> String {
+        let source = NetworkInspectorFormatters.endpointLabel(packet.endpoints.source)
+        let destination = NetworkInspectorFormatters.endpointLabel(packet.endpoints.destination)
+        let length = NetworkInspectorFormatters.byteCount(packet.capturedLength)
+        return "\(source) → \(destination) · \(length)"
+    }
+
+    private func makeStatusChips(packet: PacketSummary, inspection: PacketInspection?) -> [NSView] {
+        var chips: [NSView] = []
+        let severity = NetworkInspectorFormatters.severity(for: packet)
+        if severity != .normal {
+            chips.append(InspectorTheme.chip(text: severity.label, tint: .systemOrange, configuration: configuration))
+        }
+        if packet.captureMetadata.isTruncated {
+            chips.append(InspectorTheme.chip(text: "Truncated", tint: .systemYellow, configuration: configuration))
+        }
+        if let status = inspection?.decodeStatus, status.kind != .complete, let reason = status.reason, !reason.isEmpty {
+            chips.append(InspectorTheme.chip(text: reason, tint: .systemOrange, configuration: configuration))
+        }
+        return chips
     }
 
     private func makeDetailView(state: PacketInspectorRenderState) -> NSView {
@@ -282,9 +331,13 @@ final class PacketInspectorViewController: NSViewController {
         }
 
         let sections = inspection.detailNodes.map { node in
-            section(node.name, rows: detailRows(for: node.children, depth: 0, selectedNodeID: state.selectedDetailNodeID))
+            sectionCard(
+                symbol: layerSymbol(for: node.name),
+                title: node.name,
+                rows: detailRows(for: node.children, depth: 0, selectedNodeID: state.selectedDetailNodeID)
+            )
         }
-        return scrollView(for: sectionStack(sections, spacing: 18, edgeInsets: NSEdgeInsets(top: 14, left: 14, bottom: 14, right: 14)))
+        return scrollView(for: sectionStack(sections))
     }
 
     private func makeRawView(state: PacketInspectorRenderState) -> NSView {
@@ -332,6 +385,7 @@ final class PacketInspectorViewController: NSViewController {
         let scrollView = NSScrollView()
         scrollView.hasVerticalScroller = true
         scrollView.drawsBackground = false
+        scrollView.automaticallyAdjustsContentInsets = true
         scrollView.documentView = documentView
         documentView.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
@@ -359,40 +413,83 @@ final class PacketInspectorViewController: NSViewController {
         return container
     }
 
-    private func sectionStack(_ views: [NSView], spacing: CGFloat = 18, edgeInsets: NSEdgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)) -> NSStackView {
-        let stack = NSStackView(views: views)
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = spacing
-        stack.edgeInsets = edgeInsets
-        return stack
+    private func sectionStack(_ views: [NSView]) -> NSView {
+        let container = NSView()
+        let pad = InspectorTheme.Spacing.outerPadding
+        var previous: NSView?
+        for view in views {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(view)
+            view.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: pad).isActive = true
+            view.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -pad).isActive = true
+            if let previous {
+                view.topAnchor.constraint(equalTo: previous.bottomAnchor, constant: InspectorTheme.Spacing.cardSpacing).isActive = true
+            } else {
+                view.topAnchor.constraint(equalTo: container.topAnchor, constant: pad).isActive = true
+            }
+            previous = view
+        }
+        if let last = previous {
+            last.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -pad).isActive = true
+        }
+        return container
     }
 
-    private func section(_ title: String, rows: [NSView]) -> NSView {
-        let titleLabel = TCPViewerUI.label(title.uppercased(), font: configuration.packetFont(sizeDelta: -1, weight: .semibold), color: .secondaryLabelColor)
-        let rowsStack = NSStackView(views: rows)
-        rowsStack.orientation = .vertical
-        rowsStack.alignment = .leading
-        rowsStack.spacing = 6
-        let stack = NSStackView(views: [titleLabel, rowsStack])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 8
-        return stack
+    private func sectionCard(symbol: String, title: String, rows: [NSView]) -> NSView {
+        let header = InspectorTheme.sectionHeader(symbol: symbol, title: title, configuration: configuration)
+        header.translatesAutoresizingMaskIntoConstraints = false
+
+        let content = NSView()
+        content.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(header)
+        NSLayoutConstraint.activate([
+            header.topAnchor.constraint(equalTo: content.topAnchor),
+            header.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            header.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor),
+        ])
+
+        var previous: NSView = header
+        var firstRowSpacing: CGFloat = 10
+        for (index, row) in rows.enumerated() {
+            row.translatesAutoresizingMaskIntoConstraints = false
+            content.addSubview(row)
+            NSLayoutConstraint.activate([
+                row.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+                row.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+                row.topAnchor.constraint(equalTo: previous.bottomAnchor, constant: index == 0 ? firstRowSpacing : InspectorTheme.Spacing.rowSpacing),
+            ])
+            previous = row
+            firstRowSpacing = InspectorTheme.Spacing.rowSpacing
+
+            if index < rows.count - 1 {
+                let divider = InspectorTheme.rowDivider()
+                content.addSubview(divider)
+                NSLayoutConstraint.activate([
+                    divider.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+                    divider.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+                    divider.topAnchor.constraint(equalTo: row.bottomAnchor, constant: InspectorTheme.Spacing.rowSpacing),
+                ])
+                previous = divider
+            }
+        }
+
+        previous.bottomAnchor.constraint(equalTo: content.bottomAnchor).isActive = true
+        return InspectorTheme.card(content: content)
     }
 
-    private func keyValue(_ key: String, _ value: String) -> NSView {
-        let keyLabel = TCPViewerUI.label(key, font: configuration.packetFont(weight: .regular), color: .secondaryLabelColor)
-        let valueLabel = TCPViewerUI.label(value, font: configuration.packetFont(weight: .regular))
-        valueLabel.maximumNumberOfLines = 2
-        valueLabel.isSelectable = true
-
-        let row = NSStackView(views: [keyLabel, valueLabel])
-        row.orientation = .horizontal
-        row.alignment = .firstBaseline
-        row.spacing = 12
-        keyLabel.widthAnchor.constraint(equalToConstant: 96).isActive = true
-        return row
+    private func layerSymbol(for layerName: String) -> String {
+        switch layerName.uppercased() {
+        case let name where name.hasPrefix("ETH"): return "cable.connector"
+        case let name where name.hasPrefix("IP"): return "globe"
+        case "TCP": return "arrow.left.arrow.right"
+        case "UDP": return "bolt.horizontal"
+        case "HTTP", "HTTPS": return "network"
+        case let name where name.hasPrefix("TLS") || name.hasPrefix("SSL"): return "lock.shield"
+        case "DNS": return "magnifyingglass"
+        case "ICMP", "ICMPV6": return "exclamationmark.triangle"
+        case "ARP": return "link"
+        default: return "rectangle.stack"
+        }
     }
 
     private func detailRows(for nodes: [PacketDetailNode], depth: Int, selectedNodeID: String?) -> [NSView] {
@@ -422,14 +519,14 @@ final class PacketInspectorViewController: NSViewController {
         rowContent.orientation = .horizontal
         rowContent.alignment = .centerY
         rowContent.spacing = 8
-        rowContent.edgeInsets = NSEdgeInsets(top: 4, left: CGFloat(depth) * 14 + 2, bottom: 4, right: 8)
+        rowContent.edgeInsets = NSEdgeInsets(top: 4, left: CGFloat(depth) * 16 + 2, bottom: 4, right: 8)
         rowContent.translatesAutoresizingMaskIntoConstraints = false
         icon.widthAnchor.constraint(equalToConstant: 14).isActive = true
 
         button.addSubview(rowContent)
         button.wantsLayer = true
         button.layer?.cornerRadius = 6
-        button.layer?.backgroundColor = selectedNodeID == node.id ? NSColor.controlAccentColor.withAlphaComponent(0.14).cgColor : NSColor.clear.cgColor
+        button.layer?.backgroundColor = selectedNodeID == node.id ? NSColor.controlAccentColor.withAlphaComponent(0.18).cgColor : NSColor.clear.cgColor
         NSLayoutConstraint.activate([
             rowContent.leadingAnchor.constraint(equalTo: button.leadingAnchor),
             rowContent.trailingAnchor.constraint(equalTo: button.trailingAnchor),
@@ -441,44 +538,6 @@ final class PacketInspectorViewController: NSViewController {
         return button
     }
 
-    private func summarySentence(for packet: PacketSummary) -> String {
-        let protocolLabel = NetworkInspectorFormatters.protocolLabel(for: packet)
-        let source = NetworkInspectorFormatters.endpointLabel(packet.endpoints.source)
-        let destination = NetworkInspectorFormatters.endpointLabel(packet.endpoints.destination)
-        let length = NetworkInspectorFormatters.byteCount(packet.capturedLength)
-        return "\(protocolLabel) · \(source) → \(destination) · \(length) · frame \(packet.packetNumber)"
-    }
-
-    private func summaryBadges(for packet: PacketSummary, inspection: PacketInspection?) -> [NSView] {
-        var labels = packet.layers.map(\.name)
-        labels.append(NetworkInspectorFormatters.severity(for: packet).label)
-        if packet.captureMetadata.isTruncated {
-            labels.append("Truncated")
-        }
-        if inspection?.decodeStatus.kind != .complete, let reason = inspection?.decodeStatus.reason, !reason.isEmpty {
-            labels.append(reason)
-        }
-
-        return Array(labels.prefix(6)).map(makeBadge)
-    }
-
-    private func makeBadge(_ text: String) -> NSView {
-        let label = TCPViewerUI.label(text, font: configuration.packetFont(sizeDelta: -1, weight: .medium), color: .secondaryLabelColor)
-        label.lineBreakMode = .byTruncatingTail
-        let container = NSView()
-        container.wantsLayer = true
-        container.layer?.cornerRadius = 5
-        container.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.10).cgColor
-        label.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(label)
-        NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 7),
-            label.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -7),
-            label.topAnchor.constraint(equalTo: container.topAnchor, constant: 3),
-            label.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -3),
-        ])
-        return container
-    }
 }
 
 extension PacketInspectorViewController: PacketRawOutlineViewDelegate {

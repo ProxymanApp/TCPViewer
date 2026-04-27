@@ -122,52 +122,70 @@ final class PacketProtocolCell: NSTextFieldCell {
     }
 
     private func backgroundColor(for protocolText: String, severity: PacketSeverity) -> NSColor {
-        switch protocolText.uppercased() {
-        case "TCP":
-            return .systemOrange.withAlphaComponent(0.16)
-        case "UDP":
-            return .systemCyan.withAlphaComponent(0.18)
-        case "TLS", "SSL", "HTTPS":
-            return .systemGreen.withAlphaComponent(0.16)
-        case "HTTP":
-            return .systemPink.withAlphaComponent(0.16)
-        case "DNS":
-            return .systemPurple.withAlphaComponent(0.16)
-        case "ICMP":
-            return .systemRed.withAlphaComponent(0.14)
-        case "ARP":
-            return .systemTeal.withAlphaComponent(0.16)
-        default:
-            if severity != .normal {
-                return .systemOrange.withAlphaComponent(0.18)
-            }
-
-            return .controlAccentColor.withAlphaComponent(0.14)
-        }
+        PacketProtocolPalette.fill(for: protocolText, severity: severity)
     }
 
     private func textColor(for protocolText: String, severity: PacketSeverity) -> NSColor {
+        PacketProtocolPalette.tint(for: protocolText, severity: severity)
+    }
+}
+
+enum PacketProtocolPalette {
+    static func tint(for protocolText: String, severity: PacketSeverity = .normal) -> NSColor {
         switch protocolText.uppercased() {
         case "TCP":
             return .systemOrange
         case "UDP":
             return .systemCyan
-        case "TLS", "SSL", "HTTPS":
+        case "TLS", "SSL", "HTTPS", "TLSV1", "TLSV1.1", "TLSV1.2", "TLSV1.3":
             return .systemGreen
         case "HTTP":
             return .systemPink
         case "DNS":
             return .systemPurple
-        case "ICMP":
+        case "ICMP", "ICMPV6":
             return .systemRed
         case "ARP":
             return .systemTeal
+        case "IPV4", "IPV6", "IP":
+            return .systemBlue
+        case "ETHERNET", "ETH":
+            return .systemGray
         default:
             if severity != .normal {
                 return .systemOrange
             }
 
             return .controlAccentColor
+        }
+    }
+
+    static func fill(for protocolText: String, severity: PacketSeverity = .normal) -> NSColor {
+        switch protocolText.uppercased() {
+        case "TCP":
+            return .systemOrange.withAlphaComponent(0.16)
+        case "UDP":
+            return .systemCyan.withAlphaComponent(0.18)
+        case "TLS", "SSL", "HTTPS", "TLSV1", "TLSV1.1", "TLSV1.2", "TLSV1.3":
+            return .systemGreen.withAlphaComponent(0.16)
+        case "HTTP":
+            return .systemPink.withAlphaComponent(0.16)
+        case "DNS":
+            return .systemPurple.withAlphaComponent(0.16)
+        case "ICMP", "ICMPV6":
+            return .systemRed.withAlphaComponent(0.14)
+        case "ARP":
+            return .systemTeal.withAlphaComponent(0.16)
+        case "IPV4", "IPV6", "IP":
+            return .systemBlue.withAlphaComponent(0.14)
+        case "ETHERNET", "ETH":
+            return .systemGray.withAlphaComponent(0.18)
+        default:
+            if severity != .normal {
+                return .systemOrange.withAlphaComponent(0.18)
+            }
+
+            return .controlAccentColor.withAlphaComponent(0.14)
         }
     }
 }
