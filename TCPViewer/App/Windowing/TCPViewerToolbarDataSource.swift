@@ -32,7 +32,7 @@ protocol TCPViewerToolbarDataSourceDelegate: AnyObject {
     func tcpviewerToolbarDataSourceDidToggleCapture(_ dataSource: TCPViewerToolbarDataSource)
     func tcpviewerToolbarDataSourceDidRequestClearAllPackets(_ dataSource: TCPViewerToolbarDataSource)
     func tcpviewerToolbarDataSource(_ dataSource: TCPViewerToolbarDataSource, didRequestExport format: CaptureFileFormat)
-    func tcpviewerToolbarDataSourceDidToggleInspector(_ dataSource: TCPViewerToolbarDataSource)
+    func tcpviewerToolbarDataSource(_ dataSource: TCPViewerToolbarDataSource, didToggleInspector placement: NetworkInspectorPlacement)
 }
 
 final class TCPViewerToolbarDataSource: NSObject {
@@ -53,7 +53,9 @@ final class TCPViewerToolbarDataSource: NSObject {
     private let clearAllButton = NSButton(frame: NSRect(x: 0, y: 0, width: 34, height: 30))
     private let statusView = TCPViewerToolbarStatusView(frame: NSRect(x: 0, y: 0, width: 360, height: 28))
     private let sharePopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 42, height: 30), pullsDown: true)
-    private let inspectorButton = NSButton(frame: NSRect(x: 0, y: 0, width: 34, height: 30))
+    private let inspectorPlacementControl = NSSegmentedControl(
+        frame: NSRect(x: 0, y: 0, width: 68, height: 30)
+    )
     private var interfacePopupWidthConstraint: NSLayoutConstraint?
 
     private var allowedItemIdentifiers: [NSToolbarItem.Identifier] {
@@ -81,7 +83,7 @@ final class TCPViewerToolbarDataSource: NSObject {
     }
 
     override init() {
-        self.toolbar = NSToolbar(identifier: "TCPViewer.MainToolbar.v3")
+        self.toolbar = NSToolbar(identifier: "TCPViewer.MainToolbar.v4")
         super.init()
         configureToolbar()
         configureToolbarViews()
@@ -94,7 +96,7 @@ final class TCPViewerToolbarDataSource: NSObject {
         renderCaptureButton()
         renderClearAllButton()
         renderSharePopup()
-        renderInspectorButton()
+        renderInspectorPlacementControl()
         statusView.render(viewModel: viewModel)
     }
 
@@ -118,7 +120,7 @@ final class TCPViewerToolbarDataSource: NSObject {
         constrainToolbarView(clearAllButton, width: 34, height: 30)
         constrainToolbarView(statusView, width: 360, height: 28)
         constrainToolbarView(sharePopup, width: 42, height: 30)
-        constrainToolbarView(inspectorButton, width: 34, height: 30)
+        constrainToolbarView(inspectorPlacementControl, width: 68, height: 30)
 
         interfacePopup.target = self
         interfacePopup.action = #selector(interfaceChanged(_:))
@@ -151,12 +153,17 @@ final class TCPViewerToolbarDataSource: NSObject {
         sharePopup.action = #selector(shareActionSelected(_:))
         sharePopup.toolTip = "Share"
 
-        inspectorButton.target = self
-        inspectorButton.action = #selector(inspectorButtonPressed(_:))
-        inspectorButton.bezelStyle = .texturedRounded
-        inspectorButton.image = TCPViewerUI.image("sidebar.trailing")
-        inspectorButton.imagePosition = .imageOnly
-        inspectorButton.toolTip = "Toggle Inspector View"
+        inspectorPlacementControl.segmentCount = 2
+        inspectorPlacementControl.segmentStyle = .capsule
+        inspectorPlacementControl.trackingMode = .selectAny
+        inspectorPlacementControl.controlSize = .regular
+        inspectorPlacementControl.target = self
+        inspectorPlacementControl.action = #selector(inspectorPlacementSelected(_:))
+        inspectorPlacementControl.setImage(TCPViewerUI.image("rectangle.bottomthird.inset.filled"), forSegment: 0)
+        inspectorPlacementControl.setImage(TCPViewerUI.image("sidebar.trailing"), forSegment: 1)
+        inspectorPlacementControl.setWidth(34, forSegment: 0)
+        inspectorPlacementControl.setWidth(34, forSegment: 1)
+        inspectorPlacementControl.toolTip = "Show Inspector at Bottom or Right"
     }
 
     private func constrainToolbarView(_ view: NSView, width: CGFloat, height: CGFloat) {
@@ -292,8 +299,11 @@ final class TCPViewerToolbarDataSource: NSObject {
         sharePopup.selectItem(at: 0)
     }
 
-    private func renderInspectorButton() {
-        inspectorButton.state = viewModel.isInspectorVisible ? .on : .off
+    private func renderInspectorPlacementControl() {
+        let isBottomVisible = viewModel.isInspectorVisible && viewModel.inspectorPlacement == .bottom
+        let isTrailingVisible = viewModel.isInspectorVisible && viewModel.inspectorPlacement == .trailing
+        inspectorPlacementControl.setSelected(isBottomVisible, forSegment: 0)
+        inspectorPlacementControl.setSelected(isTrailingVisible, forSegment: 1)
     }
 
     @objc private func interfaceChanged(_ sender: NSPopUpButton) {
@@ -330,8 +340,34 @@ final class TCPViewerToolbarDataSource: NSObject {
         sender.selectItem(at: 0)
     }
 
-    @objc private func inspectorButtonPressed(_ sender: NSButton) {
-        delegate?.tcpviewerToolbarDataSourceDidToggleInspector(self)
+    @objc private func inspectorPlacementSelected(_ sender: NSSegmentedControl) {
+        let clickedSegment = sender.selectedSegment == -1 ? fallbackInspectorSegment() : sender.selectedSegment
+        guard let placement = inspectorPlacement(for: clickedSegment) else {
+            renderInspectorPlacementControl()
+            return
+        }
+
+        if sender.isSelected(forSegment: clickedSegment) {
+            let alternateSegment = clickedSegment == 0 ? 1 : 0
+            sender.setSelected(false, forSegment: alternateSegment)
+        }
+
+        delegate?.tcpviewerToolbarDataSource(self, didToggleInspector: placement)
+    }
+
+    private func fallbackInspectorSegment() -> Int {
+        viewModel.inspectorPlacement == .bottom ? 0 : 1
+    }
+
+    private func inspectorPlacement(for segment: Int) -> NetworkInspectorPlacement? {
+        switch segment {
+        case 0:
+            return .bottom
+        case 1:
+            return .trailing
+        default:
+            return nil
+        }
     }
 }
 
@@ -374,8 +410,8 @@ extension TCPViewerToolbarDataSource: NSToolbarDelegate {
             item.visibilityPriority = .high
         case TCPViewerToolbarItemMetadata.inspector.identifier:
             item.label = "Inspector"
-            item.paletteLabel = "Inspector"
-            item.view = inspectorButton
+            item.paletteLabel = "Inspector Placement"
+            item.view = inspectorPlacementControl
             item.visibilityPriority = .high
         default:
             return nil
@@ -399,6 +435,7 @@ private final class TCPViewerToolbarViewModel {
     private(set) var canSave = false
     private(set) var canSaveAs = false
     private(set) var canExport = false
+    private(set) var inspectorPlacement: NetworkInspectorPlacement = .trailing
     private(set) var isInspectorVisible = true
     private(set) var statusText = "TCP Viewer | Idle"
     private(set) var emphasizedText: String?
@@ -420,6 +457,7 @@ private final class TCPViewerToolbarViewModel {
         canSave = snapshot.base.documentState.canSave
         canSaveAs = snapshot.base.documentState.canSaveAs
         canExport = snapshot.totalPacketCount > 0 && snapshot.base.loadState.progress.phase != .loading
+        inspectorPlacement = snapshot.inspectorPlacement
         isInspectorVisible = snapshot.isInspectorVisible
         statusTint = Self.tint(for: snapshot)
         statusText = Self.statusText(for: snapshot)

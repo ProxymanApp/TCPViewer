@@ -477,6 +477,11 @@ enum PacketTableUpdatePlanner {
     }
 }
 
+enum NetworkInspectorPlacement: String, Equatable {
+    case bottom
+    case trailing
+}
+
 struct NetworkInspectorSnapshot: Equatable {
     var base: TCPViewerWindowSnapshot
     var selectedSidebar: NetworkInspectorSidebarSelection
@@ -485,6 +490,7 @@ struct NetworkInspectorSnapshot: Equatable {
     var sourceListFilterText: String
     var workspaceMode: NetworkInspectorWorkspaceMode
     var inspectorTab: PacketInspectorTab
+    var inspectorPlacement: NetworkInspectorPlacement
     var isInspectorVisible: Bool
     var displayFilterText: String
     var displayFilter: PacketDisplayFilter
@@ -506,6 +512,7 @@ struct NetworkInspectorSnapshot: Equatable {
         sourceListFilterText: String,
         workspaceMode: NetworkInspectorWorkspaceMode,
         inspectorTab: PacketInspectorTab,
+        inspectorPlacement: NetworkInspectorPlacement = .trailing,
         isInspectorVisible: Bool,
         displayFilterText: String,
         packetTableContent: PacketTableContent
@@ -518,6 +525,7 @@ struct NetworkInspectorSnapshot: Equatable {
             sourceListFilterText: sourceListFilterText,
             workspaceMode: workspaceMode,
             inspectorTab: inspectorTab,
+            inspectorPlacement: inspectorPlacement,
             isInspectorVisible: isInspectorVisible,
             displayFilterText: displayFilterText,
             displayFilter: packetTableContent.displayFilter,
@@ -544,6 +552,7 @@ struct NetworkInspectorSnapshot: Equatable {
             lhs.sourceListFilterText == rhs.sourceListFilterText &&
             lhs.workspaceMode == rhs.workspaceMode &&
             lhs.inspectorTab == rhs.inspectorTab &&
+            lhs.inspectorPlacement == rhs.inspectorPlacement &&
             lhs.isInspectorVisible == rhs.isInspectorVisible &&
             lhs.displayFilterText == rhs.displayFilterText &&
             lhs.displayFilter == rhs.displayFilter &&

@@ -397,6 +397,39 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.packetTableGeneration == generationAfterPackets)
     }
 
+    @Test func inspectorPlacementTogglePersistsRequestedPresentation() {
+        let defaults = isolatedDefaults()
+        let services = TCPViewerServiceRegistry(core: InspectorFakeCore(
+            interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")]
+        ))
+        let viewModel = NetworkInspectorViewModel(
+            services: services,
+            userDefaults: defaults
+        )
+
+        #expect(viewModel.snapshot.inspectorPlacement == .trailing)
+        #expect(viewModel.snapshot.isInspectorVisible)
+
+        viewModel.toggleInspector(at: .bottom)
+        #expect(viewModel.snapshot.inspectorPlacement == .bottom)
+        #expect(viewModel.snapshot.isInspectorVisible)
+
+        viewModel.toggleInspector(at: .bottom)
+        #expect(viewModel.snapshot.inspectorPlacement == .bottom)
+        #expect(!viewModel.snapshot.isInspectorVisible)
+
+        let hiddenReloadedViewModel = NetworkInspectorViewModel(
+            services: services,
+            userDefaults: defaults
+        )
+        #expect(hiddenReloadedViewModel.snapshot.inspectorPlacement == .bottom)
+        #expect(!hiddenReloadedViewModel.snapshot.isInspectorVisible)
+
+        hiddenReloadedViewModel.toggleInspector(at: .trailing)
+        #expect(hiddenReloadedViewModel.snapshot.inspectorPlacement == .trailing)
+        #expect(hiddenReloadedViewModel.snapshot.isInspectorVisible)
+    }
+
     @Test func packetRowsAppendIncrementallyForMatchingLiveBatches() async {
         let packets = [
             makePacket(packetNumber: 1, source: .live, transportHint: .tcp),

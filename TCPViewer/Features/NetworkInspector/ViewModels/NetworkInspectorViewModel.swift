@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 private struct NetworkInspectorPreferences {
     private enum Key {
         static let displayFilterText = "TCPViewer.displayFilterText"
+        static let inspectorPlacement = "TCPViewer.inspectorPlacement"
         static let inspectorVisible = "TCPViewer.inspectorVisible"
     }
 
@@ -27,8 +28,21 @@ private struct NetworkInspectorPreferences {
         return defaults.bool(forKey: Key.inspectorVisible)
     }
 
+    var inspectorPlacement: NetworkInspectorPlacement {
+        guard let rawValue = defaults.string(forKey: Key.inspectorPlacement),
+              let placement = NetworkInspectorPlacement(rawValue: rawValue) else {
+            return .trailing
+        }
+
+        return placement
+    }
+
     func persistDisplayFilter(_ text: String) {
         defaults.set(text, forKey: Key.displayFilterText)
+    }
+
+    func persistInspectorPlacement(_ placement: NetworkInspectorPlacement) {
+        defaults.set(placement.rawValue, forKey: Key.inspectorPlacement)
     }
 
     func persistInspectorVisible(_ isVisible: Bool) {
@@ -616,6 +630,7 @@ final class NetworkInspectorViewModel {
     private var sourceListFilterText = ""
     private var workspaceMode: NetworkInspectorWorkspaceMode = .packets
     private var inspectorTab: PacketInspectorTab = .summary
+    private var inspectorPlacement: NetworkInspectorPlacement
     private var isInspectorVisible: Bool
     private var displayFilterText: String
     private var helperOnboardingDismissed = false
@@ -641,6 +656,7 @@ final class NetworkInspectorViewModel {
         self.pinService = pinService
         self.savedPacketService = savedPacketService
         self.packetExportService = packetExportService ?? PacketExportService(defaults: userDefaults)
+        self.inspectorPlacement = preferences.inspectorPlacement
         self.isInspectorVisible = preferences.isInspectorVisible
         self.displayFilterText = preferences.displayFilterText
         let sourceListSnapshot = sourceListService.snapshot(
@@ -663,6 +679,7 @@ final class NetworkInspectorViewModel {
             sourceListFilterText: sourceListFilterText,
             workspaceMode: workspaceMode,
             inspectorTab: inspectorTab,
+            inspectorPlacement: inspectorPlacement,
             isInspectorVisible: isInspectorVisible,
             displayFilterText: displayFilterText,
             packetTableContent: packetTableContent
@@ -1249,14 +1266,33 @@ final class NetworkInspectorViewModel {
         rebuildSnapshot()
     }
 
-    func setInspectorVisible(_ isVisible: Bool) {
-        isInspectorVisible = isVisible
-        preferences.persistInspectorVisible(isVisible)
+    // Keep placement and visibility changes in sync so toolbar toggles always rebuild one snapshot.
+    func setInspectorPresentation(placement: NetworkInspectorPlacement? = nil, isVisible: Bool? = nil) {
+        let nextPlacement = placement ?? inspectorPlacement
+        let nextVisibility = isVisible ?? isInspectorVisible
+        guard nextPlacement != inspectorPlacement || nextVisibility != isInspectorVisible else {
+            return
+        }
+
+        inspectorPlacement = nextPlacement
+        isInspectorVisible = nextVisibility
+        preferences.persistInspectorPlacement(nextPlacement)
+        preferences.persistInspectorVisible(nextVisibility)
         rebuildSnapshot()
+    }
+
+    func setInspectorVisible(_ isVisible: Bool) {
+        setInspectorPresentation(isVisible: isVisible)
     }
 
     func toggleInspector() {
         setInspectorVisible(!isInspectorVisible)
+    }
+
+    // Toggle the requested placement on or off while remembering where the inspector should reopen.
+    func toggleInspector(at placement: NetworkInspectorPlacement) {
+        let shouldHideInspector = isInspectorVisible && inspectorPlacement == placement
+        setInspectorPresentation(placement: placement, isVisible: !shouldHideInspector)
     }
 
     func selectedInterfaceTitle() -> String {
@@ -1303,6 +1339,7 @@ final class NetworkInspectorViewModel {
             sourceListFilterText: sourceListFilterText,
             workspaceMode: workspaceMode,
             inspectorTab: inspectorTab,
+            inspectorPlacement: inspectorPlacement,
             isInspectorVisible: isInspectorVisible,
             displayFilterText: displayFilterText,
             packetTableContent: packetTableContent

@@ -7,6 +7,11 @@ protocol TCPViewerRootViewControllerDelegate: AnyObject {
 }
 
 final class TCPViewerRootViewController: NSViewController {
+    private enum InspectorLayoutMetrics {
+        static let trailingInspectorFraction: CGFloat = 0.28
+        static let bottomInspectorFraction: CGFloat = 0.33
+    }
+
     weak var delegate: TCPViewerRootViewControllerDelegate?
 
     let viewModel: NetworkInspectorViewModel
@@ -19,6 +24,9 @@ final class TCPViewerRootViewController: NSViewController {
     private let inspectorViewController: PacketInspectorViewController
     private let statusStripViewController = StatusStripViewController()
     private var inspectorItem: NSSplitViewItem?
+    private var appliedInspectorPlacement: NetworkInspectorPlacement?
+    private var appliedInspectorVisibility: Bool?
+    private var needsInspectorDividerRefresh = false
     private var hasRenderedHelperOnboarding = false
 
     init(viewModel: NetworkInspectorViewModel, configuration: AppConfiguration) {
@@ -44,6 +52,16 @@ final class TCPViewerRootViewController: NSViewController {
         super.viewDidLoad()
         render()
         viewModel.performInitialLoadIfNeeded()
+    }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        guard needsInspectorDividerRefresh, viewModel.snapshot.isInspectorVisible else {
+            return
+        }
+
+        needsInspectorDividerRefresh = false
+        applyInspectorDividerPosition(for: viewModel.snapshot.inspectorPlacement)
     }
 
     func openDocument(at url: URL) {
@@ -79,12 +97,11 @@ final class TCPViewerRootViewController: NSViewController {
     }
 
     func toggleInspector() {
-        contentSplitViewController.toggleInspector(nil)
-        if let inspectorItem {
-            viewModel.setInspectorVisible(!inspectorItem.isCollapsed)
-        } else {
-            viewModel.toggleInspector()
-        }
+        viewModel.toggleInspector()
+    }
+
+    func toggleInspector(at placement: NetworkInspectorPlacement) {
+        viewModel.toggleInspector(at: placement)
     }
 
     func showOpenPanel() {
@@ -127,12 +144,10 @@ final class TCPViewerRootViewController: NSViewController {
 
         // Keep the table and inspector inside the main container split.
         let workspaceItem = NSSplitViewItem(viewController: workspaceViewController)
-        workspaceItem.minimumThickness = 620
         contentSplitViewController.addSplitViewItem(workspaceItem)
 
-        let inspectorItem = NSSplitViewItem(inspectorWithViewController: inspectorViewController)
-        inspectorItem.minimumThickness = 240
-        inspectorItem.maximumThickness = 720
+        // Use a regular split item so the same inspector view can resize correctly on both axes.
+        let inspectorItem = NSSplitViewItem(viewController: inspectorViewController)
         inspectorItem.canCollapse = true
         contentSplitViewController.addSplitViewItem(inspectorItem)
         self.inspectorItem = inspectorItem
@@ -161,13 +176,10 @@ final class TCPViewerRootViewController: NSViewController {
         addChild(mainSplitViewController)
 
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarViewController)
-        sidebarItem.minimumThickness = 220
-        sidebarItem.maximumThickness = 320
         sidebarItem.canCollapse = true
         mainSplitViewController.addSplitViewItem(sidebarItem)
 
         let mainContainerItem = NSSplitViewItem(viewController: mainContainerViewController)
-        mainContainerItem.minimumThickness = 620
         mainSplitViewController.addSplitViewItem(mainContainerItem)
     }
 
@@ -190,13 +202,59 @@ final class TCPViewerRootViewController: NSViewController {
         workspaceViewController.render(snapshot: snapshot)
         inspectorViewController.render(snapshot: snapshot)
         statusStripViewController.render(snapshot: snapshot)
-        inspectorItem?.isCollapsed = !snapshot.isInspectorVisible
+        applyInspectorLayout(snapshot)
         delegate?.tcpviewerRootViewControllerDidChangeToolbarState(self)
 
         if viewModel.shouldPresentNetworkHelperOnboarding && !hasRenderedHelperOnboarding {
             hasRenderedHelperOnboarding = true
             delegate?.tcpviewerRootViewController(self, didRequestHelperOnboarding: viewModel.networkHelperToolSnapshot)
         }
+    }
+
+    // Rebuild the split orientation only when placement or visibility changes.
+    private func applyInspectorLayout(_ snapshot: NetworkInspectorSnapshot) {
+        let placementChanged = appliedInspectorPlacement != snapshot.inspectorPlacement
+        let visibilityChanged = appliedInspectorVisibility != snapshot.isInspectorVisible
+
+        if placementChanged {
+            applyInspectorPlacement(snapshot.inspectorPlacement)
+        }
+
+        inspectorItem?.isCollapsed = !snapshot.isInspectorVisible
+        if snapshot.isInspectorVisible && (placementChanged || visibilityChanged) {
+            applyInspectorDividerPosition(for: snapshot.inspectorPlacement)
+        }
+
+        appliedInspectorPlacement = snapshot.inspectorPlacement
+        appliedInspectorVisibility = snapshot.isInspectorVisible
+    }
+
+    // Update the split axis for the requested inspector placement without imposing pane size bounds.
+    private func applyInspectorPlacement(_ placement: NetworkInspectorPlacement) {
+        let isTrailing = placement == .trailing
+        contentSplitViewController.splitView.isVertical = isTrailing
+        contentSplitViewController.splitView.adjustSubviews()
+    }
+
+    // Reset the inspector size when it reappears or moves so the new orientation starts usable.
+    private func applyInspectorDividerPosition(for placement: NetworkInspectorPlacement) {
+        let splitView = contentSplitViewController.splitView
+        guard splitView.subviews.count == 2 else {
+            return
+        }
+
+        splitView.layoutSubtreeIfNeeded()
+        let totalLength = placement == .trailing ? splitView.bounds.width : splitView.bounds.height
+        guard totalLength > 0 else {
+            needsInspectorDividerRefresh = true
+            return
+        }
+
+        let preferredFraction = placement == .trailing
+            ? InspectorLayoutMetrics.trailingInspectorFraction
+            : InspectorLayoutMetrics.bottomInspectorFraction
+        let inspectorThickness = totalLength * preferredFraction
+        splitView.setPosition(totalLength - inspectorThickness, ofDividerAt: 0)
     }
 }
 
