@@ -119,7 +119,6 @@ final class TCPViewerRootViewController: NSViewController {
     private func setupChildControllers() {
         sidebarViewController.delegate = self
         workspaceViewController.delegate = self
-        inspectorViewController.delegate = self
         statusStripViewController.delegate = self
 
         // Inner split (workspace | inspector) lives inside the right pane so the
@@ -129,8 +128,8 @@ final class TCPViewerRootViewController: NSViewController {
         innerSplitViewController.addSplitViewItem(workspaceItem)
 
         let inspectorItem = NSSplitViewItem(inspectorWithViewController: inspectorViewController)
-        inspectorItem.minimumThickness = 320
-        inspectorItem.maximumThickness = 460
+        inspectorItem.minimumThickness = 240
+        inspectorItem.maximumThickness = 720
         inspectorItem.canCollapse = true
         innerSplitViewController.addSplitViewItem(inspectorItem)
         self.inspectorItem = inspectorItem
@@ -245,16 +244,6 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
 
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestDeletePackets identifiers: [PacketSummary.ID]) {
         viewModel.deletePackets(identifiers)
-    }
-}
-
-extension TCPViewerRootViewController: PacketInspectorViewControllerDelegate {
-    func packetInspectorViewController(_ controller: PacketInspectorViewController, didSelect tab: PacketInspectorTab) {
-        viewModel.selectInspectorTab(tab)
-    }
-
-    func packetInspectorViewController(_ controller: PacketInspectorViewController, didSelectDetailNode identifier: String?) {
-        viewModel.selectDetailNode(identifier)
     }
 }
 
