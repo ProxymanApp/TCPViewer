@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 private struct NetworkInspectorPreferences {
     private enum Key {
         static let displayFilterText = "TCPViewer.displayFilterText"
-        static let inspectorPlacement = "TCPViewer.inspectorPlacement"
+        static let inspectorTrailingThickness = "TCPViewer.inspectorTrailingThickness"
         static let inspectorVisible = "TCPViewer.inspectorVisible"
     }
 
@@ -28,25 +28,32 @@ private struct NetworkInspectorPreferences {
         return defaults.bool(forKey: Key.inspectorVisible)
     }
 
-    var inspectorPlacement: NetworkInspectorPlacement {
-        guard let rawValue = defaults.string(forKey: Key.inspectorPlacement),
-              let placement = NetworkInspectorPlacement(rawValue: rawValue) else {
-            return .trailing
+    func inspectorThickness(for placement: NetworkInspectorPlacement) -> CGFloat? {
+        let key = thicknessKey(for: placement)
+        guard defaults.object(forKey: key) != nil else {
+            return nil
         }
 
-        return placement
+        return CGFloat(defaults.double(forKey: key))
     }
 
     func persistDisplayFilter(_ text: String) {
         defaults.set(text, forKey: Key.displayFilterText)
     }
 
-    func persistInspectorPlacement(_ placement: NetworkInspectorPlacement) {
-        defaults.set(placement.rawValue, forKey: Key.inspectorPlacement)
+    func persistInspectorThickness(_ thickness: CGFloat, for placement: NetworkInspectorPlacement) {
+        defaults.set(Double(thickness), forKey: thicknessKey(for: placement))
     }
 
     func persistInspectorVisible(_ isVisible: Bool) {
         defaults.set(isVisible, forKey: Key.inspectorVisible)
+    }
+
+    private func thicknessKey(for placement: NetworkInspectorPlacement) -> String {
+        switch placement {
+        case .trailing:
+            Key.inspectorTrailingThickness
+        }
     }
 }
 
@@ -656,7 +663,7 @@ final class NetworkInspectorViewModel {
         self.pinService = pinService
         self.savedPacketService = savedPacketService
         self.packetExportService = packetExportService ?? PacketExportService(defaults: userDefaults)
-        self.inspectorPlacement = preferences.inspectorPlacement
+        self.inspectorPlacement = .trailing
         self.isInspectorVisible = preferences.isInspectorVisible
         self.displayFilterText = preferences.displayFilterText
         let sourceListSnapshot = sourceListService.snapshot(
@@ -1266,33 +1273,38 @@ final class NetworkInspectorViewModel {
         rebuildSnapshot()
     }
 
-    // Keep placement and visibility changes in sync so toolbar toggles always rebuild one snapshot.
-    func setInspectorPresentation(placement: NetworkInspectorPlacement? = nil, isVisible: Bool? = nil) {
-        let nextPlacement = placement ?? inspectorPlacement
-        let nextVisibility = isVisible ?? isInspectorVisible
-        guard nextPlacement != inspectorPlacement || nextVisibility != isInspectorVisible else {
+    func setInspectorVisible(_ isVisible: Bool) {
+        guard isVisible != isInspectorVisible else {
             return
         }
 
-        inspectorPlacement = nextPlacement
-        isInspectorVisible = nextVisibility
-        preferences.persistInspectorPlacement(nextPlacement)
-        preferences.persistInspectorVisible(nextVisibility)
+        isInspectorVisible = isVisible
+        preferences.persistInspectorVisible(isVisible)
         rebuildSnapshot()
-    }
-
-    func setInspectorVisible(_ isVisible: Bool) {
-        setInspectorPresentation(isVisible: isVisible)
     }
 
     func toggleInspector() {
         setInspectorVisible(!isInspectorVisible)
     }
 
-    // Toggle the requested placement on or off while remembering where the inspector should reopen.
-    func toggleInspector(at placement: NetworkInspectorPlacement) {
-        let shouldHideInspector = isInspectorVisible && inspectorPlacement == placement
-        setInspectorPresentation(placement: placement, isVisible: !shouldHideInspector)
+    // Remember the last usable right-side inspector width for future launches.
+    func rememberInspectorThickness(_ thickness: CGFloat, for placement: NetworkInspectorPlacement) {
+        guard thickness.isFinite, thickness > 0 else {
+            return
+        }
+
+        preferences.persistInspectorThickness(thickness, for: placement)
+    }
+
+    // Reject invalid saved widths so the root controller can reopen with a safe default instead.
+    func preferredInspectorThickness(for placement: NetworkInspectorPlacement, availableLength: CGFloat) -> CGFloat? {
+        guard availableLength.isFinite, availableLength > 0,
+              let thickness = preferences.inspectorThickness(for: placement),
+              thickness.isFinite, thickness > 0, thickness < availableLength else {
+            return nil
+        }
+
+        return thickness
     }
 
     func selectedInterfaceTitle() -> String {

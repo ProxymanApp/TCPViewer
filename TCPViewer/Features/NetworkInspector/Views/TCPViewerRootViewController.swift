@@ -9,7 +9,6 @@ protocol TCPViewerRootViewControllerDelegate: AnyObject {
 final class TCPViewerRootViewController: NSViewController {
     private enum InspectorLayoutMetrics {
         static let trailingInspectorFraction: CGFloat = 0.28
-        static let bottomInspectorFraction: CGFloat = 0.33
     }
 
     weak var delegate: TCPViewerRootViewControllerDelegate?
@@ -28,6 +27,10 @@ final class TCPViewerRootViewController: NSViewController {
     private var appliedInspectorVisibility: Bool?
     private var needsInspectorDividerRefresh = false
     private var hasRenderedHelperOnboarding = false
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
 
     init(viewModel: NetworkInspectorViewModel, configuration: AppConfiguration) {
         self.viewModel = viewModel
@@ -50,6 +53,7 @@ final class TCPViewerRootViewController: NSViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        configureSplitViewObservation()
         render()
         viewModel.performInitialLoadIfNeeded()
     }
@@ -98,10 +102,6 @@ final class TCPViewerRootViewController: NSViewController {
 
     func toggleInspector() {
         viewModel.toggleInspector()
-    }
-
-    func toggleInspector(at placement: NetworkInspectorPlacement) {
-        viewModel.toggleInspector(at: placement)
     }
 
     func showOpenPanel() {
@@ -211,17 +211,15 @@ final class TCPViewerRootViewController: NSViewController {
         }
     }
 
-    // Rebuild the split orientation only when placement or visibility changes.
+    // Keep the inspector in the right-side split item and only update collapse state when needed.
     private func applyInspectorLayout(_ snapshot: NetworkInspectorSnapshot) {
-        let placementChanged = appliedInspectorPlacement != snapshot.inspectorPlacement
         let visibilityChanged = appliedInspectorVisibility != snapshot.isInspectorVisible
 
-        if placementChanged {
-            applyInspectorPlacement(snapshot.inspectorPlacement)
-        }
+        persistCurrentInspectorThicknessIfVisible()
 
+        contentSplitViewController.splitView.isVertical = true
         inspectorItem?.isCollapsed = !snapshot.isInspectorVisible
-        if snapshot.isInspectorVisible && (placementChanged || visibilityChanged) {
+        if snapshot.isInspectorVisible && (appliedInspectorPlacement == nil || visibilityChanged) {
             applyInspectorDividerPosition(for: snapshot.inspectorPlacement)
         }
 
@@ -229,14 +227,7 @@ final class TCPViewerRootViewController: NSViewController {
         appliedInspectorVisibility = snapshot.isInspectorVisible
     }
 
-    // Update the split axis for the requested inspector placement without imposing pane size bounds.
-    private func applyInspectorPlacement(_ placement: NetworkInspectorPlacement) {
-        let isTrailing = placement == .trailing
-        contentSplitViewController.splitView.isVertical = isTrailing
-        contentSplitViewController.splitView.adjustSubviews()
-    }
-
-    // Reset the inspector size when it reappears or moves so the new orientation starts usable.
+    // Reset the inspector size when it reappears so the right-side panel starts usable.
     private func applyInspectorDividerPosition(for placement: NetworkInspectorPlacement) {
         let splitView = contentSplitViewController.splitView
         guard splitView.subviews.count == 2 else {
@@ -244,17 +235,61 @@ final class TCPViewerRootViewController: NSViewController {
         }
 
         splitView.layoutSubtreeIfNeeded()
-        let totalLength = placement == .trailing ? splitView.bounds.width : splitView.bounds.height
+        let totalLength = splitView.bounds.width
         guard totalLength > 0 else {
             needsInspectorDividerRefresh = true
             return
         }
 
-        let preferredFraction = placement == .trailing
-            ? InspectorLayoutMetrics.trailingInspectorFraction
-            : InspectorLayoutMetrics.bottomInspectorFraction
-        let inspectorThickness = totalLength * preferredFraction
+        let inspectorThickness = viewModel.preferredInspectorThickness(
+            for: placement,
+            availableLength: totalLength
+        ) ?? (totalLength * InspectorLayoutMetrics.trailingInspectorFraction)
         splitView.setPosition(totalLength - inspectorThickness, ofDividerAt: 0)
+    }
+
+    // Track divider changes so the right-side inspector restores the last usable width.
+    private func configureSplitViewObservation() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(contentSplitViewDidResizeSubviews(_:)),
+            name: NSSplitView.didResizeSubviewsNotification,
+            object: contentSplitViewController.splitView
+        )
+    }
+
+    @objc private func contentSplitViewDidResizeSubviews(_ notification: Notification) {
+        guard notification.object as? NSSplitView === contentSplitViewController.splitView else {
+            return
+        }
+
+        persistCurrentInspectorThicknessIfVisible()
+    }
+
+    // Persist only visible inspector sizes so collapsing the pane never stores a broken zero value.
+    private func persistCurrentInspectorThicknessIfVisible() {
+        guard let placement = appliedInspectorPlacement,
+              appliedInspectorVisibility == true,
+              let thickness = currentInspectorThickness(for: placement) else {
+            return
+        }
+
+        viewModel.rememberInspectorThickness(thickness, for: placement)
+    }
+
+    private func currentInspectorThickness(for placement: NetworkInspectorPlacement) -> CGFloat? {
+        guard let inspectorView = inspectorItem?.viewController.view,
+              inspectorView.superview != nil,
+              inspectorItem?.isCollapsed == false else {
+            return nil
+        }
+
+        let thickness = inspectorView.frame.width
+        guard thickness.isFinite, thickness > 0 else {
+            return nil
+        }
+
+        return thickness
     }
 }
 

@@ -164,7 +164,7 @@ extension TCPViewerWindowController: TCPViewerToolbarDataSourceDelegate {
         rootViewController.exportSession(format: format)
     }
 
-    func tcpviewerToolbarDataSource(_ dataSource: TCPViewerToolbarDataSource, didToggleInspector placement: NetworkInspectorPlacement) {
-        rootViewController.toggleInspector(at: placement)
+    func tcpviewerToolbarDataSourceDidToggleInspector(_ dataSource: TCPViewerToolbarDataSource) {
+        rootViewController.toggleInspector()
     }
 }

@@ -397,7 +397,7 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.packetTableGeneration == generationAfterPackets)
     }
 
-    @Test func inspectorPlacementTogglePersistsRequestedPresentation() {
+    @Test func inspectorTogglePersistsVisibility() {
         let defaults = isolatedDefaults()
         let services = TCPViewerServiceRegistry(core: InspectorFakeCore(
             interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")]
@@ -410,24 +410,44 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.inspectorPlacement == .trailing)
         #expect(viewModel.snapshot.isInspectorVisible)
 
-        viewModel.toggleInspector(at: .bottom)
-        #expect(viewModel.snapshot.inspectorPlacement == .bottom)
-        #expect(viewModel.snapshot.isInspectorVisible)
-
-        viewModel.toggleInspector(at: .bottom)
-        #expect(viewModel.snapshot.inspectorPlacement == .bottom)
+        viewModel.toggleInspector()
+        #expect(viewModel.snapshot.inspectorPlacement == .trailing)
         #expect(!viewModel.snapshot.isInspectorVisible)
 
         let hiddenReloadedViewModel = NetworkInspectorViewModel(
             services: services,
             userDefaults: defaults
         )
-        #expect(hiddenReloadedViewModel.snapshot.inspectorPlacement == .bottom)
+        #expect(hiddenReloadedViewModel.snapshot.inspectorPlacement == .trailing)
         #expect(!hiddenReloadedViewModel.snapshot.isInspectorVisible)
 
-        hiddenReloadedViewModel.toggleInspector(at: .trailing)
+        hiddenReloadedViewModel.toggleInspector()
         #expect(hiddenReloadedViewModel.snapshot.inspectorPlacement == .trailing)
         #expect(hiddenReloadedViewModel.snapshot.isInspectorVisible)
+    }
+
+    @Test func inspectorThicknessPersistsAndFallsBackWhenInvalid() {
+        let defaults = isolatedDefaults()
+        let services = TCPViewerServiceRegistry(core: InspectorFakeCore(
+            interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")]
+        ))
+        let viewModel = NetworkInspectorViewModel(
+            services: services,
+            userDefaults: defaults
+        )
+
+        viewModel.rememberInspectorThickness(320, for: .trailing)
+
+        let reloadedViewModel = NetworkInspectorViewModel(
+            services: services,
+            userDefaults: defaults
+        )
+
+        #expect(reloadedViewModel.preferredInspectorThickness(for: .trailing, availableLength: 800) == 320)
+
+        reloadedViewModel.rememberInspectorThickness(10_000, for: .trailing)
+
+        #expect(reloadedViewModel.preferredInspectorThickness(for: .trailing, availableLength: 800) == nil)
     }
 
     @Test func packetRowsAppendIncrementallyForMatchingLiveBatches() async {

@@ -478,7 +478,6 @@ enum PacketTableUpdatePlanner {
 }
 
 enum NetworkInspectorPlacement: String, Equatable {
-    case bottom
     case trailing
 }
 
