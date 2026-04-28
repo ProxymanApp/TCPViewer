@@ -11,9 +11,9 @@ final class TCPViewerRootViewController: NSViewController {
 
     let viewModel: NetworkInspectorViewModel
 
-    private let outerSplitViewController = NSSplitViewController()
-    private let innerSplitViewController = NSSplitViewController()
-    private let rightPaneViewController = NSViewController()
+    private let mainSplitViewController = NSSplitViewController()
+    private let contentSplitViewController = NSSplitViewController()
+    private let mainContainerViewController = NSViewController()
     private let sidebarViewController = SidebarViewController()
     private let workspaceViewController: PacketWorkspaceViewController
     private let inspectorViewController: PacketInspectorViewController
@@ -79,7 +79,7 @@ final class TCPViewerRootViewController: NSViewController {
     }
 
     func toggleInspector() {
-        innerSplitViewController.toggleInspector(nil)
+        contentSplitViewController.toggleInspector(nil)
         if let inspectorItem {
             viewModel.setInspectorVisible(!inspectorItem.isCollapsed)
         } else {
@@ -117,66 +117,70 @@ final class TCPViewerRootViewController: NSViewController {
     }
 
     private func setupChildControllers() {
+        // Build the two-level split layout: sidebar | (table | inspector).
         sidebarViewController.delegate = self
         workspaceViewController.delegate = self
         statusStripViewController.delegate = self
 
-        // Inner split (workspace | inspector) lives inside the right pane so the
-        // bottom status strip only spans content + inspector, not the sidebar.
+        mainSplitViewController.splitView.isVertical = true
+        contentSplitViewController.splitView.isVertical = true
+
+        // Keep the table and inspector inside the main container split.
         let workspaceItem = NSSplitViewItem(viewController: workspaceViewController)
         workspaceItem.minimumThickness = 620
-        innerSplitViewController.addSplitViewItem(workspaceItem)
+        contentSplitViewController.addSplitViewItem(workspaceItem)
 
         let inspectorItem = NSSplitViewItem(inspectorWithViewController: inspectorViewController)
         inspectorItem.minimumThickness = 240
         inspectorItem.maximumThickness = 720
         inspectorItem.canCollapse = true
-        innerSplitViewController.addSplitViewItem(inspectorItem)
+        contentSplitViewController.addSplitViewItem(inspectorItem)
         self.inspectorItem = inspectorItem
 
-        rightPaneViewController.view = NSView()
-        rightPaneViewController.addChild(innerSplitViewController)
-        rightPaneViewController.addChild(statusStripViewController)
+        mainContainerViewController.view = NSView()
+        mainContainerViewController.addChild(contentSplitViewController)
+        mainContainerViewController.addChild(statusStripViewController)
 
-        let rightPane = rightPaneViewController.view
-        innerSplitViewController.view.translatesAutoresizingMaskIntoConstraints = false
+        let mainContainerView = mainContainerViewController.view
+        contentSplitViewController.view.translatesAutoresizingMaskIntoConstraints = false
         statusStripViewController.view.translatesAutoresizingMaskIntoConstraints = false
-        rightPane.addSubview(innerSplitViewController.view)
-        rightPane.addSubview(statusStripViewController.view)
+        mainContainerView.addSubview(contentSplitViewController.view)
+        mainContainerView.addSubview(statusStripViewController.view)
 
         NSLayoutConstraint.activate([
-            innerSplitViewController.view.leadingAnchor.constraint(equalTo: rightPane.leadingAnchor),
-            innerSplitViewController.view.trailingAnchor.constraint(equalTo: rightPane.trailingAnchor),
-            innerSplitViewController.view.topAnchor.constraint(equalTo: rightPane.topAnchor),
-            innerSplitViewController.view.bottomAnchor.constraint(equalTo: statusStripViewController.view.topAnchor),
+            contentSplitViewController.view.leadingAnchor.constraint(equalTo: mainContainerView.leadingAnchor),
+            contentSplitViewController.view.trailingAnchor.constraint(equalTo: mainContainerView.trailingAnchor),
+            contentSplitViewController.view.topAnchor.constraint(equalTo: mainContainerView.topAnchor),
+            contentSplitViewController.view.bottomAnchor.constraint(equalTo: statusStripViewController.view.topAnchor),
 
-            statusStripViewController.view.leadingAnchor.constraint(equalTo: rightPane.leadingAnchor),
-            statusStripViewController.view.trailingAnchor.constraint(equalTo: rightPane.trailingAnchor),
-            statusStripViewController.view.bottomAnchor.constraint(equalTo: rightPane.bottomAnchor),
+            statusStripViewController.view.leadingAnchor.constraint(equalTo: mainContainerView.leadingAnchor),
+            statusStripViewController.view.trailingAnchor.constraint(equalTo: mainContainerView.trailingAnchor),
+            statusStripViewController.view.bottomAnchor.constraint(equalTo: mainContainerView.bottomAnchor),
         ])
 
-        addChild(outerSplitViewController)
+        addChild(mainSplitViewController)
 
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarViewController)
         sidebarItem.minimumThickness = 220
         sidebarItem.maximumThickness = 320
         sidebarItem.canCollapse = true
-        outerSplitViewController.addSplitViewItem(sidebarItem)
+        mainSplitViewController.addSplitViewItem(sidebarItem)
 
-        let rightPaneItem = NSSplitViewItem(viewController: rightPaneViewController)
-        rightPaneItem.minimumThickness = 620
-        outerSplitViewController.addSplitViewItem(rightPaneItem)
+        let mainContainerItem = NSSplitViewItem(viewController: mainContainerViewController)
+        mainContainerItem.minimumThickness = 620
+        mainSplitViewController.addSplitViewItem(mainContainerItem)
     }
 
     private func setupLayout() {
-        outerSplitViewController.view.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(outerSplitViewController.view)
+        // Pin the main split controller to the root view.
+        mainSplitViewController.view.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(mainSplitViewController.view)
 
         NSLayoutConstraint.activate([
-            outerSplitViewController.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            outerSplitViewController.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            outerSplitViewController.view.topAnchor.constraint(equalTo: view.topAnchor),
-            outerSplitViewController.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            mainSplitViewController.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            mainSplitViewController.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            mainSplitViewController.view.topAnchor.constraint(equalTo: view.topAnchor),
+            mainSplitViewController.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
     }
 
