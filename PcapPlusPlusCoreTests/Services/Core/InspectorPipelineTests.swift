@@ -121,6 +121,10 @@ struct InspectorPipelineTests {
         let tcpPayloadLength = try #require(findNode(in: tcpInspection.detailNodes, id: "payload.length"))
         #expect(tcpPayloadLength.value == "4 bytes")
         #expect(tcpPayloadLength.byteRange == PacketByteRange(offset: 54, length: 4))
+        let payloadDecodeNote = try #require(findNode(in: tcpInspection.detailNodes, id: "warning.decode"))
+        #expect(payloadDecodeNote.name == "Payload Not Decoded")
+        #expect(payloadDecodeNote.value == "The remaining payload is encrypted, unsupported, or needs stream reassembly.")
+        #expect(payloadDecodeNote.severity == .info)
 
         let udpInspection = try await document.inspectPacket(id: packets[2].id)
         let udpLength = try #require(findNode(in: udpInspection.detailNodes, id: "udp.length"))

@@ -71,6 +71,21 @@ struct PacketInspectorTreeViewModelTests {
         #expect(viewModel.rootItems[1].displayText == "Decode Warning: Partial decode")
     }
 
+    @Test func copyFormatterPreservesMultipleRowsAndChildIndentation() {
+        let text = PacketInspectorCopyFormatter.text(for: [
+            PacketInspectorCopyRow(text: "Frame: Packet 1", indentationLevel: 0),
+            PacketInspectorCopyRow(text: "Ethernet II", indentationLevel: 1),
+            PacketInspectorCopyRow(text: "Options:\nTimestamp", indentationLevel: 2),
+        ])
+
+        #expect(text == """
+        Frame: Packet 1
+            Ethernet II
+                Options:
+                Timestamp
+        """)
+    }
+
     @Test func selectedDetailNodeIsPreservedWhenPresent() {
         let packet = makePacket()
         let selectedRange = PacketByteRange(offset: 26, length: 4)

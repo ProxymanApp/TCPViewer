@@ -18,6 +18,28 @@ enum PacketInspectorTreeRenderChange: Equatable {
     case selection
 }
 
+struct PacketInspectorCopyRow: Equatable {
+    let text: String
+    let indentationLevel: Int
+}
+
+enum PacketInspectorCopyFormatter {
+    // Build copy text that mirrors the outline hierarchy with stable plain-text indentation.
+    static func text(for rows: [PacketInspectorCopyRow]) -> String {
+        rows
+            .map { row in
+                let indentation = String(repeating: "    ", count: max(0, row.indentationLevel))
+                return row.text
+                    .replacingOccurrences(of: "\r\n", with: "\n")
+                    .replacingOccurrences(of: "\r", with: "\n")
+                    .split(separator: "\n", omittingEmptySubsequences: false)
+                    .map { "\(indentation)\($0)" }
+                    .joined(separator: "\n")
+            }
+            .joined(separator: "\n")
+    }
+}
+
 final class PacketInspectorTreeItem: NSObject {
     let id: String
     let nodeID: String?
@@ -180,6 +202,18 @@ private extension PacketInspectionState {
     }
 }
 
+fileprivate protocol PacketInspectorOutlineViewCopyHandling: AnyObject {
+    func packetInspectorOutlineViewDidRequestCopy(_ outlineView: PacketInspectorOutlineView)
+}
+
+fileprivate final class PacketInspectorOutlineView: NSOutlineView {
+    weak var copyActionHandler: PacketInspectorOutlineViewCopyHandling?
+
+    @objc func copy(_ sender: Any?) {
+        copyActionHandler?.packetInspectorOutlineViewDidRequestCopy(self)
+    }
+}
+
 final class PacketInspectorViewController: NSViewController {
     private enum Metrics {
         static let rowHeight: CGFloat = 20
@@ -195,7 +229,7 @@ final class PacketInspectorViewController: NSViewController {
     private let hexViewController: PacketHexViewController
     private let stackView = NSStackView()
     private let scrollView = NSScrollView()
-    private let outlineView = NSOutlineView()
+    private let outlineView = PacketInspectorOutlineView()
     private let detailColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("detail"))
     private var isApplyingSelection = false
 
@@ -227,7 +261,7 @@ final class PacketInspectorViewController: NSViewController {
         case .none:
             return
         case .selection:
-            applySelectedNode()
+            applySelectedNode(preservingExistingSelection: true)
             return
         case .reload:
             break
@@ -239,7 +273,7 @@ final class PacketInspectorViewController: NSViewController {
         }
         outlineView.reloadData()
         expandAllItems()
-        applySelectedNode()
+        applySelectedNode(preservingExistingSelection: false)
     }
 
     private func setupOutlineView() {
@@ -259,8 +293,11 @@ final class PacketInspectorViewController: NSViewController {
         outlineView.dataSource = self
         outlineView.delegate = self
         outlineView.allowsEmptySelection = true
+        outlineView.allowsMultipleSelection = true
         outlineView.backgroundColor = .controlBackgroundColor
         outlineView.style = .fullWidth
+        outlineView.copyActionHandler = self
+        outlineView.menu = makeContextMenu()
 
         scrollView.borderType = .noBorder
         scrollView.drawsBackground = false
@@ -306,7 +343,7 @@ final class PacketInspectorViewController: NSViewController {
         }
     }
 
-    private func applySelectedNode() {
+    private func applySelectedNode(preservingExistingSelection: Bool) {
         isApplyingSelection = true
         defer { isApplyingSelection = false }
 
@@ -321,8 +358,72 @@ final class PacketInspectorViewController: NSViewController {
             return
         }
 
+        if preservingExistingSelection, outlineView.selectedRowIndexes.contains(row) {
+            outlineView.scrollRowToVisible(row)
+            return
+        }
+
         outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         outlineView.scrollRowToVisible(row)
+    }
+
+    // Create the inspector outline context menu and update its state before it opens.
+    private func makeContextMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        menu.delegate = self
+        return menu
+    }
+
+    // Keep an existing multi-selection when right-clicking one of its rows, otherwise target the clicked row.
+    private func updateSelectionFromCurrentMenuEvent() {
+        guard let event = NSApp.currentEvent,
+              event.type == .rightMouseDown || event.type == .leftMouseDown || event.type == .otherMouseDown else {
+            return
+        }
+
+        let point = outlineView.convert(event.locationInWindow, from: nil)
+        let row = outlineView.row(at: point)
+        guard row >= 0,
+              let item = outlineView.item(atRow: row) as? PacketInspectorTreeItem,
+              item.nodeID != nil else {
+            return
+        }
+
+        if outlineView.selectedRowIndexes.contains(row) {
+            return
+        }
+
+        outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+    }
+
+    // Collect selected visible outline rows in display order for copy formatting.
+    private func selectedCopyRows() -> [PacketInspectorCopyRow] {
+        outlineView.selectedRowIndexes.compactMap { row in
+            guard let item = outlineView.item(atRow: row) as? PacketInspectorTreeItem else {
+                return nil
+            }
+
+            return PacketInspectorCopyRow(
+                text: item.displayText,
+                indentationLevel: outlineView.level(forRow: row)
+            )
+        }
+    }
+
+    // Write the selected inspector rows to the system pasteboard as plain text.
+    private func copySelectedRowsToPasteboard() {
+        let text = PacketInspectorCopyFormatter.text(for: selectedCopyRows())
+        guard !text.isEmpty else {
+            return
+        }
+
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    @objc private func copySelectedRowsFromMenu(_ sender: Any?) {
+        copySelectedRowsToPasteboard()
     }
 
     private func configuredCell(for item: PacketInspectorTreeItem) -> NSTableCellView {
@@ -442,5 +543,29 @@ extension PacketInspectorViewController: NSOutlineViewDelegate {
         }
 
         return item.nodeID != nil
+    }
+}
+
+extension PacketInspectorViewController: PacketInspectorOutlineViewCopyHandling {
+    fileprivate func packetInspectorOutlineViewDidRequestCopy(_ outlineView: PacketInspectorOutlineView) {
+        copySelectedRowsToPasteboard()
+    }
+}
+
+extension PacketInspectorViewController: NSMenuDelegate {
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        updateSelectionFromCurrentMenuEvent()
+
+        menu.removeAllItems()
+        let copyItem = NSMenuItem(
+            title: "Copy",
+            action: #selector(copySelectedRowsFromMenu(_:)),
+            keyEquivalent: "c"
+        )
+        copyItem.target = self
+        copyItem.isEnabled = !selectedCopyRows().isEmpty
+        copyItem.toolTip = "Copy the selected inspector rows."
+        copyItem.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Copy")
+        menu.addItem(copyItem)
     }
 }

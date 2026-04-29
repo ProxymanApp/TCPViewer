@@ -43,6 +43,7 @@
 #include "../Dissection/PacketDissectionEngine.hpp"
 
 static NSString *const TCPViewerNativeErrorDomain = @"com.proxyman.tcpviewer.NativeBridge";
+static NSString *const TCPViewerOpaquePayloadDecodeReason = @"The remaining payload is encrypted, unsupported, or needs stream reassembly.";
 
 typedef NS_ENUM(NSInteger, TCPViewerNativeErrorCode) {
     TCPViewerNativeErrorCodeInterfaceDiscoveryFailed = 1000,
@@ -595,7 +596,7 @@ std::pair<PCPPNativeDecodeStatusKind, NSString *> DetermineDecodeStatus(const pc
     }
 
     if (lastLayer->getProtocol() == pcpp::GenericPayload) {
-        return {PCPPNativeDecodeStatusKindPartial, @"Packet parsing stopped at an opaque payload layer."};
+        return {PCPPNativeDecodeStatusKindPartial, TCPViewerOpaquePayloadDecodeReason};
     }
 
     return {PCPPNativeDecodeStatusKindComplete, nil};
@@ -1016,6 +1017,26 @@ PCPPNativePacketDetailNodeDescriptor *MakeWarningNode(NSString *identifier, NSSt
     return MakeDetailNode(identifier, @"Decode Warning", message, @"warning", nil, nil, @[]);
 }
 
+PCPPNativePacketDetailNodeDescriptor *MakeDecodeStatusNode(NSString *identifier,
+                                                           PCPPNativeDecodeStatusKind kind,
+                                                           NSString *message)
+{
+    if (kind == PCPPNativeDecodeStatusKindPartial && [message isEqualToString:TCPViewerOpaquePayloadDecodeReason]) {
+        return [[PCPPNativePacketDetailNodeDescriptor alloc] initWithIdentifier:identifier
+                                                                           name:@"Payload Not Decoded"
+                                                                      fieldName:@"tcpviewer.payload_not_decoded"
+                                                                          value:message
+                                                                       rawValue:nil
+                                                                           kind:@"field"
+                                                                       severity:@"info"
+                                                                      byteRange:nil
+                                                       jumpTargetPacketIdentifier:nil
+                                                                       children:@[]];
+    }
+
+    return MakeWarningNode(identifier, message);
+}
+
 NSUInteger LayerOffset(const pcpp::Layer &layer, const pcpp::RawPacket &rawPacket)
 {
     return static_cast<NSUInteger>(layer.getData() - rawPacket.getRawData());
@@ -1364,7 +1385,7 @@ public:
 
         auto decodeStatus = DetermineDecodeStatus(packet_, rawPacket_);
         if (decodeStatus.first != PCPPNativeDecodeStatusKindComplete && decodeStatus.second != nil) {
-            [nodes addObject:MakeWarningNode(@"warning.decode", decodeStatus.second)];
+            [nodes addObject:MakeDecodeStatusNode(@"warning.decode", decodeStatus.first, decodeStatus.second)];
         }
 
         return nodes;
