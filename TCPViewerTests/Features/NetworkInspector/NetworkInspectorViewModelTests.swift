@@ -257,10 +257,10 @@ struct NetworkInspectorViewModelTests {
         ) == .none)
     }
 
-    @Test func inspectorPanelUsesTemporaryEmptyState() {
+    @Test func inspectorTreeIgnoresUnchangedInspectionDuringAppend() {
         let selectedPacket = makePacket(packetNumber: 1, source: .live, transportHint: .tcp, streamID: nil)
         let appendedPacket = makePacket(packetNumber: 2, source: .live, transportHint: .udp, streamID: nil)
-        let panelViewModel = PacketInspectorPanelViewModel()
+        let treeViewModel = PacketInspectorTreeViewModel()
         let firstSnapshot = makeInspectorSnapshot(
             packets: [selectedPacket],
             selectedPacketID: selectedPacket.id,
@@ -276,11 +276,9 @@ struct NetworkInspectorViewModelTests {
             updatePlan: .append(1..<2)
         )
 
-        #expect(panelViewModel.render(snapshot: firstSnapshot))
-        #expect(panelViewModel.state.title == "Inspector Panel")
-        #expect(panelViewModel.state.imageName == "sidebar.trailing")
-        #expect(panelViewModel.state.message == "A redesigned inspector is coming soon.")
-        #expect(!panelViewModel.render(snapshot: appendSnapshot))
+        #expect(treeViewModel.render(snapshot: firstSnapshot) == .reload)
+        #expect(treeViewModel.rootItems.first?.displayText == "Frame: Packet 1")
+        #expect(treeViewModel.render(snapshot: appendSnapshot) == .none)
     }
 
     @Test func statusStripKeepsCancelAvailableDuringZeroPacketLoad() {

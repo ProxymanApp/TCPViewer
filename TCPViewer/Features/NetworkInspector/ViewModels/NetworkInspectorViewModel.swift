@@ -652,6 +652,7 @@ final class NetworkInspectorViewModel {
     private var packetTableContentCache = PacketTableContentCache()
     private var hasPerformedInitialLoad = false
     private var pendingRebuildWorkItem: DispatchWorkItem?
+    private var rebuildGeneration = 0
 
     // Trailing-edge debounce for delegate-driven rebuilds. Live ingest fires the controller delegate
     // up to ~10 Hz; coalescing to ~12 Hz keeps the UI feeling live without burning CPU on redundant
@@ -1423,8 +1424,13 @@ final class NetworkInspectorViewModel {
         guard pendingRebuildWorkItem == nil else {
             return
         }
+        let generation = rebuildGeneration
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else {
+                return
+            }
+            // Skip canceled coalesced ticks that were queued before a user-driven rebuild.
+            guard self.rebuildGeneration == generation else {
                 return
             }
             self.pendingRebuildWorkItem = nil
@@ -1437,6 +1443,7 @@ final class NetworkInspectorViewModel {
     private func cancelPendingRebuild() {
         pendingRebuildWorkItem?.cancel()
         pendingRebuildWorkItem = nil
+        rebuildGeneration += 1
     }
 
     deinit {

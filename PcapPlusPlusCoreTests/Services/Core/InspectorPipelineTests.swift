@@ -224,6 +224,31 @@ struct InspectorPipelineTests {
         #expect(options.children[8].name == "TCP Option - End of Option List")
     }
 
+    @Test func dnsInspectionRendersHeaderFlagsAndRecords() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let captureURL = directory.appendingPathComponent("dns-response.pcap")
+        try writePCAP(to: captureURL, packets: [makeIPv4DNSResponsePacket()])
+
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
+        let packets = try await document.open()
+        let packet = try #require(packets.first)
+        let inspection = try await document.inspectPacket(id: packet.id)
+
+        #expect(packet.transportHint == .dns)
+        let dnsNode = try #require(inspection.detailNodes.first { $0.name == "Domain Name System" })
+        #expect(findNode(in: dnsNode.children, id: "dns.id")?.value == "0x1234")
+        #expect(findNode(in: dnsNode.children, id: "dns.flags.response")?.value == "Response")
+        #expect(findNode(in: dnsNode.children, id: "dns.count.queries")?.value == "1")
+        #expect(findNode(in: dnsNode.children, id: "dns.count.answers")?.value == "1")
+        #expect(findNode(in: dnsNode.children, id: "dns.query.0.name")?.value == "www.example.com")
+        #expect(findNode(in: dnsNode.children, id: "dns.query.0.type")?.value == "A (1)")
+        #expect(findNode(in: dnsNode.children, id: "dns.answer.0.name")?.value == "www.example.com")
+        #expect(findNode(in: dnsNode.children, id: "dns.answer.0.data")?.value == "93.184.216.34")
+        #expect(findNode(in: dnsNode.children, id: "dns.answer.0.data")?.byteRange == PacketByteRange(offset: 87, length: 4))
+    }
+
     @Test func malformedInspectionAddsDecodeWarningAndKeepsRawBytes() async throws {
         let fixtureURL = CoreFixtureCatalog.captureCategoryURL("malformed").appendingPathComponent("partial-http-request.pcap")
         let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: fixtureURL)
@@ -645,6 +670,49 @@ private func makeIPv4UDPPayloadPacket() -> Data {
         0x0f, 0xa0, 0x13, 0x88, 0x00, 0x0c, 0x00, 0x00,
         0xca, 0xfe, 0xba, 0xbe,
     ])
+}
+
+private func makeIPv4DNSResponsePacket() -> Data {
+    let dnsPayload: [UInt8] = [
+        0x12, 0x34,
+        0x81, 0x80,
+        0x00, 0x01,
+        0x00, 0x01,
+        0x00, 0x00,
+        0x00, 0x00,
+        0x03, 0x77, 0x77, 0x77,
+        0x07, 0x65, 0x78, 0x61, 0x6d, 0x70, 0x6c, 0x65,
+        0x03, 0x63, 0x6f, 0x6d,
+        0x00,
+        0x00, 0x01,
+        0x00, 0x01,
+        0xc0, 0x0c,
+        0x00, 0x01,
+        0x00, 0x01,
+        0x00, 0x00, 0x00, 0x3c,
+        0x00, 0x04,
+        0x5d, 0xb8, 0xd8, 0x22,
+    ]
+    let udpLength = UInt16(8 + dnsPayload.count)
+    let ipv4TotalLength = UInt16(20 + Int(udpLength))
+    var packet = Data([
+        0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55,
+        0x08, 0x00,
+        0x45, 0x00,
+    ])
+    packet.appendBigEndian(ipv4TotalLength)
+    packet.append(contentsOf: [
+        0x12, 0x38, 0x40, 0x00, 0x40, 0x11, 0x00, 0x00,
+        0xc0, 0xa8, 0x00, 0x02,
+        0xc0, 0xa8, 0x00, 0x01,
+    ])
+    packet.appendBigEndian(UInt16(53))
+    packet.appendBigEndian(UInt16(54_321))
+    packet.appendBigEndian(udpLength)
+    packet.appendBigEndian(UInt16(0))
+    packet.append(contentsOf: dnsPayload)
+    return packet
 }
 
 private func makeIPv6UDPPayloadPacket() -> Data {
