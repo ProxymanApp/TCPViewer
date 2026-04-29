@@ -167,6 +167,46 @@ struct PacketInspectorTreeViewModelTests {
         #expect(viewModel.rootItems.first === originalRootItem)
     }
 
+    @Test func loadingNewPacketKeepsPreviousTreeUntilDecodeCompletes() throws {
+        let firstPacket = makePacket(packetNumber: 1)
+        let secondPacket = makePacket(packetNumber: 2)
+        let viewModel = PacketInspectorTreeViewModel()
+        let firstLoadedState = PacketInspectionState(
+            selectedPacketID: firstPacket.id,
+            inspection: makeFrameInspection(for: firstPacket),
+            selectedDetailNodeID: nil,
+            highlightedByteRange: nil,
+            isLoading: false,
+            statusMessage: "Inspecting packet 1."
+        )
+        let secondLoadingState = PacketInspectionState(
+            selectedPacketID: secondPacket.id,
+            inspection: nil,
+            selectedDetailNodeID: nil,
+            highlightedByteRange: nil,
+            isLoading: true,
+            statusMessage: "Inspecting packet 2..."
+        )
+        let secondLoadedState = PacketInspectionState(
+            selectedPacketID: secondPacket.id,
+            inspection: makeFrameInspection(for: secondPacket),
+            selectedDetailNodeID: nil,
+            highlightedByteRange: nil,
+            isLoading: false,
+            statusMessage: "Inspecting packet 2."
+        )
+
+        #expect(viewModel.render(snapshot: makeSnapshot(packet: firstPacket, inspectionState: firstLoadedState)) == .reload)
+        let originalRootItem = try #require(viewModel.rootItems.first)
+
+        #expect(viewModel.render(snapshot: makeSnapshot(packet: secondPacket, inspectionState: secondLoadingState)) == .none)
+        #expect(viewModel.rootItems.first === originalRootItem)
+        #expect(viewModel.rootItems.first?.displayText == "Frame: Packet 1")
+
+        #expect(viewModel.render(snapshot: makeSnapshot(packet: secondPacket, inspectionState: secondLoadedState)) == .reload)
+        #expect(viewModel.rootItems.first?.displayText == "Frame: Packet 2")
+    }
+
     private func makeSnapshot(packet: PacketSummary? = nil, inspectionState: PacketInspectionState) -> NetworkInspectorSnapshot {
         var base = TCPViewerWindowSnapshot.foundation
         if let packet {
@@ -202,9 +242,21 @@ struct PacketInspectorTreeViewModelTests {
         )
     }
 
-    private func makePacket() -> PacketSummary {
+    private func makeFrameInspection(for packet: PacketSummary) -> PacketInspection {
+        PacketInspection(
+            packetID: packet.id,
+            packetNumber: packet.packetNumber,
+            rawBytes: Data([0x01, 0x02]),
+            detailNodes: [
+                PacketDetailNode(id: "frame", name: "Frame", value: "Packet \(packet.packetNumber)", kind: .layer),
+            ],
+            decodeStatus: PacketDecodeStatus(kind: .complete)
+        )
+    }
+
+    private func makePacket(packetNumber: UInt64 = 1) -> PacketSummary {
         PacketSummary(
-            packetNumber: 1,
+            packetNumber: packetNumber,
             timestamp: Date(timeIntervalSince1970: 0),
             source: .offline,
             transportHint: .tcp,

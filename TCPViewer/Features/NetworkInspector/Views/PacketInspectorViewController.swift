@@ -88,10 +88,10 @@ final class PacketInspectorTreeViewModel {
     @discardableResult
     func render(snapshot: NetworkInspectorSnapshot) -> PacketInspectorTreeRenderChange {
         let inspectionState = snapshot.base.inspectionState
-        let contentState = PacketInspectorTreeContentState(inspectionState: inspectionState)
-        let contentChanged = contentState != renderedContentState
+        let contentState = nextContentState(from: inspectionState)
+        let contentChanged = contentState.map { $0 != renderedContentState } ?? false
 
-        if contentChanged {
+        if contentChanged, let contentState {
             renderedContentState = contentState
             itemByNodeID = [:]
             rootItems = makeRootItems(from: inspectionState)
@@ -115,7 +115,7 @@ final class PacketInspectorTreeViewModel {
     }
 
     private func makeRootItems(from inspectionState: PacketInspectionState) -> [PacketInspectorTreeItem] {
-        if inspectionState.isLoading {
+        if inspectionState.isLoading, inspectionState.currentInspection == nil {
             return [messageItem(id: "loading", message: inspectionState.statusMessage)]
         }
 
@@ -140,6 +140,18 @@ final class PacketInspectorTreeViewModel {
         }
 
         return selectedDetailNodeID
+    }
+
+    // Keep decoded rows visible during a packet-selection inspection request.
+    private func nextContentState(from inspectionState: PacketInspectionState) -> PacketInspectorTreeContentState? {
+        let contentState = PacketInspectorTreeContentState(inspectionState: inspectionState)
+        guard inspectionState.isLoading,
+              contentState.inspection == nil,
+              renderedContentState?.inspection != nil else {
+            return contentState
+        }
+
+        return nil
     }
 
     private func messageItem(id: String, message: String) -> PacketInspectorTreeItem {

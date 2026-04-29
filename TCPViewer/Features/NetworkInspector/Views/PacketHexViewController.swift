@@ -63,6 +63,10 @@ final class PacketHexViewController: NSViewController {
     func render(snapshot: NetworkInspectorSnapshot) {
         let inspectionState = snapshot.base.inspectionState
         let inspection = currentInspection(in: inspectionState)
+        if shouldKeepRenderedBytes(whileLoading: inspectionState, currentInspection: inspection) {
+            updateRenderedHighlight(nil)
+            return
+        }
         let contentChanged = renderedPacketID != inspection?.packetID || renderedRawBytes != inspection?.rawBytes
 
         if contentChanged {
@@ -75,12 +79,7 @@ final class PacketHexViewController: NSViewController {
 
         let byteCount = inspection?.rawBytes.count ?? 0
         let highlight = PacketHexHighlight.make(from: inspectionState.highlightedByteRange, byteCount: byteCount)
-        guard contentChanged || highlight != renderedHighlight else {
-            return
-        }
-
-        renderedHighlight = highlight
-        applyHighlight(highlight)
+        updateRenderedHighlight(highlight, force: contentChanged)
     }
 
     private func setupHexTextView() {
@@ -109,6 +108,21 @@ final class PacketHexViewController: NSViewController {
         }
 
         return inspection
+    }
+
+    // Preserve the old bytes until the newly selected packet finishes decoding.
+    private func shouldKeepRenderedBytes(whileLoading state: PacketInspectionState, currentInspection: PacketInspection?) -> Bool {
+        state.isLoading && currentInspection == nil && renderedRawBytes != nil
+    }
+
+    // Apply a hex highlight only when it actually changed, unless packet bytes changed too.
+    private func updateRenderedHighlight(_ highlight: PacketHexHighlight?, force: Bool = false) {
+        guard force || highlight != renderedHighlight else {
+            return
+        }
+
+        renderedHighlight = highlight
+        applyHighlight(highlight)
     }
 
     private func applyHighlight(_ highlight: PacketHexHighlight?) {

@@ -279,7 +279,9 @@ final class TCPViewerRootViewController: NSViewController {
         persistCurrentInspectorThicknessIfVisible()
 
         contentSplitViewController.splitView.isVertical = true
-        inspectorItem?.isCollapsed = !snapshot.isInspectorVisible
+        if visibilityChanged {
+            inspectorItem?.isCollapsed = !snapshot.isInspectorVisible
+        }
         if snapshot.isInspectorVisible && (appliedInspectorPlacement == nil || visibilityChanged) {
             applyInspectorDividerPosition(for: snapshot.inspectorPlacement)
         }
