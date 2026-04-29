@@ -1110,6 +1110,132 @@ NSString *UDPChecksumStatus(pcpp::UdpLayer *udpLayer)
     return @"Present (unverified)";
 }
 
+NSUInteger DNSHeaderOffset(pcpp::DnsLayer *dnsLayer, NSUInteger layerOffset)
+{
+    return dynamic_cast<pcpp::DnsOverTcpLayer *>(dnsLayer) != nullptr
+        ? layerOffset + sizeof(uint16_t)
+        : layerOffset;
+}
+
+NSString *DNSRecordTypeName(pcpp::DnsType type)
+{
+    switch (type) {
+        case pcpp::DNS_TYPE_A:
+            return @"A";
+        case pcpp::DNS_TYPE_NS:
+            return @"NS";
+        case pcpp::DNS_TYPE_CNAME:
+            return @"CNAME";
+        case pcpp::DNS_TYPE_SOA:
+            return @"SOA";
+        case pcpp::DNS_TYPE_PTR:
+            return @"PTR";
+        case pcpp::DNS_TYPE_MX:
+            return @"MX";
+        case pcpp::DNS_TYPE_TXT:
+            return @"TXT";
+        case pcpp::DNS_TYPE_AAAA:
+            return @"AAAA";
+        case pcpp::DNS_TYPE_SRV:
+            return @"SRV";
+        case pcpp::DNS_TYPE_OPT:
+            return @"OPT";
+        case pcpp::DNS_TYPE_DS:
+            return @"DS";
+        case pcpp::DNS_TYPE_RRSIG:
+            return @"RRSIG";
+        case pcpp::DNS_TYPE_NSEC:
+            return @"NSEC";
+        case pcpp::DNS_TYPE_DNSKEY:
+            return @"DNSKEY";
+        case pcpp::DNS_TYPE_ALL:
+            return @"ANY";
+        default:
+            return @"Unknown";
+    }
+}
+
+NSString *DNSRecordTypeValue(pcpp::DnsType type)
+{
+    return [NSString stringWithFormat:@"%@ (%u)", DNSRecordTypeName(type), static_cast<unsigned>(type)];
+}
+
+NSString *DNSClassName(pcpp::DnsClass dnsClass)
+{
+    switch (dnsClass) {
+        case pcpp::DNS_CLASS_IN:
+            return @"IN";
+        case pcpp::DNS_CLASS_IN_QU:
+            return @"IN QU";
+        case pcpp::DNS_CLASS_CH:
+            return @"CH";
+        case pcpp::DNS_CLASS_HS:
+            return @"HS";
+        case pcpp::DNS_CLASS_ANY:
+            return @"ANY";
+        default:
+            return @"Unknown";
+    }
+}
+
+NSString *DNSClassValue(pcpp::DnsClass dnsClass)
+{
+    return [NSString stringWithFormat:@"%@ (%u)", DNSClassName(dnsClass), static_cast<unsigned>(dnsClass)];
+}
+
+NSString *DNSOpcodeName(uint16_t opcode)
+{
+    switch (opcode) {
+        case 0:
+            return @"Standard query";
+        case 1:
+            return @"Inverse query";
+        case 2:
+            return @"Status";
+        case 4:
+            return @"Notify";
+        case 5:
+            return @"Update";
+        default:
+            return @"Unknown";
+    }
+}
+
+NSString *DNSResponseCodeName(uint16_t responseCode)
+{
+    switch (responseCode) {
+        case 0:
+            return @"No error";
+        case 1:
+            return @"Format error";
+        case 2:
+            return @"Server failure";
+        case 3:
+            return @"Non-existent domain";
+        case 4:
+            return @"Not implemented";
+        case 5:
+            return @"Refused";
+        default:
+            return @"Unknown";
+    }
+}
+
+NSString *DNSQueryResponseValue(bool isResponse)
+{
+    return isResponse ? @"Response" : @"Query";
+}
+
+NSString *DNSResourceDataValue(pcpp::DnsResource *resource)
+{
+    auto data = resource->getData();
+    if (data.get() == nullptr) {
+        return nil;
+    }
+
+    return MakeNSString(data->toString());
+}
+
 class PacketDetailTreeBuilder {
 public:
     PacketDetailTreeBuilder(const pcpp::Packet &packet,
@@ -1196,6 +1322,9 @@ private:
                 break;
             case pcpp::UDP:
                 appendUDP(static_cast<pcpp::UdpLayer *>(layer), offset, nodes);
+                break;
+            case pcpp::DNS:
+                appendDNS(static_cast<pcpp::DnsLayer *>(layer), offset, nodes);
                 break;
             case pcpp::SSL:
                 appendTLS(static_cast<pcpp::SSLLayer *>(layer), offset, nodes);
@@ -1430,6 +1559,273 @@ private:
                                        offset,
                                        udpLayer->getHeaderLen(),
                                        children)];
+    }
+
+    void appendDNS(pcpp::DnsLayer *dnsLayer, NSUInteger offset, NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *nodes)
+    {
+        // Decode the DNS header, flags, and record sections exposed by PcapPlusPlus.
+        auto *header = dnsLayer->getDnsHeader();
+        NSUInteger headerOffset = DNSHeaderOffset(dnsLayer, offset);
+        uint16_t flags = 0;
+        std::memcpy(&flags, dnsLayer->getData() + (headerOffset - offset) + 2, sizeof(flags));
+        flags = ntohs(flags);
+
+        NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *children = [NSMutableArray arrayWithArray:@[
+            MakeFieldNode(@"dns.id", @"Transaction ID", FormatHex16(ntohs(header->transactionID)), headerOffset, 0, 2),
+            dnsFlagsNode(header, flags, headerOffset),
+            MakeFieldNode(@"dns.count.queries", @"Questions", [NSString stringWithFormat:@"%u", ntohs(header->numberOfQuestions)], headerOffset, 4, 2),
+            MakeFieldNode(@"dns.count.answers", @"Answer RRs", [NSString stringWithFormat:@"%u", ntohs(header->numberOfAnswers)], headerOffset, 6, 2),
+            MakeFieldNode(@"dns.count.authorities", @"Authority RRs", [NSString stringWithFormat:@"%u", ntohs(header->numberOfAuthority)], headerOffset, 8, 2),
+            MakeFieldNode(@"dns.count.additional", @"Additional RRs", [NSString stringWithFormat:@"%u", ntohs(header->numberOfAdditional)], headerOffset, 10, 2),
+        ]];
+
+        appendDNSQueries(dnsLayer, offset, children);
+        appendDNSResources(dnsLayer, pcpp::DnsAnswerType, @"dns.answers", @"Answers", offset, children);
+        appendDNSResources(dnsLayer, pcpp::DnsAuthorityType, @"dns.authorities", @"Authoritative nameservers", offset, children);
+        appendDNSResources(dnsLayer, pcpp::DnsAdditionalType, @"dns.additional", @"Additional records", offset, children);
+
+        [nodes addObject:MakeLayerNode(@"dns",
+                                       @"Domain Name System",
+                                       MakeNSString(dnsLayer->toString()),
+                                       offset,
+                                       dnsLayer->getHeaderLen(),
+                                       children)];
+    }
+
+    PCPPNativePacketDetailNodeDescriptor *dnsFlagsNode(const pcpp::dnshdr *header, uint16_t flags, NSUInteger headerOffset)
+    {
+        NSArray *flagChildren = @[
+            MakeFieldNode(@"dns.flags.response", @"Query/Response", DNSQueryResponseValue(header->queryOrResponse), headerOffset, 2, 2),
+            MakeFieldNode(@"dns.flags.opcode", @"Opcode", [NSString stringWithFormat:@"%@ (%u)", DNSOpcodeName(header->opcode), header->opcode], headerOffset, 2, 2),
+            MakeFieldNode(@"dns.flags.authoritative", @"Authoritative", SetStatus(header->authoritativeAnswer), headerOffset, 2, 2),
+            MakeFieldNode(@"dns.flags.truncated", @"Truncated", SetStatus(header->truncation), headerOffset, 2, 2),
+            MakeFieldNode(@"dns.flags.recursionDesired", @"Recursion Desired", SetStatus(header->recursionDesired), headerOffset, 2, 2),
+            MakeFieldNode(@"dns.flags.recursionAvailable", @"Recursion Available", SetStatus(header->recursionAvailable), headerOffset, 2, 2),
+            MakeFieldNode(@"dns.flags.authenticData", @"Authentic Data", SetStatus(header->authenticData), headerOffset, 2, 2),
+            MakeFieldNode(@"dns.flags.checkingDisabled", @"Checking Disabled", SetStatus(header->checkingDisabled), headerOffset, 2, 2),
+            MakeFieldNode(@"dns.flags.rcode", @"Response Code", [NSString stringWithFormat:@"%@ (%u)", DNSResponseCodeName(header->responseCode), header->responseCode], headerOffset, 2, 2),
+        ];
+        return MakeDetailNode(@"dns.flags",
+                              @"Flags",
+                              FormatHex16(flags),
+                              @"field",
+                              MakeByteRange(headerOffset + 2, 2),
+                              nil,
+                              flagChildren);
+    }
+
+    void appendDNSQueries(pcpp::DnsLayer *dnsLayer,
+                          NSUInteger layerOffset,
+                          NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *children)
+    {
+        NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *queryNodes = [NSMutableArray array];
+        pcpp::DnsQuery *query = dnsLayer->getFirstQuery();
+        NSUInteger index = 0;
+        while (query != nullptr && index < 256) {
+            [queryNodes addObject:dnsQueryNode(query, layerOffset, index)];
+            query = dnsLayer->getNextQuery(query);
+            index += 1;
+        }
+
+        if (queryNodes.count == 0) {
+            return;
+        }
+
+        [children addObject:MakeDetailNode(@"dns.queries",
+                                           @"Queries",
+                                           [NSString stringWithFormat:@"%lu", static_cast<unsigned long>(queryNodes.count)],
+                                           @"field",
+                                           nil,
+                                           nil,
+                                           queryNodes)];
+    }
+
+    PCPPNativePacketDetailNodeDescriptor *dnsQueryNode(pcpp::DnsQuery *query, NSUInteger layerOffset, NSUInteger index)
+    {
+        NSUInteger recordOffset = static_cast<NSUInteger>(query->getNameOffset());
+        NSUInteger recordLength = static_cast<NSUInteger>(query->getSize());
+        NSUInteger nameLength = recordLength >= 4 ? recordLength - 4 : 0;
+        NSString *identifier = [NSString stringWithFormat:@"dns.query.%lu", static_cast<unsigned long>(index)];
+        NSArray *children = @[
+            MakeFieldNode([identifier stringByAppendingString:@".name"],
+                          @"Name",
+                          MakeNSString(query->getName()),
+                          layerOffset,
+                          recordOffset,
+                          nameLength),
+            MakeFieldNode([identifier stringByAppendingString:@".type"],
+                          @"Type",
+                          DNSRecordTypeValue(query->getDnsType()),
+                          layerOffset,
+                          recordOffset + nameLength,
+                          2),
+            MakeFieldNode([identifier stringByAppendingString:@".class"],
+                          @"Class",
+                          DNSClassValue(query->getDnsClass()),
+                          layerOffset,
+                          recordOffset + nameLength + 2,
+                          2),
+        ];
+        return MakeDetailNode(identifier,
+                              [NSString stringWithFormat:@"Query: %@", MakeNSString(query->getName())],
+                              DNSRecordTypeValue(query->getDnsType()),
+                              @"field",
+                              MakeByteRange(layerOffset + recordOffset, recordLength),
+                              nil,
+                              children);
+    }
+
+    void appendDNSResources(pcpp::DnsLayer *dnsLayer,
+                            pcpp::DnsResourceType resourceType,
+                            NSString *identifier,
+                            NSString *name,
+                            NSUInteger layerOffset,
+                            NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *children)
+    {
+        NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *resourceNodes = [NSMutableArray array];
+        pcpp::DnsResource *resource = firstDNSResource(dnsLayer, resourceType);
+        NSUInteger index = 0;
+        while (resource != nullptr && index < 512) {
+            [resourceNodes addObject:dnsResourceNode(resource, resourceType, layerOffset, index)];
+            resource = nextDNSResource(dnsLayer, resource, resourceType);
+            index += 1;
+        }
+
+        if (resourceNodes.count == 0) {
+            return;
+        }
+
+        [children addObject:MakeDetailNode(identifier,
+                                           name,
+                                           [NSString stringWithFormat:@"%lu", static_cast<unsigned long>(resourceNodes.count)],
+                                           @"field",
+                                           nil,
+                                           nil,
+                                           resourceNodes)];
+    }
+
+    pcpp::DnsResource *firstDNSResource(pcpp::DnsLayer *dnsLayer, pcpp::DnsResourceType resourceType)
+    {
+        switch (resourceType) {
+            case pcpp::DnsAnswerType:
+                return dnsLayer->getFirstAnswer();
+            case pcpp::DnsAuthorityType:
+                return dnsLayer->getFirstAuthority();
+            case pcpp::DnsAdditionalType:
+                return dnsLayer->getFirstAdditionalRecord();
+            case pcpp::DnsQueryType:
+                return nullptr;
+        }
+    }
+
+    pcpp::DnsResource *nextDNSResource(pcpp::DnsLayer *dnsLayer,
+                                       pcpp::DnsResource *resource,
+                                       pcpp::DnsResourceType resourceType)
+    {
+        switch (resourceType) {
+            case pcpp::DnsAnswerType:
+                return dnsLayer->getNextAnswer(resource);
+            case pcpp::DnsAuthorityType:
+                return dnsLayer->getNextAuthority(resource);
+            case pcpp::DnsAdditionalType:
+                return dnsLayer->getNextAdditionalRecord(resource);
+            case pcpp::DnsQueryType:
+                return nullptr;
+        }
+    }
+
+    PCPPNativePacketDetailNodeDescriptor *dnsResourceNode(pcpp::DnsResource *resource,
+                                                         pcpp::DnsResourceType resourceType,
+                                                         NSUInteger layerOffset,
+                                                         NSUInteger index)
+    {
+        NSUInteger recordOffset = static_cast<NSUInteger>(resource->getNameOffset());
+        NSUInteger recordLength = static_cast<NSUInteger>(resource->getSize());
+        NSUInteger dataOffset = static_cast<NSUInteger>(resource->getDataOffset());
+        NSUInteger dataLength = static_cast<NSUInteger>(resource->getDataLength());
+        NSUInteger fixedFieldsLength = 10;
+        NSUInteger nameLength = dataOffset >= recordOffset + fixedFieldsLength
+            ? dataOffset - recordOffset - fixedFieldsLength
+            : 0;
+        NSString *identifier = [NSString stringWithFormat:@"dns.%@.%lu", DNSResourceSectionIdentifier(resourceType), static_cast<unsigned long>(index)];
+        NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *children = [NSMutableArray arrayWithArray:@[
+            MakeFieldNode([identifier stringByAppendingString:@".name"],
+                          @"Name",
+                          MakeNSString(resource->getName()),
+                          layerOffset,
+                          recordOffset,
+                          nameLength),
+            MakeFieldNode([identifier stringByAppendingString:@".type"],
+                          @"Type",
+                          DNSRecordTypeValue(resource->getDnsType()),
+                          layerOffset,
+                          recordOffset + nameLength,
+                          2),
+            MakeFieldNode([identifier stringByAppendingString:@".class"],
+                          @"Class",
+                          DNSClassValue(resource->getDnsClass()),
+                          layerOffset,
+                          recordOffset + nameLength + 2,
+                          2),
+            MakeFieldNode([identifier stringByAppendingString:@".ttl"],
+                          @"Time to Live",
+                          [NSString stringWithFormat:@"%u", resource->getTTL()],
+                          layerOffset,
+                          recordOffset + nameLength + 4,
+                          4),
+            MakeFieldNode([identifier stringByAppendingString:@".dataLength"],
+                          @"Data Length",
+                          [NSString stringWithFormat:@"%zu", resource->getDataLength()],
+                          layerOffset,
+                          recordOffset + nameLength + 8,
+                          2),
+        ]];
+
+        NSString *dataValue = DNSResourceDataValue(resource);
+        if (dataValue != nil) {
+            [children addObject:MakeFieldNode([identifier stringByAppendingString:@".data"],
+                                              @"Data",
+                                              dataValue,
+                                              layerOffset,
+                                              dataOffset,
+                                              dataLength)];
+        }
+
+        return MakeDetailNode(identifier,
+                              [NSString stringWithFormat:@"%@: %@", DNSResourceRecordName(resourceType), MakeNSString(resource->getName())],
+                              dataValue ?: DNSRecordTypeValue(resource->getDnsType()),
+                              @"field",
+                              MakeByteRange(layerOffset + recordOffset, recordLength),
+                              nil,
+                              children);
+    }
+
+    NSString *DNSResourceSectionIdentifier(pcpp::DnsResourceType resourceType)
+    {
+        switch (resourceType) {
+            case pcpp::DnsAnswerType:
+                return @"answer";
+            case pcpp::DnsAuthorityType:
+                return @"authority";
+            case pcpp::DnsAdditionalType:
+                return @"additional";
+            case pcpp::DnsQueryType:
+                return @"query";
+        }
+    }
+
+    NSString *DNSResourceRecordName(pcpp::DnsResourceType resourceType)
+    {
+        switch (resourceType) {
+            case pcpp::DnsAnswerType:
+                return @"Answer";
+            case pcpp::DnsAuthorityType:
+                return @"Authority";
+            case pcpp::DnsAdditionalType:
+                return @"Additional";
+            case pcpp::DnsQueryType:
+                return @"Query";
+        }
     }
 
     void appendTLS(pcpp::SSLLayer *sslLayer, NSUInteger offset, NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *nodes)

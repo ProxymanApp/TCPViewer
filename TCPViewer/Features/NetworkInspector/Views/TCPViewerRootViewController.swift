@@ -151,6 +151,7 @@ final class TCPViewerRootViewController: NSViewController {
         // Build the two-level split layout: sidebar | (table | inspector).
         sidebarViewController.delegate = self
         workspaceViewController.delegate = self
+        inspectorViewController.delegate = self
         statusStripViewController.delegate = self
 
         mainSplitViewController.splitView.isVertical = true
@@ -163,6 +164,7 @@ final class TCPViewerRootViewController: NSViewController {
         // Use a regular split item so the same inspector view can resize correctly on both axes.
         let inspectorItem = NSSplitViewItem(viewController: inspectorViewController)
         inspectorItem.canCollapse = true
+        inspectorItem.minimumThickness = 200
         contentSplitViewController.addSplitViewItem(inspectorItem)
         self.inspectorItem = inspectorItem
 
@@ -450,6 +452,12 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
 
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestDeletePackets identifiers: [PacketSummary.ID]) {
         viewModel.deletePackets(identifiers)
+    }
+}
+
+extension TCPViewerRootViewController: PacketInspectorViewControllerDelegate {
+    func packetInspectorViewController(_ controller: PacketInspectorViewController, didSelectDetailNode identifier: String?) {
+        viewModel.selectDetailNode(identifier)
     }
 }
 
