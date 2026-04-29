@@ -450,6 +450,61 @@ struct NetworkInspectorViewModelTests {
         #expect(reloadedViewModel.preferredInspectorThickness(for: .trailing, availableLength: 800) == nil)
     }
 
+    @Test func sidebarVisibilityPersistsAcrossReloads() {
+        let defaults = isolatedDefaults()
+        let services = TCPViewerServiceRegistry(core: InspectorFakeCore(
+            interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")]
+        ))
+        let viewModel = NetworkInspectorViewModel(
+            services: services,
+            userDefaults: defaults
+        )
+
+        #expect(viewModel.prefersSidebarVisibleOnLaunch())
+
+        viewModel.setSidebarVisible(false)
+
+        let hiddenReloadedViewModel = NetworkInspectorViewModel(
+            services: services,
+            userDefaults: defaults
+        )
+
+        #expect(!hiddenReloadedViewModel.prefersSidebarVisibleOnLaunch())
+
+        hiddenReloadedViewModel.setSidebarVisible(true)
+
+        let visibleReloadedViewModel = NetworkInspectorViewModel(
+            services: services,
+            userDefaults: defaults
+        )
+
+        #expect(visibleReloadedViewModel.prefersSidebarVisibleOnLaunch())
+    }
+
+    @Test func sidebarThicknessPersistsAndFallsBackWhenInvalid() {
+        let defaults = isolatedDefaults()
+        let services = TCPViewerServiceRegistry(core: InspectorFakeCore(
+            interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")]
+        ))
+        let viewModel = NetworkInspectorViewModel(
+            services: services,
+            userDefaults: defaults
+        )
+
+        viewModel.rememberSidebarThickness(280)
+
+        let reloadedViewModel = NetworkInspectorViewModel(
+            services: services,
+            userDefaults: defaults
+        )
+
+        #expect(reloadedViewModel.preferredSidebarThickness(for: 800) == 280)
+
+        reloadedViewModel.rememberSidebarThickness(10_000)
+
+        #expect(reloadedViewModel.preferredSidebarThickness(for: 800) == nil)
+    }
+
     @Test func packetRowsAppendIncrementallyForMatchingLiveBatches() async {
         let packets = [
             makePacket(packetNumber: 1, source: .live, transportHint: .tcp),

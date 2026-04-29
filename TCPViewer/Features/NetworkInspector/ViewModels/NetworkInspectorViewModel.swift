@@ -8,6 +8,8 @@ private struct NetworkInspectorPreferences {
         static let displayFilterText = "TCPViewer.displayFilterText"
         static let inspectorTrailingThickness = "TCPViewer.inspectorTrailingThickness"
         static let inspectorVisible = "TCPViewer.inspectorVisible"
+        static let sidebarLeadingThickness = "TCPViewer.sidebarLeadingThickness"
+        static let sidebarVisible = "TCPViewer.sidebarVisible"
     }
 
     let defaults: UserDefaults
@@ -28,6 +30,14 @@ private struct NetworkInspectorPreferences {
         return defaults.bool(forKey: Key.inspectorVisible)
     }
 
+    var isSidebarVisible: Bool {
+        guard defaults.object(forKey: Key.sidebarVisible) != nil else {
+            return true
+        }
+
+        return defaults.bool(forKey: Key.sidebarVisible)
+    }
+
     func inspectorThickness(for placement: NetworkInspectorPlacement) -> CGFloat? {
         let key = thicknessKey(for: placement)
         guard defaults.object(forKey: key) != nil else {
@@ -35,6 +45,14 @@ private struct NetworkInspectorPreferences {
         }
 
         return CGFloat(defaults.double(forKey: key))
+    }
+
+    var sidebarThickness: CGFloat? {
+        guard defaults.object(forKey: Key.sidebarLeadingThickness) != nil else {
+            return nil
+        }
+
+        return CGFloat(defaults.double(forKey: Key.sidebarLeadingThickness))
     }
 
     func persistDisplayFilter(_ text: String) {
@@ -47,6 +65,14 @@ private struct NetworkInspectorPreferences {
 
     func persistInspectorVisible(_ isVisible: Bool) {
         defaults.set(isVisible, forKey: Key.inspectorVisible)
+    }
+
+    func persistSidebarThickness(_ thickness: CGFloat) {
+        defaults.set(Double(thickness), forKey: Key.sidebarLeadingThickness)
+    }
+
+    func persistSidebarVisible(_ isVisible: Bool) {
+        defaults.set(isVisible, forKey: Key.sidebarVisible)
     }
 
     private func thicknessKey(for placement: NetworkInspectorPlacement) -> String {
@@ -1285,6 +1311,36 @@ final class NetworkInspectorViewModel {
 
     func toggleInspector() {
         setInspectorVisible(!isInspectorVisible)
+    }
+
+    // Persist the sidebar's visibility so the root split view can restore it on the next launch.
+    func setSidebarVisible(_ isVisible: Bool) {
+        preferences.persistSidebarVisible(isVisible)
+    }
+
+    // Keep the last usable leading sidebar width for future launches and reopen actions.
+    func rememberSidebarThickness(_ thickness: CGFloat) {
+        guard thickness.isFinite, thickness > 0 else {
+            return
+        }
+
+        preferences.persistSidebarThickness(thickness)
+    }
+
+    // Reject invalid saved widths so the root controller can keep AppKit's default when needed.
+    func preferredSidebarThickness(for availableLength: CGFloat) -> CGFloat? {
+        guard availableLength.isFinite, availableLength > 0,
+              let thickness = preferences.sidebarThickness,
+              thickness.isFinite, thickness > 0, thickness < availableLength else {
+            return nil
+        }
+
+        return thickness
+    }
+
+    // Expose the launch preference without adding sidebar layout state to the main snapshot.
+    func prefersSidebarVisibleOnLaunch() -> Bool {
+        preferences.isSidebarVisible
     }
 
     // Remember the last usable right-side inspector width for future launches.

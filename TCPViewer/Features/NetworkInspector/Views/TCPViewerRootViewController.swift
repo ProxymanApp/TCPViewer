@@ -22,10 +22,13 @@ final class TCPViewerRootViewController: NSViewController {
     private let workspaceViewController: PacketWorkspaceViewController
     private let inspectorViewController: PacketInspectorViewController
     private let statusStripViewController = StatusStripViewController()
+    private var sidebarItem: NSSplitViewItem?
     private var inspectorItem: NSSplitViewItem?
     private var appliedInspectorPlacement: NetworkInspectorPlacement?
     private var appliedInspectorVisibility: Bool?
+    private var needsSidebarDividerRefresh = false
     private var needsInspectorDividerRefresh = false
+    private var hasRestoredInitialInspectorDivider = false
     private var hasRenderedHelperOnboarding = false
 
     deinit {
@@ -54,12 +57,18 @@ final class TCPViewerRootViewController: NSViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         configureSplitViewObservation()
+        applyPersistedSidebarLayout()
         render()
         viewModel.performInitialLoadIfNeeded()
     }
 
     override func viewDidLayout() {
         super.viewDidLayout()
+        if needsSidebarDividerRefresh, sidebarItem?.isCollapsed == false {
+            needsSidebarDividerRefresh = false
+            applySidebarDividerPosition()
+        }
+
         guard needsInspectorDividerRefresh, viewModel.snapshot.isInspectorVisible else {
             return
         }
@@ -133,6 +142,11 @@ final class TCPViewerRootViewController: NSViewController {
         viewModel.dismissNetworkHelperOnboarding()
     }
 
+    @objc func toggleSidebar(_ sender: Any?) {
+        // Mirror AppKit's toggleSidebar action while keeping the split state persisted in our model.
+        setSidebarVisible(sidebarItem?.isCollapsed ?? false)
+    }
+
     private func setupChildControllers() {
         // Build the two-level split layout: sidebar | (table | inspector).
         sidebarViewController.delegate = self
@@ -176,8 +190,10 @@ final class TCPViewerRootViewController: NSViewController {
         addChild(mainSplitViewController)
 
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarViewController)
+        sidebarItem.minimumThickness = 220
         sidebarItem.canCollapse = true
         mainSplitViewController.addSplitViewItem(sidebarItem)
+        self.sidebarItem = sidebarItem
 
         let mainContainerItem = NSSplitViewItem(viewController: mainContainerViewController)
         mainSplitViewController.addSplitViewItem(mainContainerItem)
@@ -209,6 +225,48 @@ final class TCPViewerRootViewController: NSViewController {
             hasRenderedHelperOnboarding = true
             delegate?.tcpviewerRootViewController(self, didRequestHelperOnboarding: viewModel.networkHelperToolSnapshot)
         }
+    }
+
+    // Restore the last sidebar state early so AppKit lays out the window with the expected split.
+    private func applyPersistedSidebarLayout() {
+        setSidebarVisible(viewModel.prefersSidebarVisibleOnLaunch(), persistPreference: false)
+    }
+
+    // Collapse or expand the leading sidebar and restore its last saved width when it reopens.
+    private func setSidebarVisible(_ isVisible: Bool, persistPreference: Bool = true) {
+        if !isVisible {
+            persistCurrentSidebarThicknessIfVisible()
+        }
+
+        sidebarItem?.isCollapsed = !isVisible
+        if persistPreference {
+            viewModel.setSidebarVisible(isVisible)
+        }
+
+        if isVisible {
+            applySidebarDividerPosition()
+        }
+    }
+
+    // Reapply the saved leading divider position once the split view has a real width.
+    private func applySidebarDividerPosition() {
+        let splitView = mainSplitViewController.splitView
+        guard splitView.subviews.count == 2 else {
+            return
+        }
+
+        splitView.layoutSubtreeIfNeeded()
+        let totalLength = splitView.bounds.width
+        guard totalLength > 0 else {
+            needsSidebarDividerRefresh = true
+            return
+        }
+
+        guard let sidebarThickness = viewModel.preferredSidebarThickness(for: totalLength) else {
+            return
+        }
+
+        splitView.setPosition(sidebarThickness, ofDividerAt: 0)
     }
 
     // Keep the inspector in the right-side split item and only update collapse state when needed.
@@ -245,11 +303,18 @@ final class TCPViewerRootViewController: NSViewController {
             for: placement,
             availableLength: totalLength
         ) ?? (totalLength * InspectorLayoutMetrics.trailingInspectorFraction)
+        hasRestoredInitialInspectorDivider = true
         splitView.setPosition(totalLength - inspectorThickness, ofDividerAt: 0)
     }
 
     // Track divider changes so the right-side inspector restores the last usable width.
     private func configureSplitViewObservation() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(mainSplitViewDidResizeSubviews(_:)),
+            name: NSSplitView.didResizeSubviewsNotification,
+            object: mainSplitViewController.splitView
+        )
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(contentSplitViewDidResizeSubviews(_:)),
@@ -258,12 +323,56 @@ final class TCPViewerRootViewController: NSViewController {
         )
     }
 
+    @objc private func mainSplitViewDidResizeSubviews(_ notification: Notification) {
+        guard notification.object as? NSSplitView === mainSplitViewController.splitView else {
+            return
+        }
+
+        persistCurrentSidebarLayout()
+    }
+
     @objc private func contentSplitViewDidResizeSubviews(_ notification: Notification) {
         guard notification.object as? NSSplitView === contentSplitViewController.splitView else {
             return
         }
 
+        guard hasRestoredInitialInspectorDivider else {
+            return
+        }
+
         persistCurrentInspectorThicknessIfVisible()
+    }
+
+    // Persist the leading split state after manual drags and AppKit-driven collapses.
+    private func persistCurrentSidebarLayout() {
+        let isVisible = sidebarItem?.isCollapsed == false
+        viewModel.setSidebarVisible(isVisible)
+        persistCurrentSidebarThicknessIfVisible()
+    }
+
+    // Persist only visible sidebar sizes so collapsing the pane never stores a broken zero value.
+    private func persistCurrentSidebarThicknessIfVisible() {
+        guard let thickness = currentSidebarThickness() else {
+            return
+        }
+
+        viewModel.rememberSidebarThickness(thickness)
+    }
+
+    // Read the live sidebar width from AppKit's leading split item when it is on screen.
+    private func currentSidebarThickness() -> CGFloat? {
+        guard let sidebarView = sidebarItem?.viewController.view,
+              sidebarView.superview != nil,
+              sidebarItem?.isCollapsed == false else {
+            return nil
+        }
+
+        let thickness = sidebarView.frame.width
+        guard thickness.isFinite, thickness > 0 else {
+            return nil
+        }
+
+        return thickness
     }
 
     // Persist only visible inspector sizes so collapsing the pane never stores a broken zero value.
