@@ -74,14 +74,16 @@ struct InspectorPipelineTests {
                 makeIPv4TCPPayloadPacket(),
                 makeIPv4UDPPayloadPacket(),
                 makeIPv6UDPPayloadPacket(),
+                makeIPv4ICMPEchoRequestPacket(),
+                makeIPv6ICMPEchoRequestPacket(),
             ]
         )
 
         let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
         let packets = try await document.open()
 
-        #expect(packets.count == 4)
-        #expect(packets.map(\.transportHint) == [.arp, .tcp, .udp, .udp])
+        #expect(packets.count == 6)
+        #expect(packets.map(\.transportHint) == [.arp, .tcp, .udp, .udp, .icmp, .icmp])
 
         let arpInspection = try await document.inspectPacket(id: packets[0].id)
         #expect(arpInspection.decodeStatus.kind == .complete)
@@ -89,6 +91,8 @@ struct InspectorPipelineTests {
         #expect(arpInspection.detailNodes.map(\.name).contains("Ethernet"))
         #expect(arpInspection.detailNodes.map(\.name).contains("ARP"))
         let ethDestination = try #require(findNode(in: arpInspection.detailNodes, id: "eth.dst"))
+        #expect(ethDestination.fieldName == "eth.dst")
+        #expect(ethDestination.rawValue == "ff ff ff ff ff ff")
         #expect(ethDestination.byteRange == PacketByteRange(offset: 0, length: 6))
         let arpSenderIP = try #require(findNode(in: arpInspection.detailNodes, id: "arp.senderIP"))
         #expect(arpSenderIP.value == "192.168.0.1")
@@ -99,11 +103,21 @@ struct InspectorPipelineTests {
         #expect(tcpInspection.detailNodes.map(\.name).contains("TCP"))
         #expect(tcpInspection.detailNodes.map(\.name).contains("Payload"))
         let ipv4Source = try #require(findNode(in: tcpInspection.detailNodes, id: "ipv4.src"))
+        let ipv4Version = try #require(findNode(in: tcpInspection.detailNodes, id: "ipv4.version"))
+        let ipv4DontFragment = try #require(findNode(in: tcpInspection.detailNodes, id: "ipv4.flags.df"))
         #expect(ipv4Source.value == "192.168.0.1")
         #expect(ipv4Source.byteRange == PacketByteRange(offset: 26, length: 4))
+        #expect(ipv4Version.byteRange == PacketByteRange(offset: 14, length: 1, bitOffset: 0, bitLength: 4, hasBitRange: true))
+        #expect(ipv4DontFragment.value == "Set")
+        #expect(ipv4DontFragment.byteRange == PacketByteRange(offset: 20, length: 1, bitOffset: 1, bitLength: 1, hasBitRange: true))
         let tcpDestinationPort = try #require(findNode(in: tcpInspection.detailNodes, id: "tcp.dstPort"))
         #expect(tcpDestinationPort.value == "4321")
         #expect(tcpDestinationPort.byteRange == PacketByteRange(offset: 36, length: 2))
+        #expect(tcpDestinationPort.fieldName == "tcp.dstport")
+        #expect(tcpDestinationPort.rawValue == "10 e1")
+        let tcpAckFlag = try #require(findNode(in: tcpInspection.detailNodes, id: "tcp.flags.ack"))
+        #expect(tcpAckFlag.value == "Set")
+        #expect(tcpAckFlag.byteRange == PacketByteRange(offset: 47, length: 1, bitOffset: 3, bitLength: 1, hasBitRange: true))
         let tcpPayloadLength = try #require(findNode(in: tcpInspection.detailNodes, id: "payload.length"))
         #expect(tcpPayloadLength.value == "4 bytes")
         #expect(tcpPayloadLength.byteRange == PacketByteRange(offset: 54, length: 4))
@@ -129,6 +143,18 @@ struct InspectorPipelineTests {
         #expect(ipv6PayloadPreview.byteRange == PacketByteRange(offset: 62, length: 4))
         let ipv6UDPChecksumStatus = try #require(findNode(in: ipv6Inspection.detailNodes, id: "udp.checksum.status"))
         #expect(ipv6UDPChecksumStatus.value == "Illegal zero checksum")
+
+        let icmpInspection = try await document.inspectPacket(id: packets[4].id)
+        let icmpNode = try #require(icmpInspection.detailNodes.first { $0.name == "ICMP" })
+        #expect(findNode(in: icmpNode.children, id: "icmp.type")?.value == "Echo Request (8)")
+        #expect(findNode(in: icmpNode.children, id: "icmp.identifier")?.value == "4660")
+        #expect(findNode(in: icmpNode.children, id: "icmp.sequence")?.byteRange == PacketByteRange(offset: 40, length: 2))
+
+        let icmpv6Inspection = try await document.inspectPacket(id: packets[5].id)
+        let icmpv6Node = try #require(icmpv6Inspection.detailNodes.first { $0.name == "ICMPv6" })
+        #expect(findNode(in: icmpv6Node.children, id: "icmpv6.type")?.value == "Echo Request (128)")
+        #expect(findNode(in: icmpv6Node.children, id: "icmpv6.identifier")?.value == "22136")
+        #expect(findNode(in: icmpv6Node.children, id: "icmpv6.sequence")?.byteRange == PacketByteRange(offset: 60, length: 2))
     }
 
     @Test func tlsClientHelloInspectionRendersVersionedSummaryAndDetail() async throws {
@@ -140,8 +166,11 @@ struct InspectorPipelineTests {
         #expect(packet.layers.contains { $0.name == "TLSv1.2" })
 
         let inspection = try await document.inspectPacket(id: packet.id)
-        let tlsNode = try #require(inspection.detailNodes.first { $0.name == "Transport Layer Security" })
-        #expect(tlsNode.value?.contains("TLSv1.2") == true)
+        let tlsNode = try #require(inspection.detailNodes.first {
+            $0.name == "Transport Layer Security" &&
+                findNode(in: $0.children, name: "Handshake Protocol: Client Hello") != nil
+        })
+        #expect(tlsNode.value?.contains("Handshake") == true)
         #expect(findNode(in: tlsNode.children, name: "Content Type")?.value?.contains("Handshake") == true)
         #expect(findNode(in: tlsNode.children, name: "Version") != nil)
         #expect(findNode(in: tlsNode.children, name: "Length") != nil)
@@ -247,6 +276,56 @@ struct InspectorPipelineTests {
         #expect(findNode(in: dnsNode.children, id: "dns.answer.0.name")?.value == "www.example.com")
         #expect(findNode(in: dnsNode.children, id: "dns.answer.0.data")?.value == "93.184.216.34")
         #expect(findNode(in: dnsNode.children, id: "dns.answer.0.data")?.byteRange == PacketByteRange(offset: 87, length: 4))
+    }
+
+    @Test func phaseTwoInspectionRendersHTTPHeadersAndWebSocketFrames() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let captureURL = directory.appendingPathComponent("phase-two-app-protocols.pcap")
+        try writePCAP(
+            to: captureURL,
+            packets: [
+                makeIPv4HTTPRequestPacket(),
+                makeIPv4WebSocketTextFramePacket(),
+            ]
+        )
+
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
+        let packets = try await document.open()
+        #expect(packets.count == 2)
+        #expect(packets[0].transportHint == .http1)
+        #expect(packets[1].transportHint == .websocket)
+
+        let httpInspection = try await document.inspectPacket(id: packets[0].id)
+        let httpNode = try #require(httpInspection.detailNodes.first { $0.name == "HTTP Request" })
+        let method = try #require(findNode(in: httpNode.children, id: "http.request.54.method"))
+        #expect(method.value == "GET")
+        #expect(method.fieldName == "http.request.method")
+        #expect(method.byteRange == PacketByteRange(offset: 54, length: 3))
+        #expect(findNode(in: httpNode.children, id: "http.request.54.uri")?.value == "/chat")
+        #expect(findNode(in: httpNode.children, id: "http.request.54.version")?.value == "HTTP/1.1")
+
+        let host = try #require(findNode(in: httpNode.children, id: "http.request.54.header.0.value"))
+        #expect(host.value == "example.com")
+        #expect(host.fieldName == "http.host")
+        #expect(host.byteRange == PacketByteRange(offset: 80, length: 11))
+        #expect(findNode(in: httpNode.children, id: "http.request.54.header.complete")?.value == "Yes")
+
+        let websocketInspection = try await document.inspectPacket(id: packets[1].id)
+        #expect(packets[1].layers.contains { $0.name == "WebSocket" })
+        let websocketNode = try #require(websocketInspection.detailNodes.first { $0.name == "WebSocket" })
+        #expect(websocketNode.value == "Text, 5 bytes")
+        #expect(findNode(in: websocketNode.children, id: "websocket.54.fin")?.value == "Set")
+        #expect(findNode(in: websocketNode.children, id: "websocket.54.opcode")?.byteRange == PacketByteRange(offset: 54, length: 1, bitOffset: 4, bitLength: 4, hasBitRange: true))
+        #expect(findNode(in: websocketNode.children, id: "websocket.54.payloadLength")?.byteRange == PacketByteRange(offset: 55, length: 1, bitOffset: 1, bitLength: 7, hasBitRange: true))
+
+        let maskingKey = try #require(findNode(in: websocketNode.children, id: "websocket.54.maskingKey"))
+        #expect(maskingKey.rawValue == "01 02 03 04")
+        #expect(maskingKey.byteRange == PacketByteRange(offset: 56, length: 4))
+        let websocketPayload = try #require(findNode(in: websocketNode.children, id: "websocket.54.payload"))
+        #expect(websocketPayload.value == "69 67 6f 68 6e")
+        #expect(websocketPayload.byteRange == PacketByteRange(offset: 60, length: 5))
     }
 
     @Test func malformedInspectionAddsDecodeWarningAndKeepsRawBytes() async throws {
@@ -715,6 +794,61 @@ private func makeIPv4DNSResponsePacket() -> Data {
     return packet
 }
 
+private func makeIPv4HTTPRequestPacket() -> Data {
+    makeIPv4TCPPacket(
+        sourcePort: 54_321,
+        destinationPort: 80,
+        identification: 0x1240,
+        payload: Array("""
+GET /chat HTTP/1.1\r
+Host: example.com\r
+Upgrade: websocket\r
+Connection: Upgrade\r
+Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r
+\r
+""".utf8)
+    )
+}
+
+private func makeIPv4WebSocketTextFramePacket() -> Data {
+    makeIPv4TCPPacket(
+        sourcePort: 54_321,
+        destinationPort: 80,
+        identification: 0x1241,
+        payload: [
+            0x81, 0x85,
+            0x01, 0x02, 0x03, 0x04,
+            0x69, 0x67, 0x6f, 0x68, 0x6e,
+        ]
+    )
+}
+
+private func makeIPv4TCPPacket(sourcePort: UInt16, destinationPort: UInt16, identification: UInt16, payload: [UInt8]) -> Data {
+    let ipv4TotalLength = UInt16(20 + 20 + payload.count)
+    var packet = Data([
+        0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55,
+        0x08, 0x00,
+        0x45, 0x00,
+    ])
+    packet.appendBigEndian(ipv4TotalLength)
+    packet.appendBigEndian(identification)
+    packet.append(contentsOf: [
+        0x40, 0x00, 0x40, 0x06, 0x00, 0x00,
+        0xc0, 0xa8, 0x00, 0x01,
+        0xc0, 0xa8, 0x00, 0x02,
+    ])
+    packet.appendBigEndian(sourcePort)
+    packet.appendBigEndian(destinationPort)
+    packet.append(contentsOf: [
+        0x00, 0x00, 0x00, 0x01,
+        0x00, 0x00, 0x00, 0x01,
+        0x50, 0x18, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ])
+    packet.append(contentsOf: payload)
+    return packet
+}
+
 private func makeIPv6UDPPayloadPacket() -> Data {
     Data([
         0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
@@ -729,6 +863,41 @@ private func makeIPv6UDPPayloadPacket() -> Data {
         0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
         0x04, 0xd2, 0x16, 0x2e, 0x00, 0x0c, 0x00, 0x00,
+        0xaa, 0xbb, 0xcc, 0xdd,
+    ])
+}
+
+private func makeIPv4ICMPEchoRequestPacket() -> Data {
+    Data([
+        0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55,
+        0x08, 0x00,
+        0x45, 0x00, 0x00, 0x20, 0x12, 0x39, 0x40, 0x00, 0x40, 0x01, 0x00, 0x00,
+        0xc0, 0xa8, 0x00, 0x01,
+        0xc0, 0xa8, 0x00, 0x02,
+        0x08, 0x00, 0x00, 0x00,
+        0x12, 0x34,
+        0x00, 0x02,
+        0xaa, 0xbb, 0xcc, 0xdd,
+    ])
+}
+
+private func makeIPv6ICMPEchoRequestPacket() -> Data {
+    Data([
+        0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55,
+        0x86, 0xdd,
+        0x60, 0x00, 0x00, 0x00,
+        0x00, 0x0c,
+        0x3a,
+        0x40,
+        0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+        0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
+        0x80, 0x00, 0x00, 0x00,
+        0x56, 0x78,
+        0x00, 0x03,
         0xaa, 0xbb, 0xcc, 0xdd,
     ])
 }

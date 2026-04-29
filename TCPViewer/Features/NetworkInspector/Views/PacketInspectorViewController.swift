@@ -24,6 +24,7 @@ final class PacketInspectorTreeItem: NSObject {
     let name: String
     let value: String?
     let kind: PacketInspectorTreeItemKind
+    let severity: PacketDetailNodeSeverity
     let byteRange: PacketByteRange?
     let children: [PacketInspectorTreeItem]
 
@@ -33,6 +34,7 @@ final class PacketInspectorTreeItem: NSObject {
         name: String,
         value: String? = nil,
         kind: PacketInspectorTreeItemKind,
+        severity: PacketDetailNodeSeverity = .normal,
         byteRange: PacketByteRange? = nil,
         children: [PacketInspectorTreeItem] = []
     ) {
@@ -41,6 +43,7 @@ final class PacketInspectorTreeItem: NSObject {
         self.name = name
         self.value = value
         self.kind = kind
+        self.severity = severity
         self.byteRange = byteRange
         self.children = children
     }
@@ -130,6 +133,7 @@ final class PacketInspectorTreeViewModel {
             name: node.name,
             value: node.value,
             kind: itemKind(from: node.kind),
+            severity: node.severity,
             byteRange: node.byteRange,
             children: children
         )
@@ -180,12 +184,16 @@ final class PacketInspectorViewController: NSViewController {
     private enum Metrics {
         static let rowHeight: CGFloat = 20
         static let cellIdentifier = NSUserInterfaceItemIdentifier("PacketInspectorCell")
+        static let hexPanelHeight: CGFloat = 180
+        static let minimumHexPanelHeight: CGFloat = 120
     }
 
     weak var delegate: PacketInspectorViewControllerDelegate?
 
     private let configuration: AppConfiguration
     private let viewModel = PacketInspectorTreeViewModel()
+    private let hexViewController: PacketHexViewController
+    private let stackView = NSStackView()
     private let scrollView = NSScrollView()
     private let outlineView = NSOutlineView()
     private let detailColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("detail"))
@@ -193,6 +201,7 @@ final class PacketInspectorViewController: NSViewController {
 
     init(configuration: AppConfiguration) {
         self.configuration = configuration
+        self.hexViewController = PacketHexViewController(configuration: configuration)
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -206,11 +215,15 @@ final class PacketInspectorViewController: NSViewController {
         view.wantsLayer = true
         view.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
         setupOutlineView()
+        setupLayout()
     }
 
     // Render the current packet inspection tree as a single Wireshark-style outline.
     func render(snapshot: NetworkInspectorSnapshot) {
-        switch viewModel.render(snapshot: snapshot) {
+        let renderChange = viewModel.render(snapshot: snapshot)
+        hexViewController.render(snapshot: snapshot)
+
+        switch renderChange {
         case .none:
             return
         case .selection:
@@ -254,8 +267,30 @@ final class PacketInspectorViewController: NSViewController {
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
         scrollView.documentView = outlineView
+    }
 
-        TCPViewerUI.pin(scrollView, to: view)
+    private func setupLayout() {
+        addChild(hexViewController)
+
+        stackView.orientation = .vertical
+        stackView.spacing = 0
+        stackView.edgeInsets = NSEdgeInsetsZero
+        stackView.translatesAutoresizingMaskIntoConstraints = false
+        stackView.addArrangedSubview(scrollView)
+        stackView.addArrangedSubview(hexViewController.view)
+
+        scrollView.setContentHuggingPriority(.defaultLow, for: .vertical)
+        hexViewController.view.setContentHuggingPriority(.defaultHigh, for: .vertical)
+
+        let hexHeight = hexViewController.view.heightAnchor.constraint(equalToConstant: Metrics.hexPanelHeight)
+        hexHeight.priority = .defaultHigh
+
+        view.addSubview(stackView)
+        TCPViewerUI.pin(stackView, to: view)
+        NSLayoutConstraint.activate([
+            hexHeight,
+            hexViewController.view.heightAnchor.constraint(greaterThanOrEqualToConstant: Metrics.minimumHexPanelHeight),
+        ])
     }
 
     private func expandAllItems() {
@@ -307,7 +342,7 @@ final class PacketInspectorViewController: NSViewController {
 
         textField.stringValue = item.displayText
         textField.font = font(for: item.kind)
-        textField.textColor = textColor(for: item.kind)
+        textField.textColor = textColor(for: item)
         textField.lineBreakMode = .byTruncatingTail
         textField.maximumNumberOfLines = 1
         return cell
@@ -328,14 +363,25 @@ final class PacketInspectorViewController: NSViewController {
         }
     }
 
-    private func textColor(for kind: PacketInspectorTreeItemKind) -> NSColor {
-        switch kind {
+    private func textColor(for item: PacketInspectorTreeItem) -> NSColor {
+        switch item.severity {
+        case .error:
+            return .systemRed
         case .warning:
-            .systemOrange
+            return .systemOrange
+        case .info, .normal:
+            break
+        @unknown default:
+            break
+        }
+
+        switch item.kind {
+        case .warning:
+            return .systemOrange
         case .message:
-            .secondaryLabelColor
+            return .secondaryLabelColor
         case .layer, .field:
-            .labelColor
+            return .labelColor
         }
     }
 }

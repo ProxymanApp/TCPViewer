@@ -97,20 +97,22 @@ enum NativeBridgeMapper {
         case 3:
             .ipv6
         case 4:
-            .tcp
+            .icmp
         case 5:
-            .udp
+            .tcp
         case 6:
-            .dns
+            .udp
         case 7:
-            .http1
+            .dns
         case 8:
-            .tls
+            .http1
         case 9:
-            .websocket
+            .tls
         case 10:
-            .payload
+            .websocket
         case 11:
+            .payload
+        case 12:
             .unknown
         default:
             .unknown
@@ -318,7 +320,10 @@ enum NativeBridgeMapper {
 
         return PacketByteRange(
             offset: descriptor.offset,
-            length: descriptor.length
+            length: descriptor.length,
+            bitOffset: descriptor.bitOffset,
+            bitLength: descriptor.bitLength,
+            hasBitRange: descriptor.hasBitRange
         )
     }
 
@@ -326,12 +331,19 @@ enum NativeBridgeMapper {
         PacketDetailNodeKind(rawValue: rawValue.lowercased()) ?? .field
     }
 
+    static func detailNodeSeverity(_ rawValue: String) -> PacketDetailNodeSeverity {
+        PacketDetailNodeSeverity(rawValue: rawValue.lowercased()) ?? .normal
+    }
+
     static func packetDetailNode(_ descriptor: PCPPNativePacketDetailNodeDescriptor) -> PacketDetailNode {
         PacketDetailNode(
             id: descriptor.identifier,
             name: descriptor.name,
+            fieldName: descriptor.fieldName,
             value: descriptor.value,
+            rawValue: descriptor.rawValue,
             kind: detailNodeKind(descriptor.kind),
+            severity: detailNodeSeverity(descriptor.severity),
             byteRange: packetByteRange(descriptor.byteRange),
             jumpTargetPacketID: descriptor.jumpTargetPacketIdentifier?.uint64Value,
             children: descriptor.children.map(packetDetailNode)

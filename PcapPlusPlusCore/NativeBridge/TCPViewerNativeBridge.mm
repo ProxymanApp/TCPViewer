@@ -19,6 +19,8 @@
 #include <pcapplusplus/DnsLayer.h>
 #include <pcapplusplus/EthLayer.h>
 #include <pcapplusplus/HttpLayer.h>
+#include <pcapplusplus/IcmpLayer.h>
+#include <pcapplusplus/IcmpV6Layer.h>
 #include <pcapplusplus/IPv4Layer.h>
 #include <pcapplusplus/IPv6Layer.h>
 #include <pcapplusplus/Layer.h>
@@ -37,6 +39,8 @@
 #include <pcapplusplus/TcpReassembly.h>
 #include <pcapplusplus/TcpLayer.h>
 #include <pcapplusplus/UdpLayer.h>
+
+#include "../Dissection/PacketDissectionEngine.hpp"
 
 static NSString *const TCPViewerNativeErrorDomain = @"com.proxyman.tcpviewer.NativeBridge";
 
@@ -384,6 +388,29 @@ NSString *TLSAlertDescriptionName(pcpp::SSLAlertDescription alertDescription)
     }
 }
 
+bool LooksLikeWebSocketPacket(const pcpp::Packet &packet)
+{
+    auto *tcpLayer = packet.getLayerOfType<pcpp::TcpLayer>(true);
+    auto *payloadLayer = packet.getLayerOfType<pcpp::PayloadLayer>(true);
+    if (tcpLayer == nullptr || payloadLayer == nullptr) {
+        return false;
+    }
+
+    if (!pcpp::HttpMessage::isHttpPort(tcpLayer->getSrcPort()) && !pcpp::HttpMessage::isHttpPort(tcpLayer->getDstPort())) {
+        return false;
+    }
+
+    const uint8_t *payload = payloadLayer->getPayload();
+    if (payload == nullptr || payloadLayer->getPayloadLen() < 2) {
+        return false;
+    }
+
+    const uint8_t opcode = payload[0] & 0x0f;
+    const bool reservedBitsAreClear = (payload[0] & 0x70) == 0;
+    const bool opcodeIsKnown = opcode == 0x0 || opcode == 0x1 || opcode == 0x2 || opcode == 0x8 || opcode == 0x9 || opcode == 0x0a;
+    return reservedBitsAreClear && opcodeIsKnown;
+}
+
 PCPPNativeTransportHint MapTransportHint(const pcpp::Packet &packet)
 {
     if (packet.isPacketOfType(pcpp::HTTPRequest) || packet.isPacketOfType(pcpp::HTTPResponse)) {
@@ -396,6 +423,14 @@ PCPPNativeTransportHint MapTransportHint(const pcpp::Packet &packet)
 
     if (packet.isPacketOfType(pcpp::SSL)) {
         return PCPPNativeTransportHintTLS;
+    }
+
+    if (packet.isPacketOfType(pcpp::ICMP) || packet.isPacketOfType(pcpp::ICMPv6)) {
+        return PCPPNativeTransportHintICMP;
+    }
+
+    if (LooksLikeWebSocketPacket(packet)) {
+        return PCPPNativeTransportHintWebSocket;
     }
 
     if (packet.isPacketOfType(pcpp::TCP)) {
@@ -436,6 +471,10 @@ NSString *LayerName(pcpp::Layer &layer)
             return @"IPv4";
         case pcpp::IPv6:
             return @"IPv6";
+        case pcpp::ICMP:
+            return @"ICMP";
+        case pcpp::ICMPv6:
+            return @"ICMPv6";
         case pcpp::TCP:
             return @"TCP";
         case pcpp::UDP:
@@ -458,9 +497,11 @@ NSString *LayerName(pcpp::Layer &layer)
 NSArray<PCPPNativePacketLayerDescriptor *> *MapLayers(const pcpp::Packet &packet)
 {
     NSMutableArray<PCPPNativePacketLayerDescriptor *> *layers = [NSMutableArray array];
+    const bool websocketPayload = LooksLikeWebSocketPacket(packet);
     for (pcpp::Layer *layer = packet.getFirstLayer(); layer != nullptr; layer = layer->getNextLayer()) {
         NSString *detailSummary = MakeNSString(layer->toString());
-        [layers addObject:[[PCPPNativePacketLayerDescriptor alloc] initWithName:LayerName(*layer)
+        NSString *layerName = websocketPayload && layer->getProtocol() == pcpp::GenericPayload ? @"WebSocket" : LayerName(*layer);
+        [layers addObject:[[PCPPNativePacketLayerDescriptor alloc] initWithName:layerName
                                                                   detailSummary:detailSummary]];
     }
     return layers;
@@ -850,6 +891,15 @@ PCPPNativePacketByteRangeDescriptor *MakeByteRange(NSUInteger offset, NSUInteger
     return [[PCPPNativePacketByteRangeDescriptor alloc] initWithOffset:(NSInteger)offset length:(NSInteger)length];
 }
 
+PCPPNativePacketByteRangeDescriptor *MakeBitRange(const tcpviewer::dissection::ByteRange &range)
+{
+    return [[PCPPNativePacketByteRangeDescriptor alloc] initWithOffset:(NSInteger)range.offset
+                                                                length:(NSInteger)range.length
+                                                             bitOffset:(NSInteger)range.bitOffset
+                                                             bitLength:(NSInteger)range.bitLength
+                                                           hasBitRange:range.hasBitRange];
+}
+
 PCPPNativePacketDetailNodeDescriptor *MakeDetailNode(NSString *identifier,
                                                      NSString *name,
                                                      NSString * _Nullable value,
@@ -860,11 +910,66 @@ PCPPNativePacketDetailNodeDescriptor *MakeDetailNode(NSString *identifier,
 {
     return [[PCPPNativePacketDetailNodeDescriptor alloc] initWithIdentifier:identifier
                                                                        name:name
+                                                                  fieldName:identifier
                                                                       value:value
+                                                                   rawValue:nil
                                                                        kind:kind
+                                                                   severity:[kind isEqualToString:@"warning"] ? @"warning" : @"normal"
                                                                   byteRange:byteRange
                                                    jumpTargetPacketIdentifier:jumpTargetPacketIdentifier
                                                                     children:children];
+}
+
+NSString *DetailNodeKindValue(tcpviewer::dissection::NodeKind kind)
+{
+    switch (kind) {
+        case tcpviewer::dissection::NodeKind::Layer:
+            return @"layer";
+        case tcpviewer::dissection::NodeKind::Warning:
+            return @"warning";
+        case tcpviewer::dissection::NodeKind::Field:
+        default:
+            return @"field";
+    }
+}
+
+NSString *DetailNodeSeverityValue(tcpviewer::dissection::NodeSeverity severity)
+{
+    switch (severity) {
+        case tcpviewer::dissection::NodeSeverity::Info:
+            return @"info";
+        case tcpviewer::dissection::NodeSeverity::Warning:
+            return @"warning";
+        case tcpviewer::dissection::NodeSeverity::Error:
+            return @"error";
+        case tcpviewer::dissection::NodeSeverity::Normal:
+        default:
+            return @"normal";
+    }
+}
+
+PCPPNativePacketDetailNodeDescriptor *MakeDetailNode(const tcpviewer::dissection::DetailNode &node)
+{
+    NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *children = [NSMutableArray arrayWithCapacity:node.children.size()];
+    for (const auto &child : node.children) {
+        [children addObject:MakeDetailNode(child)];
+    }
+
+    PCPPNativePacketByteRangeDescriptor *byteRange = nil;
+    if (node.range.has_value()) {
+        byteRange = MakeBitRange(node.range.value());
+    }
+
+    return [[PCPPNativePacketDetailNodeDescriptor alloc] initWithIdentifier:MakeNSString(node.id)
+                                                                       name:MakeNSString(node.title)
+                                                                  fieldName:MakeNSString(node.fieldName)
+                                                                      value:NullableNSString(node.displayValue)
+                                                                   rawValue:NullableNSString(node.rawValue)
+                                                                       kind:DetailNodeKindValue(node.kind)
+                                                                   severity:DetailNodeSeverityValue(node.severity)
+                                                                  byteRange:byteRange
+                                                   jumpTargetPacketIdentifier:nil
+                                                                   children:children];
 }
 
 PCPPNativePacketDetailNodeDescriptor *MakeFieldNode(NSString *identifier,
@@ -1271,6 +1376,25 @@ private:
     unsigned long long packetIdentifier_;
     NSString * _Nullable interfaceName_;
     NSString * _Nullable packetComment_;
+    tcpviewer::dissection::PacketDissectionEngine engine_;
+
+    tcpviewer::dissection::PacketDissectionContext dissectionContext() const
+    {
+        tcpviewer::dissection::PacketDissectionContext context{
+            packet_,
+            rawPacket_,
+            packetIdentifier_,
+            std::nullopt,
+            std::nullopt,
+        };
+        if (interfaceName_ != nil) {
+            context.interfaceName = MakeStdString(interfaceName_);
+        }
+        if (packetComment_ != nil) {
+            context.packetComment = MakeStdString(packetComment_);
+        }
+        return context;
+    }
 
     uint32_t streamIdentifier()
     {
@@ -1279,50 +1403,19 @@ private:
 
     void appendFrame(NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *nodes)
     {
-        NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *frameChildren = [NSMutableArray array];
-        [frameChildren addObject:MakeSyntheticFieldNode(@"frame.number", @"Frame Number", [NSString stringWithFormat:@"%llu", packetIdentifier_])];
-        [frameChildren addObject:MakeSyntheticFieldNode(@"frame.arrival", @"Arrival Time", MakeNSDate(rawPacket_.getPacketTimeStamp()).description)];
-        [frameChildren addObject:MakeSyntheticFieldNode(@"frame.length", @"Frame Length", [NSString stringWithFormat:@"%d bytes", rawPacket_.getFrameLength()])];
-        [frameChildren addObject:MakeSyntheticFieldNode(@"frame.captureLength", @"Captured Length", [NSString stringWithFormat:@"%d bytes", rawPacket_.getRawDataLen()])];
-        if (interfaceName_ != nil) {
-            [frameChildren addObject:MakeSyntheticFieldNode(@"frame.interface", @"Interface", interfaceName_)];
-        }
-        if (packetComment_ != nil) {
-            [frameChildren addObject:MakeSyntheticFieldNode(@"frame.comment", @"Packet Comment", packetComment_)];
-        }
-        [nodes addObject:MakeLayerNode(@"frame",
-                                       @"Frame",
-                                       [NSString stringWithFormat:@"Packet %llu: %d bytes on wire (%d captured)",
-                                                                  packetIdentifier_,
-                                                                  rawPacket_.getFrameLength(),
-                                                                  rawPacket_.getRawDataLen()],
-                                       0,
-                                       rawPacket_.getRawDataLen(),
-                                       frameChildren)];
+        [nodes addObject:MakeDetailNode(engine_.dissectFrame(dissectionContext()))];
     }
 
     void appendLayer(pcpp::Layer *layer, NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *nodes)
     {
+        auto context = dissectionContext();
+        if (auto node = engine_.dissectLayer(context, *layer)) {
+            [nodes addObject:MakeDetailNode(node.value())];
+            return;
+        }
+
         NSUInteger offset = LayerOffset(*layer, rawPacket_);
         switch (layer->getProtocol()) {
-            case pcpp::Ethernet:
-                appendEthernet(static_cast<pcpp::EthLayer *>(layer), offset, nodes);
-                break;
-            case pcpp::ARP:
-                appendARP(static_cast<pcpp::ArpLayer *>(layer), offset, nodes);
-                break;
-            case pcpp::IPv4:
-                appendIPv4(static_cast<pcpp::IPv4Layer *>(layer), offset, nodes);
-                break;
-            case pcpp::IPv6:
-                appendIPv6(static_cast<pcpp::IPv6Layer *>(layer), offset, nodes);
-                break;
-            case pcpp::TCP:
-                appendTCP(static_cast<pcpp::TcpLayer *>(layer), offset, nodes);
-                break;
-            case pcpp::UDP:
-                appendUDP(static_cast<pcpp::UdpLayer *>(layer), offset, nodes);
-                break;
             case pcpp::DNS:
                 appendDNS(static_cast<pcpp::DnsLayer *>(layer), offset, nodes);
                 break;
@@ -2821,10 +2914,26 @@ PCPPNativeCaptureHealthDescriptor *MakeHealthDescriptor(const LiveCaptureState &
 
 - (instancetype)initWithOffset:(NSInteger)offset length:(NSInteger)length
 {
+    return [self initWithOffset:offset
+                         length:length
+                      bitOffset:0
+                      bitLength:0
+                    hasBitRange:NO];
+}
+
+- (instancetype)initWithOffset:(NSInteger)offset
+                        length:(NSInteger)length
+                     bitOffset:(NSInteger)bitOffset
+                     bitLength:(NSInteger)bitLength
+                   hasBitRange:(BOOL)hasBitRange
+{
     self = [super init];
     if (self) {
         _offset = offset;
         _length = length;
+        _bitOffset = bitOffset;
+        _bitLength = bitLength;
+        _hasBitRange = hasBitRange;
     }
     return self;
 }
@@ -2835,8 +2944,11 @@ PCPPNativeCaptureHealthDescriptor *MakeHealthDescriptor(const LiveCaptureState &
 
 - (instancetype)initWithIdentifier:(NSString *)identifier
                               name:(NSString *)name
+                         fieldName:(NSString *)fieldName
                              value:(NSString *)value
+                          rawValue:(NSString *)rawValue
                               kind:(NSString *)kind
+                          severity:(NSString *)severity
                          byteRange:(PCPPNativePacketByteRangeDescriptor *)byteRange
           jumpTargetPacketIdentifier:(NSNumber *)jumpTargetPacketIdentifier
                            children:(NSArray<PCPPNativePacketDetailNodeDescriptor *> *)children
@@ -2845,8 +2957,11 @@ PCPPNativeCaptureHealthDescriptor *MakeHealthDescriptor(const LiveCaptureState &
     if (self) {
         _identifier = [identifier copy];
         _name = [name copy];
+        _fieldName = [fieldName copy];
         _value = [value copy];
+        _rawValue = [rawValue copy];
         _kind = [kind copy];
+        _severity = [severity copy];
         _byteRange = byteRange;
         _jumpTargetPacketIdentifier = jumpTargetPacketIdentifier;
         _children = [children copy];

@@ -672,6 +672,12 @@ struct WindowControllerTests {
                             value: "10.0.0.2",
                             byteRange: PacketByteRange(offset: 30, length: 4)
                         ),
+                        PacketDetailNode(
+                            id: "ipv4.flags.df",
+                            name: "Don't Fragment",
+                            value: "Set",
+                            byteRange: PacketByteRange(offset: 20, length: 1, bitOffset: 1, bitLength: 1, hasBitRange: true)
+                        ),
                     ]
                 ),
             ]
@@ -708,6 +714,11 @@ struct WindowControllerTests {
 
         #expect(controller.snapshot.inspectionState.selectedDetailNodeID == "ipv4.src")
         #expect(controller.snapshot.inspectionState.highlightedByteRange == PacketByteRange(offset: 26, length: 4))
+
+        controller.selectDetailNode("ipv4.flags.df")
+
+        #expect(controller.snapshot.inspectionState.selectedDetailNodeID == "ipv4.flags.df")
+        #expect(controller.snapshot.inspectionState.highlightedByteRange == PacketByteRange(offset: 20, length: 1, bitOffset: 1, bitLength: 1, hasBitRange: true))
 
         await tearDown(controller)
     }

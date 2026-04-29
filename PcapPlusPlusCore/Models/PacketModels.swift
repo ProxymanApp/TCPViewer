@@ -5,6 +5,7 @@ public enum TransportProtocolHint: String, Sendable, Codable {
     case arp
     case ipv4
     case ipv6
+    case icmp
     case tcp
     case udp
     case dns
@@ -21,6 +22,13 @@ public enum PacketDetailNodeKind: String, Sendable, Codable {
     case warning
 }
 
+public enum PacketDetailNodeSeverity: String, Sendable, Codable, Hashable {
+    case normal
+    case info
+    case warning
+    case error
+}
+
 public enum PacketBatchDisposition: String, Sendable, Codable {
     case append
     case replace
@@ -29,10 +37,22 @@ public enum PacketBatchDisposition: String, Sendable, Codable {
 public struct PacketByteRange: Sendable, Codable, Hashable {
     public let offset: Int
     public let length: Int
+    public let bitOffset: Int
+    public let bitLength: Int
+    public let hasBitRange: Bool
 
-    public init(offset: Int, length: Int) {
+    public init(
+        offset: Int,
+        length: Int,
+        bitOffset: Int = 0,
+        bitLength: Int = 0,
+        hasBitRange: Bool = false
+    ) {
         self.offset = offset
         self.length = length
+        self.bitOffset = bitOffset
+        self.bitLength = bitLength
+        self.hasBitRange = hasBitRange
     }
 
     public var upperBound: Int {
@@ -43,8 +63,11 @@ public struct PacketByteRange: Sendable, Codable, Hashable {
 public struct PacketDetailNode: Identifiable, Sendable, Codable, Hashable {
     public let id: String
     public let name: String
+    public let fieldName: String
     public let value: String?
+    public let rawValue: String?
     public let kind: PacketDetailNodeKind
+    public let severity: PacketDetailNodeSeverity
     public let byteRange: PacketByteRange?
     public let jumpTargetPacketID: UInt64?
     public let children: [PacketDetailNode]
@@ -52,16 +75,22 @@ public struct PacketDetailNode: Identifiable, Sendable, Codable, Hashable {
     public init(
         id: String,
         name: String,
+        fieldName: String? = nil,
         value: String? = nil,
+        rawValue: String? = nil,
         kind: PacketDetailNodeKind = .field,
+        severity: PacketDetailNodeSeverity = .normal,
         byteRange: PacketByteRange? = nil,
         jumpTargetPacketID: UInt64? = nil,
         children: [PacketDetailNode] = []
     ) {
         self.id = id
         self.name = name
+        self.fieldName = fieldName ?? id
         self.value = value
+        self.rawValue = rawValue
         self.kind = kind
+        self.severity = severity
         self.byteRange = byteRange
         self.jumpTargetPacketID = jumpTargetPacketID
         self.children = children

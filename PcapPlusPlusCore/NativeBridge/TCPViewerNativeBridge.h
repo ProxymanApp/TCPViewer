@@ -28,14 +28,15 @@ typedef NS_ENUM(NSInteger, PCPPNativeTransportHint) {
     PCPPNativeTransportHintARP = 1,
     PCPPNativeTransportHintIPv4 = 2,
     PCPPNativeTransportHintIPv6 = 3,
-    PCPPNativeTransportHintTCP = 4,
-    PCPPNativeTransportHintUDP = 5,
-    PCPPNativeTransportHintDNS = 6,
-    PCPPNativeTransportHintHTTP1 = 7,
-    PCPPNativeTransportHintTLS = 8,
-    PCPPNativeTransportHintWebSocket = 9,
-    PCPPNativeTransportHintPayload = 10,
-    PCPPNativeTransportHintUnknown = 11,
+    PCPPNativeTransportHintICMP = 4,
+    PCPPNativeTransportHintTCP = 5,
+    PCPPNativeTransportHintUDP = 6,
+    PCPPNativeTransportHintDNS = 7,
+    PCPPNativeTransportHintHTTP1 = 8,
+    PCPPNativeTransportHintTLS = 9,
+    PCPPNativeTransportHintWebSocket = 10,
+    PCPPNativeTransportHintPayload = 11,
+    PCPPNativeTransportHintUnknown = 12,
 };
 
 typedef NS_ENUM(NSInteger, PCPPNativeDecodeStatusKind) {
@@ -285,8 +286,16 @@ typedef NS_ENUM(NSInteger, PCPPNativeLiveSessionPhase) {
 
 @property (nonatomic, readonly) NSInteger offset;
 @property (nonatomic, readonly) NSInteger length;
+@property (nonatomic, readonly) NSInteger bitOffset;
+@property (nonatomic, readonly) NSInteger bitLength;
+@property (nonatomic, readonly) BOOL hasBitRange;
 
 - (instancetype)initWithOffset:(NSInteger)offset length:(NSInteger)length NS_DESIGNATED_INITIALIZER;
+- (instancetype)initWithOffset:(NSInteger)offset
+                        length:(NSInteger)length
+                     bitOffset:(NSInteger)bitOffset
+                     bitLength:(NSInteger)bitLength
+                   hasBitRange:(BOOL)hasBitRange NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
 
 @end
@@ -295,16 +304,22 @@ typedef NS_ENUM(NSInteger, PCPPNativeLiveSessionPhase) {
 
 @property (nonatomic, copy, readonly) NSString *identifier;
 @property (nonatomic, copy, readonly) NSString *name;
+@property (nonatomic, copy, readonly) NSString *fieldName;
 @property (nonatomic, copy, readonly, nullable) NSString *value;
+@property (nonatomic, copy, readonly, nullable) NSString *rawValue;
 @property (nonatomic, copy, readonly) NSString *kind;
+@property (nonatomic, copy, readonly) NSString *severity;
 @property (nonatomic, strong, readonly, nullable) PCPPNativePacketByteRangeDescriptor *byteRange;
 @property (nonatomic, readonly, nullable) NSNumber *jumpTargetPacketIdentifier;
 @property (nonatomic, copy, readonly) NSArray<PCPPNativePacketDetailNodeDescriptor *> *children;
 
 - (instancetype)initWithIdentifier:(NSString *)identifier
                               name:(NSString *)name
+                         fieldName:(NSString *)fieldName
                              value:(nullable NSString *)value
+                          rawValue:(nullable NSString *)rawValue
                               kind:(NSString *)kind
+                          severity:(NSString *)severity
                          byteRange:(nullable PCPPNativePacketByteRangeDescriptor *)byteRange
           jumpTargetPacketIdentifier:(nullable NSNumber *)jumpTargetPacketIdentifier
                            children:(NSArray<PCPPNativePacketDetailNodeDescriptor *> *)children NS_DESIGNATED_INITIALIZER;
