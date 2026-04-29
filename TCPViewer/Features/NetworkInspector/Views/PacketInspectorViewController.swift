@@ -12,6 +12,12 @@ enum PacketInspectorTreeItemKind: Equatable {
     case message
 }
 
+enum PacketInspectorTreeRenderChange: Equatable {
+    case none
+    case reload
+    case selection
+}
+
 final class PacketInspectorTreeItem: NSObject {
     let id: String
     let nodeID: String?
@@ -52,27 +58,27 @@ final class PacketInspectorTreeViewModel {
     private(set) var rootItems: [PacketInspectorTreeItem] = []
     private(set) var selectedNodeID: String?
     private var itemByNodeID: [String: PacketInspectorTreeItem] = [:]
-    private var renderedInspectionState: PacketInspectionState?
+    private var renderedContentState: PacketInspectorTreeContentState?
 
     @discardableResult
-    func render(snapshot: NetworkInspectorSnapshot) -> Bool {
+    func render(snapshot: NetworkInspectorSnapshot) -> PacketInspectorTreeRenderChange {
         let inspectionState = snapshot.base.inspectionState
-        guard inspectionState != renderedInspectionState else {
-            return false
+        let contentState = PacketInspectorTreeContentState(inspectionState: inspectionState)
+        let contentChanged = contentState != renderedContentState
+
+        if contentChanged {
+            renderedContentState = contentState
+            itemByNodeID = [:]
+            rootItems = makeRootItems(from: inspectionState)
         }
 
-        renderedInspectionState = inspectionState
-        itemByNodeID = [:]
-        rootItems = makeRootItems(from: inspectionState)
-
-        if let selectedDetailNodeID = inspectionState.selectedDetailNodeID,
-           itemByNodeID[selectedDetailNodeID] != nil {
-            selectedNodeID = selectedDetailNodeID
-        } else {
-            selectedNodeID = nil
+        let nextSelectedNodeID = validSelectedNodeID(from: inspectionState)
+        guard nextSelectedNodeID != selectedNodeID else {
+            return contentChanged ? .reload : .none
         }
 
-        return true
+        selectedNodeID = nextSelectedNodeID
+        return contentChanged ? .reload : .selection
     }
 
     func item(withNodeID nodeID: String?) -> PacketInspectorTreeItem? {
@@ -88,7 +94,7 @@ final class PacketInspectorTreeViewModel {
             return [messageItem(id: "loading", message: inspectionState.statusMessage)]
         }
 
-        guard let inspection = inspectionState.inspection else {
+        guard let inspection = inspectionState.currentInspection else {
             let message = inspectionState.selectedPacketID == nil
                 ? "Select a packet to inspect its decode tree."
                 : inspectionState.statusMessage
@@ -100,6 +106,15 @@ final class PacketInspectorTreeViewModel {
         }
 
         return inspection.detailNodes.map { makeItem(from: $0, parentPath: "") }
+    }
+
+    private func validSelectedNodeID(from inspectionState: PacketInspectionState) -> String? {
+        guard let selectedDetailNodeID = inspectionState.selectedDetailNodeID,
+              itemByNodeID[selectedDetailNodeID] != nil else {
+            return nil
+        }
+
+        return selectedDetailNodeID
     }
 
     private func messageItem(id: String, message: String) -> PacketInspectorTreeItem {
@@ -133,6 +148,31 @@ final class PacketInspectorTreeViewModel {
         @unknown default:
             .field
         }
+    }
+}
+
+private struct PacketInspectorTreeContentState: Equatable {
+    let selectedPacketID: PacketSummary.ID?
+    let inspection: PacketInspection?
+    let isLoading: Bool
+    let statusMessage: String
+
+    init(inspectionState: PacketInspectionState) {
+        selectedPacketID = inspectionState.selectedPacketID
+        inspection = inspectionState.currentInspection
+        isLoading = inspectionState.isLoading
+        statusMessage = inspectionState.statusMessage
+    }
+}
+
+private extension PacketInspectionState {
+    var currentInspection: PacketInspection? {
+        guard let inspection,
+              selectedPacketID == inspection.packetID else {
+            return nil
+        }
+
+        return inspection
     }
 }
 
@@ -170,10 +210,20 @@ final class PacketInspectorViewController: NSViewController {
 
     // Render the current packet inspection tree as a single Wireshark-style outline.
     func render(snapshot: NetworkInspectorSnapshot) {
-        guard viewModel.render(snapshot: snapshot) else {
+        switch viewModel.render(snapshot: snapshot) {
+        case .none:
             return
+        case .selection:
+            applySelectedNode()
+            return
+        case .reload:
+            break
         }
 
+        if let inspection = snapshot.base.inspectionState.inspection,
+           snapshot.base.inspectionState.selectedPacketID == inspection.packetID {
+            print("[TCPViewer] \(NetworkInspectorDebugLog.timestamp()) ✅ Inspector View rendering data: packet=#\(inspection.packetNumber), rootNodes=\(viewModel.rootItems.count)")
+        }
         outlineView.reloadData()
         expandAllItems()
         applySelectedNode()
@@ -197,6 +247,7 @@ final class PacketInspectorViewController: NSViewController {
         outlineView.delegate = self
         outlineView.allowsEmptySelection = true
         outlineView.backgroundColor = .controlBackgroundColor
+        outlineView.style = .fullWidth
 
         scrollView.borderType = .noBorder
         scrollView.drawsBackground = false

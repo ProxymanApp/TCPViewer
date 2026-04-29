@@ -158,13 +158,14 @@ final class TCPViewerRootViewController: NSViewController {
         contentSplitViewController.splitView.isVertical = true
 
         // Keep the table and inspector inside the main container split.
-        let workspaceItem = NSSplitViewItem(viewController: workspaceViewController)
+        let workspaceItem = NSSplitViewItem(contentListWithViewController: workspaceViewController)
         contentSplitViewController.addSplitViewItem(workspaceItem)
 
         // Use a regular split item so the same inspector view can resize correctly on both axes.
         let inspectorItem = NSSplitViewItem(viewController: inspectorViewController)
         inspectorItem.canCollapse = true
         inspectorItem.minimumThickness = 200
+        inspectorItem.preferredThicknessFraction = 0.4
         contentSplitViewController.addSplitViewItem(inspectorItem)
         self.inspectorItem = inspectorItem
 

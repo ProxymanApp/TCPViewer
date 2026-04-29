@@ -276,9 +276,9 @@ struct NetworkInspectorViewModelTests {
             updatePlan: .append(1..<2)
         )
 
-        #expect(treeViewModel.render(snapshot: firstSnapshot))
+        #expect(treeViewModel.render(snapshot: firstSnapshot) == .reload)
         #expect(treeViewModel.rootItems.first?.displayText == "Frame: Packet 1")
-        #expect(!treeViewModel.render(snapshot: appendSnapshot))
+        #expect(treeViewModel.render(snapshot: appendSnapshot) == .none)
     }
 
     @Test func statusStripKeepsCancelAvailableDuringZeroPacketLoad() {

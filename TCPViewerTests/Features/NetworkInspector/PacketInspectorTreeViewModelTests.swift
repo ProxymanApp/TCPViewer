@@ -7,7 +7,7 @@ struct PacketInspectorTreeViewModelTests {
     @Test func emptyStateShowsSelectionPrompt() {
         let viewModel = PacketInspectorTreeViewModel()
 
-        viewModel.render(snapshot: makeSnapshot(inspectionState: .empty))
+        #expect(viewModel.render(snapshot: makeSnapshot(inspectionState: .empty)) == .reload)
 
         #expect(viewModel.rootItems.count == 1)
         #expect(viewModel.rootItems[0].kind == .message)
@@ -26,7 +26,7 @@ struct PacketInspectorTreeViewModelTests {
         )
         let viewModel = PacketInspectorTreeViewModel()
 
-        viewModel.render(snapshot: makeSnapshot(packet: packet, inspectionState: state))
+        #expect(viewModel.render(snapshot: makeSnapshot(packet: packet, inspectionState: state)) == .reload)
 
         #expect(viewModel.rootItems.count == 1)
         #expect(viewModel.rootItems[0].kind == .message)
@@ -63,7 +63,7 @@ struct PacketInspectorTreeViewModelTests {
         )
         let viewModel = PacketInspectorTreeViewModel()
 
-        viewModel.render(snapshot: makeSnapshot(packet: packet, inspectionState: state))
+        #expect(viewModel.render(snapshot: makeSnapshot(packet: packet, inspectionState: state)) == .reload)
 
         #expect(viewModel.rootItems.map(\.kind) == [.layer, .warning])
         #expect(viewModel.rootItems[0].displayText == "Frame: Packet 1")
@@ -100,11 +100,56 @@ struct PacketInspectorTreeViewModelTests {
         )
         let viewModel = PacketInspectorTreeViewModel()
 
-        viewModel.render(snapshot: makeSnapshot(packet: packet, inspectionState: state))
+        #expect(viewModel.render(snapshot: makeSnapshot(packet: packet, inspectionState: state)) == .reload)
 
         #expect(viewModel.selectedNodeID == "ipv4.src")
         #expect(viewModel.item(withNodeID: "ipv4.src")?.displayText == "Source: 10.0.0.1")
         #expect(viewModel.item(withNodeID: "missing") == nil)
+    }
+
+    @Test func selectionChangeDoesNotRebuildTreeItems() throws {
+        let packet = makePacket()
+        let selectedRange = PacketByteRange(offset: 26, length: 4)
+        let inspection = PacketInspection(
+            packetID: packet.id,
+            packetNumber: packet.packetNumber,
+            rawBytes: Data([0x01, 0x02]),
+            detailNodes: [
+                PacketDetailNode(
+                    id: "ipv4",
+                    name: "IPv4",
+                    kind: .layer,
+                    children: [
+                        PacketDetailNode(id: "ipv4.src", name: "Source", value: "10.0.0.1", byteRange: selectedRange),
+                    ]
+                ),
+            ],
+            decodeStatus: PacketDecodeStatus(kind: .complete)
+        )
+        let unselectedState = PacketInspectionState(
+            selectedPacketID: packet.id,
+            inspection: inspection,
+            selectedDetailNodeID: nil,
+            highlightedByteRange: nil,
+            isLoading: false,
+            statusMessage: "Inspecting packet 1."
+        )
+        let selectedState = PacketInspectionState(
+            selectedPacketID: packet.id,
+            inspection: inspection,
+            selectedDetailNodeID: "ipv4.src",
+            highlightedByteRange: selectedRange,
+            isLoading: false,
+            statusMessage: "Inspecting packet 1."
+        )
+        let viewModel = PacketInspectorTreeViewModel()
+
+        #expect(viewModel.render(snapshot: makeSnapshot(packet: packet, inspectionState: unselectedState)) == .reload)
+        let originalRootItem = try #require(viewModel.rootItems.first)
+
+        #expect(viewModel.render(snapshot: makeSnapshot(packet: packet, inspectionState: selectedState)) == .selection)
+        #expect(viewModel.selectedNodeID == "ipv4.src")
+        #expect(viewModel.rootItems.first === originalRootItem)
     }
 
     private func makeSnapshot(packet: PacketSummary? = nil, inspectionState: PacketInspectionState) -> NetworkInspectorSnapshot {
