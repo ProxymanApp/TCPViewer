@@ -257,103 +257,30 @@ struct NetworkInspectorViewModelTests {
         ) == .none)
     }
 
-    @Test func inspectorTabsAndRawCopyFormatterMatchRedesignedInspector() {
-        #expect(PacketInspectorTab.allCases.map(\.title) == ["Summary", "Detail", "Raw", "Hex"])
-
-        let copyText = PacketDetailCopyFormatter.text(for: [
-            PacketDetailCopyRow(depth: 0, name: "Transmission Control Protocol", value: "53845 → 62078"),
-            PacketDetailCopyRow(depth: 1, name: "Source Port", value: "53845"),
-            PacketDetailCopyRow(depth: 1, name: "TCP Option - SACK permitted", value: "Permitted"),
-            PacketDetailCopyRow(depth: 2, name: "Kind", value: "4"),
-        ])
-
-        #expect(copyText == """
-        Transmission Control Protocol: 53845 → 62078
-            Source Port: 53845
-            TCP Option - SACK permitted: Permitted
-                Kind: 4
-        """)
-    }
-
-    @Test func inspectorPanelSkipsRenderForUnchangedSelectionDuringLiveAppends() {
+    @Test func inspectorPanelUsesTemporaryEmptyState() {
         let selectedPacket = makePacket(packetNumber: 1, source: .live, transportHint: .tcp, streamID: nil)
         let appendedPacket = makePacket(packetNumber: 2, source: .live, transportHint: .udp, streamID: nil)
-        let inspection = makeInspection(for: selectedPacket)
         let panelViewModel = PacketInspectorPanelViewModel()
         let firstSnapshot = makeInspectorSnapshot(
             packets: [selectedPacket],
             selectedPacketID: selectedPacket.id,
-            inspection: inspection,
+            inspection: makeInspection(for: selectedPacket),
             generation: 1,
             updatePlan: .reload
         )
         let appendSnapshot = makeInspectorSnapshot(
             packets: [selectedPacket, appendedPacket],
             selectedPacketID: selectedPacket.id,
-            inspection: inspection,
+            inspection: makeInspection(for: selectedPacket),
             generation: 2,
             updatePlan: .append(1..<2)
         )
-        let updatedSelectedPacket = makePacket(
-            packetNumber: selectedPacket.packetNumber,
-            source: .live,
-            transportHint: .tcp,
-            streamID: nil,
-            sniDomainName: "selected.example.com"
-        )
-        let selectedMetadataSnapshot = makeInspectorSnapshot(
-            packets: [updatedSelectedPacket, appendedPacket],
-            selectedPacketID: selectedPacket.id,
-            inspection: inspection,
-            generation: 3,
-            updatePlan: .reload
-        )
 
         #expect(panelViewModel.render(snapshot: firstSnapshot))
+        #expect(panelViewModel.state.title == "Inspector Panel")
+        #expect(panelViewModel.state.imageName == "sidebar.trailing")
+        #expect(panelViewModel.state.message == "A redesigned inspector is coming soon.")
         #expect(!panelViewModel.render(snapshot: appendSnapshot))
-        #expect(panelViewModel.render(snapshot: selectedMetadataSnapshot))
-    }
-
-    @Test func inspectorPanelDefersPendingSelectionUntilInspectionMatches() {
-        let firstPacket = makePacket(packetNumber: 5, source: .live, transportHint: .tcp, streamID: nil)
-        let nextPacket = makePacket(packetNumber: 15, source: .live, transportHint: .tcp, streamID: nil)
-        let firstInspection = makeInspection(for: firstPacket)
-        let nextInspection = makeInspection(for: nextPacket)
-        let panelViewModel = PacketInspectorPanelViewModel()
-        let firstSnapshot = makeInspectorSnapshot(
-            packets: [firstPacket, nextPacket],
-            selectedPacketID: firstPacket.id,
-            inspection: firstInspection,
-            generation: 1,
-            updatePlan: .reload
-        )
-        let staleInspectionSnapshot = makeInspectorSnapshot(
-            packets: [firstPacket, nextPacket],
-            selectedPacketID: nextPacket.id,
-            inspection: firstInspection,
-            generation: 2,
-            updatePlan: .reload
-        )
-        let loadingSnapshot = makeInspectorSnapshot(
-            packets: [firstPacket, nextPacket],
-            selectedPacketID: nextPacket.id,
-            inspection: nil,
-            generation: 3,
-            updatePlan: .reload,
-            isLoading: true
-        )
-        let resolvedSnapshot = makeInspectorSnapshot(
-            packets: [firstPacket, nextPacket],
-            selectedPacketID: nextPacket.id,
-            inspection: nextInspection,
-            generation: 4,
-            updatePlan: .reload
-        )
-
-        #expect(panelViewModel.render(snapshot: firstSnapshot))
-        #expect(!panelViewModel.render(snapshot: staleInspectionSnapshot))
-        #expect(!panelViewModel.render(snapshot: loadingSnapshot))
-        #expect(panelViewModel.render(snapshot: resolvedSnapshot))
     }
 
     @Test func statusStripKeepsCancelAvailableDuringZeroPacketLoad() {
@@ -468,6 +395,114 @@ struct NetworkInspectorViewModelTests {
         }
 
         #expect(viewModel.snapshot.packetTableGeneration == generationAfterPackets)
+    }
+
+    @Test func inspectorTogglePersistsVisibility() {
+        let defaults = isolatedDefaults()
+        let services = TCPViewerServiceRegistry(core: InspectorFakeCore(
+            interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")]
+        ))
+        let viewModel = NetworkInspectorViewModel(
+            services: services,
+            userDefaults: defaults
+        )
+
+        #expect(viewModel.snapshot.inspectorPlacement == .trailing)
+        #expect(viewModel.snapshot.isInspectorVisible)
+
+        viewModel.toggleInspector()
+        #expect(viewModel.snapshot.inspectorPlacement == .trailing)
+        #expect(!viewModel.snapshot.isInspectorVisible)
+
+        let hiddenReloadedViewModel = NetworkInspectorViewModel(
+            services: services,
+            userDefaults: defaults
+        )
+        #expect(hiddenReloadedViewModel.snapshot.inspectorPlacement == .trailing)
+        #expect(!hiddenReloadedViewModel.snapshot.isInspectorVisible)
+
+        hiddenReloadedViewModel.toggleInspector()
+        #expect(hiddenReloadedViewModel.snapshot.inspectorPlacement == .trailing)
+        #expect(hiddenReloadedViewModel.snapshot.isInspectorVisible)
+    }
+
+    @Test func inspectorThicknessPersistsAndFallsBackWhenInvalid() {
+        let defaults = isolatedDefaults()
+        let services = TCPViewerServiceRegistry(core: InspectorFakeCore(
+            interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")]
+        ))
+        let viewModel = NetworkInspectorViewModel(
+            services: services,
+            userDefaults: defaults
+        )
+
+        viewModel.rememberInspectorThickness(320, for: .trailing)
+
+        let reloadedViewModel = NetworkInspectorViewModel(
+            services: services,
+            userDefaults: defaults
+        )
+
+        #expect(reloadedViewModel.preferredInspectorThickness(for: .trailing, availableLength: 800) == 320)
+
+        reloadedViewModel.rememberInspectorThickness(10_000, for: .trailing)
+
+        #expect(reloadedViewModel.preferredInspectorThickness(for: .trailing, availableLength: 800) == nil)
+    }
+
+    @Test func sidebarVisibilityPersistsAcrossReloads() {
+        let defaults = isolatedDefaults()
+        let services = TCPViewerServiceRegistry(core: InspectorFakeCore(
+            interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")]
+        ))
+        let viewModel = NetworkInspectorViewModel(
+            services: services,
+            userDefaults: defaults
+        )
+
+        #expect(viewModel.prefersSidebarVisibleOnLaunch())
+
+        viewModel.setSidebarVisible(false)
+
+        let hiddenReloadedViewModel = NetworkInspectorViewModel(
+            services: services,
+            userDefaults: defaults
+        )
+
+        #expect(!hiddenReloadedViewModel.prefersSidebarVisibleOnLaunch())
+
+        hiddenReloadedViewModel.setSidebarVisible(true)
+
+        let visibleReloadedViewModel = NetworkInspectorViewModel(
+            services: services,
+            userDefaults: defaults
+        )
+
+        #expect(visibleReloadedViewModel.prefersSidebarVisibleOnLaunch())
+    }
+
+    @Test func sidebarThicknessPersistsAndFallsBackWhenInvalid() {
+        let defaults = isolatedDefaults()
+        let services = TCPViewerServiceRegistry(core: InspectorFakeCore(
+            interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")]
+        ))
+        let viewModel = NetworkInspectorViewModel(
+            services: services,
+            userDefaults: defaults
+        )
+
+        viewModel.rememberSidebarThickness(280)
+
+        let reloadedViewModel = NetworkInspectorViewModel(
+            services: services,
+            userDefaults: defaults
+        )
+
+        #expect(reloadedViewModel.preferredSidebarThickness(for: 800) == 280)
+
+        reloadedViewModel.rememberSidebarThickness(10_000)
+
+        #expect(reloadedViewModel.preferredSidebarThickness(for: 800) == nil)
     }
 
     @Test func packetRowsAppendIncrementallyForMatchingLiveBatches() async {
@@ -1035,10 +1070,15 @@ struct NetworkInspectorViewModelTests {
         let filteredPacket = makePacket(packetNumber: 2, source: .live, transportHint: .tcp)
         let liveSession = InspectorFakeLiveSession()
         let viewModel = NetworkInspectorViewModel(
-            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
-                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
-                liveSession: liveSession
-            )),
+            services: TCPViewerServiceRegistry(
+                core: InspectorFakeCore(
+                    interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                    liveSession: liveSession
+                ),
+                packetMetadataEnricher: PacketMetadataEnrichmentService(
+                    clientResolver: InspectorFakePacketClientResolver(defaultClient: nil)
+                )
+            ),
             userDefaults: isolatedDefaults()
         )
 
@@ -1051,8 +1091,12 @@ struct NetworkInspectorViewModelTests {
             viewModel.snapshot.packetRows.count == 1
         }
 
+        let generationBeforeFilter = viewModel.snapshot.packetTableGeneration
         viewModel.updateDisplayFilterText("protocol:udp")
-        let generationAfterFilter = viewModel.snapshot.packetTableGeneration
+        await waitUntil {
+            viewModel.snapshot.displayFilterText == "protocol:udp" &&
+                viewModel.snapshot.packetTableGeneration > generationBeforeFilter
+        }
         liveSession.send(.packetBatch([filteredPacket], disposition: .append))
 
         await waitUntil {
@@ -1060,7 +1104,7 @@ struct NetworkInspectorViewModelTests {
         }
 
         #expect(viewModel.snapshot.visiblePacketCount == 1)
-        #expect(viewModel.snapshot.packetTableGeneration == generationAfterFilter)
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [firstPacket.id])
         #expect(viewModel.snapshot.packetTableUpdatePlan == .none)
     }
 

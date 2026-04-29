@@ -7,19 +7,33 @@ protocol TCPViewerRootViewControllerDelegate: AnyObject {
 }
 
 final class TCPViewerRootViewController: NSViewController {
+    private enum InspectorLayoutMetrics {
+        static let trailingInspectorFraction: CGFloat = 0.28
+    }
+
     weak var delegate: TCPViewerRootViewControllerDelegate?
 
     let viewModel: NetworkInspectorViewModel
 
-    private let outerSplitViewController = NSSplitViewController()
-    private let innerSplitViewController = NSSplitViewController()
-    private let rightPaneViewController = NSViewController()
+    private let mainSplitViewController = NSSplitViewController()
+    private let contentSplitViewController = NSSplitViewController()
+    private let mainContainerViewController = NSViewController()
     private let sidebarViewController = SidebarViewController()
     private let workspaceViewController: PacketWorkspaceViewController
     private let inspectorViewController: PacketInspectorViewController
     private let statusStripViewController = StatusStripViewController()
+    private var sidebarItem: NSSplitViewItem?
     private var inspectorItem: NSSplitViewItem?
+    private var appliedInspectorPlacement: NetworkInspectorPlacement?
+    private var appliedInspectorVisibility: Bool?
+    private var needsSidebarDividerRefresh = false
+    private var needsInspectorDividerRefresh = false
+    private var hasRestoredInitialInspectorDivider = false
     private var hasRenderedHelperOnboarding = false
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
 
     init(viewModel: NetworkInspectorViewModel, configuration: AppConfiguration) {
         self.viewModel = viewModel
@@ -42,8 +56,25 @@ final class TCPViewerRootViewController: NSViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        configureSplitViewObservation()
+        applyPersistedSidebarLayout()
         render()
         viewModel.performInitialLoadIfNeeded()
+    }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        if needsSidebarDividerRefresh, sidebarItem?.isCollapsed == false {
+            needsSidebarDividerRefresh = false
+            applySidebarDividerPosition()
+        }
+
+        guard needsInspectorDividerRefresh, viewModel.snapshot.isInspectorVisible else {
+            return
+        }
+
+        needsInspectorDividerRefresh = false
+        applyInspectorDividerPosition(for: viewModel.snapshot.inspectorPlacement)
     }
 
     func openDocument(at url: URL) {
@@ -79,12 +110,7 @@ final class TCPViewerRootViewController: NSViewController {
     }
 
     func toggleInspector() {
-        innerSplitViewController.toggleInspector(nil)
-        if let inspectorItem {
-            viewModel.setInspectorVisible(!inspectorItem.isCollapsed)
-        } else {
-            viewModel.toggleInspector()
-        }
+        viewModel.toggleInspector()
     }
 
     func showOpenPanel() {
@@ -116,68 +142,73 @@ final class TCPViewerRootViewController: NSViewController {
         viewModel.dismissNetworkHelperOnboarding()
     }
 
+    @objc func toggleSidebar(_ sender: Any?) {
+        // Mirror AppKit's toggleSidebar action while keeping the split state persisted in our model.
+        setSidebarVisible(sidebarItem?.isCollapsed ?? false)
+    }
+
     private func setupChildControllers() {
+        // Build the two-level split layout: sidebar | (table | inspector).
         sidebarViewController.delegate = self
         workspaceViewController.delegate = self
-        inspectorViewController.delegate = self
         statusStripViewController.delegate = self
 
-        // Inner split (workspace | inspector) lives inside the right pane so the
-        // bottom status strip only spans content + inspector, not the sidebar.
-        let workspaceItem = NSSplitViewItem(viewController: workspaceViewController)
-        workspaceItem.minimumThickness = 620
-        innerSplitViewController.addSplitViewItem(workspaceItem)
+        mainSplitViewController.splitView.isVertical = true
+        contentSplitViewController.splitView.isVertical = true
 
-        let inspectorItem = NSSplitViewItem(inspectorWithViewController: inspectorViewController)
-        inspectorItem.minimumThickness = 320
-        inspectorItem.maximumThickness = 460
+        // Keep the table and inspector inside the main container split.
+        let workspaceItem = NSSplitViewItem(viewController: workspaceViewController)
+        contentSplitViewController.addSplitViewItem(workspaceItem)
+
+        // Use a regular split item so the same inspector view can resize correctly on both axes.
+        let inspectorItem = NSSplitViewItem(viewController: inspectorViewController)
         inspectorItem.canCollapse = true
-        innerSplitViewController.addSplitViewItem(inspectorItem)
+        contentSplitViewController.addSplitViewItem(inspectorItem)
         self.inspectorItem = inspectorItem
 
-        rightPaneViewController.view = NSView()
-        rightPaneViewController.addChild(innerSplitViewController)
-        rightPaneViewController.addChild(statusStripViewController)
+        mainContainerViewController.view = NSView()
+        mainContainerViewController.addChild(contentSplitViewController)
+        mainContainerViewController.addChild(statusStripViewController)
 
-        let rightPane = rightPaneViewController.view
-        innerSplitViewController.view.translatesAutoresizingMaskIntoConstraints = false
+        let mainContainerView = mainContainerViewController.view
+        contentSplitViewController.view.translatesAutoresizingMaskIntoConstraints = false
         statusStripViewController.view.translatesAutoresizingMaskIntoConstraints = false
-        rightPane.addSubview(innerSplitViewController.view)
-        rightPane.addSubview(statusStripViewController.view)
+        mainContainerView.addSubview(contentSplitViewController.view)
+        mainContainerView.addSubview(statusStripViewController.view)
 
         NSLayoutConstraint.activate([
-            innerSplitViewController.view.leadingAnchor.constraint(equalTo: rightPane.leadingAnchor),
-            innerSplitViewController.view.trailingAnchor.constraint(equalTo: rightPane.trailingAnchor),
-            innerSplitViewController.view.topAnchor.constraint(equalTo: rightPane.topAnchor),
-            innerSplitViewController.view.bottomAnchor.constraint(equalTo: statusStripViewController.view.topAnchor),
+            contentSplitViewController.view.leadingAnchor.constraint(equalTo: mainContainerView.leadingAnchor),
+            contentSplitViewController.view.trailingAnchor.constraint(equalTo: mainContainerView.trailingAnchor),
+            contentSplitViewController.view.topAnchor.constraint(equalTo: mainContainerView.topAnchor),
+            contentSplitViewController.view.bottomAnchor.constraint(equalTo: statusStripViewController.view.topAnchor),
 
-            statusStripViewController.view.leadingAnchor.constraint(equalTo: rightPane.leadingAnchor),
-            statusStripViewController.view.trailingAnchor.constraint(equalTo: rightPane.trailingAnchor),
-            statusStripViewController.view.bottomAnchor.constraint(equalTo: rightPane.bottomAnchor),
+            statusStripViewController.view.leadingAnchor.constraint(equalTo: mainContainerView.leadingAnchor),
+            statusStripViewController.view.trailingAnchor.constraint(equalTo: mainContainerView.trailingAnchor),
+            statusStripViewController.view.bottomAnchor.constraint(equalTo: mainContainerView.bottomAnchor),
         ])
 
-        addChild(outerSplitViewController)
+        addChild(mainSplitViewController)
 
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarViewController)
         sidebarItem.minimumThickness = 220
-        sidebarItem.maximumThickness = 320
         sidebarItem.canCollapse = true
-        outerSplitViewController.addSplitViewItem(sidebarItem)
+        mainSplitViewController.addSplitViewItem(sidebarItem)
+        self.sidebarItem = sidebarItem
 
-        let rightPaneItem = NSSplitViewItem(viewController: rightPaneViewController)
-        rightPaneItem.minimumThickness = 620
-        outerSplitViewController.addSplitViewItem(rightPaneItem)
+        let mainContainerItem = NSSplitViewItem(viewController: mainContainerViewController)
+        mainSplitViewController.addSplitViewItem(mainContainerItem)
     }
 
     private func setupLayout() {
-        outerSplitViewController.view.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(outerSplitViewController.view)
+        // Pin the main split controller to the root view.
+        mainSplitViewController.view.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(mainSplitViewController.view)
 
         NSLayoutConstraint.activate([
-            outerSplitViewController.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            outerSplitViewController.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            outerSplitViewController.view.topAnchor.constraint(equalTo: view.topAnchor),
-            outerSplitViewController.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            mainSplitViewController.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            mainSplitViewController.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            mainSplitViewController.view.topAnchor.constraint(equalTo: view.topAnchor),
+            mainSplitViewController.view.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
     }
 
@@ -187,13 +218,187 @@ final class TCPViewerRootViewController: NSViewController {
         workspaceViewController.render(snapshot: snapshot)
         inspectorViewController.render(snapshot: snapshot)
         statusStripViewController.render(snapshot: snapshot)
-        inspectorItem?.isCollapsed = !snapshot.isInspectorVisible
+        applyInspectorLayout(snapshot)
         delegate?.tcpviewerRootViewControllerDidChangeToolbarState(self)
 
         if viewModel.shouldPresentNetworkHelperOnboarding && !hasRenderedHelperOnboarding {
             hasRenderedHelperOnboarding = true
             delegate?.tcpviewerRootViewController(self, didRequestHelperOnboarding: viewModel.networkHelperToolSnapshot)
         }
+    }
+
+    // Restore the last sidebar state early so AppKit lays out the window with the expected split.
+    private func applyPersistedSidebarLayout() {
+        setSidebarVisible(viewModel.prefersSidebarVisibleOnLaunch(), persistPreference: false)
+    }
+
+    // Collapse or expand the leading sidebar and restore its last saved width when it reopens.
+    private func setSidebarVisible(_ isVisible: Bool, persistPreference: Bool = true) {
+        if !isVisible {
+            persistCurrentSidebarThicknessIfVisible()
+        }
+
+        sidebarItem?.isCollapsed = !isVisible
+        if persistPreference {
+            viewModel.setSidebarVisible(isVisible)
+        }
+
+        if isVisible {
+            applySidebarDividerPosition()
+        }
+    }
+
+    // Reapply the saved leading divider position once the split view has a real width.
+    private func applySidebarDividerPosition() {
+        let splitView = mainSplitViewController.splitView
+        guard splitView.subviews.count == 2 else {
+            return
+        }
+
+        splitView.layoutSubtreeIfNeeded()
+        let totalLength = splitView.bounds.width
+        guard totalLength > 0 else {
+            needsSidebarDividerRefresh = true
+            return
+        }
+
+        guard let sidebarThickness = viewModel.preferredSidebarThickness(for: totalLength) else {
+            return
+        }
+
+        splitView.setPosition(sidebarThickness, ofDividerAt: 0)
+    }
+
+    // Keep the inspector in the right-side split item and only update collapse state when needed.
+    private func applyInspectorLayout(_ snapshot: NetworkInspectorSnapshot) {
+        let visibilityChanged = appliedInspectorVisibility != snapshot.isInspectorVisible
+
+        persistCurrentInspectorThicknessIfVisible()
+
+        contentSplitViewController.splitView.isVertical = true
+        inspectorItem?.isCollapsed = !snapshot.isInspectorVisible
+        if snapshot.isInspectorVisible && (appliedInspectorPlacement == nil || visibilityChanged) {
+            applyInspectorDividerPosition(for: snapshot.inspectorPlacement)
+        }
+
+        appliedInspectorPlacement = snapshot.inspectorPlacement
+        appliedInspectorVisibility = snapshot.isInspectorVisible
+    }
+
+    // Reset the inspector size when it reappears so the right-side panel starts usable.
+    private func applyInspectorDividerPosition(for placement: NetworkInspectorPlacement) {
+        let splitView = contentSplitViewController.splitView
+        guard splitView.subviews.count == 2 else {
+            return
+        }
+
+        splitView.layoutSubtreeIfNeeded()
+        let totalLength = splitView.bounds.width
+        guard totalLength > 0 else {
+            needsInspectorDividerRefresh = true
+            return
+        }
+
+        let inspectorThickness = viewModel.preferredInspectorThickness(
+            for: placement,
+            availableLength: totalLength
+        ) ?? (totalLength * InspectorLayoutMetrics.trailingInspectorFraction)
+        hasRestoredInitialInspectorDivider = true
+        splitView.setPosition(totalLength - inspectorThickness, ofDividerAt: 0)
+    }
+
+    // Track divider changes so the right-side inspector restores the last usable width.
+    private func configureSplitViewObservation() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(mainSplitViewDidResizeSubviews(_:)),
+            name: NSSplitView.didResizeSubviewsNotification,
+            object: mainSplitViewController.splitView
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(contentSplitViewDidResizeSubviews(_:)),
+            name: NSSplitView.didResizeSubviewsNotification,
+            object: contentSplitViewController.splitView
+        )
+    }
+
+    @objc private func mainSplitViewDidResizeSubviews(_ notification: Notification) {
+        guard notification.object as? NSSplitView === mainSplitViewController.splitView else {
+            return
+        }
+
+        persistCurrentSidebarLayout()
+    }
+
+    @objc private func contentSplitViewDidResizeSubviews(_ notification: Notification) {
+        guard notification.object as? NSSplitView === contentSplitViewController.splitView else {
+            return
+        }
+
+        guard hasRestoredInitialInspectorDivider else {
+            return
+        }
+
+        persistCurrentInspectorThicknessIfVisible()
+    }
+
+    // Persist the leading split state after manual drags and AppKit-driven collapses.
+    private func persistCurrentSidebarLayout() {
+        let isVisible = sidebarItem?.isCollapsed == false
+        viewModel.setSidebarVisible(isVisible)
+        persistCurrentSidebarThicknessIfVisible()
+    }
+
+    // Persist only visible sidebar sizes so collapsing the pane never stores a broken zero value.
+    private func persistCurrentSidebarThicknessIfVisible() {
+        guard let thickness = currentSidebarThickness() else {
+            return
+        }
+
+        viewModel.rememberSidebarThickness(thickness)
+    }
+
+    // Read the live sidebar width from AppKit's leading split item when it is on screen.
+    private func currentSidebarThickness() -> CGFloat? {
+        guard let sidebarView = sidebarItem?.viewController.view,
+              sidebarView.superview != nil,
+              sidebarItem?.isCollapsed == false else {
+            return nil
+        }
+
+        let thickness = sidebarView.frame.width
+        guard thickness.isFinite, thickness > 0 else {
+            return nil
+        }
+
+        return thickness
+    }
+
+    // Persist only visible inspector sizes so collapsing the pane never stores a broken zero value.
+    private func persistCurrentInspectorThicknessIfVisible() {
+        guard let placement = appliedInspectorPlacement,
+              appliedInspectorVisibility == true,
+              let thickness = currentInspectorThickness(for: placement) else {
+            return
+        }
+
+        viewModel.rememberInspectorThickness(thickness, for: placement)
+    }
+
+    private func currentInspectorThickness(for placement: NetworkInspectorPlacement) -> CGFloat? {
+        guard let inspectorView = inspectorItem?.viewController.view,
+              inspectorView.superview != nil,
+              inspectorItem?.isCollapsed == false else {
+            return nil
+        }
+
+        let thickness = inspectorView.frame.width
+        guard thickness.isFinite, thickness > 0 else {
+            return nil
+        }
+
+        return thickness
     }
 }
 
@@ -245,16 +450,6 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
 
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestDeletePackets identifiers: [PacketSummary.ID]) {
         viewModel.deletePackets(identifiers)
-    }
-}
-
-extension TCPViewerRootViewController: PacketInspectorViewControllerDelegate {
-    func packetInspectorViewController(_ controller: PacketInspectorViewController, didSelect tab: PacketInspectorTab) {
-        viewModel.selectInspectorTab(tab)
-    }
-
-    func packetInspectorViewController(_ controller: PacketInspectorViewController, didSelectDetailNode identifier: String?) {
-        viewModel.selectDetailNode(identifier)
     }
 }
 

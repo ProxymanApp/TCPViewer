@@ -81,7 +81,7 @@ final class TCPViewerToolbarDataSource: NSObject {
     }
 
     override init() {
-        self.toolbar = NSToolbar(identifier: "TCPViewer.MainToolbar.v3")
+        self.toolbar = NSToolbar(identifier: "TCPViewer.MainToolbar.v4")
         super.init()
         configureToolbar()
         configureToolbarViews()
@@ -153,10 +153,13 @@ final class TCPViewerToolbarDataSource: NSObject {
 
         inspectorButton.target = self
         inspectorButton.action = #selector(inspectorButtonPressed(_:))
+        inspectorButton.setButtonType(.toggle)
         inspectorButton.bezelStyle = .texturedRounded
+        inspectorButton.controlSize = .regular
         inspectorButton.image = TCPViewerUI.image("sidebar.trailing")
         inspectorButton.imagePosition = .imageOnly
-        inspectorButton.toolTip = "Toggle Inspector View"
+        inspectorButton.title = ""
+        inspectorButton.toolTip = "Toggle Inspector"
     }
 
     private func constrainToolbarView(_ view: NSView, width: CGFloat, height: CGFloat) {
@@ -374,7 +377,7 @@ extension TCPViewerToolbarDataSource: NSToolbarDelegate {
             item.visibilityPriority = .high
         case TCPViewerToolbarItemMetadata.inspector.identifier:
             item.label = "Inspector"
-            item.paletteLabel = "Inspector"
+            item.paletteLabel = "Toggle Inspector"
             item.view = inspectorButton
             item.visibilityPriority = .high
         default:
