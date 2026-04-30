@@ -90,9 +90,18 @@ if [ -z "$NINJA_BIN" ]; then
   exit 1
 fi
 
-if [ ! -d "$SOURCE_DIR/.git" ]; then
+if [ ! -e "$SOURCE_DIR/.git" ]; then
+  if [ -d "$SOURCE_DIR" ] && [ -n "$(find "$SOURCE_DIR" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+    echo "error: $SOURCE_DIR exists but is not a git checkout." >&2
+    echo "       Remove it or move it aside before running this script again." >&2
+    exit 1
+  fi
+
   mkdir -p "$(dirname "$SOURCE_DIR")"
   git clone --branch "$PINNED_TAG" --depth 1 "$REMOTE_URL" "$SOURCE_DIR"
+elif ! git -C "$SOURCE_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "error: $SOURCE_DIR has a .git entry but is not a valid git checkout." >&2
+  exit 1
 fi
 
 git -C "$SOURCE_DIR" fetch --depth 1 origin "refs/tags/$PINNED_TAG:refs/tags/$PINNED_TAG"
@@ -121,6 +130,10 @@ if [ -f "$STAMP_FILE" ] && [ "$(cat "$STAMP_FILE")" = "$CURRENT_STAMP_CONTENT" ]
   exit 0
 fi
 
+# Clear partial installs so CMake's macOS install-name rewrites stay repeatable.
+rm -rf "$INSTALL_ROOT"
+mkdir -p "$INSTALL_ROOT"
+
 "$CMAKE_BIN" -S "$SOURCE_DIR" -B "$BUILD_DIR" -G Ninja \
   -DCMAKE_MAKE_PROGRAM="$NINJA_BIN" \
   -DCMAKE_BUILD_TYPE=RelWithDebInfo \
@@ -133,19 +146,32 @@ fi
   -DENABLE_DOCS=OFF \
   -DENABLE_DOXYGEN=OFF \
   -DENABLE_MAN_PAGES=OFF \
+  -DENABLE_PLUGINS=OFF \
   -DBUILD_androiddump=OFF \
+  -DBUILD_ciscodump=OFF \
   -DBUILD_capinfos=OFF \
+  -DBUILD_captype=OFF \
+  -DBUILD_dcerpcidl2wrs=OFF \
   -DBUILD_dftest=OFF \
+  -DBUILD_dpauxmon=OFF \
   -DBUILD_dumpcap=OFF \
   -DBUILD_editcap=OFF \
+  -DBUILD_etwdump=OFF \
+  -DBUILD_falcodump=OFF \
   -DBUILD_mergecap=OFF \
   -DBUILD_mmdbresolve=OFF \
+  -DBUILD_randpktdump=OFF \
   -DBUILD_randpkt=OFF \
   -DBUILD_rawshark=OFF \
   -DBUILD_reordercap=OFF \
   -DBUILD_sharkd=OFF \
+  -DBUILD_sdjournal=OFF \
+  -DBUILD_sshdig=OFF \
+  -DBUILD_sshdump=OFF \
   -DBUILD_text2pcap=OFF \
   -DBUILD_tshark=OFF \
+  -DBUILD_udpdump=OFF \
+  -DBUILD_wifidump=OFF \
   -DBUILD_wireshark=OFF
 
 "$CMAKE_BIN" --build "$BUILD_DIR" --config RelWithDebInfo --target epan wiretap wsutil --parallel

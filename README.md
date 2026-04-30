@@ -43,17 +43,13 @@ brew install glib libgcrypt gnutls nghttp2 brotli lz4 zstd
 ./scripts/bootstrap-wireshark.sh
 ```
 
-Then build with the Wireshark backend enabled:
+The Debug build links the staged Wireshark libraries by default after bootstrap:
 
 ```bash
-xcodebuild build \
-  -project TCPViewer.xcodeproj \
-  -scheme TCPViewer \
-  TCPVIEWER_HAS_WIRESHARK=1 \
-  TCPVIEWER_WIRESHARK_LDFLAGS="-L$(pwd)/Vendor/.install/wireshark/lib -Wl,-rpath,$(pwd)/Vendor/.install/wireshark/lib -lwireshark -lwiretap -lwsutil"
+xcodebuild -project TCPViewer.xcodeproj -scheme TCPViewer build
 ```
 
-Without these build settings, the project intentionally builds with `TCPVIEWER_HAS_WIRESHARK=0` and shows a fallback warning node in the packet inspector.
+Release packaging still needs to bundle the required Wireshark dylibs before distribution.
 
 ## Run
 
@@ -100,9 +96,5 @@ Wireshark backend is not active:
 
 ```bash
 ./scripts/bootstrap-wireshark.sh
-xcodebuild build \
-  -project TCPViewer.xcodeproj \
-  -scheme TCPViewer \
-  TCPVIEWER_HAS_WIRESHARK=1 \
-  TCPVIEWER_WIRESHARK_LDFLAGS="-L$(pwd)/Vendor/.install/wireshark/lib -Wl,-rpath,$(pwd)/Vendor/.install/wireshark/lib -lwireshark -lwiretap -lwsutil"
+xcodebuild -project TCPViewer.xcodeproj -scheme TCPViewer build
 ```

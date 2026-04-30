@@ -7,9 +7,8 @@
 
 `Vendor/.build/` and `Vendor/.install/` are intentionally ignored so the repository stores source pins, not generated artifacts.
 
-After `scripts/bootstrap-wireshark.sh` succeeds, enable the Wireshark backend for local builds by passing:
+After `scripts/bootstrap-wireshark.sh` succeeds, Debug builds link the staged Wireshark libraries by default:
 
 ```sh
-TCPVIEWER_HAS_WIRESHARK=1 \
-TCPVIEWER_WIRESHARK_LDFLAGS="-L$(pwd)/Vendor/.install/wireshark/lib -Wl,-rpath,$(pwd)/Vendor/.install/wireshark/lib -lwireshark -lwiretap -lwsutil"
+xcodebuild -project TCPViewer.xcodeproj -scheme TCPViewer build
 ```

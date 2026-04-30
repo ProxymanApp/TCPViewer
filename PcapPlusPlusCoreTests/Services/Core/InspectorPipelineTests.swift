@@ -79,7 +79,12 @@ struct InspectorPipelineTests {
         #expect(fallback.name == "Wireshark Dissector Unavailable")
         #expect(fallback.fieldName == "tcpviewer.wireshark.fallback")
         #expect(fallback.severity == .warning)
-        #expect(fallback.value?.contains("libwireshark backend is not linked") == true)
+        let fallbackValue = try #require(fallback.value)
+        #expect(
+            fallbackValue.contains("libwireshark backend is not linked")
+                || fallbackValue.contains("TCPVIEWER_DISABLE_WIRESHARK")
+                || fallbackValue.contains("disabled while running TCP Viewer tests")
+        )
         #expect(findNode(in: inspection.detailNodes, id: "udp.length") != nil)
     }
 

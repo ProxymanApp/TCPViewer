@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <cstdlib>
 #include <iomanip>
 #include <limits>
 #include <mutex>
@@ -41,6 +42,10 @@ namespace {
 constexpr const char* kBackendNotLinkedReason =
     "Wireshark libwireshark backend is not linked in this build. Run scripts/bootstrap-wireshark.sh, then enable "
     "TCPVIEWER_HAS_WIRESHARK=1 for PcapPlusPlusCore to use Wireshark protocol-tree dissection.";
+constexpr const char* kBackendDisabledReason =
+    "Wireshark libwireshark backend is linked but disabled for this process by TCPVIEWER_DISABLE_WIRESHARK.";
+constexpr const char* kBackendDisabledForTestsReason =
+    "Wireshark libwireshark backend is linked but disabled while running TCP Viewer tests.";
 
 DetailNode MakeUnavailableDetail(const std::string& reason)
 {
@@ -57,6 +62,27 @@ DetailNode MakeUnavailableDetail(const std::string& reason)
 #if defined(TCPVIEWER_HAS_WIRESHARK) && TCPVIEWER_HAS_WIRESHARK
 
 constexpr uint32_t kUnknownFrameNumber = 0;
+
+bool WiresharkDisabledByEnvironment()
+{
+    // Keep fallback-focused tests deterministic while the Debug app uses Wireshark by default.
+    const char* value = std::getenv("TCPVIEWER_DISABLE_WIRESHARK");
+    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
+
+bool RunningUnderXCTest()
+{
+    const char* value = std::getenv("XCTestConfigurationFilePath");
+    if (value != nullptr && value[0] != '\0') {
+        return true;
+    }
+#if defined(__APPLE__)
+    const char* programName = getprogname();
+    return programName != nullptr && std::strcmp(programName, "xctest") == 0;
+#else
+    return false;
+#endif
+}
 
 std::mutex& WiresharkAPIMutex()
 {
@@ -571,6 +597,17 @@ WiresharkRuntime& WiresharkRuntime::shared()
 WiresharkRuntime::WiresharkRuntime()
 {
 #if defined(TCPVIEWER_HAS_WIRESHARK) && TCPVIEWER_HAS_WIRESHARK
+    if (WiresharkDisabledByEnvironment()) {
+        available_ = false;
+        unavailableReason_ = kBackendDisabledReason;
+        return;
+    }
+    if (RunningUnderXCTest()) {
+        available_ = false;
+        unavailableReason_ = kBackendDisabledForTestsReason;
+        return;
+    }
+
     // libwireshark has process-wide registries, so runtime setup is deliberately one-time and serialized.
     std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
     wtap_init(true);
