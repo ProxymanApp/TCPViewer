@@ -71,6 +71,92 @@ struct PacketInspectorTreeViewModelTests {
         #expect(viewModel.rootItems[1].displayText == "Decode Warning: Partial decode")
     }
 
+    @Test func longLayerSummaryBreaksIntoReadableChildRows() throws {
+        let packet = makePacket()
+        let layerName = "IEEE 802.3 Ethernet, Src: 90:e7:36:d2:00:00, Dst: 24:b2:7f:41:80:10"
+        let inspection = PacketInspection(
+            packetID: packet.id,
+            packetNumber: packet.packetNumber,
+            rawBytes: Data([0x01, 0x02]),
+            detailNodes: [
+                PacketDetailNode(
+                    id: "layer-0",
+                    name: layerName,
+                    value: "Detailed field decoding is not available yet for \(layerName).",
+                    kind: .layer,
+                    children: [
+                        PacketDetailNode(id: "layer-0.bytes", name: "Bytes", value: "14 bytes"),
+                    ]
+                ),
+            ],
+            decodeStatus: PacketDecodeStatus(kind: .partial, reason: "Unsupported layer")
+        )
+        let state = PacketInspectionState(
+            selectedPacketID: packet.id,
+            inspection: inspection,
+            selectedDetailNodeID: nil,
+            highlightedByteRange: nil,
+            isLoading: false,
+            statusMessage: "Inspecting packet 1."
+        )
+        let viewModel = PacketInspectorTreeViewModel()
+
+        #expect(viewModel.render(snapshot: makeSnapshot(packet: packet, inspectionState: state)) == .reload)
+
+        let rootItem = try #require(viewModel.rootItems.first)
+        #expect(rootItem.displayText == "IEEE 802.3 Ethernet")
+        #expect(rootItem.children.map(\.displayText) == [
+            "Source: 90:e7:36:d2:00:00",
+            "Destination: 24:b2:7f:41:80:10",
+            "Decode Status: Field decoding is not available yet.",
+            "Bytes: 14 bytes",
+        ])
+        #expect(rootItem.children.prefix(3).allSatisfy { $0.nodeID == nil })
+        #expect(viewModel.item(withNodeID: "layer-0") === rootItem)
+    }
+
+    @Test func longLayerSummaryReusesExistingDecodedChildRows() throws {
+        let packet = makePacket()
+        let inspection = PacketInspection(
+            packetID: packet.id,
+            packetNumber: packet.packetNumber,
+            rawBytes: Data([0x01, 0x02]),
+            detailNodes: [
+                PacketDetailNode(
+                    id: "ipv6",
+                    name: "IPv6",
+                    value: "Src: 2001:0db8:85a3:0000:0000:8a2e:0370:7334, Dst: 2001:0db8:85a3:0000:0000:8a2e:0370:7335",
+                    kind: .layer,
+                    children: [
+                        PacketDetailNode(id: "ipv6.src", name: "Source", value: "2001:0db8:85a3:0000:0000:8a2e:0370:7334"),
+                        PacketDetailNode(id: "ipv6.dst", name: "Destination", value: "2001:0db8:85a3:0000:0000:8a2e:0370:7335"),
+                        PacketDetailNode(id: "ipv6.hopLimit", name: "Hop Limit", value: "64"),
+                    ]
+                ),
+            ],
+            decodeStatus: PacketDecodeStatus(kind: .complete)
+        )
+        let state = PacketInspectionState(
+            selectedPacketID: packet.id,
+            inspection: inspection,
+            selectedDetailNodeID: nil,
+            highlightedByteRange: nil,
+            isLoading: false,
+            statusMessage: "Inspecting packet 1."
+        )
+        let viewModel = PacketInspectorTreeViewModel()
+
+        #expect(viewModel.render(snapshot: makeSnapshot(packet: packet, inspectionState: state)) == .reload)
+
+        let rootItem = try #require(viewModel.rootItems.first)
+        #expect(rootItem.displayText == "IPv6")
+        #expect(rootItem.children.map(\.displayText) == [
+            "Source: 2001:0db8:85a3:0000:0000:8a2e:0370:7334",
+            "Destination: 2001:0db8:85a3:0000:0000:8a2e:0370:7335",
+            "Hop Limit: 64",
+        ])
+    }
+
     @Test func copyFormatterPreservesMultipleRowsAndChildIndentation() {
         let text = PacketInspectorCopyFormatter.text(for: [
             PacketInspectorCopyRow(text: "Frame: Packet 1", indentationLevel: 0),

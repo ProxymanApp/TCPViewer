@@ -80,6 +80,21 @@ final class PacketInspectorTreeItem: NSObject {
 }
 
 final class PacketInspectorTreeViewModel {
+    private enum Metrics {
+        static let maximumInlineDisplayLength = 64
+    }
+
+    private struct DisplayParts {
+        let name: String
+        let value: String?
+        let summaryRows: [SummaryRow]
+    }
+
+    private struct SummaryRow {
+        let name: String
+        let value: String?
+    }
+
     private(set) var rootItems: [PacketInspectorTreeItem] = []
     private(set) var selectedNodeID: String?
     private var itemByNodeID: [String: PacketInspectorTreeItem] = [:]
@@ -160,12 +175,14 @@ final class PacketInspectorTreeViewModel {
 
     private func makeItem(from node: PacketDetailNode, parentPath: String) -> PacketInspectorTreeItem {
         let path = parentPath.isEmpty ? node.id : "\(parentPath).\(node.id)"
-        let children = node.children.map { makeItem(from: $0, parentPath: path) }
+        let displayParts = displayParts(for: node)
+        let summaryChildren = makeSummaryItems(from: displayParts.summaryRows, parentPath: path, severity: node.severity)
+        let children = summaryChildren + node.children.map { makeItem(from: $0, parentPath: path) }
         let treeItem = PacketInspectorTreeItem(
             id: path,
             nodeID: node.id,
-            name: node.name,
-            value: node.value,
+            name: displayParts.name,
+            value: displayParts.value,
             kind: itemKind(from: node.kind),
             severity: node.severity,
             byteRange: node.byteRange,
@@ -173,6 +190,144 @@ final class PacketInspectorTreeViewModel {
         )
         itemByNodeID[node.id] = treeItem
         return treeItem
+    }
+
+    // Split oversized layer summaries into child rows so the outline stays readable at inspector width.
+    private func displayParts(for node: PacketDetailNode) -> DisplayParts {
+        guard shouldSplitDisplayText(name: node.name, value: node.value, kind: node.kind) else {
+            return DisplayParts(name: node.name, value: node.value, summaryRows: [])
+        }
+
+        var displayName = node.name
+        var displayValue = node.value
+        var summaryRows: [SummaryRow] = []
+        var didSplitDisplay = false
+
+        let nameParts = commaSeparatedParts(from: node.name)
+        if nameParts.count > 1 {
+            displayName = nameParts[0]
+            summaryRows.append(contentsOf: nameParts.dropFirst().map(summaryRow(from:)))
+            didSplitDisplay = true
+        }
+
+        if let value = node.value, !value.isEmpty {
+            let valueSummaryRows = summaryRowsForValue(value)
+            if !valueSummaryRows.isEmpty {
+                summaryRows.append(contentsOf: valueSummaryRows)
+                displayValue = nil
+                didSplitDisplay = true
+            }
+        }
+
+        summaryRows = removingRowsAlreadyRepresentedByChildren(summaryRows, from: node.children)
+
+        guard didSplitDisplay else {
+            return DisplayParts(name: node.name, value: node.value, summaryRows: [])
+        }
+
+        return DisplayParts(name: displayName, value: displayValue, summaryRows: summaryRows)
+    }
+
+    // Only layer rows carry protocol summaries; field rows should keep their exact label/value pairing.
+    private func shouldSplitDisplayText(name: String, value: String?, kind: PacketDetailNodeKind) -> Bool {
+        guard kind == .layer else {
+            return false
+        }
+
+        let displayText: String
+        if let value, !value.isEmpty {
+            displayText = "\(name): \(value)"
+        } else {
+            displayText = name
+        }
+
+        return displayText.count > Metrics.maximumInlineDisplayLength
+    }
+
+    // Build non-selectable rows that preserve long summary content under the original selectable node.
+    private func makeSummaryItems(
+        from rows: [SummaryRow],
+        parentPath: String,
+        severity: PacketDetailNodeSeverity
+    ) -> [PacketInspectorTreeItem] {
+        rows.enumerated().map { index, row in
+            PacketInspectorTreeItem(
+                id: "\(parentPath).__summary.\(index)",
+                name: row.name,
+                value: row.value,
+                kind: .field,
+                severity: severity
+            )
+        }
+    }
+
+    // Prefer protocol-shaped pieces such as "Src: ..." over one very long inline summary string.
+    private func summaryRowsForValue(_ value: String) -> [SummaryRow] {
+        if value.hasPrefix("Detailed field decoding is not available yet for ") {
+            return [SummaryRow(name: "Decode Status", value: "Field decoding is not available yet.")]
+        }
+
+        let parts = commaSeparatedParts(from: value)
+        guard parts.count > 1 else {
+            return [SummaryRow(name: "Summary", value: value)]
+        }
+
+        return parts.map(summaryRow(from:))
+    }
+
+    // Split simple comma-separated protocol summaries without changing values that contain no separators.
+    private func commaSeparatedParts(from value: String) -> [String] {
+        value
+            .split(separator: ",", omittingEmptySubsequences: true)
+            .map { trimmed(String($0)) }
+            .filter { !$0.isEmpty }
+    }
+
+    // Convert a summary fragment into the same "name: value" shape used by decoded field rows.
+    private func summaryRow(from part: String) -> SummaryRow {
+        let pieces = part.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+        guard pieces.count == 2 else {
+            return SummaryRow(name: "Summary", value: part)
+        }
+
+        let name = normalizedSummaryName(trimmed(String(pieces[0])))
+        let value = trimmed(String(pieces[1]))
+        return SummaryRow(name: name, value: value.isEmpty ? nil : value)
+    }
+
+    // Expand common packet-summary abbreviations into clearer inspector row names.
+    private func normalizedSummaryName(_ name: String) -> String {
+        switch name.lowercased() {
+        case "src":
+            return "Source"
+        case "dst":
+            return "Destination"
+        default:
+            return name
+        }
+    }
+
+    // Keep whitespace cleanup local to the summary splitter.
+    private func trimmed(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // Avoid duplicating decoded child fields that already show a long layer summary's key details.
+    private func removingRowsAlreadyRepresentedByChildren(
+        _ rows: [SummaryRow],
+        from children: [PacketDetailNode]
+    ) -> [SummaryRow] {
+        let existingDisplayTexts = Set(children.map { displayText(name: $0.name, value: $0.value) })
+        return rows.filter { !existingDisplayTexts.contains(displayText(name: $0.name, value: $0.value)) }
+    }
+
+    // Mirror PacketInspectorTreeItem display text for pre-render duplicate checks.
+    private func displayText(name: String, value: String?) -> String {
+        guard let value, !value.isEmpty else {
+            return name
+        }
+
+        return "\(name): \(value)"
     }
 
     private func itemKind(from kind: PacketDetailNodeKind) -> PacketInspectorTreeItemKind {
