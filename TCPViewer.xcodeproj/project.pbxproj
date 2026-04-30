@@ -258,15 +258,15 @@
 		BA4D26B32F9A2F760070BE17 /* PcapPlusPlusCore */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = BA4D26C92F9A2F770070BE17 /* Build configuration list for PBXNativeTarget "PcapPlusPlusCore" */;
-				buildPhases = (
-					BA4D26AF2F9A2F760070BE17 /* Headers */,
-					BA4D26D02F9A30770070BE17 /* Bootstrap PcapPlusPlus */,
-					BA4D26B02F9A2F760070BE17 /* Sources */,
-					BA4D26B12F9A2F760070BE17 /* Frameworks */,
-					BAWS00012F9E00000070BE17 /* Stage Wireshark Debug Libraries */,
-					BAWS00022F9E00000070BE17 /* Sign Wireshark Debug Libraries */,
-					BA4D26B22F9A2F760070BE17 /* Resources */,
-				);
+			buildPhases = (
+				BA4D26AF2F9A2F760070BE17 /* Headers */,
+				BA4D26D02F9A30770070BE17 /* Bootstrap PcapPlusPlus */,
+				BA4D26B02F9A2F760070BE17 /* Sources */,
+				BA4D26B12F9A2F760070BE17 /* Frameworks */,
+				BAWS00012F9E00000070BE17 /* Stage Wireshark Debug Libraries */,
+				BAWS00022F9E00000070BE17 /* Sign Wireshark Debug Libraries */,
+				BA4D26B22F9A2F760070BE17 /* Resources */,
+			);
 			buildRules = (
 			);
 			dependencies = (
@@ -457,9 +457,9 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-			BA4D26D02F9A30770070BE17 /* Bootstrap PcapPlusPlus */ = {
-				isa = PBXShellScriptBuildPhase;
-				buildActionMask = 2147483647;
+		BA4D26D02F9A30770070BE17 /* Bootstrap PcapPlusPlus */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
 			files = (
 			);
 			inputFileListPaths = (
@@ -474,56 +474,56 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-				shellScript = "\"$PROJECT_DIR/scripts/bootstrap-pcapplusplus.sh\"\n";
-				showEnvVarsInLog = 0;
-			};
-			BAWS00012F9E00000070BE17 /* Stage Wireshark Debug Libraries */ = {
-				isa = PBXShellScriptBuildPhase;
-				buildActionMask = 2147483647;
-				files = (
-				);
-				inputFileListPaths = (
-				);
-				inputPaths = (
-					"$(PROJECT_DIR)/Vendor/.install/wireshark/lib",
-				);
-				name = "Stage Wireshark Debug Libraries";
-				outputFileListPaths = (
-				);
-				outputPaths = (
-					"$(BUILT_PRODUCTS_DIR)/libwireshark.19.dylib",
-					"$(BUILT_PRODUCTS_DIR)/libwiretap.16.dylib",
-					"$(BUILT_PRODUCTS_DIR)/libwsutil.17.dylib",
-				);
-				runOnlyForDeploymentPostprocessing = 0;
-				shellPath = /bin/sh;
-				shellScript = "if [ \"${CONFIGURATION}\" != \"Debug\" ]; then\n    exit 0\nfi\n\nwireshark_lib_dir=\"${PROJECT_DIR}/Vendor/.install/wireshark/lib\"\nif [ ! -d \"${wireshark_lib_dir}\" ]; then\n    echo \"error: Wireshark libraries are missing at ${wireshark_lib_dir}. Run scripts/bootstrap-wireshark.sh.\"\n    exit 1\nfi\n\nmkdir -p \"${BUILT_PRODUCTS_DIR}\"\nfor dylib in \"${wireshark_lib_dir}\"/libwireshark*.dylib \"${wireshark_lib_dir}\"/libwiretap*.dylib \"${wireshark_lib_dir}\"/libwsutil*.dylib; do\n    [ -e \"${dylib}\" ] || continue\n    cp -fP \"${dylib}\" \"${BUILT_PRODUCTS_DIR}/\"\ndone\n";
-				showEnvVarsInLog = 0;
-			};
-			BAWS00022F9E00000070BE17 /* Sign Wireshark Debug Libraries */ = {
-				isa = PBXShellScriptBuildPhase;
-				buildActionMask = 2147483647;
-				files = (
-				);
-				inputFileListPaths = (
-				);
-				inputPaths = (
-					"$(BUILT_PRODUCTS_DIR)/libwireshark.19.dylib",
-					"$(BUILT_PRODUCTS_DIR)/libwiretap.16.dylib",
-					"$(BUILT_PRODUCTS_DIR)/libwsutil.17.dylib",
-				);
-				name = "Sign Wireshark Debug Libraries";
-				outputFileListPaths = (
-				);
-				outputPaths = (
-					"$(BUILT_PRODUCTS_DIR)/.wireshark-debug-libs-signed",
-				);
-				runOnlyForDeploymentPostprocessing = 0;
-				shellPath = /bin/sh;
-				shellScript = "if [ \"${CONFIGURATION}\" != \"Debug\" ]; then\n    exit 0\nfi\n\nsign_identity=\"${EXPANDED_CODE_SIGN_IDENTITY:-}\"\nif [ -z \"${sign_identity}\" ] || [ \"${sign_identity}\" = \"-\" ]; then\n    exit 0\nfi\n\nfor dylib in \"${BUILT_PRODUCTS_DIR}\"/libwireshark*.dylib \"${BUILT_PRODUCTS_DIR}\"/libwiretap*.dylib \"${BUILT_PRODUCTS_DIR}\"/libwsutil*.dylib; do\n    [ -f \"${dylib}\" ] || continue\n    codesign --force --sign \"${sign_identity}\" --timestamp=none \"${dylib}\"\ndone\n\ntouch \"${BUILT_PRODUCTS_DIR}/.wireshark-debug-libs-signed\"\n";
-				showEnvVarsInLog = 0;
-			};
-		/* End PBXShellScriptBuildPhase section */
+			shellScript = "\"$PROJECT_DIR/scripts/bootstrap-pcapplusplus.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+		BAWS00012F9E00000070BE17 /* Stage Wireshark Debug Libraries */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(PROJECT_DIR)/Vendor/.install/wireshark/lib",
+			);
+			name = "Stage Wireshark Debug Libraries";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(BUILT_PRODUCTS_DIR)/libwireshark.19.dylib",
+				"$(BUILT_PRODUCTS_DIR)/libwiretap.16.dylib",
+				"$(BUILT_PRODUCTS_DIR)/libwsutil.17.dylib",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "if [ \"${CONFIGURATION}\" != \"Debug\" ]; then\n    exit 0\nfi\n\nwireshark_lib_dir=\"${PROJECT_DIR}/Vendor/.install/wireshark/lib\"\nif [ ! -d \"${wireshark_lib_dir}\" ]; then\n    echo \"error: Wireshark libraries are missing at ${wireshark_lib_dir}. Run scripts/bootstrap-wireshark.sh.\"\n    exit 1\nfi\n\nmkdir -p \"${BUILT_PRODUCTS_DIR}\"\nfor dylib in \"${wireshark_lib_dir}\"/libwireshark*.dylib \"${wireshark_lib_dir}\"/libwiretap*.dylib \"${wireshark_lib_dir}\"/libwsutil*.dylib; do\n    [ -e \"${dylib}\" ] || continue\n    cp -fP \"${dylib}\" \"${BUILT_PRODUCTS_DIR}/\"\ndone\n";
+			showEnvVarsInLog = 0;
+		};
+		BAWS00022F9E00000070BE17 /* Sign Wireshark Debug Libraries */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(BUILT_PRODUCTS_DIR)/libwireshark.19.dylib",
+				"$(BUILT_PRODUCTS_DIR)/libwiretap.16.dylib",
+				"$(BUILT_PRODUCTS_DIR)/libwsutil.17.dylib",
+			);
+			name = "Sign Wireshark Debug Libraries";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(BUILT_PRODUCTS_DIR)/.wireshark-debug-libs-signed",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "if [ \"${CONFIGURATION}\" != \"Debug\" ]; then\n    exit 0\nfi\n\nsign_identity=\"${EXPANDED_CODE_SIGN_IDENTITY:-}\"\nif [ -z \"${sign_identity}\" ] || [ \"${sign_identity}\" = \"-\" ]; then\n    exit 0\nfi\n\nfor dylib in \"${BUILT_PRODUCTS_DIR}\"/libwireshark*.dylib \"${BUILT_PRODUCTS_DIR}\"/libwiretap*.dylib \"${BUILT_PRODUCTS_DIR}\"/libwsutil*.dylib; do\n    [ -f \"${dylib}\" ] || continue\n    codesign --force --sign \"${sign_identity}\" --timestamp=none \"${dylib}\"\ndone\n\ntouch \"${BUILT_PRODUCTS_DIR}/.wireshark-debug-libs-signed\"\n";
+			showEnvVarsInLog = 0;
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		BA4D26B02F9A2F760070BE17 /* Sources */ = {
@@ -725,11 +725,11 @@
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
 				ENABLE_MODULE_VERIFIER = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
-				GENERATE_INFOPLIST_FILE = YES;
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"$(inherited)",
 					"TCPVIEWER_HAS_WIRESHARK=$(TCPVIEWER_HAS_WIRESHARK)",
 				);
+				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Vendor/.install/pcapplusplus/include",
@@ -738,30 +738,30 @@
 					"$(PROJECT_DIR)/Vendor/Wireshark/include",
 					"/opt/homebrew/include/glib-2.0",
 					"/opt/homebrew/lib/glib-2.0/include",
-					"/opt/homebrew/opt/gettext/include",
-					"/opt/homebrew/opt/pcre2/include",
+					/opt/homebrew/opt/gettext/include,
+					/opt/homebrew/opt/pcre2/include,
 					"/usr/local/include/glib-2.0",
 					"/usr/local/lib/glib-2.0/include",
-					"/usr/local/opt/gettext/include",
-					"/usr/local/opt/pcre2/include",
+					/usr/local/opt/gettext/include,
+					/usr/local/opt/pcre2/include,
 				);
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
 				LD_RUNPATH_SEARCH_PATHS = (
-						"$(inherited)",
-						"@executable_path/../Frameworks",
-						"@loader_path/Frameworks",
-						"$(BUILT_PRODUCTS_DIR)",
-						"$(PROJECT_DIR)/Vendor/.install/wireshark/lib",
-					);
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/Frameworks",
+					"$(BUILT_PRODUCTS_DIR)",
+					"$(PROJECT_DIR)/Vendor/.install/wireshark/lib",
+				);
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Vendor/.install/pcapplusplus/lib",
 					"$(PROJECT_DIR)/Vendor/.install/wireshark/lib",
-					"/opt/homebrew/opt/glib/lib",
-					"/opt/homebrew/opt/gettext/lib",
-					"/usr/local/opt/glib/lib",
-					"/usr/local/opt/gettext/lib",
+					/opt/homebrew/opt/glib/lib,
+					/opt/homebrew/opt/gettext/lib,
+					/usr/local/opt/glib/lib,
+					/usr/local/opt/gettext/lib,
 				);
 				MARKETING_VERSION = 1.0;
 				MODULE_VERIFIER_SUPPORTED_LANGUAGES = "objective-c objective-c++";
@@ -815,11 +815,11 @@
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
 				ENABLE_MODULE_VERIFIER = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
-				GENERATE_INFOPLIST_FILE = YES;
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"$(inherited)",
 					"TCPVIEWER_HAS_WIRESHARK=$(TCPVIEWER_HAS_WIRESHARK)",
 				);
+				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Vendor/.install/pcapplusplus/include",
@@ -932,18 +932,19 @@
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSMainStoryboardFile = Main;
 				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
-					LD_RUNPATH_SEARCH_PATHS = (
-							"$(inherited)",
-							"@executable_path/../Frameworks",
-							"$(BUILT_PRODUCTS_DIR)",
-							"$(PROJECT_DIR)/Vendor/.install/wireshark/lib",
-						);
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"$(BUILT_PRODUCTS_DIR)",
+					"$(PROJECT_DIR)/Vendor/.install/wireshark/lib",
+				);
 				MACOSX_DEPLOYMENT_TARGET = 15.6;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.proxyman.tcpviewer;
 				PRODUCT_MODULE_NAME = TCPViewer;
 				PRODUCT_NAME = "TCP Viewer";
 				REGISTER_APP_GROUPS = YES;
+				SKIP_INSTALL = NO;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -986,6 +987,7 @@
 				PRODUCT_MODULE_NAME = TCPViewer;
 				PRODUCT_NAME = "TCP Viewer";
 				REGISTER_APP_GROUPS = YES;
+				SKIP_INSTALL = NO;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
