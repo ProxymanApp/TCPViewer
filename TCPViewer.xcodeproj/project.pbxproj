@@ -678,9 +678,15 @@
 				ENABLE_MODULE_VERIFIER = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"TCPVIEWER_HAS_WIRESHARK=$(TCPVIEWER_HAS_WIRESHARK)",
+				);
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Vendor/.install/pcapplusplus/include",
+					"$(PROJECT_DIR)/Vendor/.install/wireshark/include",
+					"$(PROJECT_DIR)/Vendor/.install/wireshark/include/wireshark",
 				);
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
@@ -706,6 +712,7 @@
 					SystemConfiguration,
 					"-framework",
 					CoreFoundation,
+					"$(TCPVIEWER_WIRESHARK_LDFLAGS)",
 				);
 				OTHER_SWIFT_FLAGS = "$(inherited) -Xcc -fmodule-map-file=$(PROJECT_DIR)/PcapPlusPlusCore/NativeBridge/module.modulemap";
 				PRODUCT_BUNDLE_IDENTIFIER = com.proxyman.PcapPlusPlusCore;
@@ -719,6 +726,8 @@
 				SWIFT_INSTALL_OBJC_HEADER = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
+				TCPVIEWER_HAS_WIRESHARK = 0;
+				TCPVIEWER_WIRESHARK_LDFLAGS = "";
 				VERSIONING_SYSTEM = "apple-generic";
 				VERSION_INFO_PREFIX = "";
 			};
@@ -738,9 +747,15 @@
 				ENABLE_MODULE_VERIFIER = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"TCPVIEWER_HAS_WIRESHARK=$(TCPVIEWER_HAS_WIRESHARK)",
+				);
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Vendor/.install/pcapplusplus/include",
+					"$(PROJECT_DIR)/Vendor/.install/wireshark/include",
+					"$(PROJECT_DIR)/Vendor/.install/wireshark/include/wireshark",
 				);
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
@@ -766,6 +781,7 @@
 					SystemConfiguration,
 					"-framework",
 					CoreFoundation,
+					"$(TCPVIEWER_WIRESHARK_LDFLAGS)",
 				);
 				OTHER_SWIFT_FLAGS = "$(inherited) -Xcc -fmodule-map-file=$(PROJECT_DIR)/PcapPlusPlusCore/NativeBridge/module.modulemap";
 				PRODUCT_BUNDLE_IDENTIFIER = com.proxyman.PcapPlusPlusCore;
@@ -779,6 +795,8 @@
 				SWIFT_INSTALL_OBJC_HEADER = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
+				TCPVIEWER_HAS_WIRESHARK = 0;
+				TCPVIEWER_WIRESHARK_LDFLAGS = "";
 				VERSIONING_SYSTEM = "apple-generic";
 				VERSION_INFO_PREFIX = "";
 			};
@@ -916,7 +934,7 @@
 					"$(PROJECT_DIR)/Vendor/HexFiend",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 26.4;
+				MACOSX_DEPLOYMENT_TARGET = 15.6;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.proxyman.tcpviewer.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -941,7 +959,7 @@
 					"$(PROJECT_DIR)/Vendor/HexFiend",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 26.4;
+				MACOSX_DEPLOYMENT_TARGET = 15.6;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.proxyman.tcpviewer.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";

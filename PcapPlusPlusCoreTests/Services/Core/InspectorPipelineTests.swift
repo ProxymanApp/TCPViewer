@@ -3,6 +3,7 @@ import Foundation
 import Testing
 @testable import PcapPlusPlusCore
 
+@Suite(.serialized)
 struct InspectorPipelineTests {
 
     @Test func nativeCoreCaptureFilterValidationNormalizesAndRejectsInvalidSyntax() async {
@@ -60,6 +61,26 @@ struct InspectorPipelineTests {
         buffer.discardPending(releasingCapacity: true)
         #expect(buffer.isEmpty)
         #expect(buffer.flush() == nil)
+    }
+
+    @Test func wiresharkUnavailableBackendFallsBackToPcapPlusPlusDetails() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let captureURL = directory.appendingPathComponent("wireshark-fallback.pcap")
+        try writePCAP(to: captureURL, packets: [makeIPv4UDPPayloadPacket()])
+
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
+        let packets = try await document.open()
+        let packet = try #require(packets.first)
+        let inspection = try await document.inspectPacket(id: packet.id)
+
+        let fallback = try #require(findNode(in: inspection.detailNodes, id: "wireshark.fallback"))
+        #expect(fallback.name == "Wireshark Dissector Unavailable")
+        #expect(fallback.fieldName == "tcpviewer.wireshark.fallback")
+        #expect(fallback.severity == .warning)
+        #expect(fallback.value?.contains("libwireshark backend is not linked") == true)
+        #expect(findNode(in: inspection.detailNodes, id: "udp.length") != nil)
     }
 
     @Test func generatedCaptureInspectionCoversCoreProtocolsAndExactByteRanges() async throws {
@@ -343,7 +364,13 @@ struct InspectorPipelineTests {
         #expect(inspection.decodeStatus.kind != .complete)
         #expect(!inspection.rawBytes.isEmpty)
         #expect(inspection.rawBytes.count == packet.capturedLength)
-        #expect(inspection.detailNodes.contains { $0.kind == .warning && $0.name == "Decode Warning" })
+        let decodeNode = try #require(findNode(in: inspection.detailNodes, id: "warning.decode"))
+        if inspection.decodeStatus.kind == .malformed {
+            #expect(decodeNode.kind == .warning)
+            #expect(decodeNode.name == "Decode Warning")
+        } else {
+            #expect(decodeNode.severity != .normal)
+        }
     }
 
     @Test func incrementalOpenEmitsAppendBatchesAndCompletedProgress() async throws {
