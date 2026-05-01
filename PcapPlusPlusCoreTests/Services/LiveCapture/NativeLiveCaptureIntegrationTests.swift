@@ -10,7 +10,7 @@ final class NativeLiveCaptureIntegrationTests {
             return
         }
 
-        let core = NativeTCPViewerCore()
+        let core = NativeTCPViewerCore(disablesWiresharkForOfflineDocuments: true, disablesWiresharkForLiveSessions: true)
         let interfaces = try await core.listInterfaces()
         let captureInterface = try #require(
             interfaces.first { $0.id == requestedInterfaceID },
@@ -81,7 +81,7 @@ private actor LiveCaptureProbe {
             packets.append(contentsOf: batch)
         case .packetBatch(let batch, .replace):
             packets = batch
-        case .liveStateChanged, .documentStateChanged, .loadProgressChanged, .healthChanged, .documentMetadataChanged:
+        case .liveStateChanged, .documentStateChanged, .loadProgressChanged, .healthChanged, .documentMetadataChanged, .packetSummaryUpdates:
             break
         @unknown default:
             break

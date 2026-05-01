@@ -6,18 +6,33 @@ public final class NativeTCPViewerCore: TCPViewerCoreProviding, @unchecked Senda
 
     private let nativeCore: PCPPNativeCore
     private let workerQueue: DispatchQueue
+    private let disablesWiresharkForOfflineDocuments: Bool
+    private let disablesWiresharkForLiveSessions: Bool
 
     public init() {
         self.nativeCore = PCPPNativeCore()
         self.workerQueue = DispatchQueue(label: Self.defaultQueueLabel, qos: .userInitiated)
+        self.disablesWiresharkForOfflineDocuments = false
+        self.disablesWiresharkForLiveSessions = false
     }
 
     init(
         nativeCore: PCPPNativeCore,
-        workerQueue: DispatchQueue = DispatchQueue(label: NativeTCPViewerCore.defaultQueueLabel, qos: .userInitiated)
+        workerQueue: DispatchQueue = DispatchQueue(label: NativeTCPViewerCore.defaultQueueLabel, qos: .userInitiated),
+        disablesWiresharkForOfflineDocuments: Bool = false,
+        disablesWiresharkForLiveSessions: Bool = false
     ) {
         self.nativeCore = nativeCore
         self.workerQueue = workerQueue
+        self.disablesWiresharkForOfflineDocuments = disablesWiresharkForOfflineDocuments
+        self.disablesWiresharkForLiveSessions = disablesWiresharkForLiveSessions
+    }
+
+    init(disablesWiresharkForOfflineDocuments: Bool, disablesWiresharkForLiveSessions: Bool = false) {
+        self.nativeCore = PCPPNativeCore()
+        self.workerQueue = DispatchQueue(label: Self.defaultQueueLabel, qos: .userInitiated)
+        self.disablesWiresharkForOfflineDocuments = disablesWiresharkForOfflineDocuments
+        self.disablesWiresharkForLiveSessions = disablesWiresharkForLiveSessions
     }
 
     public func listInterfaces(completion: @escaping TCPViewerCompletion<[CaptureInterfaceSummary]>) {
@@ -67,7 +82,11 @@ public final class NativeTCPViewerCore: TCPViewerCoreProviding, @unchecked Senda
                         )
                     }
                 }
-                return try NativeLiveCaptureSession(interfaceID: interfaceID, options: validatedOptions)
+                return try NativeLiveCaptureSession(
+                    interfaceID: interfaceID,
+                    options: validatedOptions,
+                    disablesWireshark: self.disablesWiresharkForLiveSessions
+                )
             })
         }
     }
@@ -81,7 +100,10 @@ public final class NativeTCPViewerCore: TCPViewerCoreProviding, @unchecked Senda
         workerQueue.async {
             completion(Result {
                 do {
-                    return try NativeOfflineCaptureDocument(fileURL: fileURL)
+                    return try NativeOfflineCaptureDocument(
+                        fileURL: fileURL,
+                        disablesWireshark: self.disablesWiresharkForOfflineDocuments
+                    )
                 } catch {
                     throw NativeBridgeMapper.coreError(error, defaultCode: .offlineFileOpenFailed)
                 }

@@ -134,6 +134,19 @@ typedef NS_ENUM(NSInteger, PCPPNativeLiveSessionPhase) {
 
 @end
 
+@interface PCPPNativePacketByteViewDescriptor : NSObject
+
+@property (nonatomic, copy, readonly) NSString *identifier;
+@property (nonatomic, copy, readonly) NSString *label;
+@property (nonatomic, copy, readonly) NSData *bytes;
+
+- (instancetype)initWithIdentifier:(NSString *)identifier
+                             label:(NSString *)label
+                             bytes:(NSData *)bytes NS_DESIGNATED_INITIALIZER;
+- (instancetype)init NS_UNAVAILABLE;
+
+@end
+
 @interface PCPPNativePacketCaptureMetadataDescriptor : NSObject
 
 @property (nonatomic, readonly) PCPPNativeLinkType linkType;
@@ -166,6 +179,7 @@ typedef NS_ENUM(NSInteger, PCPPNativeLiveSessionPhase) {
 @property (nonatomic, strong, readonly) NSDate *timestamp;
 @property (nonatomic, copy, readonly, nullable) NSString *interfaceIdentifier;
 @property (nonatomic, readonly) PCPPNativeTransportHint transportHint;
+@property (nonatomic, copy, readonly, nullable) NSString *protocolSummary;
 @property (nonatomic, strong, readonly) PCPPNativePacketEndpointDescriptor *sourceEndpoint;
 @property (nonatomic, strong, readonly) PCPPNativePacketEndpointDescriptor *destinationEndpoint;
 @property (nonatomic, readonly) NSInteger originalLength;
@@ -184,6 +198,7 @@ typedef NS_ENUM(NSInteger, PCPPNativeLiveSessionPhase) {
                           timestamp:(NSDate *)timestamp
                 interfaceIdentifier:(nullable NSString *)interfaceIdentifier
                       transportHint:(PCPPNativeTransportHint)transportHint
+                     protocolSummary:(nullable NSString *)protocolSummary
                      sourceEndpoint:(PCPPNativePacketEndpointDescriptor *)sourceEndpoint
                 destinationEndpoint:(PCPPNativePacketEndpointDescriptor *)destinationEndpoint
                      originalLength:(NSInteger)originalLength
@@ -289,13 +304,15 @@ typedef NS_ENUM(NSInteger, PCPPNativeLiveSessionPhase) {
 @property (nonatomic, readonly) NSInteger bitOffset;
 @property (nonatomic, readonly) NSInteger bitLength;
 @property (nonatomic, readonly) BOOL hasBitRange;
+@property (nonatomic, copy, readonly) NSString *sourceIdentifier;
 
 - (instancetype)initWithOffset:(NSInteger)offset length:(NSInteger)length NS_DESIGNATED_INITIALIZER;
 - (instancetype)initWithOffset:(NSInteger)offset
                         length:(NSInteger)length
                      bitOffset:(NSInteger)bitOffset
                      bitLength:(NSInteger)bitLength
-                   hasBitRange:(BOOL)hasBitRange NS_DESIGNATED_INITIALIZER;
+                   hasBitRange:(BOOL)hasBitRange
+              sourceIdentifier:(NSString *)sourceIdentifier NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
 
 @end
@@ -332,12 +349,14 @@ typedef NS_ENUM(NSInteger, PCPPNativeLiveSessionPhase) {
 @property (nonatomic, readonly) unsigned long long packetIdentifier;
 @property (nonatomic, readonly) unsigned long long packetNumber;
 @property (nonatomic, copy, readonly) NSData *rawBytes;
+@property (nonatomic, copy, readonly) NSArray<PCPPNativePacketByteViewDescriptor *> *byteViews;
 @property (nonatomic, copy, readonly) NSArray<PCPPNativePacketDetailNodeDescriptor *> *detailNodes;
 @property (nonatomic, strong, readonly) PCPPNativeDecodeStatusDescriptor *decodeStatus;
 
 - (instancetype)initWithPacketIdentifier:(unsigned long long)packetIdentifier
                             packetNumber:(unsigned long long)packetNumber
                                 rawBytes:(NSData *)rawBytes
+                               byteViews:(NSArray<PCPPNativePacketByteViewDescriptor *> *)byteViews
                              detailNodes:(NSArray<PCPPNativePacketDetailNodeDescriptor *> *)detailNodes
                             decodeStatus:(PCPPNativeDecodeStatusDescriptor *)decodeStatus NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
@@ -381,6 +400,10 @@ typedef BOOL (^PCPPNativeCancellationHandler)(void);
 
 - (instancetype)initWithInterfaceIdentifier:(NSString *)interfaceIdentifier
                                     options:(PCPPNativeCaptureOptionsDescriptor *)options
+                                      error:(NSError **)error;
+- (instancetype)initWithInterfaceIdentifier:(NSString *)interfaceIdentifier
+                                    options:(PCPPNativeCaptureOptionsDescriptor *)options
+                         disablesWireshark:(BOOL)disablesWireshark
                                       error:(NSError **)error NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
 
@@ -389,6 +412,8 @@ typedef BOOL (^PCPPNativeCancellationHandler)(void);
 - (BOOL)resumeAndReturnError:(NSError **)error NS_SWIFT_NAME(resume());
 - (BOOL)stopAndReturnError:(NSError **)error NS_SWIFT_NAME(stop());
 - (nullable PCPPNativePacketInspectionDescriptor *)inspectPacketWithIdentifier:(unsigned long long)identifier error:(NSError **)error;
+- (nullable NSArray<PCPPNativePacketSummaryDescriptor *> *)reanalyzePacketSummariesAndReturnError:(NSError **)error
+    NS_SWIFT_NAME(reanalyzePacketSummaries());
 - (BOOL)exportPacketsWithIdentifiers:(NSArray<NSNumber *> *)identifiers
                                 toURL:(NSURL *)url
                                format:(NSString *)format
@@ -405,7 +430,10 @@ typedef BOOL (^PCPPNativeCancellationHandler)(void);
 @property (nonatomic, strong, readonly) PCPPNativeCaptureDocumentMetadataDescriptor *documentMetadata;
 @property (nonatomic, readonly) BOOL dirty;
 
-- (instancetype)initWithURL:(NSURL *)url error:(NSError **)error NS_DESIGNATED_INITIALIZER;
+- (instancetype)initWithURL:(NSURL *)url error:(NSError **)error;
+- (instancetype)initWithURL:(NSURL *)url
+         disablesWireshark:(BOOL)disablesWireshark
+                     error:(NSError **)error NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
 
 - (NSArray<PCPPNativePacketSummaryDescriptor *> *)openAndReturnError:(NSError **)error;
@@ -451,6 +479,9 @@ typedef BOOL (^PCPPNativeCancellationHandler)(void);
                               error:(NSError **)error NS_SWIFT_NAME(appendPacket(identifier:rawBytes:timestamp:linkLayerType:originalLength:));
 - (nullable PCPPNativePacketInspectionDescriptor *)inspectPacketWithIdentifier:(unsigned long long)identifier
                                                                          error:(NSError **)error NS_SWIFT_NAME(inspectPacket(identifier:));
+- (nullable NSArray<PCPPNativePacketSummaryDescriptor *> *)reanalyzePacketSummariesUpToIdentifier:(unsigned long long)identifier
+                                                                                             error:(NSError **)error
+    NS_SWIFT_NAME(reanalyzePacketSummaries(upTo:));
 - (nullable NSNumber *)offsetForPacketWithIdentifier:(unsigned long long)identifier
                                                error:(NSError **)error NS_SWIFT_NAME(offset(identifier:));
 - (void)cleanup;

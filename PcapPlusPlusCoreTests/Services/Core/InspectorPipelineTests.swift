@@ -64,6 +64,9 @@ struct InspectorPipelineTests {
     }
 
     @Test func wiresharkUnavailableBackendFallsBackToPcapPlusPlusDetails() async throws {
+        setenv("TCPVIEWER_DISABLE_WIRESHARK", "1", 1)
+        defer { unsetenv("TCPVIEWER_DISABLE_WIRESHARK") }
+
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -83,27 +86,27 @@ struct InspectorPipelineTests {
         #expect(
             fallbackValue.contains("libwireshark backend is not linked")
                 || fallbackValue.contains("TCPVIEWER_DISABLE_WIRESHARK")
-                || fallbackValue.contains("disabled while running TCP Viewer tests")
         )
         #expect(findNode(in: inspection.detailNodes, id: "udp.length") != nil)
     }
 
     @Test func generatedCaptureInspectionCoversCoreProtocolsAndExactByteRanges() async throws {
-        let directory = try makeTemporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
+        try await withWiresharkDisabled {
+            let directory = try makeTemporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: directory) }
 
-        let captureURL = directory.appendingPathComponent("generated-protocols.pcap")
-        try writePCAP(
-            to: captureURL,
-            packets: [
-                makeARPRequestPacket(),
-                makeIPv4TCPPayloadPacket(),
-                makeIPv4UDPPayloadPacket(),
-                makeIPv6UDPPayloadPacket(),
-                makeIPv4ICMPEchoRequestPacket(),
-                makeIPv6ICMPEchoRequestPacket(),
-            ]
-        )
+            let captureURL = directory.appendingPathComponent("generated-protocols.pcap")
+            try writePCAP(
+                to: captureURL,
+                packets: [
+                    makeARPRequestPacket(),
+                    makeIPv4TCPPayloadPacket(),
+                    makeIPv4UDPPayloadPacket(),
+                    makeIPv6UDPPayloadPacket(),
+                    makeIPv4ICMPEchoRequestPacket(),
+                    makeIPv6ICMPEchoRequestPacket(),
+                ]
+            )
 
         let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
         let packets = try await document.open()
@@ -180,38 +183,75 @@ struct InspectorPipelineTests {
         #expect(findNode(in: icmpNode.children, id: "icmp.identifier")?.value == "4660")
         #expect(findNode(in: icmpNode.children, id: "icmp.sequence")?.byteRange == PacketByteRange(offset: 40, length: 2))
 
-        let icmpv6Inspection = try await document.inspectPacket(id: packets[5].id)
-        let icmpv6Node = try #require(icmpv6Inspection.detailNodes.first { $0.name == "ICMPv6" })
-        #expect(findNode(in: icmpv6Node.children, id: "icmpv6.type")?.value == "Echo Request (128)")
-        #expect(findNode(in: icmpv6Node.children, id: "icmpv6.identifier")?.value == "22136")
-        #expect(findNode(in: icmpv6Node.children, id: "icmpv6.sequence")?.byteRange == PacketByteRange(offset: 60, length: 2))
+            let icmpv6Inspection = try await document.inspectPacket(id: packets[5].id)
+            let icmpv6Node = try #require(icmpv6Inspection.detailNodes.first { $0.name == "ICMPv6" })
+            #expect(findNode(in: icmpv6Node.children, id: "icmpv6.type")?.value == "Echo Request (128)")
+            #expect(findNode(in: icmpv6Node.children, id: "icmpv6.identifier")?.value == "22136")
+            #expect(findNode(in: icmpv6Node.children, id: "icmpv6.sequence")?.byteRange == PacketByteRange(offset: 60, length: 2))
+        }
     }
 
     @Test func tlsClientHelloInspectionRendersVersionedSummaryAndDetail() async throws {
         let fixtureURL = CoreFixtureCatalog.captureCategoryURL("tls").appendingPathComponent("SSL-ClientHello1.pcap")
         let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: fixtureURL)
         let packets = try await document.open()
-        let packet = try #require(packets.first { $0.transportHint == .tls })
+        let packet = try #require(packets.first { $0.infoSummary.contains("Client Hello") })
 
         #expect(packet.layers.contains { $0.name == "TLSv1.2" })
 
         let inspection = try await document.inspectPacket(id: packet.id)
-        let tlsNode = try #require(inspection.detailNodes.first {
-            $0.name == "Transport Layer Security" &&
-                findNode(in: $0.children, name: "Handshake Protocol: Client Hello") != nil
+        #expect(inspection.byteViews.first?.id == "frame")
+        #expect(inspection.byteViews.first?.bytes == inspection.rawBytes)
+        let tlsNode = try #require(inspection.detailNodes.first { $0.fieldName == "tls" })
+        #expect(findNode(in: tlsNode.children, fieldName: "tls.record.content_type")?.value?.contains("Handshake") == true)
+        #expect(findNode(in: tlsNode.children, fieldName: "tls.record.version") != nil)
+        #expect(findNode(in: tlsNode.children, fieldName: "tls.record.length") != nil)
+        #expect(findNode(in: tlsNode.children, fieldName: "tls.handshake")?.value?.contains("Client Hello") == true)
+        #expect(findNode(in: tlsNode.children, fieldName: "tls.handshake.version")?.value?.contains("TLS") == true)
+        #expect(findNode(in: tlsNode.children, fieldName: "tls.handshake.extensions_server_name")?.value?.contains("www.google.com") == true)
+    }
+
+    @Test func splitTlsClientHelloInspectionExposesReassembledByteView() async throws {
+        let fixtureURL = CoreFixtureCatalog.captureCategoryURL("tls").appendingPathComponent("SSL-ClientHello1-split.pcap")
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: fixtureURL)
+        let packets = try await document.open()
+        let clientHello = try #require(packets.first { $0.infoSummary.contains("Client Hello") })
+
+        let inspection = try await document.inspectPacket(id: clientHello.id)
+        let reassembled = try #require(inspection.byteViews.first { byteView in
+            byteView.id != "frame" && byteView.label.localizedCaseInsensitiveContains("reassembled")
         })
-        #expect(tlsNode.value?.contains("Handshake") == true)
-        #expect(findNode(in: tlsNode.children, name: "Content Type")?.value?.contains("Handshake") == true)
-        #expect(findNode(in: tlsNode.children, name: "Version") != nil)
-        #expect(findNode(in: tlsNode.children, name: "Length") != nil)
-        #expect(findNode(in: tlsNode.children, name: "Handshake Protocol: Client Hello") != nil)
-        #expect(findNode(in: tlsNode.children, name: "Handshake Version")?.value?.contains("TLSv1.2") == true)
-        #expect(findNode(in: tlsNode.children, name: "Server Name Indication")?.value == "www.google.com")
+
+        #expect(reassembled.bytes.count > inspection.rawBytes.count)
+        #expect(inspection.detailNodes.contains { nodeHasByteSource($0, sourceID: reassembled.id) })
+    }
+
+    @Test func wiresharkColumnsPopulateProtocolAndInfoForTlsClientHello() async throws {
+        let fixtureURL = CoreFixtureCatalog.captureCategoryURL("tls").appendingPathComponent("SSL-ClientHello1.pcap")
+
+        let packets = try await NativeTCPViewerCore().loadPacketSummaries(from: fixtureURL)
+        let clientHello = try #require(packets.first { $0.infoSummary.contains("Client Hello") })
+
+        #expect(clientHello.protocolSummary?.hasPrefix("TLS") == true)
+        #expect(clientHello.infoSummary.contains("Client Hello"))
+        #expect(clientHello.sniDomainName == "www.google.com")
+    }
+
+    @Test func wiresharkColumnsUseReassembledSplitClientHelloPacket() async throws {
+        let fixtureURL = CoreFixtureCatalog.captureCategoryURL("tls").appendingPathComponent("SSL-ClientHello1-split.pcap")
+
+        let packets = try await NativeTCPViewerCore().loadPacketSummaries(from: fixtureURL)
+        let clientHello = try #require(packets.first { $0.infoSummary.contains("Client Hello") })
+
+        #expect(clientHello.protocolSummary?.hasPrefix("TLS") == true)
+        #expect(clientHello.infoSummary.contains("Client Hello"))
+        #expect(clientHello.sniDomainName == "www.google.com")
     }
 
     @Test func tlsApplicationDataInspectionRendersRecordVersionsAndEncryptedData() async throws {
-        let directory = try makeTemporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
+        try await withWiresharkDisabled {
+            let directory = try makeTemporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: directory) }
 
         let captureURL = directory.appendingPathComponent("tls-application-data.pcap")
         try writePCAP(
@@ -237,12 +277,14 @@ struct InspectorPipelineTests {
         #expect(findNode(in: tlsNode.children, name: "Content Type")?.value == "Application Data (23)")
         #expect(findNode(in: tlsNode.children, name: "Version")?.value == "TLSv1.2 (0x0303)")
         #expect(findNode(in: tlsNode.children, name: "Encrypted Application Data")?.value == "4 bytes")
-        #expect(findNode(in: tlsNode.children, name: "Encrypted Data Preview")?.value == "de ad be ef")
+            #expect(findNode(in: tlsNode.children, name: "Encrypted Data Preview")?.value == "de ad be ef")
+        }
     }
 
     @Test func tcpSynInspectionExpandsFlagsAndOptions() async throws {
-        let directory = try makeTemporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
+        try await withWiresharkDisabled {
+            let directory = try makeTemporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: directory) }
 
         let captureURL = directory.appendingPathComponent("tcp-syn-options.pcap")
         try writePCAP(to: captureURL, packets: [makeIPv4TCPSYNOptionsPacket()])
@@ -279,13 +321,15 @@ struct InspectorPipelineTests {
         #expect(options.children[5].value == "TSval 663237127, TSecr 0")
         #expect(options.children[6].name == "TCP Option - SACK permitted")
         #expect(options.children[6].value == "Permitted")
-        #expect(options.children[7].name == "TCP Option - End of Option List")
-        #expect(options.children[8].name == "TCP Option - End of Option List")
+            #expect(options.children[7].name == "TCP Option - End of Option List")
+            #expect(options.children[8].name == "TCP Option - End of Option List")
+        }
     }
 
     @Test func dnsInspectionRendersHeaderFlagsAndRecords() async throws {
-        let directory = try makeTemporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
+        try await withWiresharkDisabled {
+            let directory = try makeTemporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: directory) }
 
         let captureURL = directory.appendingPathComponent("dns-response.pcap")
         try writePCAP(to: captureURL, packets: [makeIPv4DNSResponsePacket()])
@@ -304,13 +348,15 @@ struct InspectorPipelineTests {
         #expect(findNode(in: dnsNode.children, id: "dns.query.0.name")?.value == "www.example.com")
         #expect(findNode(in: dnsNode.children, id: "dns.query.0.type")?.value == "A (1)")
         #expect(findNode(in: dnsNode.children, id: "dns.answer.0.name")?.value == "www.example.com")
-        #expect(findNode(in: dnsNode.children, id: "dns.answer.0.data")?.value == "93.184.216.34")
-        #expect(findNode(in: dnsNode.children, id: "dns.answer.0.data")?.byteRange == PacketByteRange(offset: 87, length: 4))
+            #expect(findNode(in: dnsNode.children, id: "dns.answer.0.data")?.value == "93.184.216.34")
+            #expect(findNode(in: dnsNode.children, id: "dns.answer.0.data")?.byteRange == PacketByteRange(offset: 87, length: 4))
+        }
     }
 
     @Test func phaseTwoInspectionRendersHTTPHeadersAndWebSocketFrames() async throws {
-        let directory = try makeTemporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
+        try await withWiresharkDisabled {
+            let directory = try makeTemporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: directory) }
 
         let captureURL = directory.appendingPathComponent("phase-two-app-protocols.pcap")
         try writePCAP(
@@ -353,16 +399,18 @@ struct InspectorPipelineTests {
         let maskingKey = try #require(findNode(in: websocketNode.children, id: "websocket.54.maskingKey"))
         #expect(maskingKey.rawValue == "01 02 03 04")
         #expect(maskingKey.byteRange == PacketByteRange(offset: 56, length: 4))
-        let websocketPayload = try #require(findNode(in: websocketNode.children, id: "websocket.54.payload"))
-        #expect(websocketPayload.value == "69 67 6f 68 6e")
-        #expect(websocketPayload.byteRange == PacketByteRange(offset: 60, length: 5))
+            let websocketPayload = try #require(findNode(in: websocketNode.children, id: "websocket.54.payload"))
+            #expect(websocketPayload.value == "69 67 6f 68 6e")
+            #expect(websocketPayload.byteRange == PacketByteRange(offset: 60, length: 5))
+        }
     }
 
     @Test func malformedInspectionAddsDecodeWarningAndKeepsRawBytes() async throws {
-        let fixtureURL = CoreFixtureCatalog.captureCategoryURL("malformed").appendingPathComponent("partial-http-request.pcap")
-        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: fixtureURL)
-        let packets = try await document.open()
-        let packet = try #require(packets.first)
+        try await withWiresharkDisabled {
+            let fixtureURL = CoreFixtureCatalog.captureCategoryURL("malformed").appendingPathComponent("partial-http-request.pcap")
+            let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: fixtureURL)
+            let packets = try await document.open()
+            let packet = try #require(packets.first)
 
         let inspection = try await document.inspectPacket(id: packet.id)
 
@@ -373,14 +421,16 @@ struct InspectorPipelineTests {
         if inspection.decodeStatus.kind == .malformed {
             #expect(decodeNode.kind == .warning)
             #expect(decodeNode.name == "Decode Warning")
-        } else {
-            #expect(decodeNode.severity != .normal)
+            } else {
+                #expect(decodeNode.severity != .normal)
+            }
         }
     }
 
     @Test func incrementalOpenEmitsAppendBatchesAndCompletedProgress() async throws {
-        let directory = try makeTemporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
+        try await withWiresharkDisabled {
+            let directory = try makeTemporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: directory) }
 
         let captureURL = directory.appendingPathComponent("incremental-complete.pcap")
         let repeatedPacket = makeIPv4UDPPayloadPacket()
@@ -412,13 +462,15 @@ struct InspectorPipelineTests {
         #expect(snapshot.replaceBatchCount == 1)
         #expect(snapshot.appendBatchCount >= 5)
         #expect(snapshot.appendedPacketCount == packetCount)
-        #expect(snapshot.progressPhases.contains(.loading))
-        #expect(snapshot.progressPhases.last == .completed)
+            #expect(snapshot.progressPhases.contains(.loading))
+            #expect(snapshot.progressPhases.last == .completed)
+        }
     }
 
     @Test func incrementalOpenAllowsEarlyInspectionAndCancellation() async throws {
-        let directory = try makeTemporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
+        try await withWiresharkDisabled {
+            let directory = try makeTemporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: directory) }
 
         let captureURL = directory.appendingPathComponent("incremental-cancel.pcap")
         let repeatedPacket = makeIPv4UDPPayloadPacket()
@@ -479,8 +531,9 @@ struct InspectorPipelineTests {
         do {
             try await document.save()
             Issue.record("Expected save() to fail for a partially loaded capture.")
-        } catch let error as TCPViewerCoreError {
-            #expect(error.code == .offlineFileSaveFailed)
+            } catch let error as TCPViewerCoreError {
+                #expect(error.code == .offlineFileSaveFailed)
+            }
         }
     }
 
@@ -532,6 +585,68 @@ struct InspectorPipelineTests {
         #expect(!FileManager.default.fileExists(atPath: backingFilePath))
         #expect(harness.snapshot.packetCount == 0)
         #expect(!harness.snapshot.backingFileExists)
+    }
+
+    @Test func livePacketDiskStoreUnitAppendsAtEOFAfterInspectionReads() throws {
+        let harness = NativeLivePacketDiskStoreTestHarness()
+        let timestamp = Date(timeIntervalSince1970: 1_700_000_000)
+        let firstPacket = makeIPv4UDPPayloadPacket()
+        var secondPacket = makePaddedPacket(base: makeIPv4UDPPayloadPacket(), byteCount: 64)
+        secondPacket[secondPacket.count - 1] = 0x22
+        var thirdPacket = makePaddedPacket(base: makeIPv4UDPPayloadPacket(), byteCount: 96)
+        thirdPacket[thirdPacket.count - 1] = 0x33
+
+        try harness.appendPacket(identifier: 1, rawBytes: firstPacket, timestamp: timestamp)
+        try harness.appendPacket(identifier: 2, rawBytes: secondPacket, timestamp: timestamp.addingTimeInterval(1))
+
+        let firstInspection = try harness.inspectPacket(identifier: 1)
+        #expect(firstInspection.rawBytes == firstPacket)
+
+        try harness.appendPacket(identifier: 3, rawBytes: thirdPacket, timestamp: timestamp.addingTimeInterval(2))
+
+        #expect(try harness.offset(identifier: 1) == 0)
+        #expect(try harness.offset(identifier: 2) == UInt64(firstPacket.count))
+        #expect(try harness.offset(identifier: 3) == UInt64(firstPacket.count + secondPacket.count))
+        #expect(harness.snapshot.backingFileSize == UInt64(firstPacket.count + secondPacket.count + thirdPacket.count))
+        #expect(try harness.inspectPacket(identifier: 2).rawBytes == secondPacket)
+        #expect(try harness.inspectPacket(identifier: 3).rawBytes == thirdPacket)
+
+        harness.cleanup()
+    }
+
+    @Test func livePacketReanalysisIntegrationDoesNotCorruptLaterPacketSummaries() throws {
+        let harness = NativeLivePacketDiskStoreTestHarness()
+        let timestamp = Date(timeIntervalSince1970: 1_700_200_000)
+        let firstPacket = makeIPv4UDPPayloadPacket()
+        var secondPacket = makePaddedPacket(base: makeIPv4UDPPayloadPacket(), byteCount: 94)
+        secondPacket[secondPacket.count - 1] = 0x22
+        let thirdPacket = makeUnknownEtherTypePacket(etherType: 0xb681, byteCount: 66)
+
+        try harness.appendPacket(identifier: 1, rawBytes: firstPacket, timestamp: timestamp)
+        try harness.appendPacket(identifier: 2, rawBytes: secondPacket, timestamp: timestamp.addingTimeInterval(1))
+
+        let staleReanalysis = try harness.reanalyzePacketSummaries(upTo: 1)
+        #expect(staleReanalysis.count == 1)
+        #expect(staleReanalysis.first?.layers.map(\.name).contains("UDP") == true)
+
+        try harness.appendPacket(identifier: 3, rawBytes: thirdPacket, timestamp: timestamp.addingTimeInterval(2))
+
+        let summaries = try harness.reanalyzePacketSummaries(upTo: 2)
+        let secondSummary = try #require(summaries.last)
+        #expect(secondSummary.id == 2)
+        #expect(secondSummary.layers.map(\.name).contains("UDP"))
+        #expect(secondSummary.infoSummary != "Ethernet II")
+        if let protocolSummary = secondSummary.protocolSummary {
+            #expect(!isHexEtherTypeProtocol(protocolSummary))
+        }
+
+        #expect(try harness.offset(identifier: 1) == 0)
+        #expect(try harness.offset(identifier: 2) == UInt64(firstPacket.count))
+        #expect(try harness.offset(identifier: 3) == UInt64(firstPacket.count + secondPacket.count))
+        #expect(try harness.inspectPacket(identifier: 2).rawBytes == secondPacket)
+        #expect(try harness.inspectPacket(identifier: 3).rawBytes == thirdPacket)
+
+        harness.cleanup()
     }
 
     @Test func livePacketDiskStoreRSSStressIsGated() throws {
@@ -605,7 +720,7 @@ private actor LoadEventProbe {
             }
         case .loadProgressChanged(let progress):
             state.progressPhases.append(progress.phase)
-        case .liveStateChanged, .documentStateChanged, .healthChanged, .documentMetadataChanged:
+        case .liveStateChanged, .documentStateChanged, .healthChanged, .documentMetadataChanged, .packetSummaryUpdates:
             break
         }
     }
@@ -952,12 +1067,50 @@ private func findNode(in nodes: [PacketDetailNode], id: String) -> PacketDetailN
     return nil
 }
 
+private func nodeHasByteSource(_ node: PacketDetailNode, sourceID: String) -> Bool {
+    if node.byteRange?.sourceID == sourceID {
+        return true
+    }
+    return node.children.contains { nodeHasByteSource($0, sourceID: sourceID) }
+}
+
+private func findNode(in nodes: [PacketDetailNode], fieldName: String) -> PacketDetailNode? {
+    for node in nodes {
+        if node.fieldName == fieldName {
+            return node
+        }
+
+        if let match = findNode(in: node.children, fieldName: fieldName) {
+            return match
+        }
+    }
+
+    return nil
+}
+
+private func withWiresharkDisabled<T>(_ body: () async throws -> T) async rethrows -> T {
+    setenv("TCPVIEWER_DISABLE_WIRESHARK", "1", 1)
+    defer { unsetenv("TCPVIEWER_DISABLE_WIRESHARK") }
+    return try await body()
+}
+
 private func makePaddedPacket(base: Data, byteCount: Int) -> Data {
     var packet = base
     if packet.count < byteCount {
         packet.append(Data(repeating: 0, count: byteCount - packet.count))
     }
     return packet
+}
+
+private func makeUnknownEtherTypePacket(etherType: UInt16, byteCount: Int) -> Data {
+    var packet = makePaddedPacket(base: makeIPv4UDPPayloadPacket(), byteCount: byteCount)
+    packet[12] = UInt8((etherType >> 8) & 0xff)
+    packet[13] = UInt8(etherType & 0xff)
+    return packet
+}
+
+private func isHexEtherTypeProtocol(_ value: String) -> Bool {
+    value.range(of: #"^0x[0-9a-fA-F]{4}$"#, options: .regularExpression) != nil
 }
 
 private func residentMemoryBytes() -> UInt64 {

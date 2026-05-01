@@ -29,6 +29,15 @@ struct PacketHexViewControllerTests {
         #expect(highlight.tooltip == "Bytes 3-4")
     }
 
+    @Test func highlightPreservesReassembledByteSource() throws {
+        let range = PacketByteRange(offset: 2, length: 4, sourceID: "reassembled-tcp")
+        let highlight = try #require(PacketHexHighlight.make(from: range, byteCount: 8))
+
+        #expect(highlight.sourceRange.sourceID == "reassembled-tcp")
+        #expect(highlight.byteOffset == 2)
+        #expect(highlight.byteLength == 4)
+    }
+
     @Test func highlightIgnoresOutOfBoundsRanges() {
         #expect(PacketHexHighlight.make(from: PacketByteRange(offset: 5, length: 1), byteCount: 5) == nil)
         #expect(PacketHexHighlight.make(from: PacketByteRange(offset: 0, length: 0), byteCount: 5) == nil)

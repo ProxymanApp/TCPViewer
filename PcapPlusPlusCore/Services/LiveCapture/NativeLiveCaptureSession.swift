@@ -10,10 +10,11 @@ public final class NativeLiveCaptureSession: LiveCaptureSessionProviding, @unche
         set { eventBox.handler = newValue }
     }
 
-    init(interfaceID: String, options: CaptureOptions) throws {
+    init(interfaceID: String, options: CaptureOptions, disablesWireshark: Bool = false) throws {
         self.state = try NativeLiveCaptureSessionState(
             interfaceID: interfaceID,
             options: options,
+            disablesWireshark: disablesWireshark,
             eventBox: eventBox
         )
     }
@@ -142,6 +143,7 @@ struct LiveCaptureDurationStopTimer: Sendable {
 private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     private static let maxLivePacketBatchSize = 256
     private static let livePacketBatchInterval: DispatchTimeInterval = .milliseconds(100)
+    private static let liveReanalysisInterval: DispatchTimeInterval = .milliseconds(250)
 
     private let queue = DispatchQueue(label: "com.proxyman.tcpviewer.PcapPlusPlusCore.NativeLiveCaptureSession", qos: .userInitiated)
     private let nativeSession: PCPPNativeLiveSession
@@ -154,10 +156,12 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     private var activeRunPacketCount: UInt64 = 0
     private var packetBatchBuffer = LivePacketBatchBuffer<PacketSummary>(maxBatchSize: maxLivePacketBatchSize)
     private var packetBatchFlushWorkItem: DispatchWorkItem?
+    private var packetReanalysisWorkItem: DispatchWorkItem?
+    private var packetSummariesByID: [PacketSummary.ID: PacketSummary] = [:]
     private var durationStopWorkItem: DispatchWorkItem?
     private var durationStopTimer: LiveCaptureDurationStopTimer?
 
-    init(interfaceID: String, options: CaptureOptions, eventBox: EventCallbackBox<PacketIngestEvent>) throws {
+    init(interfaceID: String, options: CaptureOptions, disablesWireshark: Bool, eventBox: EventCallbackBox<PacketIngestEvent>) throws {
         self.eventBox = eventBox
         self.stopCondition = options.stopCondition
         if case .durationMilliseconds(let duration) = options.stopCondition {
@@ -167,6 +171,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
         self.nativeSession = PCPPNativeLiveSession(
             interfaceIdentifier: interfaceID,
             options: NativeBridgeMapper.nativeCaptureOptions(options),
+            disablesWireshark: disablesWireshark,
             error: &nativeError
         )
 
@@ -302,6 +307,8 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
             activeRunPacketCount = 0
             startedAt = Date()
             cancelPacketBatchFlushWorkItem()
+            cancelPacketReanalysisWorkItem()
+            packetSummariesByID.removeAll(keepingCapacity: true)
             packetBatchBuffer.discardPending(releasingCapacity: true)
         }
 
@@ -422,7 +429,11 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
             return
         }
 
+        for packet in batch {
+            packetSummariesByID[packet.id] = packet
+        }
         eventBox.yield(.packetBatch(batch, disposition: .append))
+        schedulePacketReanalysisIfNeeded()
     }
 
     private func schedulePacketBatchFlushIfNeeded() {
@@ -452,6 +463,53 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     private func cancelPacketBatchFlushWorkItem() {
         packetBatchFlushWorkItem?.cancel()
         packetBatchFlushWorkItem = nil
+    }
+
+    private func schedulePacketReanalysisIfNeeded() {
+        guard packetReanalysisWorkItem == nil, !packetSummariesByID.isEmpty else {
+            return
+        }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.reanalyzePacketSummariesFromTimer()
+        }
+        packetReanalysisWorkItem = workItem
+        queue.asyncAfter(deadline: .now() + Self.liveReanalysisInterval, execute: workItem)
+    }
+
+    private func reanalyzePacketSummariesFromTimer() {
+        packetReanalysisWorkItem = nil
+        do {
+            let descriptors = try nativeSession.reanalyzePacketSummaries()
+            let summaries = NativeBridgeMapper.packetBatch(descriptors, source: .live)
+            let updates = summaries.compactMap { summary -> PacketSummaryUpdate? in
+                guard let current = packetSummariesByID[summary.id] else {
+                    packetSummariesByID[summary.id] = summary
+                    return nil
+                }
+
+                packetSummariesByID[summary.id] = summary
+                guard current.protocolSummary != summary.protocolSummary || current.infoSummary != summary.infoSummary else {
+                    return nil
+                }
+                return PacketSummaryUpdate(
+                    packetID: summary.id,
+                    protocolSummary: summary.protocolSummary,
+                    infoSummary: summary.infoSummary
+                )
+            }
+
+            if !updates.isEmpty {
+                eventBox.yield(.packetSummaryUpdates(updates))
+            }
+        } catch {
+            // Reanalysis only refines table text; capture delivery should continue if it fails.
+        }
+    }
+
+    private func cancelPacketReanalysisWorkItem() {
+        packetReanalysisWorkItem?.cancel()
+        packetReanalysisWorkItem = nil
     }
 
     private func scheduleDurationStopIfNeeded() {

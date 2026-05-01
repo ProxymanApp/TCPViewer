@@ -21,6 +21,7 @@ struct ByteRange {
     uint8_t bitOffset = 0;
     uint8_t bitLength = 0;
     bool hasBitRange = false;
+    std::string sourceID = "frame";
 };
 
 enum class NodeKind {

@@ -10,8 +10,8 @@ public final class NativeOfflineCaptureDocument: OfflineCaptureDocumentProviding
         set { eventBox.handler = newValue }
     }
 
-    init(fileURL: URL) throws {
-        self.state = try NativeOfflineCaptureDocumentState(fileURL: fileURL, eventBox: eventBox)
+    init(fileURL: URL, disablesWireshark: Bool = false) throws {
+        self.state = try NativeOfflineCaptureDocumentState(fileURL: fileURL, disablesWireshark: disablesWireshark, eventBox: eventBox)
     }
 
     public func open(completion: @escaping TCPViewerCompletion<[PacketSummary]>) {
@@ -159,10 +159,10 @@ private final class NativeOfflineCaptureDocumentState: @unchecked Sendable {
     private var activeLoad: ActiveLoad?
     private var queuedReopenCompletions: [TCPViewerCompletion<[PacketSummary]>] = []
 
-    init(fileURL: URL, eventBox: EventCallbackBox<PacketIngestEvent>) throws {
+    init(fileURL: URL, disablesWireshark: Bool, eventBox: EventCallbackBox<PacketIngestEvent>) throws {
         self.eventBox = eventBox
         var nativeError: NSError?
-        self.nativeDocument = PCPPNativeOfflineDocument(url: fileURL, error: &nativeError)
+        self.nativeDocument = PCPPNativeOfflineDocument(url: fileURL, disablesWireshark: disablesWireshark, error: &nativeError)
 
         if let nativeError {
             throw NativeBridgeMapper.coreError(

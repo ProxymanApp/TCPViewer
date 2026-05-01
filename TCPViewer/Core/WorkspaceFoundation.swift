@@ -147,6 +147,31 @@ struct PacketIngestState: Sendable, Equatable {
         lastMutation = .metadataUpdate(packetIDs: updatedIDs)
     }
 
+    mutating func applySummaryUpdates(_ updates: [PacketSummaryUpdate]) {
+        var updatedIDs: [PacketSummary.ID] = []
+        for update in updates {
+            guard let packetIndex = packetIndexByID[update.packetID] else {
+                continue
+            }
+
+            let currentPacket = packets[packetIndex]
+            let updatedPacket = currentPacket.tcpviewerApplying(summaryUpdate: update)
+            guard updatedPacket != currentPacket else {
+                continue
+            }
+
+            packets[packetIndex] = updatedPacket
+            updatedIDs.append(update.packetID)
+        }
+
+        guard !updatedIDs.isEmpty else {
+            return
+        }
+
+        packetRevision &+= 1
+        lastMutation = .metadataUpdate(packetIDs: updatedIDs)
+    }
+
     // Append a batch and fold metadata updates that target older packets into a single mutation,
     // so consumers can take their cheap append paths without a redundant didSet fire.
     mutating func appendAndApplyMetadataUpdates(
@@ -1920,6 +1945,18 @@ final class TCPViewerWorkspaceController {
                 }
             } else {
                 synchronizeVisiblePackets(message: "No packets available.")
+            }
+        case .packetSummaryUpdates(let updates):
+            let beforeRevision = snapshot.packetIngestState.packetRevision
+            snapshot.packetIngestState.applySummaryUpdates(updates)
+            guard snapshot.packetIngestState.packetRevision != beforeRevision else {
+                return
+            }
+
+            synchronizeVisiblePackets(message: "Updated \(updates.count) packet summaries.")
+            if let selectedPacketID = snapshot.selectedPacketID,
+               updates.contains(where: { $0.packetID == selectedPacketID }) {
+                scheduleInspection(for: selectedPacketID)
             }
         case .loadProgressChanged(let progress):
             guard snapshot.documentState.phase == .opening || snapshot.documentState.phase == .reopening else {

@@ -164,6 +164,13 @@ struct NetworkInspectorViewModelTests {
             transportHint: .tls,
             destinationPort: 443
         )
+        let wiresharkProtocol = makePacket(
+            packetNumber: 5,
+            source: .offline,
+            transportHint: .tcp,
+            destinationPort: 443,
+            protocolSummary: "TLSv1.3"
+        )
 
         let healthyRow = PacketTableRow(packet: healthy)
         let malformedRow = PacketTableRow(packet: malformed)
@@ -186,6 +193,7 @@ struct NetworkInspectorViewModelTests {
         #expect(malformedRow.tags.map(\.label) == ["Malformed"])
         #expect(PacketTableRow(packet: tls).protocolText == "TLSv1.2")
         #expect(PacketTableRow(packet: tlsFallback).protocolText == "TLS")
+        #expect(PacketTableRow(packet: wiresharkProtocol).protocolText == "TLSv1.3")
 
         #expect(PacketDisplayFilter("protocol:http port:80").matches(healthy))
         #expect(PacketDisplayFilter("protocol:TLSv1.2").matches(tls))
@@ -1624,7 +1632,8 @@ struct NetworkInspectorViewModelTests {
         tcpPayloadLength: Int? = nil,
         interfaceName: String? = nil,
         transportDetailSummary: String? = nil,
-        transportLayerName: String? = nil
+        transportLayerName: String? = nil,
+        protocolSummary: String? = nil
     ) -> PacketSummary {
         PacketSummary(
             packetNumber: packetNumber,
@@ -1632,6 +1641,7 @@ struct NetworkInspectorViewModelTests {
             source: source,
             interfaceID: source == .live ? "en0" : nil,
             transportHint: transportHint,
+            protocolSummary: protocolSummary,
             endpoints: PacketEndpoints(
                 source: PacketEndpoint(address: "10.0.0.1", port: sourcePort),
                 destination: PacketEndpoint(address: "10.0.0.2", port: destinationPort)

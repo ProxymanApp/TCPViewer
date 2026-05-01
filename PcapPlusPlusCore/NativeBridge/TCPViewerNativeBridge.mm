@@ -847,8 +847,9 @@ PCPPNativePacketSummaryDescriptor *MakePacketSummary(const pcpp::RawPacket &rawP
 {
     try {
         pcpp::Packet packet(const_cast<pcpp::RawPacket *>(&rawPacket), false);
+        auto dissectionContext = MakeDissectionContext(packet, rawPacket, identifier, interfaceName, packetComment);
         if (wiresharkSession != nullptr) {
-            wiresharkSession->observePacket(MakeDissectionContext(packet, rawPacket, identifier, interfaceName, packetComment));
+            wiresharkSession->observePacket(dissectionContext);
         }
 
         auto decodeStatus = DetermineDecodeStatus(packet, rawPacket);
@@ -872,11 +873,24 @@ PCPPNativePacketSummaryDescriptor *MakePacketSummary(const pcpp::RawPacket &rawP
             }
         }
 
+        NSString *protocolSummary = nil;
+        NSString *infoSummary = InfoSummaryForPacket(packet, rawPacket);
+        if (wiresharkSession != nullptr) {
+            auto wiresharkSummary = wiresharkSession->summarizePacket(dissectionContext);
+            if (!wiresharkSummary.columns.protocol.empty()) {
+                protocolSummary = MakeNSString(wiresharkSummary.columns.protocol);
+            }
+            if (!wiresharkSummary.columns.info.empty()) {
+                infoSummary = MakeNSString(wiresharkSummary.columns.info);
+            }
+        }
+
         return [[PCPPNativePacketSummaryDescriptor alloc] initWithIdentifier:identifier
                                                                  packetNumber:identifier
                                                                     timestamp:MakeNSDate(rawPacket.getPacketTimeStamp())
                                                           interfaceIdentifier:interfaceIdentifier
                                                                 transportHint:MapTransportHint(packet)
+                                                               protocolSummary:protocolSummary
                                                                sourceEndpoint:MapSourceEndpoint(packet)
                                                           destinationEndpoint:MapDestinationEndpoint(packet)
                                                                originalLength:rawPacket.getFrameLength()
@@ -884,7 +898,7 @@ PCPPNativePacketSummaryDescriptor *MakePacketSummary(const pcpp::RawPacket &rawP
                                                              streamIdentifier:streamIdentifier
                                                                       tcpFlags:TCPFlagsSummaryForPacket(packet)
                                                                tcpPayloadLength:TCPPayloadLengthForPacket(packet)
-                                                                  infoSummary:InfoSummaryForPacket(packet, rawPacket)
+                                                                  infoSummary:infoSummary
                                                                       layers:MapLayers(packet)
                                                                  decodeStatus:decodeDescriptor
                                                               captureMetadata:captureMetadata
@@ -901,6 +915,7 @@ PCPPNativePacketSummaryDescriptor *MakePacketSummary(const pcpp::RawPacket &rawP
                                                                     timestamp:MakeNSDate(rawPacket.getPacketTimeStamp())
                                                           interfaceIdentifier:interfaceIdentifier
                                                                 transportHint:PCPPNativeTransportHintUnknown
+                                                               protocolSummary:nil
                                                                sourceEndpoint:[[PCPPNativePacketEndpointDescriptor alloc] initWithAddress:nil port:nil]
                                                           destinationEndpoint:[[PCPPNativePacketEndpointDescriptor alloc] initWithAddress:nil port:nil]
                                                                originalLength:rawPacket.getFrameLength()
@@ -927,7 +942,8 @@ PCPPNativePacketByteRangeDescriptor *MakeBitRange(const tcpviewer::dissection::B
                                                                 length:(NSInteger)range.length
                                                              bitOffset:(NSInteger)range.bitOffset
                                                              bitLength:(NSInteger)range.bitLength
-                                                           hasBitRange:range.hasBitRange];
+                                                           hasBitRange:range.hasBitRange
+                                                      sourceIdentifier:MakeNSString(range.sourceID)];
 }
 
 PCPPNativePacketDetailNodeDescriptor *MakeDetailNode(NSString *identifier,
@@ -1400,6 +1416,11 @@ NSString *DNSResourceDataValue(pcpp::DnsResource *resource)
     return MakeNSString(data->toString());
 }
 
+struct PacketDetailBuildResult {
+    NSArray<PCPPNativePacketDetailNodeDescriptor *> *nodes = nil;
+    std::vector<tcpviewer::dissection::WiresharkByteSource> byteSources;
+};
+
 class PacketDetailTreeBuilder {
 public:
     PacketDetailTreeBuilder(const pcpp::Packet &packet,
@@ -1415,12 +1436,12 @@ public:
           packetComment_(packetComment),
           wiresharkDissector_(wiresharkSession) {}
 
-    NSArray<PCPPNativePacketDetailNodeDescriptor *> *build()
+    PacketDetailBuildResult build()
     {
         auto context = dissectionContext();
         auto wiresharkResult = wiresharkDissector_.dissect(context);
         if (wiresharkResult.usedWireshark) {
-            return MakeDetailNodes(wiresharkResult.nodes);
+            return PacketDetailBuildResult{MakeDetailNodes(wiresharkResult.nodes), std::move(wiresharkResult.byteSources)};
         }
 
         NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *nodes = [NSMutableArray array];
@@ -1435,7 +1456,7 @@ public:
             [nodes addObject:MakeDecodeStatusNode(@"warning.decode", decodeStatus.first, decodeStatus.second)];
         }
 
-        return nodes;
+        return PacketDetailBuildResult{nodes, {}};
     }
 
 private:
@@ -2259,14 +2280,35 @@ private:
     }
 };
 
-NSArray<PCPPNativePacketDetailNodeDescriptor *> *BuildPacketDetailNodes(const pcpp::Packet &packet,
-                                                                        const pcpp::RawPacket &rawPacket,
-                                                                        unsigned long long packetIdentifier,
-                                                                        NSString * _Nullable interfaceName,
-                                                                        NSString * _Nullable packetComment,
-                                                                        tcpviewer::dissection::WiresharkDissectionSession *wiresharkSession = nullptr)
+PacketDetailBuildResult BuildPacketDetailNodes(const pcpp::Packet &packet,
+                                               const pcpp::RawPacket &rawPacket,
+                                               unsigned long long packetIdentifier,
+                                               NSString * _Nullable interfaceName,
+                                               NSString * _Nullable packetComment,
+                                               tcpviewer::dissection::WiresharkDissectionSession *wiresharkSession = nullptr)
 {
     return PacketDetailTreeBuilder(packet, rawPacket, packetIdentifier, interfaceName, packetComment, wiresharkSession).build();
+}
+
+NSArray<PCPPNativePacketByteViewDescriptor *> *MakePacketByteViews(
+    NSData *rawBytes,
+    const std::vector<tcpviewer::dissection::WiresharkByteSource> &wiresharkByteSources)
+{
+    NSMutableArray<PCPPNativePacketByteViewDescriptor *> *byteViews = [NSMutableArray array];
+    [byteViews addObject:[[PCPPNativePacketByteViewDescriptor alloc] initWithIdentifier:@"frame"
+                                                                                  label:@"Frame"
+                                                                                  bytes:rawBytes]];
+
+    for (const auto &source : wiresharkByteSources) {
+        if (source.identifier == "frame") {
+            continue;
+        }
+        NSData *bytes = [NSData dataWithBytes:source.bytes.data() length:source.bytes.size()];
+        [byteViews addObject:[[PCPPNativePacketByteViewDescriptor alloc] initWithIdentifier:MakeNSString(source.identifier)
+                                                                                      label:MakeNSString(source.label)
+                                                                                      bytes:bytes]];
+    }
+    return byteViews;
 }
 
 PCPPNativePacketInspectionDescriptor *MakePacketInspection(const pcpp::RawPacket &rawPacket,
@@ -2282,10 +2324,12 @@ PCPPNativePacketInspectionDescriptor *MakePacketInspection(const pcpp::RawPacket
         auto decodeStatus = DetermineDecodeStatus(packet, rawPacket);
         auto *decodeDescriptor = [[PCPPNativeDecodeStatusDescriptor alloc] initWithKind:decodeStatus.first
                                                                                   reason:decodeStatus.second];
+        auto detailResult = BuildPacketDetailNodes(packet, rawPacket, identifier, interfaceName, packetComment, wiresharkSession);
         return [[PCPPNativePacketInspectionDescriptor alloc] initWithPacketIdentifier:identifier
                                                                          packetNumber:identifier
                                                                              rawBytes:rawBytes
-                                                                          detailNodes:BuildPacketDetailNodes(packet, rawPacket, identifier, interfaceName, packetComment, wiresharkSession)
+                                                                            byteViews:MakePacketByteViews(rawBytes, detailResult.byteSources)
+                                                                          detailNodes:detailResult.nodes
                                                                          decodeStatus:decodeDescriptor];
     } catch (const std::exception &exception) {
         auto *decodeDescriptor = [[PCPPNativeDecodeStatusDescriptor alloc] initWithKind:PCPPNativeDecodeStatusKindMalformed
@@ -2293,6 +2337,7 @@ PCPPNativePacketInspectionDescriptor *MakePacketInspection(const pcpp::RawPacket
         return [[PCPPNativePacketInspectionDescriptor alloc] initWithPacketIdentifier:identifier
                                                                          packetNumber:identifier
                                                                              rawBytes:rawBytes
+                                                                            byteViews:MakePacketByteViews(rawBytes, {})
                                                                           detailNodes:@[
                                                                               MakeLayerNode(@"frame",
                                                                                             @"Frame",
@@ -2361,6 +2406,7 @@ public:
     {
         ensureFileOpen();
 
+        seekToEndForAppend();
         const auto offset = currentOffset();
         const int capturedLength = packet.getRawDataLen();
         if (capturedLength > 0) {
@@ -2490,6 +2536,14 @@ private:
         }
 
         return static_cast<uint64_t>(offset);
+    }
+
+    void seekToEndForAppend()
+    {
+        // Reanalysis reads seek around the same file, so every live append must return to EOF first.
+        if (::fseeko(file_, 0, SEEK_END) != 0) {
+            throw std::runtime_error("Failed to seek to the end of the live capture backing store.");
+        }
     }
 
     void flushPendingWrites()
@@ -2646,19 +2700,26 @@ private:
 
 class LiveCaptureState {
 public:
-    explicit LiveCaptureState(NSString *interfaceIdentifier, PCPPNativeCaptureOptionsDescriptor *options)
+    explicit LiveCaptureState(NSString *interfaceIdentifier, PCPPNativeCaptureOptionsDescriptor *options, bool disablesWireshark)
         : interfaceIdentifier_(interfaceIdentifier),
           options_(options),
+          disablesWireshark_(disablesWireshark),
           writer_(MakeStdString(options.fileWritingMode),
                   std::filesystem::path(MakeStdString(options.captureDirectoryURL.path ?: @"")),
                   MakeStdString(options.fileNameStem ?: @"capture"),
                   MakeStdString(options.fileFormat ?: @"pcapng"),
                   options.maxFileSizeBytes,
-                  options.ringFileCount) {}
+                  options.ringFileCount)
+    {
+        if (!disablesWireshark) {
+            wiresharkSession = std::make_shared<tcpviewer::dissection::WiresharkDissectionSession>();
+        }
+    }
 
     pcpp::PcapLiveDevice *device = nullptr;
     NSString *interfaceIdentifier_ = nil;
     PCPPNativeCaptureOptionsDescriptor *options_ = nil;
+    bool disablesWireshark_ = false;
     std::mutex mutex;
     unsigned long long nextPacketIdentifier = 1;
     unsigned long long packetsObserved = 0;
@@ -2670,8 +2731,7 @@ public:
     PCPPNativeLiveSessionPhase phase = PCPPNativeLiveSessionPhaseReady;
     CaptureFileWriter writer_;
     std::unique_ptr<SniReassemblyState> sniReassembly = std::make_unique<SniReassemblyState>();
-    std::shared_ptr<tcpviewer::dissection::WiresharkDissectionSession> wiresharkSession =
-        std::make_shared<tcpviewer::dissection::WiresharkDissectionSession>();
+    std::shared_ptr<tcpviewer::dissection::WiresharkDissectionSession> wiresharkSession;
 };
 
 void UpdateStats(LiveCaptureState &state)
@@ -2813,6 +2873,21 @@ PCPPNativeCaptureHealthDescriptor *MakeHealthDescriptor(const LiveCaptureState &
 
 @end
 
+@implementation PCPPNativePacketByteViewDescriptor
+
+- (instancetype)initWithIdentifier:(NSString *)identifier label:(NSString *)label bytes:(NSData *)bytes
+{
+    self = [super init];
+    if (self) {
+        _identifier = [identifier copy];
+        _label = [label copy];
+        _bytes = [bytes copy];
+    }
+    return self;
+}
+
+@end
+
 @implementation PCPPNativeDecodeStatusDescriptor
 
 - (instancetype)initWithKind:(PCPPNativeDecodeStatusKind)kind reason:(NSString *)reason
@@ -2834,6 +2909,7 @@ PCPPNativeCaptureHealthDescriptor *MakeHealthDescriptor(const LiveCaptureState &
                           timestamp:(NSDate *)timestamp
                 interfaceIdentifier:(NSString *)interfaceIdentifier
                       transportHint:(PCPPNativeTransportHint)transportHint
+                     protocolSummary:(NSString *)protocolSummary
                      sourceEndpoint:(PCPPNativePacketEndpointDescriptor *)sourceEndpoint
                 destinationEndpoint:(PCPPNativePacketEndpointDescriptor *)destinationEndpoint
                      originalLength:(NSInteger)originalLength
@@ -2854,6 +2930,7 @@ PCPPNativeCaptureHealthDescriptor *MakeHealthDescriptor(const LiveCaptureState &
         _timestamp = timestamp;
         _interfaceIdentifier = [interfaceIdentifier copy];
         _transportHint = transportHint;
+        _protocolSummary = [protocolSummary copy];
         _sourceEndpoint = sourceEndpoint;
         _destinationEndpoint = destinationEndpoint;
         _originalLength = originalLength;
@@ -2978,7 +3055,8 @@ PCPPNativeCaptureHealthDescriptor *MakeHealthDescriptor(const LiveCaptureState &
                          length:length
                       bitOffset:0
                       bitLength:0
-                    hasBitRange:NO];
+                    hasBitRange:NO
+               sourceIdentifier:@"frame"];
 }
 
 - (instancetype)initWithOffset:(NSInteger)offset
@@ -2986,6 +3064,7 @@ PCPPNativeCaptureHealthDescriptor *MakeHealthDescriptor(const LiveCaptureState &
                      bitOffset:(NSInteger)bitOffset
                      bitLength:(NSInteger)bitLength
                    hasBitRange:(BOOL)hasBitRange
+              sourceIdentifier:(NSString *)sourceIdentifier
 {
     self = [super init];
     if (self) {
@@ -2994,6 +3073,7 @@ PCPPNativeCaptureHealthDescriptor *MakeHealthDescriptor(const LiveCaptureState &
         _bitOffset = bitOffset;
         _bitLength = bitLength;
         _hasBitRange = hasBitRange;
+        _sourceIdentifier = [sourceIdentifier copy];
     }
     return self;
 }
@@ -3036,6 +3116,7 @@ PCPPNativeCaptureHealthDescriptor *MakeHealthDescriptor(const LiveCaptureState &
 - (instancetype)initWithPacketIdentifier:(unsigned long long)packetIdentifier
                             packetNumber:(unsigned long long)packetNumber
                                 rawBytes:(NSData *)rawBytes
+                               byteViews:(NSArray<PCPPNativePacketByteViewDescriptor *> *)byteViews
                              detailNodes:(NSArray<PCPPNativePacketDetailNodeDescriptor *> *)detailNodes
                             decodeStatus:(PCPPNativeDecodeStatusDescriptor *)decodeStatus
 {
@@ -3044,6 +3125,7 @@ PCPPNativeCaptureHealthDescriptor *MakeHealthDescriptor(const LiveCaptureState &
         _packetIdentifier = packetIdentifier;
         _packetNumber = packetNumber;
         _rawBytes = [rawBytes copy];
+        _byteViews = [byteViews copy];
         _detailNodes = [detailNodes copy];
         _decodeStatus = decodeStatus;
     }
@@ -3141,12 +3223,20 @@ static void OnLiveStatsUpdate(pcpp::IPcapDevice::PcapStats &stats, void *userCoo
                                     options:(PCPPNativeCaptureOptionsDescriptor *)options
                                       error:(NSError **)error
 {
+    return [self initWithInterfaceIdentifier:interfaceIdentifier options:options disablesWireshark:NO error:error];
+}
+
+- (instancetype)initWithInterfaceIdentifier:(NSString *)interfaceIdentifier
+                                    options:(PCPPNativeCaptureOptionsDescriptor *)options
+                         disablesWireshark:(BOOL)disablesWireshark
+                                      error:(NSError **)error
+{
     self = [super init];
     if (!self) {
         return nil;
     }
 
-    _state = std::make_unique<LiveCaptureState>(interfaceIdentifier, options);
+    _state = std::make_unique<LiveCaptureState>(interfaceIdentifier, options, disablesWireshark);
 
     try {
         auto &list = pcpp::PcapLiveDeviceList::getInstance();
@@ -3198,7 +3288,10 @@ static void OnLiveStatsUpdate(pcpp::IPcapDevice::PcapStats &stats, void *userCoo
             _state->packetsDroppedByInterface = 0;
             _state->nextPacketIdentifier = 1;
             _state->sniReassembly = std::make_unique<SniReassemblyState>();
-            _state->wiresharkSession = std::make_shared<tcpviewer::dissection::WiresharkDissectionSession>();
+            _state->wiresharkSession.reset();
+            if (!_state->disablesWireshark_) {
+                _state->wiresharkSession = std::make_shared<tcpviewer::dissection::WiresharkDissectionSession>();
+            }
         }
 
         pcpp::PcapLiveDevice::DeviceMode deviceMode = _state->options_.promiscuousMode ? pcpp::PcapLiveDevice::Promiscuous : pcpp::PcapLiveDevice::Normal;
@@ -3407,6 +3500,51 @@ static void OnLiveStatsUpdate(pcpp::IPcapDevice::PcapStats &stats, void *userCoo
     return MakePacketInspection(*rawPacket, identifier, interfaceName, nil, wiresharkSession.get());
 }
 
+- (NSArray<PCPPNativePacketSummaryDescriptor *> *)reanalyzePacketSummariesAndReturnError:(NSError **)error
+{
+    NSMutableArray<PCPPNativePacketSummaryDescriptor *> *summaries = [NSMutableArray array];
+    NSString *interfaceName = nil;
+    NSString *interfaceIdentifier = nil;
+    std::shared_ptr<tcpviewer::dissection::WiresharkDissectionSession> wiresharkSession;
+    size_t packetCount = 0;
+
+    {
+        std::lock_guard<std::mutex> lock(_state->mutex);
+        packetCount = _state->packetStore.count();
+        interfaceIdentifier = _state->interfaceIdentifier_;
+        if (_state->device != nullptr) {
+            interfaceName = MakeNSString(_state->device->getName());
+        }
+        wiresharkSession = _state->wiresharkSession;
+    }
+
+    try {
+        SniReassemblyState summarySniReassembly;
+        for (size_t index = 0; index < packetCount; index += 1) {
+            const unsigned long long identifier = static_cast<unsigned long long>(index + 1);
+            std::unique_ptr<pcpp::RawPacket> rawPacket;
+            {
+                std::lock_guard<std::mutex> lock(_state->mutex);
+                rawPacket = _state->packetStore.packet(identifier);
+            }
+            [summaries addObject:MakePacketSummary(*rawPacket,
+                                                   identifier,
+                                                   interfaceIdentifier,
+                                                   interfaceName,
+                                                   nil,
+                                                   &summarySniReassembly,
+                                                   wiresharkSession.get())];
+        }
+    } catch (const std::exception &exception) {
+        if (error != nullptr) {
+            *error = MakeError(TCPViewerNativeErrorCodeFileReadFailed, MakeNSString(exception.what()));
+        }
+        return nil;
+    }
+
+    return summaries;
+}
+
 - (BOOL)exportPacketsWithIdentifiers:(NSArray<NSNumber *> *)identifiers
                                 toURL:(NSURL *)url
                                format:(NSString *)format
@@ -3456,6 +3594,7 @@ static void OnLiveStatsUpdate(pcpp::IPcapDevice::PcapStats &stats, void *userCoo
 @interface PCPPNativeLivePacketStoreTestProbe () {
 @private
     std::unique_ptr<LivePacketDiskStore> _store;
+    std::shared_ptr<tcpviewer::dissection::WiresharkDissectionSession> _wiresharkSession;
 }
 
 @end
@@ -3470,6 +3609,7 @@ static void OnLiveStatsUpdate(pcpp::IPcapDevice::PcapStats &stats, void *userCoo
     }
 
     _store = std::make_unique<LivePacketDiskStore>();
+    _wiresharkSession = std::make_shared<tcpviewer::dissection::WiresharkDissectionSession>();
 
     return self;
 }
@@ -3574,6 +3714,42 @@ static void OnLiveStatsUpdate(pcpp::IPcapDevice::PcapStats &stats, void *userCoo
     }
 }
 
+- (NSArray<PCPPNativePacketSummaryDescriptor *> *)reanalyzePacketSummariesUpToIdentifier:(unsigned long long)identifier
+                                                                                  error:(NSError **)error
+{
+    if (_store == nullptr) {
+        if (error != nullptr) {
+            *error = MakeError(TCPViewerNativeErrorCodeFileReadFailed, @"The live packet backing store is not available.");
+        }
+        return nil;
+    }
+
+    NSMutableArray<PCPPNativePacketSummaryDescriptor *> *summaries = [NSMutableArray array];
+    const size_t packetCount = _store->count();
+    const size_t limit = identifier == 0 ? packetCount : std::min<size_t>(packetCount, static_cast<size_t>(identifier));
+
+    try {
+        SniReassemblyState summarySniReassembly;
+        for (size_t index = 0; index < limit; index += 1) {
+            const unsigned long long packetIdentifier = static_cast<unsigned long long>(index + 1);
+            auto packet = _store->packet(packetIdentifier);
+            [summaries addObject:MakePacketSummary(*packet,
+                                                   packetIdentifier,
+                                                   nil,
+                                                   nil,
+                                                   nil,
+                                                   &summarySniReassembly,
+                                                   _wiresharkSession.get())];
+        }
+        return summaries;
+    } catch (const std::exception &exception) {
+        if (error != nullptr) {
+            *error = MakeFileError(TCPViewerNativeErrorCodeFileReadFailed, exception.what());
+        }
+        return nil;
+    }
+}
+
 - (NSNumber *)offsetForPacketWithIdentifier:(unsigned long long)identifier error:(NSError **)error
 {
     if (_store == nullptr) {
@@ -3607,10 +3783,11 @@ static void OnLiveStatsUpdate(pcpp::IPcapDevice::PcapStats &stats, void *userCoo
 namespace {
 
 struct OfflineDocumentState {
-    explicit OfflineDocumentState(NSURL *fileURL) : currentURL(fileURL) {}
+    explicit OfflineDocumentState(NSURL *fileURL, bool disablesWireshark) : currentURL(fileURL), disablesWireshark(disablesWireshark) {}
 
     mutable std::mutex mutex;
     NSURL *currentURL = nil;
+    bool disablesWireshark = false;
     std::vector<StoredPacket> packets;
     std::string format;
     std::string operatingSystem;
@@ -3620,8 +3797,7 @@ struct OfflineDocumentState {
     bool dirty = false;
     bool loading = false;
     bool partialResult = false;
-    std::shared_ptr<tcpviewer::dissection::WiresharkDissectionSession> wiresharkSession =
-        std::make_shared<tcpviewer::dissection::WiresharkDissectionSession>();
+    std::shared_ptr<tcpviewer::dissection::WiresharkDissectionSession> wiresharkSession;
 };
 
 std::string NormalizedCaptureFileFormat(const std::string &rawFormat)
@@ -3893,7 +4069,10 @@ NSArray<PCPPNativePacketSummaryDescriptor *> *LoadPacketsFromURLIncrementally(Of
         state.dirty = false;
         state.loading = true;
         state.partialResult = false;
-        state.wiresharkSession = std::make_shared<tcpviewer::dissection::WiresharkDissectionSession>();
+        state.wiresharkSession.reset();
+        if (!state.disablesWireshark) {
+            state.wiresharkSession = std::make_shared<tcpviewer::dissection::WiresharkDissectionSession>();
+        }
         wiresharkSession = state.wiresharkSession;
     }
 
@@ -3977,8 +4156,8 @@ NSArray<PCPPNativePacketSummaryDescriptor *> *LoadPacketsFromURLIncrementally(Of
     uint64_t processedBytes = 0;
     bool wasCancelled = false;
     NSError *caughtError = nil;
-    SniReassemblyState sniReassembly;
-
+    const bool wiresharkExactSummaries = wiresharkSession != nullptr && tcpviewer::dissection::WiresharkRuntime::shared().isAvailable();
+    SniReassemblyState summarySniReassembly;
     auto flushPendingBatch = [&]() {
         if (pendingBatch.count == 0) {
             return;
@@ -4012,30 +4191,45 @@ NSArray<PCPPNativePacketSummaryDescriptor *> *LoadPacketsFromURLIncrementally(Of
                     break;
                 }
 
-                auto *summary = MakePacketSummary(rawPacket,
-                                                  identifier,
-                                                  nil,
-                                                  nil,
-                                                  NullableNSString(packetComment),
-                                                  &sniReassembly,
-                                                  wiresharkSession.get());
+                if (wiresharkExactSummaries) {
+                    pcpp::Packet packetForDissection(&rawPacket, false);
+                    wiresharkSession->observePacket(MakeDissectionContext(packetForDissection,
+                                                                          rawPacket,
+                                                                          identifier,
+                                                                          nil,
+                                                                          NullableNSString(packetComment)));
+                }
                 {
                     std::lock_guard<std::mutex> lock(state.mutex);
                     state.packets.push_back({std::make_unique<pcpp::RawPacket>(rawPacket), packetComment});
                 }
 
-                [packets addObject:summary];
-                [pendingBatch addObject:summary];
                 processedBytes += static_cast<uint64_t>(rawPacket.getRawDataLen());
+
+                if (!wiresharkExactSummaries) {
+                    auto *summary = MakePacketSummary(rawPacket,
+                                                      identifier,
+                                                      nil,
+                                                      nil,
+                                                      NullableNSString(packetComment),
+                                                      &summarySniReassembly,
+                                                      wiresharkSession.get());
+                    [packets addObject:summary];
+                    [pendingBatch addObject:summary];
+
+                    if (pendingBatch.count >= effectiveBatchSize) {
+                        flushPendingBatch();
+                    }
+                }
+
                 identifier += 1;
 
-                if (pendingBatch.count >= effectiveBatchSize) {
-                    flushPendingBatch();
+                if ((identifier - 1) % effectiveBatchSize == 0) {
                     emitProgress(@"loading",
-                                 packets.count,
+                                 static_cast<NSUInteger>(identifier - 1),
                                  processedBytes,
                                  false,
-                                 [NSString stringWithFormat:@"Loaded %lu packets from %@…", (unsigned long)packets.count, fileName]);
+                                 [NSString stringWithFormat:@"Reading %llu packets from %@…", identifier - 1, fileName]);
                 }
             }
         }
@@ -4043,8 +4237,10 @@ NSArray<PCPPNativePacketSummaryDescriptor *> *LoadPacketsFromURLIncrementally(Of
         caughtError = MakeError(TCPViewerNativeErrorCodeFileReadFailed, MakeNSString(exception.what()));
     }
 
-    flushPendingBatch();
     reader->close();
+    if (!wiresharkExactSummaries) {
+        flushPendingBatch();
+    }
 
     {
         std::lock_guard<std::mutex> lock(state.mutex);
@@ -4055,9 +4251,9 @@ NSArray<PCPPNativePacketSummaryDescriptor *> *LoadPacketsFromURLIncrementally(Of
 
     if (caughtError != nil) {
         emitProgress(@"failed",
-                     packets.count,
+                     static_cast<NSUInteger>(identifier - 1),
                      processedBytes,
-                     packets.count > 0,
+                     identifier > 1,
                      [NSString stringWithFormat:@"TCP Viewer could not finish loading %@.", fileName]);
         if (error != nullptr) {
             *error = caughtError;
@@ -4067,15 +4263,67 @@ NSArray<PCPPNativePacketSummaryDescriptor *> *LoadPacketsFromURLIncrementally(Of
 
     if (wasCancelled) {
         emitProgress(@"cancelled",
-                     packets.count,
+                     static_cast<NSUInteger>(identifier - 1),
                      processedBytes,
                      true,
-                     [NSString stringWithFormat:@"Loading cancelled after %lu packets from %@.", (unsigned long)packets.count, fileName]);
+                     [NSString stringWithFormat:@"Loading cancelled after %llu packets from %@.", identifier - 1, fileName]);
         if (error != nullptr) {
             *error = MakeError(TCPViewerNativeErrorCodeOperationCancelled,
-                               [NSString stringWithFormat:@"Loading %@ was cancelled after %lu packets.", fileName, (unsigned long)packets.count]);
+                               [NSString stringWithFormat:@"Loading %@ was cancelled after %llu packets.", fileName, identifier - 1]);
         }
         return nil;
+    }
+
+    if (wiresharkExactSummaries) {
+        wiresharkSession->finishFirstPass();
+        emitProgress(@"loading",
+                     static_cast<NSUInteger>(identifier - 1),
+                     processedBytes,
+                     false,
+                     [NSString stringWithFormat:@"Analyzing %llu packets from %@…", identifier - 1, fileName]);
+
+        for (NSUInteger index = 0; index < state.packets.size(); index += 1) {
+            @autoreleasepool {
+                if (cancellationCheck != nil && cancellationCheck()) {
+                    wasCancelled = true;
+                    break;
+                }
+
+                const auto &storedPacket = state.packets[index];
+                const unsigned long long packetIdentifier = static_cast<unsigned long long>(index + 1);
+                auto *summary = MakePacketSummary(*storedPacket.rawPacket,
+                                                  packetIdentifier,
+                                                  nil,
+                                                  nil,
+                                                  NullableNSString(storedPacket.packetComment),
+                                                  &summarySniReassembly,
+                                                  wiresharkSession.get());
+                [packets addObject:summary];
+                [pendingBatch addObject:summary];
+
+                if (pendingBatch.count >= effectiveBatchSize) {
+                    flushPendingBatch();
+                }
+            }
+        }
+        flushPendingBatch();
+
+        if (wasCancelled) {
+            {
+                std::lock_guard<std::mutex> lock(state.mutex);
+                state.partialResult = true;
+            }
+            emitProgress(@"cancelled",
+                         packets.count,
+                         processedBytes,
+                         true,
+                         [NSString stringWithFormat:@"Loading cancelled after %lu packets from %@.", (unsigned long)packets.count, fileName]);
+            if (error != nullptr) {
+                *error = MakeError(TCPViewerNativeErrorCodeOperationCancelled,
+                                   [NSString stringWithFormat:@"Loading %@ was cancelled after %lu packets.", fileName, (unsigned long)packets.count]);
+            }
+            return nil;
+        }
     }
 
     emitProgress(@"completed",
@@ -4235,9 +4483,14 @@ bool SavePacketsToURL(const OfflineDocumentSaveSnapshot &state,
 
 @end
 
-@implementation PCPPNativeOfflineDocument
+	@implementation PCPPNativeOfflineDocument
 
 - (instancetype)initWithURL:(NSURL *)url error:(NSError **)error
+{
+    return [self initWithURL:url disablesWireshark:NO error:error];
+}
+
+- (instancetype)initWithURL:(NSURL *)url disablesWireshark:(BOOL)disablesWireshark error:(NSError **)error
 {
     self = [super init];
     if (!self) {
@@ -4251,7 +4504,7 @@ bool SavePacketsToURL(const OfflineDocumentSaveSnapshot &state,
         return nil;
     }
 
-    _state = std::make_unique<OfflineDocumentState>(url);
+    _state = std::make_unique<OfflineDocumentState>(url, disablesWireshark);
     return self;
 }
 

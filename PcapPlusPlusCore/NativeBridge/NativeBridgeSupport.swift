@@ -323,7 +323,16 @@ enum NativeBridgeMapper {
             length: descriptor.length,
             bitOffset: descriptor.bitOffset,
             bitLength: descriptor.bitLength,
-            hasBitRange: descriptor.hasBitRange
+            hasBitRange: descriptor.hasBitRange,
+            sourceID: descriptor.sourceIdentifier
+        )
+    }
+
+    static func packetByteView(_ descriptor: PCPPNativePacketByteViewDescriptor) -> PacketByteView {
+        PacketByteView(
+            id: descriptor.identifier,
+            label: descriptor.label,
+            bytes: descriptor.bytes
         )
     }
 
@@ -355,6 +364,7 @@ enum NativeBridgeMapper {
             packetID: descriptor.packetIdentifier,
             packetNumber: descriptor.packetNumber,
             rawBytes: descriptor.rawBytes,
+            byteViews: descriptor.byteViews.map(packetByteView),
             detailNodes: descriptor.detailNodes.map(packetDetailNode),
             decodeStatus: decodeStatus(descriptor.decodeStatus)
         )
@@ -371,6 +381,7 @@ enum NativeBridgeMapper {
             source: source,
             interfaceID: descriptor.interfaceIdentifier,
             transportHint: transportHint(descriptor.transportHint),
+            protocolSummary: descriptor.protocolSummary,
             endpoints: PacketEndpoints(
                 source: packetEndpoint(descriptor.sourceEndpoint),
                 destination: packetEndpoint(descriptor.destinationEndpoint)
@@ -680,6 +691,12 @@ final class NativeLivePacketDiskStoreTestHarness {
 
     func inspectPacket(identifier: UInt64) throws -> PacketInspection {
         try NativeBridgeMapper.packetInspection(probe.inspectPacket(identifier: identifier))
+    }
+
+    func reanalyzePacketSummaries(upTo identifier: UInt64 = 0) throws -> [PacketSummary] {
+        try probe.reanalyzePacketSummaries(upTo: identifier).map {
+            NativeBridgeMapper.packetSummary($0, source: .live)
+        }
     }
 
     func offset(identifier: UInt64) throws -> UInt64 {

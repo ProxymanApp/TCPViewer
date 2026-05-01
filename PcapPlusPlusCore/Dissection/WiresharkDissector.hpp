@@ -9,9 +9,22 @@
 
 namespace tcpviewer::dissection {
 
+struct WiresharkPacketColumns {
+    std::string protocol;
+    std::string info;
+};
+
+struct WiresharkByteSource {
+    std::string identifier;
+    std::string label;
+    std::vector<uint8_t> bytes;
+};
+
 struct WiresharkDissectionResult {
     bool usedWireshark = false;
     std::string fallbackReason;
+    WiresharkPacketColumns columns;
+    std::vector<WiresharkByteSource> byteSources;
     std::vector<DetailNode> nodes;
 };
 
@@ -45,6 +58,8 @@ public:
     WiresharkDissectionSession& operator=(const WiresharkDissectionSession&) = delete;
 
     bool observePacket(const PacketDissectionContext& context);
+    bool finishFirstPass();
+    WiresharkDissectionResult summarizePacket(const PacketDissectionContext& context);
     uint64_t observedPacketCount() const;
     std::string unavailableReason() const;
 
