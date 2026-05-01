@@ -458,6 +458,10 @@ struct NetworkInspectorViewModelTests {
 
         #expect(reloadedViewModel.preferredInspectorThickness(for: .trailing, availableLength: 800) == 320)
 
+        reloadedViewModel.rememberInspectorThickness(700, for: .trailing)
+
+        #expect(reloadedViewModel.preferredInspectorThickness(for: .trailing, availableLength: 800) == nil)
+
         reloadedViewModel.rememberInspectorThickness(10_000, for: .trailing)
 
         #expect(reloadedViewModel.preferredInspectorThickness(for: .trailing, availableLength: 800) == nil)
@@ -1571,9 +1575,40 @@ struct NetworkInspectorViewModelTests {
 
         viewModel.toggleQuickFilter(.tcp)
         #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[0].id])
+        #expect(viewModel.snapshot.selectedPacket?.id == packets[0].id)
+        #expect(viewModel.snapshot.selectedPacketRowIndex == 0)
 
         viewModel.resetQuickFilters()
         #expect(viewModel.snapshot.packetRows.map(\.id) == packets.map(\.id))
+        #expect(viewModel.snapshot.selectedPacketID == nil)
+        #expect(viewModel.snapshot.selectedPacket == nil)
+        #expect(viewModel.snapshot.selectedPacketRowIndex == nil)
+        #expect(viewModel.snapshot.base.inspectionState == .empty)
+    }
+
+    @Test func quickFilterSelectsFirstVisiblePacketAndLoadsInspector() async {
+        let packets = [
+            makePacket(packetNumber: 1, source: .offline, transportHint: .udp, streamID: nil, layerNames: ["Ethernet", "UDP"]),
+            makePacket(packetNumber: 2, source: .offline, transportHint: .tcp, streamID: nil, layerNames: ["Ethernet", "TCP"]),
+            makePacket(packetNumber: 3, source: .offline, transportHint: .tcp, streamID: nil, layerNames: ["Ethernet", "TCP"]),
+        ]
+        let viewModel = makeOfflineViewModel(packets: packets)
+
+        await viewModel.openDocument(at: URL(fileURLWithPath: "/tmp/quick-filter-select-first.pcapng"))
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == packets.count
+        }
+
+        viewModel.toggleQuickFilter(.tcp)
+
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[1].id, packets[2].id])
+        #expect(viewModel.snapshot.selectedPacket?.id == packets[1].id)
+        #expect(viewModel.snapshot.selectedPacketRowIndex == 0)
+        #expect(viewModel.snapshot.base.inspectionState.selectedPacketID == packets[1].id)
+
+        await waitUntil {
+            viewModel.snapshot.base.inspectionState.inspection?.packetID == packets[1].id
+        }
     }
 
     @Test func quickFilterLiveAppendOnlyShowsMatchingPackets() async {

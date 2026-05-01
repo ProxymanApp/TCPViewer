@@ -684,6 +684,9 @@ protocol NetworkInspectorViewModelDelegate: AnyObject {
 }
 
 final class NetworkInspectorViewModel {
+    // Keep restored inspector widths from crowding out the packet workspace on launch.
+    private static let maximumInspectorThicknessFraction: CGFloat = 0.45
+
     weak var delegate: NetworkInspectorViewModelDelegate?
 
     private(set) var snapshot: NetworkInspectorSnapshot {
@@ -917,12 +920,12 @@ final class NetworkInspectorViewModel {
 
     func toggleQuickFilter(_ id: PacketQuickFilterID) {
         quickFilterService.toggle(id)
-        rebuildSnapshot()
+        rebuildSnapshot(selectsFirstVisiblePacketForQuickFilter: true)
     }
 
     func resetQuickFilters() {
         quickFilterService.reset()
-        rebuildSnapshot()
+        rebuildSnapshot(clearsSelectedPacket: true)
     }
 
     func clearPackets() {
@@ -1419,11 +1422,12 @@ final class NetworkInspectorViewModel {
         preferences.persistInspectorThickness(thickness, for: placement)
     }
 
-    // Reject invalid saved widths so the root controller can reopen with a safe default instead.
+    // Reject invalid or oversized saved widths so the root controller can reopen with a safe default instead.
     func preferredInspectorThickness(for placement: NetworkInspectorPlacement, availableLength: CGFloat) -> CGFloat? {
         guard availableLength.isFinite, availableLength > 0,
               let thickness = preferences.inspectorThickness(for: placement),
-              thickness.isFinite, thickness > 0, thickness < availableLength else {
+              thickness.isFinite, thickness > 0, thickness < availableLength,
+              thickness <= availableLength * Self.maximumInspectorThicknessFraction else {
             return nil
         }
 
@@ -1446,7 +1450,10 @@ final class NetworkInspectorViewModel {
         snapshot.base.sessionState.canStop ? "stop.fill" : "play.fill"
     }
 
-    private func rebuildSnapshot() {
+    private func rebuildSnapshot(
+        selectsFirstVisiblePacketForQuickFilter: Bool = false,
+        clearsSelectedPacket: Bool = false
+    ) {
         cancelPendingRebuild()
         let pinnedItems = pinService.pins()
         let savedRecords = savedPacketService.records()
@@ -1468,6 +1475,15 @@ final class NetworkInspectorViewModel {
             pinnedItems: pinnedItems,
             savedRecords: savedRecords
         )
+        if clearsSelectedPacket {
+            applyPacketSelectionDuringRebuild(nil)
+        } else if selectsFirstVisiblePacketForQuickFilter {
+            let firstVisiblePacketID = quickFilterService.selection.isActive ? packetTableContent.rows.first?.id : nil
+            applyPacketSelectionDuringRebuild(firstVisiblePacketID)
+            if firstVisiblePacketID != nil {
+                inspectorTab = .summary
+            }
+        }
         let updatedSnapshot = NetworkInspectorSnapshot.make(
             base: controller.snapshot,
             selectedSidebar: selectedSidebar,
@@ -1488,6 +1504,16 @@ final class NetworkInspectorViewModel {
         }
 
         snapshot = updatedSnapshot
+    }
+
+    private func applyPacketSelectionDuringRebuild(_ identifier: PacketSummary.ID?) {
+        guard controller.snapshot.selectedPacketID != identifier else {
+            return
+        }
+
+        // Model-driven selection emits a workspace callback; this rebuild already owns the update.
+        controller.selectPacket(identifier)
+        cancelPendingRebuild()
     }
 
     private func scheduleCoalescedRebuild() {

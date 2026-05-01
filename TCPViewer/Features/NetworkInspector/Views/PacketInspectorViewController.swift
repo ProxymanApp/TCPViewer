@@ -405,6 +405,8 @@ final class PacketInspectorViewController: NSViewController {
     private let scrollView = NSScrollView()
     private let outlineView = PacketInspectorOutlineView()
     private let detailColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("detail"))
+    private var emptyStateView: NSView?
+    private var emptyStateMessage: String?
     private var isApplyingSelection = false
 
     init(configuration: AppConfiguration) {
@@ -430,6 +432,7 @@ final class PacketInspectorViewController: NSViewController {
     func render(snapshot: NetworkInspectorSnapshot) {
         let renderChange = viewModel.render(snapshot: snapshot)
         hexViewController.render(snapshot: snapshot)
+        updateContentVisibility(for: snapshot.base.inspectionState)
 
         switch renderChange {
         case .none:
@@ -502,6 +505,44 @@ final class PacketInspectorViewController: NSViewController {
             hexHeight,
             hexViewController.view.heightAnchor.constraint(greaterThanOrEqualToConstant: Metrics.minimumHexPanelHeight),
         ])
+    }
+
+    // Swap between the launch empty state and packet-detail controls.
+    private func updateContentVisibility(for inspectionState: PacketInspectionState) {
+        let shouldShowEmptyState = inspectionState.selectedPacketID == nil
+        scrollView.isHidden = shouldShowEmptyState
+        outlineView.isHidden = shouldShowEmptyState
+        hexViewController.view.isHidden = shouldShowEmptyState
+
+        if shouldShowEmptyState {
+            showEmptyState(message: inspectionState.statusMessage)
+        } else {
+            hideEmptyState()
+        }
+    }
+
+    // Build the centered no-selection placeholder only when the message changes.
+    private func showEmptyState(message: String) {
+        guard emptyStateView == nil || emptyStateMessage != message else {
+            return
+        }
+
+        emptyStateView?.removeFromSuperview()
+        let placeholder = TCPViewerUI.placeholder(
+            title: "No Packet Selected",
+            imageName: "list.bullet.rectangle",
+            message: message
+        )
+        TCPViewerUI.pin(placeholder, to: view)
+        emptyStateView = placeholder
+        emptyStateMessage = message
+    }
+
+    // Restore the outline and hex views once a packet selection exists.
+    private func hideEmptyState() {
+        emptyStateView?.removeFromSuperview()
+        emptyStateView = nil
+        emptyStateMessage = nil
     }
 
     private func expandAllItems() {

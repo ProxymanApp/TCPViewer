@@ -22,6 +22,16 @@ protocol PacketWorkspaceViewControllerDelegate: AnyObject {
     func packetWorkspaceViewControllerDidRequestResetQuickFilters(_ controller: PacketWorkspaceViewController)
 }
 
+private final class VerticallyCenteredTextFieldCell: NSTextFieldCell {
+    override func drawingRect(forBounds rect: NSRect) -> NSRect {
+        var drawingRect = super.drawingRect(forBounds: rect)
+        let textHeight = cellSize(forBounds: rect).height
+        drawingRect.origin.y += floor((drawingRect.height - textHeight) / 2)
+        drawingRect.size.height = textHeight
+        return drawingRect
+    }
+}
+
 final class PacketWorkspaceViewModel {
     private(set) var title = "Packets"
     private(set) var countText = "0 visible"
@@ -235,8 +245,13 @@ final class PacketWorkspaceViewController: NSViewController {
     }
 
     private func makeQuickFilterChip(title: String) -> NSView {
-        let label = TCPViewerUI.label(title, font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium))
+        let font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
+        let label = TCPViewerUI.label(title, font: font)
+        label.cell = VerticallyCenteredTextFieldCell(textCell: title)
+        label.font = font
+        label.textColor = .labelColor
         label.alignment = .center
+        label.cell?.lineBreakMode = .byTruncatingTail
 
         let chip = NSView()
         chip.wantsLayer = true
@@ -245,9 +260,9 @@ final class PacketWorkspaceViewController: NSViewController {
         chip.layer?.borderColor = NSColor.separatorColor.cgColor
         chip.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.65).cgColor
 
-        TCPViewerUI.pin(label, to: chip, insets: NSEdgeInsets(top: 3, left: 9, bottom: 3, right: 9))
+        TCPViewerUI.pin(label, to: chip, insets: NSEdgeInsets(top: 0, left: 9, bottom: 0, right: 9))
         NSLayoutConstraint.activate([
-            chip.heightAnchor.constraint(greaterThanOrEqualToConstant: 22),
+            chip.heightAnchor.constraint(equalToConstant: 24),
             chip.widthAnchor.constraint(lessThanOrEqualToConstant: 130),
         ])
         return chip

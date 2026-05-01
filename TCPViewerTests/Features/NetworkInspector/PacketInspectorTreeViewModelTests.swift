@@ -5,7 +5,9 @@
 //  Created by Proxyman LLC on 29/4/26.
 //
 
+import AppKit
 import Foundation
+import HexFiend
 import Testing
 import PcapPlusPlusCore
 @testable import TCPViewer
@@ -19,6 +21,54 @@ struct PacketInspectorTreeViewModelTests {
         #expect(viewModel.rootItems.count == 1)
         #expect(viewModel.rootItems[0].kind == .message)
         #expect(viewModel.rootItems[0].displayText == "Select a packet to inspect its decode tree.")
+    }
+
+    @MainActor
+    @Test func emptySelectionShowsPlaceholderAndHidesInspectorViews() throws {
+        let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        controller.loadViewIfNeeded()
+
+        controller.render(snapshot: makeSnapshot(inspectionState: .empty))
+
+        let outlineView = try #require(firstSubview(ofType: NSOutlineView.self, in: controller.view))
+        let outlineScrollView = try #require(findOutlineScrollView(in: controller.view))
+        let hexTextView = try #require(firstSubview(ofType: HFTextView.self, in: controller.view))
+        let textValues = textFieldValues(in: controller.view)
+
+        #expect(isEffectivelyHidden(outlineView))
+        #expect(isEffectivelyHidden(outlineScrollView))
+        #expect(isEffectivelyHidden(hexTextView))
+        #expect(textValues.contains("No Packet Selected"))
+        #expect(textValues.contains("Select a packet to inspect its decode tree and bytes."))
+    }
+
+    @MainActor
+    @Test func selectedPacketRestoresInspectorViewsAfterEmptyState() throws {
+        let packet = makePacket()
+        let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        controller.loadViewIfNeeded()
+
+        controller.render(snapshot: makeSnapshot(inspectionState: .empty))
+        controller.render(snapshot: makeSnapshot(
+            packet: packet,
+            inspectionState: PacketInspectionState(
+                selectedPacketID: packet.id,
+                inspection: makeFrameInspection(for: packet),
+                selectedDetailNodeID: nil,
+                highlightedByteRange: nil,
+                isLoading: false,
+                statusMessage: "Inspecting packet 1."
+            )
+        ))
+
+        let outlineView = try #require(firstSubview(ofType: NSOutlineView.self, in: controller.view))
+        let outlineScrollView = try #require(findOutlineScrollView(in: controller.view))
+        let hexTextView = try #require(firstSubview(ofType: HFTextView.self, in: controller.view))
+
+        #expect(!isEffectivelyHidden(outlineView))
+        #expect(!isEffectivelyHidden(outlineScrollView))
+        #expect(!isEffectivelyHidden(hexTextView))
+        #expect(!textFieldValues(in: controller.view).contains("No Packet Selected"))
     }
 
     @Test func loadingStateShowsStatusMessage() {
@@ -333,6 +383,54 @@ struct PacketInspectorTreeViewModelTests {
             displayFilterText: "",
             packetTableContent: tableContent
         )
+    }
+
+    private func isolatedDefaults() -> UserDefaults {
+        let suiteName = "TCPViewer.PacketInspectorTreeViewModelTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        return defaults
+    }
+
+    private func firstSubview<T: NSView>(ofType type: T.Type, in view: NSView) -> T? {
+        if let view = view as? T {
+            return view
+        }
+
+        for subview in view.subviews {
+            if let match = firstSubview(ofType: type, in: subview) {
+                return match
+            }
+        }
+
+        return nil
+    }
+
+    private func findOutlineScrollView(in view: NSView) -> NSScrollView? {
+        allSubviews(ofType: NSScrollView.self, in: view).first { $0.documentView is NSOutlineView }
+    }
+
+    private func allSubviews<T: NSView>(ofType type: T.Type, in view: NSView) -> [T] {
+        let current = (view as? T).map { [$0] } ?? []
+        return view.subviews.reduce(current) { result, subview in
+            result + allSubviews(ofType: type, in: subview)
+        }
+    }
+
+    private func isEffectivelyHidden(_ view: NSView) -> Bool {
+        var current: NSView? = view
+        while let view = current {
+            if view.isHidden {
+                return true
+            }
+            current = view.superview
+        }
+
+        return false
+    }
+
+    private func textFieldValues(in view: NSView) -> [String] {
+        allSubviews(ofType: NSTextField.self, in: view).map(\.stringValue)
     }
 
     private func makeFrameInspection(for packet: PacketSummary) -> PacketInspection {
