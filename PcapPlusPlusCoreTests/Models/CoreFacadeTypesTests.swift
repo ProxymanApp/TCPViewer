@@ -1,3 +1,10 @@
+//
+//  CoreFacadeTypesTests.swift
+//  TCPViewer
+//
+//  Created by Proxyman LLC on 23/4/26.
+//
+
 import Foundation
 import Testing
 @testable import PcapPlusPlusCore
@@ -8,6 +15,9 @@ struct CoreFacadeTypesTests {
         #expect(PcapPlusPlusCoreModule.plannedVendorPath == "Vendor/PcapPlusPlus")
         #expect(PcapPlusPlusCoreModule.pinnedTag == "v25.05")
         #expect(PcapPlusPlusCoreModule.pinnedCommit == "a49a79e0b67b402ad75ffa96c1795def36df75c8")
+        #expect(PcapPlusPlusCoreModule.wiresharkVendorPath == "Vendor/Wireshark")
+        #expect(PcapPlusPlusCoreModule.wiresharkPinnedTag == "v4.6.4")
+        #expect(PcapPlusPlusCoreModule.wiresharkPinnedCommit == "93282876538d78a2927108dd71ee0ff370aedb0a")
     }
 
     @Test func unconfiguredCoreRejectsEmptyCaptureFilter() async {

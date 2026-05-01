@@ -5,6 +5,7 @@
 - Avoid duplication code
 - Core logic should be carefully tested by Unit Test or Integration Test
 - Don't write UI Tests
+- Add the standard header to Swift and Objective-C source files with the correct filename, `TCPViewer` project name, and `Created by Proxyman LLC on <file created date>.`
 - If the logic is complicated and hard to understand, explain why you do it
 - Make sure to build the project if you change code, to verify all syntax are correct and works
 - Run Unit Tests that you've made a change or created or entire test suit if it's possible

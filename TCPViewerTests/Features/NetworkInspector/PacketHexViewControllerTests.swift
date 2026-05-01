@@ -1,3 +1,10 @@
+//
+//  PacketHexViewControllerTests.swift
+//  TCPViewer
+//
+//  Created by Proxyman LLC on 29/4/26.
+//
+
 import Foundation
 import Testing
 import PcapPlusPlusCore
@@ -27,6 +34,15 @@ struct PacketHexViewControllerTests {
         #expect(highlight.byteOffset == 3)
         #expect(highlight.byteLength == 2)
         #expect(highlight.tooltip == "Bytes 3-4")
+    }
+
+    @Test func highlightPreservesReassembledByteSource() throws {
+        let range = PacketByteRange(offset: 2, length: 4, sourceID: "reassembled-tcp")
+        let highlight = try #require(PacketHexHighlight.make(from: range, byteCount: 8))
+
+        #expect(highlight.sourceRange.sourceID == "reassembled-tcp")
+        #expect(highlight.byteOffset == 2)
+        #expect(highlight.byteLength == 4)
     }
 
     @Test func highlightIgnoresOutOfBoundsRanges() {

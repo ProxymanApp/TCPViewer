@@ -1,3 +1,10 @@
+//
+//  NetworkInspectorModels.swift
+//  TCPViewer
+//
+//  Created by Proxyman LLC on 23/4/26.
+//
+
 import Foundation
 import PcapPlusPlusCore
 
@@ -709,6 +716,11 @@ enum NetworkInspectorFormatters {
     }
 
     static func protocolLabel(for packet: PacketSummary) -> String {
+        if let protocolSummary = packet.protocolSummary?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !protocolSummary.isEmpty {
+            return protocolSummary
+        }
+
         if packet.transportHint == .tls {
             return packet.layers.reversed()
                 .map(\.name)

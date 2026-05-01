@@ -1,3 +1,10 @@
+//
+//  TCPViewerUserDataDirectory.swift
+//  TCPViewer
+//
+//  Created by Proxyman LLC on 25/4/26.
+//
+
 import Foundation
 
 final class TCPViewerUserDataDirectory {

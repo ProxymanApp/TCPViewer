@@ -1,3 +1,10 @@
+//
+//  PacketTableMenuModels.swift
+//  TCPViewer
+//
+//  Created by Proxyman LLC on 25/4/26.
+//
+
 import Foundation
 
 enum PacketTableColumnRole: String, Equatable, Sendable {

@@ -1,3 +1,10 @@
+//
+//  CoreProtocols.swift
+//  TCPViewer
+//
+//  Created by Proxyman LLC on 24/4/26.
+//
+
 import Foundation
 
 public typealias TCPViewerCompletion<Value> = (Result<Value, Error>) -> Void

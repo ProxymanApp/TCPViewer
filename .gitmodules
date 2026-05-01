@@ -1,3 +1,6 @@
 [submodule "Vendor/PcapPlusPlus"]
 	path = Vendor/PcapPlusPlus
 	url = https://github.com/seladb/PcapPlusPlus.git
+[submodule "Vendor/Wireshark"]
+	path = Vendor/Wireshark
+	url = https://gitlab.com/wireshark/wireshark.git

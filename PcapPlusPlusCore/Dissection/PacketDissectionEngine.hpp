@@ -21,6 +21,7 @@ struct ByteRange {
     uint8_t bitOffset = 0;
     uint8_t bitLength = 0;
     bool hasBitRange = false;
+    std::string sourceID = "frame";
 };
 
 enum class NodeKind {
@@ -48,12 +49,22 @@ struct DetailNode {
     std::vector<DetailNode> children;
 };
 
+struct PacketInterfaceMetadata {
+    uint32_t interfaceID = 0;
+    unsigned sectionNumber = 0;
+    std::string name;
+    std::string description;
+};
+
 struct PacketDissectionContext {
     const pcpp::Packet& packet;
     const pcpp::RawPacket& rawPacket;
     uint64_t packetIdentifier = 0;
     std::optional<std::string> interfaceName;
     std::optional<std::string> packetComment;
+    uint32_t interfaceID = 0;
+    unsigned sectionNumber = 0;
+    std::vector<PacketInterfaceMetadata> interfaces;
 };
 
 struct DissectionResult {
