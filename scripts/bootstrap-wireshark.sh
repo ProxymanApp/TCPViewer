@@ -12,9 +12,11 @@ REMOTE_URL="https://gitlab.com/wireshark/wireshark.git"
 CONFIGURATION_NAME="${CONFIGURATION:-Debug}"
 DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-15.0}"
 ARCHITECTURES="${ARCHS:-${NATIVE_ARCH_ACTUAL:-${CURRENT_ARCH:-arm64}}}"
+# Xcode passes ARCHS as space-separated values, while CMake expects a semicolon list.
+CMAKE_ARCHITECTURES="$(printf '%s' "$ARCHITECTURES" | tr ' ' ';')"
 BUILD_DIR="$BUILD_ROOT/wireshark-${CONFIGURATION_NAME}-$(printf '%s' "$ARCHITECTURES" | tr ' ' '_')"
 STAMP_FILE="$INSTALL_ROOT/.tcpviewer-build-stamp"
-CURRENT_STAMP_CONTENT="tag=$PINNED_TAG;commit=$PINNED_COMMIT;config=$CONFIGURATION_NAME;archs=$ARCHITECTURES;deployment=$DEPLOYMENT_TARGET"
+CURRENT_STAMP_CONTENT="tag=$PINNED_TAG;commit=$PINNED_COMMIT;config=$CONFIGURATION_NAME;archs=$CMAKE_ARCHITECTURES;deployment=$DEPLOYMENT_TARGET"
 
 cache_value() {
   KEY="$1"
@@ -68,6 +70,13 @@ has_installed_library() {
 if ! command -v git >/dev/null 2>&1; then
   echo "error: git is required to prepare vendored Wireshark." >&2
   exit 1
+fi
+
+if [ -f "$STAMP_FILE" ] && [ "$(cat "$STAMP_FILE")" = "$CURRENT_STAMP_CONTENT" ] \
+  && has_installed_library wireshark \
+  && has_installed_library wiretap \
+  && has_installed_library wsutil; then
+  exit 0
 fi
 
 if ! command -v pkg-config >/dev/null 2>&1; then
@@ -138,7 +147,7 @@ mkdir -p "$INSTALL_ROOT"
   -DCMAKE_MAKE_PROGRAM="$NINJA_BIN" \
   -DCMAKE_BUILD_TYPE=RelWithDebInfo \
   -DCMAKE_INSTALL_PREFIX="$INSTALL_ROOT" \
-  -DCMAKE_OSX_ARCHITECTURES="$ARCHITECTURES" \
+  -DCMAKE_OSX_ARCHITECTURES="$CMAKE_ARCHITECTURES" \
   -DCMAKE_OSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" \
   -DENABLE_APPLICATION_BUNDLE=OFF \
   -DENABLE_QT6=OFF \
