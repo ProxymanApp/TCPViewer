@@ -1,4 +1,3 @@
-import Darwin
 import Foundation
 import Testing
 @testable import PcapPlusPlusCore
@@ -64,16 +63,13 @@ struct InspectorPipelineTests {
     }
 
     @Test func wiresharkUnavailableBackendFallsBackToPcapPlusPlusDetails() async throws {
-        setenv("TCPVIEWER_DISABLE_WIRESHARK", "1", 1)
-        defer { unsetenv("TCPVIEWER_DISABLE_WIRESHARK") }
-
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let captureURL = directory.appendingPathComponent("wireshark-fallback.pcap")
         try writePCAP(to: captureURL, packets: [makeIPv4UDPPayloadPacket()])
 
-        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
+        let document = try await wiresharkDisabledCore().openOfflineCaptureDocument(at: captureURL)
         let packets = try await document.open()
         let packet = try #require(packets.first)
         let inspection = try await document.inspectPacket(id: packet.id)
@@ -83,12 +79,34 @@ struct InspectorPipelineTests {
         #expect(fallback.fieldName == "tcpviewer.wireshark.fallback")
         #expect(fallback.severity == .warning)
         let fallbackValue = try #require(fallback.value)
-        #expect(fallbackValue.contains("TCPVIEWER_DISABLE_WIRESHARK"))
+        #expect(fallbackValue.contains("disabled for this capture"))
         #expect(findNode(in: inspection.detailNodes, id: "udp.length") != nil)
     }
 
+    @Test func offlinePcapNgInterfaceNamesFlowIntoFrameDetails() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let captureURL = directory.appendingPathComponent("named-interfaces.pcapng")
+        try writePCAPNG(
+            to: captureURL,
+            interfaces: ["alpha0", "beta1"],
+            packets: [(packet: makeIPv4UDPPayloadPacket(), interfaceID: 1)]
+        )
+
+        let document = try await wiresharkDisabledCore().openOfflineCaptureDocument(at: captureURL)
+        let packets = try await document.open()
+        let packet = try #require(packets.first)
+
+        #expect(packet.captureMetadata.interfaceName == "beta1")
+
+        let inspection = try await document.inspectPacket(id: packet.id)
+        let interfaceNode = try #require(findNode(in: inspection.detailNodes, id: "frame.interface"))
+        #expect(interfaceNode.value == "beta1")
+    }
+
     @Test func generatedCaptureInspectionCoversCoreProtocolsAndExactByteRanges() async throws {
-        try await withWiresharkDisabled {
+        try await withWiresharkDisabled { core in
             let directory = try makeTemporaryDirectory()
             defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -105,7 +123,7 @@ struct InspectorPipelineTests {
                 ]
             )
 
-        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
+        let document = try await core.openOfflineCaptureDocument(at: captureURL)
         let packets = try await document.open()
 
         #expect(packets.count == 6)
@@ -245,8 +263,23 @@ struct InspectorPipelineTests {
         #expect(clientHello.sniDomainName == "www.google.com")
     }
 
+    @Test func wiresharkSessionKeepsOlderDocumentStateAfterOpeningAnotherDocument() async throws {
+        let fixtureURL = CoreFixtureCatalog.captureCategoryURL("tls").appendingPathComponent("SSL-ClientHello1.pcap")
+        let firstDocument = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: fixtureURL)
+        let firstPackets = try await firstDocument.open()
+        let firstClientHello = try #require(firstPackets.first { $0.infoSummary.contains("Client Hello") })
+
+        let secondDocument = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: fixtureURL)
+        _ = try await secondDocument.open()
+
+        let inspection = try await firstDocument.inspectPacket(id: firstClientHello.id)
+
+        #expect(findNode(in: inspection.detailNodes, id: "wireshark.fallback") == nil)
+        #expect(inspection.detailNodes.first { $0.fieldName == "tls" } != nil)
+    }
+
     @Test func tlsApplicationDataInspectionRendersRecordVersionsAndEncryptedData() async throws {
-        try await withWiresharkDisabled {
+        try await withWiresharkDisabled { core in
             let directory = try makeTemporaryDirectory()
             defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -259,7 +292,7 @@ struct InspectorPipelineTests {
             ]
         )
 
-        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
+        let document = try await core.openOfflineCaptureDocument(at: captureURL)
         let packets = try await document.open()
         let firstPacket = try #require(packets.first)
         let secondPacket = try #require(packets.dropFirst().first)
@@ -279,14 +312,14 @@ struct InspectorPipelineTests {
     }
 
     @Test func tcpSynInspectionExpandsFlagsAndOptions() async throws {
-        try await withWiresharkDisabled {
+        try await withWiresharkDisabled { core in
             let directory = try makeTemporaryDirectory()
             defer { try? FileManager.default.removeItem(at: directory) }
 
         let captureURL = directory.appendingPathComponent("tcp-syn-options.pcap")
         try writePCAP(to: captureURL, packets: [makeIPv4TCPSYNOptionsPacket()])
 
-        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
+        let document = try await core.openOfflineCaptureDocument(at: captureURL)
         let packets = try await document.open()
         let packet = try #require(packets.first)
         let inspection = try await document.inspectPacket(id: packet.id)
@@ -324,14 +357,14 @@ struct InspectorPipelineTests {
     }
 
     @Test func dnsInspectionRendersHeaderFlagsAndRecords() async throws {
-        try await withWiresharkDisabled {
+        try await withWiresharkDisabled { core in
             let directory = try makeTemporaryDirectory()
             defer { try? FileManager.default.removeItem(at: directory) }
 
         let captureURL = directory.appendingPathComponent("dns-response.pcap")
         try writePCAP(to: captureURL, packets: [makeIPv4DNSResponsePacket()])
 
-        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
+        let document = try await core.openOfflineCaptureDocument(at: captureURL)
         let packets = try await document.open()
         let packet = try #require(packets.first)
         let inspection = try await document.inspectPacket(id: packet.id)
@@ -351,7 +384,7 @@ struct InspectorPipelineTests {
     }
 
     @Test func phaseTwoInspectionRendersHTTPHeadersAndWebSocketFrames() async throws {
-        try await withWiresharkDisabled {
+        try await withWiresharkDisabled { core in
             let directory = try makeTemporaryDirectory()
             defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -364,7 +397,7 @@ struct InspectorPipelineTests {
             ]
         )
 
-        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
+        let document = try await core.openOfflineCaptureDocument(at: captureURL)
         let packets = try await document.open()
         #expect(packets.count == 2)
         #expect(packets[0].transportHint == .http1)
@@ -403,9 +436,9 @@ struct InspectorPipelineTests {
     }
 
     @Test func malformedInspectionAddsDecodeWarningAndKeepsRawBytes() async throws {
-        try await withWiresharkDisabled {
+        try await withWiresharkDisabled { core in
             let fixtureURL = CoreFixtureCatalog.captureCategoryURL("malformed").appendingPathComponent("partial-http-request.pcap")
-            let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: fixtureURL)
+            let document = try await core.openOfflineCaptureDocument(at: fixtureURL)
             let packets = try await document.open()
             let packet = try #require(packets.first)
 
@@ -425,7 +458,7 @@ struct InspectorPipelineTests {
     }
 
     @Test func incrementalOpenEmitsAppendBatchesAndCompletedProgress() async throws {
-        try await withWiresharkDisabled {
+        try await withWiresharkDisabled { core in
             let directory = try makeTemporaryDirectory()
             defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -434,7 +467,7 @@ struct InspectorPipelineTests {
         let packetCount = 640
         try writePCAP(to: captureURL, repeating: repeatedPacket, count: packetCount)
 
-        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
+        let document = try await core.openOfflineCaptureDocument(at: captureURL)
         let probe = LoadEventProbe()
         let events = document.events()
         let collector = Task {
@@ -465,7 +498,7 @@ struct InspectorPipelineTests {
     }
 
     @Test func incrementalOpenAllowsEarlyInspectionAndCancellation() async throws {
-        try await withWiresharkDisabled {
+        try await withWiresharkDisabled { core in
             let directory = try makeTemporaryDirectory()
             defer { try? FileManager.default.removeItem(at: directory) }
 
@@ -474,7 +507,7 @@ struct InspectorPipelineTests {
         let totalPacketCount = 120_000
         try writePCAP(to: captureURL, repeating: repeatedPacket, count: totalPacketCount)
 
-        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
+        let document = try await core.openOfflineCaptureDocument(at: captureURL)
         let probe = LoadEventProbe()
         let events = document.events()
         let collector = Task {
@@ -787,6 +820,62 @@ private func writePCAP(to url: URL, repeating packet: Data, count: Int) throws {
     try data.write(to: url)
 }
 
+private func writePCAPNG(to url: URL, interfaces: [String], packets: [(packet: Data, interfaceID: UInt32)]) throws {
+    var data = Data()
+
+    var sectionBody = Data()
+    sectionBody.appendLittleEndian(UInt32(0x1a2b3c4d))
+    sectionBody.appendLittleEndian(UInt16(1))
+    sectionBody.appendLittleEndian(UInt16(0))
+    sectionBody.appendLittleEndian(UInt64.max)
+    appendPCAPNGBlock(type: 0x0a0d0d0a, body: sectionBody, to: &data)
+
+    for interfaceName in interfaces {
+        var interfaceBody = Data()
+        interfaceBody.appendLittleEndian(UInt16(1))
+        interfaceBody.appendLittleEndian(UInt16(0))
+        interfaceBody.appendLittleEndian(UInt32(65_535))
+        appendPCAPNGStringOption(code: 2, value: interfaceName, to: &interfaceBody)
+        interfaceBody.appendLittleEndian(UInt16(0))
+        interfaceBody.appendLittleEndian(UInt16(0))
+        appendPCAPNGBlock(type: 1, body: interfaceBody, to: &data)
+    }
+
+    for (index, entry) in packets.enumerated() {
+        let packetLength = try UInt32(exactly: entry.packet.count).unwrap()
+        let timestamp = UInt64(1_700_000_000 + index) * 1_000_000
+        var packetBody = Data()
+        packetBody.appendLittleEndian(entry.interfaceID)
+        packetBody.appendLittleEndian(UInt32(timestamp >> 32))
+        packetBody.appendLittleEndian(UInt32(timestamp & 0xffff_ffff))
+        packetBody.appendLittleEndian(packetLength)
+        packetBody.appendLittleEndian(packetLength)
+        packetBody.append(entry.packet)
+        packetBody.appendPCAPNGPadding(for: entry.packet.count)
+        packetBody.appendLittleEndian(UInt16(0))
+        packetBody.appendLittleEndian(UInt16(0))
+        appendPCAPNGBlock(type: 6, body: packetBody, to: &data)
+    }
+
+    try data.write(to: url)
+}
+
+private func appendPCAPNGBlock(type: UInt32, body: Data, to data: inout Data) {
+    let totalLength = UInt32(12 + body.count)
+    data.appendLittleEndian(type)
+    data.appendLittleEndian(totalLength)
+    data.append(body)
+    data.appendLittleEndian(totalLength)
+}
+
+private func appendPCAPNGStringOption(code: UInt16, value: String, to data: inout Data) {
+    let bytes = Array(value.utf8)
+    data.appendLittleEndian(code)
+    data.appendLittleEndian(UInt16(bytes.count))
+    data.append(contentsOf: bytes)
+    data.appendPCAPNGPadding(for: bytes.count)
+}
+
 private func appendPacketRecord(_ packet: Data, index: Int, to data: inout Data) throws {
     let timestamp = UInt32(1_700_000_000 + index)
     let microseconds = UInt32((index % 1_000) * 1_000)
@@ -1085,10 +1174,12 @@ private func findNode(in nodes: [PacketDetailNode], fieldName: String) -> Packet
     return nil
 }
 
-private func withWiresharkDisabled<T>(_ body: () async throws -> T) async rethrows -> T {
-    setenv("TCPVIEWER_DISABLE_WIRESHARK", "1", 1)
-    defer { unsetenv("TCPVIEWER_DISABLE_WIRESHARK") }
-    return try await body()
+private func wiresharkDisabledCore() -> NativeTCPViewerCore {
+    NativeTCPViewerCore(disablesWiresharkForOfflineDocuments: true, disablesWiresharkForLiveSessions: true)
+}
+
+private func withWiresharkDisabled<T>(_ body: (NativeTCPViewerCore) async throws -> T) async rethrows -> T {
+    try await body(wiresharkDisabledCore())
 }
 
 private func makePaddedPacket(base: Data, byteCount: Int) -> Data {
@@ -1159,6 +1250,13 @@ private extension Data {
         var bigEndian = value.bigEndian
         Swift.withUnsafeBytes(of: &bigEndian) { buffer in
             append(buffer.bindMemory(to: UInt8.self))
+        }
+    }
+
+    mutating func appendPCAPNGPadding(for byteCount: Int) {
+        let padding = (4 - (byteCount % 4)) % 4
+        if padding > 0 {
+            append(Data(repeating: 0, count: padding))
         }
     }
 }

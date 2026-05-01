@@ -3,9 +3,9 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
-#include <cstdlib>
 #include <iomanip>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <sstream>
@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include <pcapplusplus/Packet.h>
 #include <pcapplusplus/RawPacket.h>
 
 #include <glib.h>
@@ -40,7 +41,8 @@ struct packet_provider_data {
     frame_data* prev_cap = nullptr;
     frame_data_sequence* frames = nullptr;
     GTree* frames_modified_blocks = nullptr;
-    std::string interfaceName;
+    std::unordered_map<uint64_t, std::string> interfaceNames;
+    std::unordered_map<uint64_t, std::string> interfaceDescriptions;
 };
 
 namespace tcpviewer::dissection {
@@ -48,8 +50,8 @@ namespace {
 
 constexpr const char* kBackendUnavailableReason =
     "Wireshark libwireshark backend is unavailable. Run scripts/bootstrap-wireshark.sh, then rebuild TCP Viewer.";
-constexpr const char* kBackendDisabledReason =
-    "Wireshark libwireshark backend is linked but disabled for this process by TCPVIEWER_DISABLE_WIRESHARK.";
+constexpr const char* kBackendDisabledForSessionReason =
+    "Wireshark libwireshark backend is disabled for this capture.";
 
 DetailNode MakeUnavailableDetail(const std::string& reason)
 {
@@ -65,13 +67,6 @@ DetailNode MakeUnavailableDetail(const std::string& reason)
 
 constexpr uint32_t kUnknownFrameNumber = 0;
 
-bool WiresharkDisabledByEnvironment()
-{
-    // Keep fallback-focused tests deterministic while the Debug app uses Wireshark by default.
-    const char* value = std::getenv("TCPVIEWER_DISABLE_WIRESHARK");
-    return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
-}
-
 std::mutex& WiresharkAPIMutex()
 {
     static std::mutex mutex;
@@ -80,8 +75,7 @@ std::mutex& WiresharkAPIMutex()
 
 struct WiresharkSessionResources {
     epan_t* epan = nullptr;
-    frame_data_sequence* frames = nullptr;
-    GTree* framesModifiedBlocks = nullptr;
+    std::unique_ptr<packet_provider_data> provider;
 };
 
 void FreeWiresharkSessionResources(WiresharkSessionResources& resources)
@@ -90,14 +84,18 @@ void FreeWiresharkSessionResources(WiresharkSessionResources& resources)
         epan_free(resources.epan);
         resources.epan = nullptr;
     }
-    if (resources.frames != nullptr) {
-        free_frame_data_sequence(resources.frames);
-        resources.frames = nullptr;
+    if (resources.provider == nullptr) {
+        return;
     }
-    if (resources.framesModifiedBlocks != nullptr) {
-        g_tree_destroy(resources.framesModifiedBlocks);
-        resources.framesModifiedBlocks = nullptr;
+    if (resources.provider->frames != nullptr) {
+        free_frame_data_sequence(resources.provider->frames);
+        resources.provider->frames = nullptr;
     }
+    if (resources.provider->frames_modified_blocks != nullptr) {
+        g_tree_destroy(resources.provider->frames_modified_blocks);
+        resources.provider->frames_modified_blocks = nullptr;
+    }
+    resources.provider.reset();
 }
 
 std::string HexBytes(const uint8_t* bytes, size_t length)
@@ -137,17 +135,46 @@ const nstime_t* ProviderGetFrameTimestamp(packet_provider_data* provider, uint32
     return frame != nullptr && frame->has_ts ? &frame->abs_ts : nullptr;
 }
 
-const char* ProviderGetInterfaceName(packet_provider_data* provider, uint32_t, unsigned)
+uint64_t InterfaceMetadataKey(uint32_t interfaceID, unsigned sectionNumber)
 {
-    if (provider == nullptr || provider->interfaceName.empty()) {
-        return "unknown";
-    }
-    return provider->interfaceName.c_str();
+    return (static_cast<uint64_t>(sectionNumber) << 32) | static_cast<uint64_t>(interfaceID);
 }
 
-const char* ProviderGetInterfaceDescription(packet_provider_data*, uint32_t, unsigned)
+void MergeInterfaceMetadata(packet_provider_data& provider, const PacketDissectionContext& context)
 {
-    return nullptr;
+    for (const auto& interface : context.interfaces) {
+        const uint64_t key = InterfaceMetadataKey(interface.interfaceID, interface.sectionNumber);
+        if (!interface.name.empty()) {
+            provider.interfaceNames[key] = interface.name;
+        }
+        if (!interface.description.empty()) {
+            provider.interfaceDescriptions[key] = interface.description;
+        }
+    }
+
+    if (context.interfaceName.has_value() && !context.interfaceName->empty()) {
+        provider.interfaceNames[InterfaceMetadataKey(context.interfaceID, context.sectionNumber)] = *context.interfaceName;
+    }
+}
+
+const char* ProviderGetInterfaceName(packet_provider_data* provider, uint32_t interfaceID, unsigned sectionNumber)
+{
+    if (provider == nullptr) {
+        return "unknown";
+    }
+
+    const auto match = provider->interfaceNames.find(InterfaceMetadataKey(interfaceID, sectionNumber));
+    return match == provider->interfaceNames.end() ? "unknown" : match->second.c_str();
+}
+
+const char* ProviderGetInterfaceDescription(packet_provider_data* provider, uint32_t interfaceID, unsigned sectionNumber)
+{
+    if (provider == nullptr) {
+        return nullptr;
+    }
+
+    const auto match = provider->interfaceDescriptions.find(InterfaceMetadataKey(interfaceID, sectionNumber));
+    return match == provider->interfaceDescriptions.end() ? nullptr : match->second.c_str();
 }
 
 wtap_block_t ProviderGetModifiedBlock(packet_provider_data* provider, const frame_data* frame)
@@ -209,8 +236,8 @@ public:
         record_.presence_flags = WTAP_HAS_TS | WTAP_HAS_CAP_LEN | WTAP_HAS_INTERFACE_ID;
         record_.rec_header.packet_header.caplen = static_cast<uint32_t>(capturedLength);
         record_.rec_header.packet_header.len = static_cast<uint32_t>(reportedLength);
-        record_.rec_header.packet_header.interface_id = 0;
-        record_.section_number = 0;
+        record_.rec_header.packet_header.interface_id = context.interfaceID;
+        record_.section_number = context.sectionNumber;
         record_.tsprec = WTAP_TSPREC_NSEC;
 
         const timespec timestamp = context.rawPacket.getPacketTimeStamp();
@@ -603,18 +630,45 @@ std::vector<DetailNode> MapProtoTree(proto_tree* tree, const WiresharkSourceSet&
 
 }  // namespace
 
+struct PacketDissectionSnapshot {
+    pcpp::RawPacket rawPacket;
+    uint32_t frameNumber = 0;
+    std::optional<std::string> interfaceName;
+    std::optional<std::string> packetComment;
+    uint32_t interfaceID = 0;
+    unsigned sectionNumber = 0;
+    std::vector<PacketInterfaceMetadata> interfaces;
+};
+
+PacketDissectionSnapshot MakePacketSnapshot(const PacketDissectionContext& context, uint32_t frameNumber)
+{
+    return PacketDissectionSnapshot{
+        context.rawPacket,
+        frameNumber,
+        context.interfaceName,
+        context.packetComment,
+        context.interfaceID,
+        context.sectionNumber,
+        context.interfaces,
+    };
+}
+
 struct WiresharkDissectionSession::Impl {
     mutable std::mutex mutex;
-    uint64_t observedPacketCount = 0;
     std::string unavailableReason = kBackendUnavailableReason;
-    packet_provider_data provider;
+    std::unique_ptr<packet_provider_data> provider;
     epan_t* epan = nullptr;
     EpanDissectPtr firstPassDissect;
     nstime_t elapsedTime = NSTIME_INIT_ZERO;
     frame_data referenceFrame{};
     uint32_t cumulativeBytes = 0;
-    std::unordered_set<uint32_t> observedFrameNumbers;
+    uint64_t activeObservedPacketCount = 0;
+    std::vector<PacketDissectionSnapshot> observedPackets;
+    std::unordered_set<uint32_t> storedFrameNumbers;
+    std::unordered_set<uint32_t> activeFrameNumbers;
     bool firstPassFinished = false;
+    bool disabled = false;
+    bool backendAvailable = false;
 
     static Impl*& activeSession()
     {
@@ -622,99 +676,91 @@ struct WiresharkDissectionSession::Impl {
         return session;
     }
 
-    void releaseWiresharkResourcesLocked(const std::string& reason)
+    void resetActiveFrameStateLocked()
     {
+        activeObservedPacketCount = 0;
+        activeFrameNumbers.clear();
+        nstime_set_zero(&elapsedTime);
+        referenceFrame = frame_data{};
+        cumulativeBytes = 0;
+        if (provider != nullptr) {
+            provider->ref = nullptr;
+            provider->prev_dis = nullptr;
+            provider->prev_cap = nullptr;
+        }
+    }
+
+    void releaseWiresharkResourcesLocked(const std::string& reason, bool finishSession)
+    {
+        if (activeSession() == this) {
+            activeSession() = nullptr;
+        }
         firstPassDissect.reset();
-        WiresharkSessionResources resources{epan, provider.frames, provider.frames_modified_blocks};
+        WiresharkSessionResources resources{epan, std::move(provider)};
         epan = nullptr;
-        provider.frames = nullptr;
-        provider.frames_modified_blocks = nullptr;
         if (!reason.empty()) {
             unavailableReason = reason;
         }
         FreeWiresharkSessionResources(resources);
-        firstPassFinished = true;
+        resetActiveFrameStateLocked();
+        if (finishSession) {
+            firstPassFinished = true;
+        }
     }
 
-    Impl()
+    bool initializeWiresharkResourcesLocked()
     {
-        auto& runtime = WiresharkRuntime::shared();
-        unavailableReason = runtime.unavailableReason();
-        if (!runtime.isAvailable()) {
-            return;
-        }
-
-        std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
         if (auto* active = activeSession(); active != nullptr && active != this) {
             std::lock_guard<std::mutex> activeLock(active->mutex);
-            active->releaseWiresharkResourcesLocked("Wireshark session was replaced by another capture.");
-            activeSession() = nullptr;
+            active->releaseWiresharkResourcesLocked("Wireshark session is inactive until this capture is inspected again.", false);
         }
 
-        provider.frames = new_frame_data_sequence();
-        if (provider.frames == nullptr) {
+        provider = std::make_unique<packet_provider_data>();
+        provider->frames = new_frame_data_sequence();
+        if (provider->frames == nullptr) {
             unavailableReason = "Wireshark frame storage could not be created.";
-            return;
+            provider.reset();
+            return false;
         }
 
-        epan = epan_new(&provider, &kPacketProviderFuncs);
+        epan = epan_new(provider.get(), &kPacketProviderFuncs);
         if (epan == nullptr) {
-            WiresharkSessionResources resources{nullptr, provider.frames, provider.frames_modified_blocks};
-            provider.frames = nullptr;
-            provider.frames_modified_blocks = nullptr;
+            WiresharkSessionResources resources{nullptr, std::move(provider)};
             FreeWiresharkSessionResources(resources);
             unavailableReason = "Wireshark session could not be created.";
-            return;
+            return false;
         }
-        activeSession() = this;
+
         firstPassDissect.reset(epan_dissect_new(epan, false, false));
         if (!firstPassDissect) {
-            unavailableReason = "Wireshark could not allocate a first-pass dissector.";
+            releaseWiresharkResourcesLocked("Wireshark could not allocate a first-pass dissector.", true);
+            return false;
         }
+
+        activeSession() = this;
+        resetActiveFrameStateLocked();
+        return true;
     }
 
-    ~Impl()
-    {
-        std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
-        if (activeSession() == this) {
-            activeSession() = nullptr;
-        }
-        releaseWiresharkResourcesLocked("");
-    }
-
-    bool hasSession() const
-    {
-        return epan != nullptr && provider.frames != nullptr;
-    }
-
-    bool canObservePackets() const
-    {
-        return hasSession() && firstPassDissect != nullptr && !firstPassFinished;
-    }
-
-    bool observePacketLocked(const PacketDissectionContext& context)
+    bool appendFirstPassPacketLocked(const PacketDissectionContext& context, uint32_t frameNumber)
     {
         // First pass feeds Wireshark's conversation/reassembly state before the UI asks for a detail tree.
         if (!hasSession()) {
             return false;
         }
-
-        const uint32_t frameNumber = FrameNumberForContext(context, observedPacketCount + 1);
         if (frameNumber == kUnknownFrameNumber) {
             unavailableReason = "Wireshark requires a 32-bit frame number for dissection state.";
             return false;
         }
-        if (observedFrameNumbers.find(frameNumber) != observedFrameNumbers.end()) {
+        if (activeFrameNumbers.find(frameNumber) != activeFrameNumbers.end()) {
             return true;
         }
-        if (!canObservePackets()) {
+        if (firstPassDissect == nullptr || firstPassFinished) {
             unavailableReason = "Wireshark first-pass state is already finalized for this packet set.";
             return false;
         }
 
-        if (context.interfaceName.has_value()) {
-            provider.interfaceName = *context.interfaceName;
-        }
+        MergeInterfaceMetadata(*provider, context);
 
         WiresharkRecord record(context);
         if (!record.isValid()) {
@@ -722,41 +768,160 @@ struct WiresharkDissectionSession::Impl {
             return false;
         }
 
-        if (!firstPassDissect) {
-            unavailableReason = "Wireshark could not allocate a first-pass dissector.";
-            return false;
-        }
-
         frame_data frame{};
         frame_data_init(&frame, frameNumber, record.get(), cumulativeBytes, cumulativeBytes);
-        frame_data_set_before_dissect(&frame, &elapsedTime, &provider.ref, provider.prev_dis);
-        if (provider.ref == &frame) {
+        frame_data_set_before_dissect(&frame, &elapsedTime, &provider->ref, provider->prev_dis);
+        if (provider->ref == &frame) {
             referenceFrame = frame;
-            provider.ref = &referenceFrame;
+            provider->ref = &referenceFrame;
         }
         epan_dissect_run(firstPassDissect.get(), WTAP_FILE_TYPE_SUBTYPE_UNKNOWN, record.get(), &frame, nullptr);
         frame_data_set_after_dissect(&frame, &cumulativeBytes);
 
-        provider.prev_cap = provider.prev_dis = frame_data_sequence_add(provider.frames, &frame);
+        provider->prev_cap = provider->prev_dis = frame_data_sequence_add(provider->frames, &frame);
         epan_dissect_reset(firstPassDissect.get());
-        observedFrameNumbers.insert(frameNumber);
-        observedPacketCount += 1;
+        activeFrameNumbers.insert(frameNumber);
+        activeObservedPacketCount += 1;
         return true;
+    }
+
+    bool replayFirstPassPacketsLocked()
+    {
+        const bool shouldFinishFirstPass = firstPassFinished;
+        firstPassFinished = false;
+
+        for (auto& snapshot : observedPackets) {
+            pcpp::Packet packet(&snapshot.rawPacket, false);
+            PacketDissectionContext context{
+                packet,
+                snapshot.rawPacket,
+                snapshot.frameNumber,
+                snapshot.interfaceName,
+                snapshot.packetComment,
+                snapshot.interfaceID,
+                snapshot.sectionNumber,
+                snapshot.interfaces,
+            };
+            if (!appendFirstPassPacketLocked(context, snapshot.frameNumber)) {
+                firstPassFinished = shouldFinishFirstPass;
+                return false;
+            }
+        }
+
+        if (shouldFinishFirstPass) {
+            finishActiveFirstPassLocked();
+        }
+        firstPassFinished = shouldFinishFirstPass;
+        return true;
+    }
+
+    bool ensureActiveSessionLocked()
+    {
+        if (disabled) {
+            return false;
+        }
+
+        auto& runtime = WiresharkRuntime::shared();
+        backendAvailable = runtime.isAvailable();
+        if (!backendAvailable) {
+            unavailableReason = runtime.unavailableReason();
+            return false;
+        }
+
+        if (hasSession() && activeSession() == this) {
+            return true;
+        }
+        if (!initializeWiresharkResourcesLocked()) {
+            return false;
+        }
+        if (!replayFirstPassPacketsLocked()) {
+            releaseWiresharkResourcesLocked(unavailableReason, true);
+            return false;
+        }
+        unavailableReason.clear();
+        return true;
+    }
+
+    explicit Impl(bool disablesWireshark)
+    {
+        if (disablesWireshark) {
+            disabled = true;
+            unavailableReason = kBackendDisabledForSessionReason;
+            firstPassFinished = true;
+            return;
+        }
+        auto& runtime = WiresharkRuntime::shared();
+        backendAvailable = runtime.isAvailable();
+        unavailableReason = runtime.unavailableReason();
+        if (!backendAvailable) {
+            return;
+        }
+
+        std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
+        ensureActiveSessionLocked();
+    }
+
+    ~Impl()
+    {
+        std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
+        std::lock_guard<std::mutex> sessionLock(mutex);
+        releaseWiresharkResourcesLocked("", false);
+    }
+
+    bool hasSession() const
+    {
+        return epan != nullptr && provider != nullptr && provider->frames != nullptr;
+    }
+
+    bool observePacketLocked(const PacketDissectionContext& context)
+    {
+        if (disabled || !backendAvailable) {
+            return false;
+        }
+        const uint32_t frameNumber = FrameNumberForContext(context, observedPackets.size() + 1);
+        if (frameNumber == kUnknownFrameNumber) {
+            unavailableReason = "Wireshark requires a 32-bit frame number for dissection state.";
+            return false;
+        }
+        if (storedFrameNumbers.find(frameNumber) != storedFrameNumbers.end()) {
+            return ensureActiveSessionLocked();
+        }
+        if (firstPassFinished) {
+            unavailableReason = "Wireshark first-pass state is already finalized for this packet set.";
+            return false;
+        }
+        if (!ensureActiveSessionLocked()) {
+            return false;
+        }
+        if (!appendFirstPassPacketLocked(context, frameNumber)) {
+            return false;
+        }
+
+        observedPackets.push_back(MakePacketSnapshot(context, frameNumber));
+        storedFrameNumbers.insert(frameNumber);
+        return true;
+    }
+
+    void finishActiveFirstPassLocked()
+    {
+        // Keep frame sequence state alive for later packet detail passes.
+        firstPassDissect.reset();
+        if (provider != nullptr) {
+            provider->prev_dis = nullptr;
+            provider->prev_cap = nullptr;
+        }
     }
 
     bool finishFirstPassLocked()
     {
-        if (!hasSession()) {
-            return false;
-        }
         if (firstPassFinished) {
             return true;
         }
+        if (!ensureActiveSessionLocked()) {
+            return false;
+        }
 
-        // Keep sequence state alive for the second pass; Wireshark's postseq cleanup is process-global.
-        firstPassDissect.reset();
-        provider.prev_dis = nullptr;
-        provider.prev_cap = nullptr;
+        finishActiveFirstPassLocked();
         firstPassFinished = true;
         return true;
     }
@@ -765,22 +930,24 @@ struct WiresharkDissectionSession::Impl {
     {
         // Second pass uses the frame state captured during observePacketLocked() so columns and reassembly match Wireshark.
         WiresharkDissectionResult result;
-        if (!hasSession()) {
+        if (!ensureActiveSessionLocked()) {
             result.fallbackReason = unavailableReason;
             result.nodes.push_back(MakeUnavailableDetail(result.fallbackReason));
             return result;
         }
 
-        const uint32_t expectedFrameNumber = FrameNumberForContext(context, observedPacketCount);
-        if (expectedFrameNumber != kUnknownFrameNumber && observedFrameNumbers.find(expectedFrameNumber) == observedFrameNumbers.end() &&
+        const uint32_t expectedFrameNumber = FrameNumberForContext(context, observedPackets.size());
+        if (expectedFrameNumber != kUnknownFrameNumber && activeFrameNumbers.find(expectedFrameNumber) == activeFrameNumbers.end() &&
             !observePacketLocked(context)) {
             result.fallbackReason = unavailableReason;
             result.nodes.push_back(MakeUnavailableDetail(result.fallbackReason));
             return result;
         }
 
-        const uint32_t frameNumber = FrameNumberForContext(context, observedPacketCount);
-        frame_data* frame = frameNumber == kUnknownFrameNumber ? nullptr : frame_data_sequence_find(provider.frames, frameNumber);
+        MergeInterfaceMetadata(*provider, context);
+
+        const uint32_t frameNumber = FrameNumberForContext(context, observedPackets.size());
+        frame_data* frame = frameNumber == kUnknownFrameNumber ? nullptr : frame_data_sequence_find(provider->frames, frameNumber);
         if (frame == nullptr) {
             result.fallbackReason = "Wireshark first-pass frame state was not available for this packet.";
             result.nodes.push_back(MakeUnavailableDetail(result.fallbackReason));
@@ -806,10 +973,10 @@ struct WiresharkDissectionSession::Impl {
             col_custom_prime_edt(dissect.get(), columnInfo.get());
         }
 
-        frame_data_set_before_dissect(frame, &elapsedTime, &provider.ref, provider.prev_dis);
-        if (provider.ref == frame) {
+        frame_data_set_before_dissect(frame, &elapsedTime, &provider->ref, provider->prev_dis);
+        if (provider->ref == frame) {
             referenceFrame = *frame;
-            provider.ref = &referenceFrame;
+            provider->ref = &referenceFrame;
         }
         wtap_block_t block = record.get()->block != nullptr ? wtap_block_ref(record.get()->block) : nullptr;
         if (buildTree) {
@@ -882,19 +1049,16 @@ WiresharkRuntime::~WiresharkRuntime()
 
 bool WiresharkRuntime::isAvailable() const
 {
-    return available_ && !WiresharkDisabledByEnvironment();
+    return available_;
 }
 
 std::string WiresharkRuntime::unavailableReason() const
 {
-    if (WiresharkDisabledByEnvironment()) {
-        return kBackendDisabledReason;
-    }
     return unavailableReason_;
 }
 
-WiresharkDissectionSession::WiresharkDissectionSession()
-    : impl_(std::make_unique<Impl>())
+WiresharkDissectionSession::WiresharkDissectionSession(bool disabled)
+    : impl_(std::make_unique<Impl>(disabled))
 {
 }
 
@@ -906,52 +1070,35 @@ WiresharkDissectionSession& WiresharkDissectionSession::operator=(WiresharkDisse
 
 bool WiresharkDissectionSession::observePacket(const PacketDissectionContext& context)
 {
-    auto& runtime = WiresharkRuntime::shared();
-    if (runtime.isAvailable()) {
-        std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
-        std::lock_guard<std::mutex> sessionLock(impl_->mutex);
-        return impl_->observePacketLocked(context);
-    }
+    std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
     std::lock_guard<std::mutex> sessionLock(impl_->mutex);
-    // Count packets when Wireshark is disabled so live/offline plumbing remains observable and testable.
-    impl_->observedPacketCount += 1;
-    impl_->unavailableReason = runtime.unavailableReason();
-    return false;
+    return impl_->observePacketLocked(context);
 }
 
 bool WiresharkDissectionSession::finishFirstPass()
 {
-    auto& runtime = WiresharkRuntime::shared();
-    if (runtime.isAvailable()) {
-        std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
-        std::lock_guard<std::mutex> sessionLock(impl_->mutex);
-        return impl_->finishFirstPassLocked();
-    }
+    std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
     std::lock_guard<std::mutex> sessionLock(impl_->mutex);
-    impl_->unavailableReason = runtime.unavailableReason();
-    return false;
+    return impl_->finishFirstPassLocked();
 }
 
 WiresharkDissectionResult WiresharkDissectionSession::summarizePacket(const PacketDissectionContext& context)
 {
-    auto& runtime = WiresharkRuntime::shared();
-    WiresharkDissectionResult result;
-    if (runtime.isAvailable()) {
-        std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
-        std::lock_guard<std::mutex> sessionLock(impl_->mutex);
-        return impl_->summarizePacketLocked(context);
-    }
+    std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
     std::lock_guard<std::mutex> sessionLock(impl_->mutex);
-    result.usedWireshark = false;
-    result.fallbackReason = runtime.unavailableReason();
-    impl_->unavailableReason = result.fallbackReason;
-    return result;
+    return impl_->summarizePacketLocked(context);
+}
+
+bool WiresharkDissectionSession::isAvailable() const
+{
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->backendAvailable && !impl_->disabled;
 }
 
 uint64_t WiresharkDissectionSession::observedPacketCount() const
 {
     std::lock_guard<std::mutex> lock(impl_->mutex);
-    return impl_->observedPacketCount;
+    return impl_->observedPackets.size();
 }
 
 std::string WiresharkDissectionSession::unavailableReason() const
@@ -968,14 +1115,6 @@ WiresharkPacketDissector::WiresharkPacketDissector(WiresharkDissectionSession* s
 WiresharkDissectionResult WiresharkPacketDissector::dissect(const PacketDissectionContext& context) const
 {
     WiresharkDissectionResult result;
-    auto& runtime = WiresharkRuntime::shared();
-    if (!runtime.isAvailable()) {
-        result.usedWireshark = false;
-        result.fallbackReason = runtime.unavailableReason();
-        result.nodes.push_back(MakeUnavailableDetail(result.fallbackReason));
-        return result;
-    }
-
     if (session_ == nullptr) {
         result.fallbackReason = "Wireshark dissection requires a per-session first-pass state.";
         result.nodes.push_back(MakeUnavailableDetail(result.fallbackReason));

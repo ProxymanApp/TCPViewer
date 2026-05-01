@@ -48,7 +48,7 @@ private:
 
 class WiresharkDissectionSession {
 public:
-    WiresharkDissectionSession();
+    explicit WiresharkDissectionSession(bool disabled = false);
     ~WiresharkDissectionSession();
 
     WiresharkDissectionSession(WiresharkDissectionSession&&) noexcept;
@@ -60,6 +60,7 @@ public:
     bool observePacket(const PacketDissectionContext& context);
     bool finishFirstPass();
     WiresharkDissectionResult summarizePacket(const PacketDissectionContext& context);
+    bool isAvailable() const;
     uint64_t observedPacketCount() const;
     std::string unavailableReason() const;
 
