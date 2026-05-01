@@ -13,6 +13,7 @@ final class TCPViewerWindowController: NSWindowController {
     let rootViewController: TCPViewerRootViewController
 
     private let toolbarDataSource = TCPViewerToolbarDataSource()
+    private let filterController = PacketQuickFilterViewController()
     private var helperSheetController: NSHostingController<TCPViewerNetworkHelperOnboardingSheet>?
     private var helperSheetWindow: NSWindow?
 
@@ -36,6 +37,7 @@ final class TCPViewerWindowController: NSWindowController {
         super.init(window: window)
         self.rootViewController.delegate = self
         setupToolbar()
+        setupQuickFilters()
         // Persist size and position across launches. If a saved frame exists
         // for this name, it overrides the default size/center set above.
         window.setFrameAutosaveName(Self.frameAutosaveName)
@@ -84,9 +86,16 @@ final class TCPViewerWindowController: NSWindowController {
         window?.toolbarStyle = .unified
     }
 
+    private func setupQuickFilters() {
+        filterController.delegate = self
+        filterController.render(snapshot: rootViewController.viewModel.snapshot)
+        window?.addTitlebarAccessoryViewController(filterController)
+    }
+
     private func renderToolbar() {
         let snapshot = rootViewController.viewModel.snapshot
         toolbarDataSource.render(snapshot: snapshot, inspectorViewModel: rootViewController.viewModel)
+        filterController.render(snapshot: snapshot)
         window?.title = snapshot.base.documentState.fileURL?.lastPathComponent ?? "TCP Viewer"
     }
 
@@ -173,5 +182,15 @@ extension TCPViewerWindowController: TCPViewerToolbarDataSourceDelegate {
 
     func tcpviewerToolbarDataSourceDidToggleInspector(_ dataSource: TCPViewerToolbarDataSource) {
         rootViewController.toggleInspector()
+    }
+}
+
+extension TCPViewerWindowController: PacketQuickFilterViewControllerDelegate {
+    func packetQuickFilterViewController(_ controller: PacketQuickFilterViewController, didToggle filterID: PacketQuickFilterID) {
+        rootViewController.toggleQuickFilter(filterID)
+    }
+
+    func packetQuickFilterViewControllerDidRequestReset(_ controller: PacketQuickFilterViewController) {
+        rootViewController.resetQuickFilters()
     }
 }

@@ -10,6 +10,7 @@ import PcapPlusPlusCore
 
 protocol PacketInspectorViewControllerDelegate: AnyObject {
     func packetInspectorViewController(_ controller: PacketInspectorViewController, didSelectDetailNode identifier: String?)
+    func packetInspectorViewControllerDidRequestResetQuickFilters(_ controller: PacketInspectorViewController)
 }
 
 enum PacketInspectorTreeItemKind: Equatable {
@@ -388,6 +389,59 @@ fileprivate final class PacketInspectorOutlineView: NSOutlineView {
     }
 }
 
+private final class PacketInspectorQuickFilterEmptyView: NSView {
+    private let titleLabel = TCPViewerUI.label(
+        "No Packet Selected",
+        font: .systemFont(ofSize: 17, weight: .semibold)
+    )
+    private let messageLabel = TCPViewerUI.label(
+        "",
+        font: .systemFont(ofSize: NSFont.systemFontSize),
+        color: .secondaryLabelColor
+    )
+    private let resetButton = NSButton(title: "Reset Filters", target: nil, action: nil)
+
+    init(target: AnyObject, action: Selector) {
+        super.init(frame: .zero)
+        resetButton.target = target
+        resetButton.action = action
+        setupLayout()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func render(message: String) {
+        messageLabel.stringValue = message
+    }
+
+    private func setupLayout() {
+        titleLabel.alignment = .center
+        messageLabel.alignment = .center
+        messageLabel.maximumNumberOfLines = 2
+
+        resetButton.bezelStyle = .rounded
+        resetButton.controlSize = .regular
+
+        let stack = NSStackView(views: [titleLabel, messageLabel, resetButton])
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 10
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            stack.centerXAnchor.constraint(equalTo: centerXAnchor),
+            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            stack.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -24),
+            messageLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 320),
+        ])
+    }
+}
+
 final class PacketInspectorViewController: NSViewController {
     private enum Metrics {
         static let rowHeight: CGFloat = 20
@@ -406,6 +460,7 @@ final class PacketInspectorViewController: NSViewController {
     private let outlineView = PacketInspectorOutlineView()
     private let detailColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("detail"))
     private var isApplyingSelection = false
+    private var quickFilterEmptyStateView: PacketInspectorQuickFilterEmptyView?
 
     init(configuration: AppConfiguration) {
         self.configuration = configuration
@@ -428,6 +483,14 @@ final class PacketInspectorViewController: NSViewController {
 
     // Render the current packet inspection tree as a single Wireshark-style outline.
     func render(snapshot: NetworkInspectorSnapshot) {
+        if shouldShowQuickFilterEmptyState(for: snapshot) {
+            hexViewController.render(snapshot: snapshot)
+            showQuickFilterEmptyState(message: snapshot.quickFilterAppliedDescription ?? "Filtered by quick filters")
+            return
+        }
+
+        hideQuickFilterEmptyState()
+
         let renderChange = viewModel.render(snapshot: snapshot)
         hexViewController.render(snapshot: snapshot)
 
@@ -448,6 +511,10 @@ final class PacketInspectorViewController: NSViewController {
         outlineView.reloadData()
         expandAllItems()
         applySelectedNode(preservingExistingSelection: false)
+    }
+
+    private func shouldShowQuickFilterEmptyState(for snapshot: NetworkInspectorSnapshot) -> Bool {
+        snapshot.selectedPacketRowIndex == nil && snapshot.isQuickFilterActive
     }
 
     private func setupOutlineView() {
@@ -502,6 +569,26 @@ final class PacketInspectorViewController: NSViewController {
             hexHeight,
             hexViewController.view.heightAnchor.constraint(greaterThanOrEqualToConstant: Metrics.minimumHexPanelHeight),
         ])
+    }
+
+    private func showQuickFilterEmptyState(message: String) {
+        stackView.isHidden = true
+        let emptyView: PacketInspectorQuickFilterEmptyView
+        if let quickFilterEmptyStateView {
+            emptyView = quickFilterEmptyStateView
+        } else {
+            let view = PacketInspectorQuickFilterEmptyView(target: self, action: #selector(resetQuickFilters(_:)))
+            TCPViewerUI.pin(view, to: self.view)
+            quickFilterEmptyStateView = view
+            emptyView = view
+        }
+        emptyView.render(message: message)
+    }
+
+    private func hideQuickFilterEmptyState() {
+        stackView.isHidden = false
+        quickFilterEmptyStateView?.removeFromSuperview()
+        quickFilterEmptyStateView = nil
     }
 
     private func expandAllItems() {
@@ -598,6 +685,10 @@ final class PacketInspectorViewController: NSViewController {
 
     @objc private func copySelectedRowsFromMenu(_ sender: Any?) {
         copySelectedRowsToPasteboard()
+    }
+
+    @objc private func resetQuickFilters(_ sender: Any?) {
+        delegate?.packetInspectorViewControllerDidRequestResetQuickFilters(self)
     }
 
     private func configuredCell(for item: PacketInspectorTreeItem) -> NSTableCellView {

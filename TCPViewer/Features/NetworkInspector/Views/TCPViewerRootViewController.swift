@@ -120,6 +120,14 @@ final class TCPViewerRootViewController: NSViewController {
         viewModel.toggleInspector()
     }
 
+    func toggleQuickFilter(_ filterID: PacketQuickFilterID) {
+        viewModel.toggleQuickFilter(filterID)
+    }
+
+    func resetQuickFilters() {
+        viewModel.resetQuickFilters()
+    }
+
     func showOpenPanel() {
         viewModel.presentOpenCapturePanel()
     }
@@ -468,6 +476,10 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
 extension TCPViewerRootViewController: PacketInspectorViewControllerDelegate {
     func packetInspectorViewController(_ controller: PacketInspectorViewController, didSelectDetailNode identifier: String?) {
         viewModel.selectDetailNode(identifier)
+    }
+
+    func packetInspectorViewControllerDidRequestResetQuickFilters(_ controller: PacketInspectorViewController) {
+        viewModel.resetQuickFilters()
     }
 }
 
