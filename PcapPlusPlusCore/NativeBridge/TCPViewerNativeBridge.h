@@ -1,3 +1,10 @@
+//
+//  TCPViewerNativeBridge.h
+//  TCPViewer
+//
+//  Created by Proxyman LLC on 23/4/26.
+//
+
 #import <Foundation/Foundation.h>
 
 NS_ASSUME_NONNULL_BEGIN
@@ -28,14 +35,15 @@ typedef NS_ENUM(NSInteger, PCPPNativeTransportHint) {
     PCPPNativeTransportHintARP = 1,
     PCPPNativeTransportHintIPv4 = 2,
     PCPPNativeTransportHintIPv6 = 3,
-    PCPPNativeTransportHintTCP = 4,
-    PCPPNativeTransportHintUDP = 5,
-    PCPPNativeTransportHintDNS = 6,
-    PCPPNativeTransportHintHTTP1 = 7,
-    PCPPNativeTransportHintTLS = 8,
-    PCPPNativeTransportHintWebSocket = 9,
-    PCPPNativeTransportHintPayload = 10,
-    PCPPNativeTransportHintUnknown = 11,
+    PCPPNativeTransportHintICMP = 4,
+    PCPPNativeTransportHintTCP = 5,
+    PCPPNativeTransportHintUDP = 6,
+    PCPPNativeTransportHintDNS = 7,
+    PCPPNativeTransportHintHTTP1 = 8,
+    PCPPNativeTransportHintTLS = 9,
+    PCPPNativeTransportHintWebSocket = 10,
+    PCPPNativeTransportHintPayload = 11,
+    PCPPNativeTransportHintUnknown = 12,
 };
 
 typedef NS_ENUM(NSInteger, PCPPNativeDecodeStatusKind) {
@@ -133,6 +141,19 @@ typedef NS_ENUM(NSInteger, PCPPNativeLiveSessionPhase) {
 
 @end
 
+@interface PCPPNativePacketByteViewDescriptor : NSObject
+
+@property (nonatomic, copy, readonly) NSString *identifier;
+@property (nonatomic, copy, readonly) NSString *label;
+@property (nonatomic, copy, readonly) NSData *bytes;
+
+- (instancetype)initWithIdentifier:(NSString *)identifier
+                             label:(NSString *)label
+                             bytes:(NSData *)bytes NS_DESIGNATED_INITIALIZER;
+- (instancetype)init NS_UNAVAILABLE;
+
+@end
+
 @interface PCPPNativePacketCaptureMetadataDescriptor : NSObject
 
 @property (nonatomic, readonly) PCPPNativeLinkType linkType;
@@ -165,6 +186,7 @@ typedef NS_ENUM(NSInteger, PCPPNativeLiveSessionPhase) {
 @property (nonatomic, strong, readonly) NSDate *timestamp;
 @property (nonatomic, copy, readonly, nullable) NSString *interfaceIdentifier;
 @property (nonatomic, readonly) PCPPNativeTransportHint transportHint;
+@property (nonatomic, copy, readonly, nullable) NSString *protocolSummary;
 @property (nonatomic, strong, readonly) PCPPNativePacketEndpointDescriptor *sourceEndpoint;
 @property (nonatomic, strong, readonly) PCPPNativePacketEndpointDescriptor *destinationEndpoint;
 @property (nonatomic, readonly) NSInteger originalLength;
@@ -183,6 +205,7 @@ typedef NS_ENUM(NSInteger, PCPPNativeLiveSessionPhase) {
                           timestamp:(NSDate *)timestamp
                 interfaceIdentifier:(nullable NSString *)interfaceIdentifier
                       transportHint:(PCPPNativeTransportHint)transportHint
+                     protocolSummary:(nullable NSString *)protocolSummary
                      sourceEndpoint:(PCPPNativePacketEndpointDescriptor *)sourceEndpoint
                 destinationEndpoint:(PCPPNativePacketEndpointDescriptor *)destinationEndpoint
                      originalLength:(NSInteger)originalLength
@@ -285,8 +308,18 @@ typedef NS_ENUM(NSInteger, PCPPNativeLiveSessionPhase) {
 
 @property (nonatomic, readonly) NSInteger offset;
 @property (nonatomic, readonly) NSInteger length;
+@property (nonatomic, readonly) NSInteger bitOffset;
+@property (nonatomic, readonly) NSInteger bitLength;
+@property (nonatomic, readonly) BOOL hasBitRange;
+@property (nonatomic, copy, readonly) NSString *sourceIdentifier;
 
 - (instancetype)initWithOffset:(NSInteger)offset length:(NSInteger)length NS_DESIGNATED_INITIALIZER;
+- (instancetype)initWithOffset:(NSInteger)offset
+                        length:(NSInteger)length
+                     bitOffset:(NSInteger)bitOffset
+                     bitLength:(NSInteger)bitLength
+                   hasBitRange:(BOOL)hasBitRange
+              sourceIdentifier:(NSString *)sourceIdentifier NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
 
 @end
@@ -295,16 +328,22 @@ typedef NS_ENUM(NSInteger, PCPPNativeLiveSessionPhase) {
 
 @property (nonatomic, copy, readonly) NSString *identifier;
 @property (nonatomic, copy, readonly) NSString *name;
+@property (nonatomic, copy, readonly) NSString *fieldName;
 @property (nonatomic, copy, readonly, nullable) NSString *value;
+@property (nonatomic, copy, readonly, nullable) NSString *rawValue;
 @property (nonatomic, copy, readonly) NSString *kind;
+@property (nonatomic, copy, readonly) NSString *severity;
 @property (nonatomic, strong, readonly, nullable) PCPPNativePacketByteRangeDescriptor *byteRange;
 @property (nonatomic, readonly, nullable) NSNumber *jumpTargetPacketIdentifier;
 @property (nonatomic, copy, readonly) NSArray<PCPPNativePacketDetailNodeDescriptor *> *children;
 
 - (instancetype)initWithIdentifier:(NSString *)identifier
                               name:(NSString *)name
+                         fieldName:(NSString *)fieldName
                              value:(nullable NSString *)value
+                          rawValue:(nullable NSString *)rawValue
                               kind:(NSString *)kind
+                          severity:(NSString *)severity
                          byteRange:(nullable PCPPNativePacketByteRangeDescriptor *)byteRange
           jumpTargetPacketIdentifier:(nullable NSNumber *)jumpTargetPacketIdentifier
                            children:(NSArray<PCPPNativePacketDetailNodeDescriptor *> *)children NS_DESIGNATED_INITIALIZER;
@@ -317,12 +356,14 @@ typedef NS_ENUM(NSInteger, PCPPNativeLiveSessionPhase) {
 @property (nonatomic, readonly) unsigned long long packetIdentifier;
 @property (nonatomic, readonly) unsigned long long packetNumber;
 @property (nonatomic, copy, readonly) NSData *rawBytes;
+@property (nonatomic, copy, readonly) NSArray<PCPPNativePacketByteViewDescriptor *> *byteViews;
 @property (nonatomic, copy, readonly) NSArray<PCPPNativePacketDetailNodeDescriptor *> *detailNodes;
 @property (nonatomic, strong, readonly) PCPPNativeDecodeStatusDescriptor *decodeStatus;
 
 - (instancetype)initWithPacketIdentifier:(unsigned long long)packetIdentifier
                             packetNumber:(unsigned long long)packetNumber
                                 rawBytes:(NSData *)rawBytes
+                               byteViews:(NSArray<PCPPNativePacketByteViewDescriptor *> *)byteViews
                              detailNodes:(NSArray<PCPPNativePacketDetailNodeDescriptor *> *)detailNodes
                             decodeStatus:(PCPPNativeDecodeStatusDescriptor *)decodeStatus NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
@@ -366,6 +407,10 @@ typedef BOOL (^PCPPNativeCancellationHandler)(void);
 
 - (instancetype)initWithInterfaceIdentifier:(NSString *)interfaceIdentifier
                                     options:(PCPPNativeCaptureOptionsDescriptor *)options
+                                      error:(NSError **)error;
+- (instancetype)initWithInterfaceIdentifier:(NSString *)interfaceIdentifier
+                                    options:(PCPPNativeCaptureOptionsDescriptor *)options
+                         disablesWireshark:(BOOL)disablesWireshark
                                       error:(NSError **)error NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
 
@@ -374,6 +419,8 @@ typedef BOOL (^PCPPNativeCancellationHandler)(void);
 - (BOOL)resumeAndReturnError:(NSError **)error NS_SWIFT_NAME(resume());
 - (BOOL)stopAndReturnError:(NSError **)error NS_SWIFT_NAME(stop());
 - (nullable PCPPNativePacketInspectionDescriptor *)inspectPacketWithIdentifier:(unsigned long long)identifier error:(NSError **)error;
+- (nullable NSArray<PCPPNativePacketSummaryDescriptor *> *)reanalyzePacketSummariesAndReturnError:(NSError **)error
+    NS_SWIFT_NAME(reanalyzePacketSummaries());
 - (BOOL)exportPacketsWithIdentifiers:(NSArray<NSNumber *> *)identifiers
                                 toURL:(NSURL *)url
                                format:(NSString *)format
@@ -390,7 +437,10 @@ typedef BOOL (^PCPPNativeCancellationHandler)(void);
 @property (nonatomic, strong, readonly) PCPPNativeCaptureDocumentMetadataDescriptor *documentMetadata;
 @property (nonatomic, readonly) BOOL dirty;
 
-- (instancetype)initWithURL:(NSURL *)url error:(NSError **)error NS_DESIGNATED_INITIALIZER;
+- (instancetype)initWithURL:(NSURL *)url error:(NSError **)error;
+- (instancetype)initWithURL:(NSURL *)url
+         disablesWireshark:(BOOL)disablesWireshark
+                     error:(NSError **)error NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
 
 - (NSArray<PCPPNativePacketSummaryDescriptor *> *)openAndReturnError:(NSError **)error;
@@ -436,6 +486,9 @@ typedef BOOL (^PCPPNativeCancellationHandler)(void);
                               error:(NSError **)error NS_SWIFT_NAME(appendPacket(identifier:rawBytes:timestamp:linkLayerType:originalLength:));
 - (nullable PCPPNativePacketInspectionDescriptor *)inspectPacketWithIdentifier:(unsigned long long)identifier
                                                                          error:(NSError **)error NS_SWIFT_NAME(inspectPacket(identifier:));
+- (nullable NSArray<PCPPNativePacketSummaryDescriptor *> *)reanalyzePacketSummariesUpToIdentifier:(unsigned long long)identifier
+                                                                                             error:(NSError **)error
+    NS_SWIFT_NAME(reanalyzePacketSummaries(upTo:));
 - (nullable NSNumber *)offsetForPacketWithIdentifier:(unsigned long long)identifier
                                                error:(NSError **)error NS_SWIFT_NAME(offset(identifier:));
 - (void)cleanup;

@@ -1,3 +1,10 @@
+//
+//  WorkspaceControllerTests.swift
+//  TCPViewer
+//
+//  Created by Proxyman LLC on 23/4/26.
+//
+
 import Foundation
 import Testing
 import PcapPlusPlusCore
@@ -672,6 +679,12 @@ struct WindowControllerTests {
                             value: "10.0.0.2",
                             byteRange: PacketByteRange(offset: 30, length: 4)
                         ),
+                        PacketDetailNode(
+                            id: "ipv4.flags.df",
+                            name: "Don't Fragment",
+                            value: "Set",
+                            byteRange: PacketByteRange(offset: 20, length: 1, bitOffset: 1, bitLength: 1, hasBitRange: true)
+                        ),
                     ]
                 ),
             ]
@@ -708,6 +721,11 @@ struct WindowControllerTests {
 
         #expect(controller.snapshot.inspectionState.selectedDetailNodeID == "ipv4.src")
         #expect(controller.snapshot.inspectionState.highlightedByteRange == PacketByteRange(offset: 26, length: 4))
+
+        controller.selectDetailNode("ipv4.flags.df")
+
+        #expect(controller.snapshot.inspectionState.selectedDetailNodeID == "ipv4.flags.df")
+        #expect(controller.snapshot.inspectionState.highlightedByteRange == PacketByteRange(offset: 20, length: 1, bitOffset: 1, bitLength: 1, hasBitRange: true))
 
         await tearDown(controller)
     }
@@ -1213,6 +1231,24 @@ struct PacketIngestStateMutationTests {
 
         #expect(state.lastMutation == .none)
         #expect(state.packets.isEmpty)
+    }
+
+    @Test func applySummaryUpdatesRefreshesProtocolAndInfoInPlace() {
+        var state = PacketIngestState.empty
+        let packet = makePacket(packetNumber: 1)
+        state.append([packet], source: .live)
+
+        state.applySummaryUpdates([
+            PacketSummaryUpdate(packetID: packet.id, protocolSummary: "TLSv1.3", infoSummary: "Client Hello")
+        ])
+
+        #expect(state.packets.first?.protocolSummary == "TLSv1.3")
+        #expect(state.packets.first?.infoSummary == "Client Hello")
+        if case let .metadataUpdate(ids) = state.lastMutation {
+            #expect(ids == [packet.id])
+        } else {
+            Issue.record("expected .metadataUpdate, got \(state.lastMutation)")
+        }
     }
 
     private func makePacket(packetNumber: UInt64) -> PacketSummary {

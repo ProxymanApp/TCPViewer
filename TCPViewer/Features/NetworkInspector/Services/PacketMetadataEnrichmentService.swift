@@ -1,3 +1,10 @@
+//
+//  PacketMetadataEnrichmentService.swift
+//  TCPViewer
+//
+//  Created by Proxyman LLC on 24/4/26.
+//
+
 import AppKit
 import Darwin
 import Foundation
@@ -724,6 +731,31 @@ private extension MacOSPacketClientResolver.SocketTransport {
 }
 
 extension PacketSummary {
+    func tcpviewerApplying(summaryUpdate: PacketSummaryUpdate) -> PacketSummary {
+        PacketSummary(
+            id: id,
+            packetNumber: packetNumber,
+            timestamp: timestamp,
+            source: source,
+            interfaceID: interfaceID,
+            transportHint: transportHint,
+            protocolSummary: summaryUpdate.protocolSummary,
+            endpoints: endpoints,
+            originalLength: originalLength,
+            capturedLength: capturedLength,
+            streamID: streamID,
+            direction: direction,
+            tcpFlags: tcpFlags,
+            tcpPayloadLength: tcpPayloadLength,
+            infoSummary: summaryUpdate.infoSummary,
+            layers: layers,
+            decodeStatus: decodeStatus,
+            captureMetadata: captureMetadata,
+            sniDomainName: sniDomainName,
+            client: client
+        )
+    }
+
     func tcpviewerApplying(
         sniDomainName: String? = nil,
         client: PacketClient? = nil,
@@ -736,6 +768,7 @@ extension PacketSummary {
             source: source,
             interfaceID: interfaceID,
             transportHint: transportHint,
+            protocolSummary: protocolSummary,
             endpoints: endpoints,
             originalLength: originalLength,
             capturedLength: capturedLength,

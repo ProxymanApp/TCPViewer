@@ -1,3 +1,10 @@
+//
+//  PacketClientIconPathResolver.swift
+//  TCPViewer
+//
+//  Created by Proxyman LLC on 26/4/26.
+//
+
 import Foundation
 import PcapPlusPlusCore
 

@@ -1,3 +1,10 @@
+//
+//  NativeBridgeSupport.swift
+//  TCPViewer
+//
+//  Created by Proxyman LLC on 23/4/26.
+//
+
 import Foundation
 import SystemConfiguration
 @_implementationOnly import TCPViewerNativeBridge
@@ -97,20 +104,22 @@ enum NativeBridgeMapper {
         case 3:
             .ipv6
         case 4:
-            .tcp
+            .icmp
         case 5:
-            .udp
+            .tcp
         case 6:
-            .dns
+            .udp
         case 7:
-            .http1
+            .dns
         case 8:
-            .tls
+            .http1
         case 9:
-            .websocket
+            .tls
         case 10:
-            .payload
+            .websocket
         case 11:
+            .payload
+        case 12:
             .unknown
         default:
             .unknown
@@ -318,7 +327,19 @@ enum NativeBridgeMapper {
 
         return PacketByteRange(
             offset: descriptor.offset,
-            length: descriptor.length
+            length: descriptor.length,
+            bitOffset: descriptor.bitOffset,
+            bitLength: descriptor.bitLength,
+            hasBitRange: descriptor.hasBitRange,
+            sourceID: descriptor.sourceIdentifier
+        )
+    }
+
+    static func packetByteView(_ descriptor: PCPPNativePacketByteViewDescriptor) -> PacketByteView {
+        PacketByteView(
+            id: descriptor.identifier,
+            label: descriptor.label,
+            bytes: descriptor.bytes
         )
     }
 
@@ -326,12 +347,19 @@ enum NativeBridgeMapper {
         PacketDetailNodeKind(rawValue: rawValue.lowercased()) ?? .field
     }
 
+    static func detailNodeSeverity(_ rawValue: String) -> PacketDetailNodeSeverity {
+        PacketDetailNodeSeverity(rawValue: rawValue.lowercased()) ?? .normal
+    }
+
     static func packetDetailNode(_ descriptor: PCPPNativePacketDetailNodeDescriptor) -> PacketDetailNode {
         PacketDetailNode(
             id: descriptor.identifier,
             name: descriptor.name,
+            fieldName: descriptor.fieldName,
             value: descriptor.value,
+            rawValue: descriptor.rawValue,
             kind: detailNodeKind(descriptor.kind),
+            severity: detailNodeSeverity(descriptor.severity),
             byteRange: packetByteRange(descriptor.byteRange),
             jumpTargetPacketID: descriptor.jumpTargetPacketIdentifier?.uint64Value,
             children: descriptor.children.map(packetDetailNode)
@@ -343,6 +371,7 @@ enum NativeBridgeMapper {
             packetID: descriptor.packetIdentifier,
             packetNumber: descriptor.packetNumber,
             rawBytes: descriptor.rawBytes,
+            byteViews: descriptor.byteViews.map(packetByteView),
             detailNodes: descriptor.detailNodes.map(packetDetailNode),
             decodeStatus: decodeStatus(descriptor.decodeStatus)
         )
@@ -359,6 +388,7 @@ enum NativeBridgeMapper {
             source: source,
             interfaceID: descriptor.interfaceIdentifier,
             transportHint: transportHint(descriptor.transportHint),
+            protocolSummary: descriptor.protocolSummary,
             endpoints: PacketEndpoints(
                 source: packetEndpoint(descriptor.sourceEndpoint),
                 destination: packetEndpoint(descriptor.destinationEndpoint)
@@ -668,6 +698,12 @@ final class NativeLivePacketDiskStoreTestHarness {
 
     func inspectPacket(identifier: UInt64) throws -> PacketInspection {
         try NativeBridgeMapper.packetInspection(probe.inspectPacket(identifier: identifier))
+    }
+
+    func reanalyzePacketSummaries(upTo identifier: UInt64 = 0) throws -> [PacketSummary] {
+        try probe.reanalyzePacketSummaries(upTo: identifier).map {
+            NativeBridgeMapper.packetSummary($0, source: .live)
+        }
     }
 
     func offset(identifier: UInt64) throws -> UInt64 {

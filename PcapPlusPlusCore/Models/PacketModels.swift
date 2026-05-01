@@ -1,3 +1,10 @@
+//
+//  PacketModels.swift
+//  TCPViewer
+//
+//  Created by Proxyman LLC on 24/4/26.
+//
+
 import Foundation
 
 public enum TransportProtocolHint: String, Sendable, Codable {
@@ -5,6 +12,7 @@ public enum TransportProtocolHint: String, Sendable, Codable {
     case arp
     case ipv4
     case ipv6
+    case icmp
     case tcp
     case udp
     case dns
@@ -21,6 +29,13 @@ public enum PacketDetailNodeKind: String, Sendable, Codable {
     case warning
 }
 
+public enum PacketDetailNodeSeverity: String, Sendable, Codable, Hashable {
+    case normal
+    case info
+    case warning
+    case error
+}
+
 public enum PacketBatchDisposition: String, Sendable, Codable {
     case append
     case replace
@@ -29,10 +44,25 @@ public enum PacketBatchDisposition: String, Sendable, Codable {
 public struct PacketByteRange: Sendable, Codable, Hashable {
     public let offset: Int
     public let length: Int
+    public let bitOffset: Int
+    public let bitLength: Int
+    public let hasBitRange: Bool
+    public let sourceID: String
 
-    public init(offset: Int, length: Int) {
+    public init(
+        offset: Int,
+        length: Int,
+        bitOffset: Int = 0,
+        bitLength: Int = 0,
+        hasBitRange: Bool = false,
+        sourceID: String = "frame"
+    ) {
         self.offset = offset
         self.length = length
+        self.bitOffset = bitOffset
+        self.bitLength = bitLength
+        self.hasBitRange = hasBitRange
+        self.sourceID = sourceID
     }
 
     public var upperBound: Int {
@@ -40,11 +70,26 @@ public struct PacketByteRange: Sendable, Codable, Hashable {
     }
 }
 
+public struct PacketByteView: Identifiable, Sendable, Codable, Hashable {
+    public let id: String
+    public let label: String
+    public let bytes: Data
+
+    public init(id: String, label: String, bytes: Data) {
+        self.id = id
+        self.label = label
+        self.bytes = bytes
+    }
+}
+
 public struct PacketDetailNode: Identifiable, Sendable, Codable, Hashable {
     public let id: String
     public let name: String
+    public let fieldName: String
     public let value: String?
+    public let rawValue: String?
     public let kind: PacketDetailNodeKind
+    public let severity: PacketDetailNodeSeverity
     public let byteRange: PacketByteRange?
     public let jumpTargetPacketID: UInt64?
     public let children: [PacketDetailNode]
@@ -52,16 +97,22 @@ public struct PacketDetailNode: Identifiable, Sendable, Codable, Hashable {
     public init(
         id: String,
         name: String,
+        fieldName: String? = nil,
         value: String? = nil,
+        rawValue: String? = nil,
         kind: PacketDetailNodeKind = .field,
+        severity: PacketDetailNodeSeverity = .normal,
         byteRange: PacketByteRange? = nil,
         jumpTargetPacketID: UInt64? = nil,
         children: [PacketDetailNode] = []
     ) {
         self.id = id
         self.name = name
+        self.fieldName = fieldName ?? id
         self.value = value
+        self.rawValue = rawValue
         self.kind = kind
+        self.severity = severity
         self.byteRange = byteRange
         self.jumpTargetPacketID = jumpTargetPacketID
         self.children = children
@@ -72,6 +123,7 @@ public struct PacketInspection: Sendable, Codable, Hashable {
     public let packetID: UInt64
     public let packetNumber: UInt64
     public let rawBytes: Data
+    public let byteViews: [PacketByteView]
     public let detailNodes: [PacketDetailNode]
     public let decodeStatus: PacketDecodeStatus
 
@@ -79,12 +131,14 @@ public struct PacketInspection: Sendable, Codable, Hashable {
         packetID: UInt64,
         packetNumber: UInt64,
         rawBytes: Data,
+        byteViews: [PacketByteView]? = nil,
         detailNodes: [PacketDetailNode],
         decodeStatus: PacketDecodeStatus
     ) {
         self.packetID = packetID
         self.packetNumber = packetNumber
         self.rawBytes = rawBytes
+        self.byteViews = byteViews ?? [PacketByteView(id: "frame", label: "Frame", bytes: rawBytes)]
         self.detailNodes = detailNodes
         self.decodeStatus = decodeStatus
     }
@@ -245,6 +299,7 @@ public struct PacketSummary: Identifiable, Sendable, Codable, Hashable {
     public let source: CaptureSource
     public let interfaceID: String?
     public let transportHint: TransportProtocolHint
+    public let protocolSummary: String?
     public let endpoints: PacketEndpoints
     public let originalLength: Int
     public let capturedLength: Int
@@ -266,6 +321,7 @@ public struct PacketSummary: Identifiable, Sendable, Codable, Hashable {
         source: CaptureSource,
         interfaceID: String? = nil,
         transportHint: TransportProtocolHint,
+        protocolSummary: String? = nil,
         endpoints: PacketEndpoints,
         originalLength: Int,
         capturedLength: Int,
@@ -286,6 +342,7 @@ public struct PacketSummary: Identifiable, Sendable, Codable, Hashable {
         self.source = source
         self.interfaceID = interfaceID
         self.transportHint = transportHint
+        self.protocolSummary = protocolSummary
         self.endpoints = endpoints
         self.originalLength = originalLength
         self.capturedLength = capturedLength
@@ -302,10 +359,23 @@ public struct PacketSummary: Identifiable, Sendable, Codable, Hashable {
     }
 }
 
+public struct PacketSummaryUpdate: Sendable, Codable, Hashable {
+    public let packetID: PacketSummary.ID
+    public let protocolSummary: String?
+    public let infoSummary: String
+
+    public init(packetID: PacketSummary.ID, protocolSummary: String?, infoSummary: String) {
+        self.packetID = packetID
+        self.protocolSummary = protocolSummary
+        self.infoSummary = infoSummary
+    }
+}
+
 public enum PacketIngestEvent: Sendable, Equatable {
     case liveStateChanged(phase: LiveCaptureSessionPhase, message: String)
     case documentStateChanged(phase: OfflineCaptureDocumentPhase, message: String)
     case packetBatch([PacketSummary], disposition: PacketBatchDisposition)
+    case packetSummaryUpdates([PacketSummaryUpdate])
     case loadProgressChanged(PacketLoadProgress)
     case healthChanged(CaptureHealthSnapshot)
     case documentMetadataChanged(CaptureDocumentMetadata)

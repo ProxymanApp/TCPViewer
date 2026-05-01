@@ -2,7 +2,7 @@
 //  AppDelegate.swift
 //  TCPViewer
 //
-//  Created by nghiatran on 24/4/26.
+//  Created by Proxyman LLC on 24/4/26.
 //
 
 import Cocoa

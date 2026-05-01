@@ -1,3 +1,10 @@
+//
+//  PacketInspectorViewController.swift
+//  TCPViewer
+//
+//  Created by Proxyman LLC on 25/4/26.
+//
+
 import AppKit
 import PcapPlusPlusCore
 
@@ -18,12 +25,35 @@ enum PacketInspectorTreeRenderChange: Equatable {
     case selection
 }
 
+struct PacketInspectorCopyRow: Equatable {
+    let text: String
+    let indentationLevel: Int
+}
+
+enum PacketInspectorCopyFormatter {
+    // Build copy text that mirrors the outline hierarchy with stable plain-text indentation.
+    static func text(for rows: [PacketInspectorCopyRow]) -> String {
+        rows
+            .map { row in
+                let indentation = String(repeating: "    ", count: max(0, row.indentationLevel))
+                return row.text
+                    .replacingOccurrences(of: "\r\n", with: "\n")
+                    .replacingOccurrences(of: "\r", with: "\n")
+                    .split(separator: "\n", omittingEmptySubsequences: false)
+                    .map { "\(indentation)\($0)" }
+                    .joined(separator: "\n")
+            }
+            .joined(separator: "\n")
+    }
+}
+
 final class PacketInspectorTreeItem: NSObject {
     let id: String
     let nodeID: String?
     let name: String
     let value: String?
     let kind: PacketInspectorTreeItemKind
+    let severity: PacketDetailNodeSeverity
     let byteRange: PacketByteRange?
     let children: [PacketInspectorTreeItem]
 
@@ -33,6 +63,7 @@ final class PacketInspectorTreeItem: NSObject {
         name: String,
         value: String? = nil,
         kind: PacketInspectorTreeItemKind,
+        severity: PacketDetailNodeSeverity = .normal,
         byteRange: PacketByteRange? = nil,
         children: [PacketInspectorTreeItem] = []
     ) {
@@ -41,6 +72,7 @@ final class PacketInspectorTreeItem: NSObject {
         self.name = name
         self.value = value
         self.kind = kind
+        self.severity = severity
         self.byteRange = byteRange
         self.children = children
     }
@@ -55,6 +87,21 @@ final class PacketInspectorTreeItem: NSObject {
 }
 
 final class PacketInspectorTreeViewModel {
+    private enum Metrics {
+        static let maximumInlineDisplayLength = 64
+    }
+
+    private struct DisplayParts {
+        let name: String
+        let value: String?
+        let summaryRows: [SummaryRow]
+    }
+
+    private struct SummaryRow {
+        let name: String
+        let value: String?
+    }
+
     private(set) var rootItems: [PacketInspectorTreeItem] = []
     private(set) var selectedNodeID: String?
     private var itemByNodeID: [String: PacketInspectorTreeItem] = [:]
@@ -63,10 +110,10 @@ final class PacketInspectorTreeViewModel {
     @discardableResult
     func render(snapshot: NetworkInspectorSnapshot) -> PacketInspectorTreeRenderChange {
         let inspectionState = snapshot.base.inspectionState
-        let contentState = PacketInspectorTreeContentState(inspectionState: inspectionState)
-        let contentChanged = contentState != renderedContentState
+        let contentState = nextContentState(from: inspectionState)
+        let contentChanged = contentState.map { $0 != renderedContentState } ?? false
 
-        if contentChanged {
+        if contentChanged, let contentState {
             renderedContentState = contentState
             itemByNodeID = [:]
             rootItems = makeRootItems(from: inspectionState)
@@ -90,7 +137,7 @@ final class PacketInspectorTreeViewModel {
     }
 
     private func makeRootItems(from inspectionState: PacketInspectionState) -> [PacketInspectorTreeItem] {
-        if inspectionState.isLoading {
+        if inspectionState.isLoading, inspectionState.currentInspection == nil {
             return [messageItem(id: "loading", message: inspectionState.statusMessage)]
         }
 
@@ -117,24 +164,177 @@ final class PacketInspectorTreeViewModel {
         return selectedDetailNodeID
     }
 
+    // Keep decoded rows visible during a packet-selection inspection request.
+    private func nextContentState(from inspectionState: PacketInspectionState) -> PacketInspectorTreeContentState? {
+        let contentState = PacketInspectorTreeContentState(inspectionState: inspectionState)
+        guard inspectionState.isLoading,
+              contentState.inspection == nil,
+              renderedContentState?.inspection != nil else {
+            return contentState
+        }
+
+        return nil
+    }
+
     private func messageItem(id: String, message: String) -> PacketInspectorTreeItem {
         PacketInspectorTreeItem(id: "__\(id)", name: message, kind: .message)
     }
 
     private func makeItem(from node: PacketDetailNode, parentPath: String) -> PacketInspectorTreeItem {
         let path = parentPath.isEmpty ? node.id : "\(parentPath).\(node.id)"
-        let children = node.children.map { makeItem(from: $0, parentPath: path) }
+        let displayParts = displayParts(for: node)
+        let summaryChildren = makeSummaryItems(from: displayParts.summaryRows, parentPath: path, severity: node.severity)
+        let children = summaryChildren + node.children.map { makeItem(from: $0, parentPath: path) }
         let treeItem = PacketInspectorTreeItem(
             id: path,
             nodeID: node.id,
-            name: node.name,
-            value: node.value,
+            name: displayParts.name,
+            value: displayParts.value,
             kind: itemKind(from: node.kind),
+            severity: node.severity,
             byteRange: node.byteRange,
             children: children
         )
         itemByNodeID[node.id] = treeItem
         return treeItem
+    }
+
+    // Split oversized layer summaries into child rows so the outline stays readable at inspector width.
+    private func displayParts(for node: PacketDetailNode) -> DisplayParts {
+        guard shouldSplitDisplayText(name: node.name, value: node.value, kind: node.kind) else {
+            return DisplayParts(name: node.name, value: node.value, summaryRows: [])
+        }
+
+        var displayName = node.name
+        var displayValue = node.value
+        var summaryRows: [SummaryRow] = []
+        var didSplitDisplay = false
+
+        let nameParts = commaSeparatedParts(from: node.name)
+        if nameParts.count > 1 {
+            displayName = nameParts[0]
+            summaryRows.append(contentsOf: nameParts.dropFirst().map(summaryRow(from:)))
+            didSplitDisplay = true
+        }
+
+        if let value = node.value, !value.isEmpty {
+            let valueSummaryRows = summaryRowsForValue(value)
+            if !valueSummaryRows.isEmpty {
+                summaryRows.append(contentsOf: valueSummaryRows)
+                displayValue = nil
+                didSplitDisplay = true
+            }
+        }
+
+        summaryRows = removingRowsAlreadyRepresentedByChildren(summaryRows, from: node.children)
+
+        guard didSplitDisplay else {
+            return DisplayParts(name: node.name, value: node.value, summaryRows: [])
+        }
+
+        return DisplayParts(name: displayName, value: displayValue, summaryRows: summaryRows)
+    }
+
+    // Only layer rows carry protocol summaries; field rows should keep their exact label/value pairing.
+    private func shouldSplitDisplayText(name: String, value: String?, kind: PacketDetailNodeKind) -> Bool {
+        guard kind == .layer else {
+            return false
+        }
+
+        let displayText: String
+        if let value, !value.isEmpty {
+            displayText = "\(name): \(value)"
+        } else {
+            displayText = name
+        }
+
+        return displayText.count > Metrics.maximumInlineDisplayLength
+    }
+
+    // Build non-selectable rows that preserve long summary content under the original selectable node.
+    private func makeSummaryItems(
+        from rows: [SummaryRow],
+        parentPath: String,
+        severity: PacketDetailNodeSeverity
+    ) -> [PacketInspectorTreeItem] {
+        rows.enumerated().map { index, row in
+            PacketInspectorTreeItem(
+                id: "\(parentPath).__summary.\(index)",
+                name: row.name,
+                value: row.value,
+                kind: .field,
+                severity: severity
+            )
+        }
+    }
+
+    // Prefer protocol-shaped pieces such as "Src: ..." over one very long inline summary string.
+    private func summaryRowsForValue(_ value: String) -> [SummaryRow] {
+        if value.hasPrefix("Detailed field decoding is not available yet for ") {
+            return [SummaryRow(name: "Decode Status", value: "Field decoding is not available yet.")]
+        }
+
+        let parts = commaSeparatedParts(from: value)
+        guard parts.count > 1 else {
+            return [SummaryRow(name: "Summary", value: value)]
+        }
+
+        return parts.map(summaryRow(from:))
+    }
+
+    // Split simple comma-separated protocol summaries without changing values that contain no separators.
+    private func commaSeparatedParts(from value: String) -> [String] {
+        value
+            .split(separator: ",", omittingEmptySubsequences: true)
+            .map { trimmed(String($0)) }
+            .filter { !$0.isEmpty }
+    }
+
+    // Convert a summary fragment into the same "name: value" shape used by decoded field rows.
+    private func summaryRow(from part: String) -> SummaryRow {
+        let pieces = part.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+        guard pieces.count == 2 else {
+            return SummaryRow(name: "Summary", value: part)
+        }
+
+        let name = normalizedSummaryName(trimmed(String(pieces[0])))
+        let value = trimmed(String(pieces[1]))
+        return SummaryRow(name: name, value: value.isEmpty ? nil : value)
+    }
+
+    // Expand common packet-summary abbreviations into clearer inspector row names.
+    private func normalizedSummaryName(_ name: String) -> String {
+        switch name.lowercased() {
+        case "src":
+            return "Source"
+        case "dst":
+            return "Destination"
+        default:
+            return name
+        }
+    }
+
+    // Keep whitespace cleanup local to the summary splitter.
+    private func trimmed(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // Avoid duplicating decoded child fields that already show a long layer summary's key details.
+    private func removingRowsAlreadyRepresentedByChildren(
+        _ rows: [SummaryRow],
+        from children: [PacketDetailNode]
+    ) -> [SummaryRow] {
+        let existingDisplayTexts = Set(children.map { displayText(name: $0.name, value: $0.value) })
+        return rows.filter { !existingDisplayTexts.contains(displayText(name: $0.name, value: $0.value)) }
+    }
+
+    // Mirror PacketInspectorTreeItem display text for pre-render duplicate checks.
+    private func displayText(name: String, value: String?) -> String {
+        guard let value, !value.isEmpty else {
+            return name
+        }
+
+        return "\(name): \(value)"
     }
 
     private func itemKind(from kind: PacketDetailNodeKind) -> PacketInspectorTreeItemKind {
@@ -176,23 +376,40 @@ private extension PacketInspectionState {
     }
 }
 
+fileprivate protocol PacketInspectorOutlineViewCopyHandling: AnyObject {
+    func packetInspectorOutlineViewDidRequestCopy(_ outlineView: PacketInspectorOutlineView)
+}
+
+fileprivate final class PacketInspectorOutlineView: NSOutlineView {
+    weak var copyActionHandler: PacketInspectorOutlineViewCopyHandling?
+
+    @objc func copy(_ sender: Any?) {
+        copyActionHandler?.packetInspectorOutlineViewDidRequestCopy(self)
+    }
+}
+
 final class PacketInspectorViewController: NSViewController {
     private enum Metrics {
         static let rowHeight: CGFloat = 20
         static let cellIdentifier = NSUserInterfaceItemIdentifier("PacketInspectorCell")
+        static let hexPanelHeight: CGFloat = 180
+        static let minimumHexPanelHeight: CGFloat = 120
     }
 
     weak var delegate: PacketInspectorViewControllerDelegate?
 
     private let configuration: AppConfiguration
     private let viewModel = PacketInspectorTreeViewModel()
+    private let hexViewController: PacketHexViewController
+    private let stackView = NSStackView()
     private let scrollView = NSScrollView()
-    private let outlineView = NSOutlineView()
+    private let outlineView = PacketInspectorOutlineView()
     private let detailColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("detail"))
     private var isApplyingSelection = false
 
     init(configuration: AppConfiguration) {
         self.configuration = configuration
+        self.hexViewController = PacketHexViewController(configuration: configuration)
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -206,15 +423,19 @@ final class PacketInspectorViewController: NSViewController {
         view.wantsLayer = true
         view.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
         setupOutlineView()
+        setupLayout()
     }
 
     // Render the current packet inspection tree as a single Wireshark-style outline.
     func render(snapshot: NetworkInspectorSnapshot) {
-        switch viewModel.render(snapshot: snapshot) {
+        let renderChange = viewModel.render(snapshot: snapshot)
+        hexViewController.render(snapshot: snapshot)
+
+        switch renderChange {
         case .none:
             return
         case .selection:
-            applySelectedNode()
+            applySelectedNode(preservingExistingSelection: true)
             return
         case .reload:
             break
@@ -226,7 +447,7 @@ final class PacketInspectorViewController: NSViewController {
         }
         outlineView.reloadData()
         expandAllItems()
-        applySelectedNode()
+        applySelectedNode(preservingExistingSelection: false)
     }
 
     private func setupOutlineView() {
@@ -246,16 +467,41 @@ final class PacketInspectorViewController: NSViewController {
         outlineView.dataSource = self
         outlineView.delegate = self
         outlineView.allowsEmptySelection = true
+        outlineView.allowsMultipleSelection = true
         outlineView.backgroundColor = .controlBackgroundColor
         outlineView.style = .fullWidth
+        outlineView.copyActionHandler = self
+        outlineView.menu = makeContextMenu()
 
         scrollView.borderType = .noBorder
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
         scrollView.documentView = outlineView
+    }
 
-        TCPViewerUI.pin(scrollView, to: view)
+    private func setupLayout() {
+        addChild(hexViewController)
+
+        stackView.orientation = .vertical
+        stackView.spacing = 0
+        stackView.edgeInsets = NSEdgeInsetsZero
+        stackView.translatesAutoresizingMaskIntoConstraints = false
+        stackView.addArrangedSubview(scrollView)
+        stackView.addArrangedSubview(hexViewController.view)
+
+        scrollView.setContentHuggingPriority(.defaultLow, for: .vertical)
+        hexViewController.view.setContentHuggingPriority(.defaultHigh, for: .vertical)
+
+        let hexHeight = hexViewController.view.heightAnchor.constraint(equalToConstant: Metrics.hexPanelHeight)
+        hexHeight.priority = .defaultHigh
+
+        view.addSubview(stackView)
+        TCPViewerUI.pin(stackView, to: view)
+        NSLayoutConstraint.activate([
+            hexHeight,
+            hexViewController.view.heightAnchor.constraint(greaterThanOrEqualToConstant: Metrics.minimumHexPanelHeight),
+        ])
     }
 
     private func expandAllItems() {
@@ -271,7 +517,7 @@ final class PacketInspectorViewController: NSViewController {
         }
     }
 
-    private func applySelectedNode() {
+    private func applySelectedNode(preservingExistingSelection: Bool) {
         isApplyingSelection = true
         defer { isApplyingSelection = false }
 
@@ -286,8 +532,72 @@ final class PacketInspectorViewController: NSViewController {
             return
         }
 
+        if preservingExistingSelection, outlineView.selectedRowIndexes.contains(row) {
+            outlineView.scrollRowToVisible(row)
+            return
+        }
+
         outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         outlineView.scrollRowToVisible(row)
+    }
+
+    // Create the inspector outline context menu and update its state before it opens.
+    private func makeContextMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        menu.delegate = self
+        return menu
+    }
+
+    // Keep an existing multi-selection when right-clicking one of its rows, otherwise target the clicked row.
+    private func updateSelectionFromCurrentMenuEvent() {
+        guard let event = NSApp.currentEvent,
+              event.type == .rightMouseDown || event.type == .leftMouseDown || event.type == .otherMouseDown else {
+            return
+        }
+
+        let point = outlineView.convert(event.locationInWindow, from: nil)
+        let row = outlineView.row(at: point)
+        guard row >= 0,
+              let item = outlineView.item(atRow: row) as? PacketInspectorTreeItem,
+              item.nodeID != nil else {
+            return
+        }
+
+        if outlineView.selectedRowIndexes.contains(row) {
+            return
+        }
+
+        outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+    }
+
+    // Collect selected visible outline rows in display order for copy formatting.
+    private func selectedCopyRows() -> [PacketInspectorCopyRow] {
+        outlineView.selectedRowIndexes.compactMap { row in
+            guard let item = outlineView.item(atRow: row) as? PacketInspectorTreeItem else {
+                return nil
+            }
+
+            return PacketInspectorCopyRow(
+                text: item.displayText,
+                indentationLevel: outlineView.level(forRow: row)
+            )
+        }
+    }
+
+    // Write the selected inspector rows to the system pasteboard as plain text.
+    private func copySelectedRowsToPasteboard() {
+        let text = PacketInspectorCopyFormatter.text(for: selectedCopyRows())
+        guard !text.isEmpty else {
+            return
+        }
+
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    @objc private func copySelectedRowsFromMenu(_ sender: Any?) {
+        copySelectedRowsToPasteboard()
     }
 
     private func configuredCell(for item: PacketInspectorTreeItem) -> NSTableCellView {
@@ -307,7 +617,7 @@ final class PacketInspectorViewController: NSViewController {
 
         textField.stringValue = item.displayText
         textField.font = font(for: item.kind)
-        textField.textColor = textColor(for: item.kind)
+        textField.textColor = textColor(for: item)
         textField.lineBreakMode = .byTruncatingTail
         textField.maximumNumberOfLines = 1
         return cell
@@ -328,14 +638,25 @@ final class PacketInspectorViewController: NSViewController {
         }
     }
 
-    private func textColor(for kind: PacketInspectorTreeItemKind) -> NSColor {
-        switch kind {
+    private func textColor(for item: PacketInspectorTreeItem) -> NSColor {
+        switch item.severity {
+        case .error:
+            return .systemRed
         case .warning:
-            .systemOrange
+            return .systemOrange
+        case .info, .normal:
+            break
+        @unknown default:
+            break
+        }
+
+        switch item.kind {
+        case .warning:
+            return .systemOrange
         case .message:
-            .secondaryLabelColor
+            return .secondaryLabelColor
         case .layer, .field:
-            .labelColor
+            return .labelColor
         }
     }
 }
@@ -396,5 +717,29 @@ extension PacketInspectorViewController: NSOutlineViewDelegate {
         }
 
         return item.nodeID != nil
+    }
+}
+
+extension PacketInspectorViewController: PacketInspectorOutlineViewCopyHandling {
+    fileprivate func packetInspectorOutlineViewDidRequestCopy(_ outlineView: PacketInspectorOutlineView) {
+        copySelectedRowsToPasteboard()
+    }
+}
+
+extension PacketInspectorViewController: NSMenuDelegate {
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        updateSelectionFromCurrentMenuEvent()
+
+        menu.removeAllItems()
+        let copyItem = NSMenuItem(
+            title: "Copy",
+            action: #selector(copySelectedRowsFromMenu(_:)),
+            keyEquivalent: "c"
+        )
+        copyItem.target = self
+        copyItem.isEnabled = !selectedCopyRows().isEmpty
+        copyItem.toolTip = "Copy the selected inspector rows."
+        copyItem.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Copy")
+        menu.addItem(copyItem)
     }
 }
