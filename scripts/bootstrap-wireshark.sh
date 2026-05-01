@@ -195,8 +195,5 @@ printf '%s' "$CURRENT_STAMP_CONTENT" > "$STAMP_FILE"
 
 cat <<EOF
 Wireshark installed in $INSTALL_ROOT.
-Enable TCP Viewer's Wireshark backend with:
-
-TCPVIEWER_HAS_WIRESHARK=1 \\
-TCPVIEWER_WIRESHARK_LDFLAGS="-L$INSTALL_ROOT/lib -Wl,-rpath,$INSTALL_ROOT/lib -lwireshark -lwiretap -lwsutil"
+TCP Viewer links and bundles the Wireshark backend by default.
 EOF

@@ -21,6 +21,7 @@ Clone the repository with submodules, then let the bootstrap scripts prepare the
 git clone --recurse-submodules <repo-url>
 cd Packetry
 ./scripts/bootstrap-pcapplusplus.sh
+./scripts/bootstrap-wireshark.sh
 ```
 
 If you already cloned without submodules:
@@ -28,9 +29,10 @@ If you already cloned without submodules:
 ```bash
 git submodule update --init --recursive
 ./scripts/bootstrap-pcapplusplus.sh
+./scripts/bootstrap-wireshark.sh
 ```
 
-This is enough for the default developer build. TCP Viewer will use PcapPlusPlus for capture, packet summaries, export, and fallback packet details.
+This prepares the native capture and dissection libraries used by the default developer build.
 
 ## Wireshark Deep Packet Details
 

@@ -16,7 +16,6 @@
 
 #include <pcapplusplus/RawPacket.h>
 
-#if defined(TCPVIEWER_HAS_WIRESHARK) && TCPVIEWER_HAS_WIRESHARK
 #include <glib.h>
 
 #include <epan/column.h>
@@ -43,14 +42,12 @@ struct packet_provider_data {
     GTree* frames_modified_blocks = nullptr;
     std::string interfaceName;
 };
-#endif
 
 namespace tcpviewer::dissection {
 namespace {
 
-constexpr const char* kBackendNotLinkedReason =
-    "Wireshark libwireshark backend is not linked in this build. Run scripts/bootstrap-wireshark.sh, then enable "
-    "TCPVIEWER_HAS_WIRESHARK=1 for PcapPlusPlusCore to use Wireshark protocol-tree dissection.";
+constexpr const char* kBackendUnavailableReason =
+    "Wireshark libwireshark backend is unavailable. Run scripts/bootstrap-wireshark.sh, then rebuild TCP Viewer.";
 constexpr const char* kBackendDisabledReason =
     "Wireshark libwireshark backend is linked but disabled for this process by TCPVIEWER_DISABLE_WIRESHARK.";
 
@@ -65,8 +62,6 @@ DetailNode MakeUnavailableDetail(const std::string& reason)
     node.severity = NodeSeverity::Info;
     return node;
 }
-
-#if defined(TCPVIEWER_HAS_WIRESHARK) && TCPVIEWER_HAS_WIRESHARK
 
 constexpr uint32_t kUnknownFrameNumber = 0;
 
@@ -606,15 +601,12 @@ std::vector<DetailNode> MapProtoTree(proto_tree* tree, const WiresharkSourceSet&
     return nodes;
 }
 
-#endif
-
 }  // namespace
 
 struct WiresharkDissectionSession::Impl {
     mutable std::mutex mutex;
     uint64_t observedPacketCount = 0;
-    std::string unavailableReason = kBackendNotLinkedReason;
-#if defined(TCPVIEWER_HAS_WIRESHARK) && TCPVIEWER_HAS_WIRESHARK
+    std::string unavailableReason = kBackendUnavailableReason;
     packet_provider_data provider;
     epan_t* epan = nullptr;
     EpanDissectPtr firstPassDissect;
@@ -853,10 +845,6 @@ struct WiresharkDissectionSession::Impl {
     {
         return runSecondPassLocked(context, true);
     }
-#else
-    Impl() = default;
-    ~Impl() = default;
-#endif
 };
 
 WiresharkRuntime& WiresharkRuntime::shared()
@@ -868,7 +856,6 @@ WiresharkRuntime& WiresharkRuntime::shared()
 
 WiresharkRuntime::WiresharkRuntime()
 {
-#if defined(TCPVIEWER_HAS_WIRESHARK) && TCPVIEWER_HAS_WIRESHARK
     // libwireshark has process-wide registries, so runtime setup is deliberately one-time and serialized.
     std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
     wtap_init(true);
@@ -882,21 +869,15 @@ WiresharkRuntime::WiresharkRuntime()
     prefs_apply_all();
     available_ = true;
     unavailableReason_.clear();
-#else
-    available_ = false;
-    unavailableReason_ = kBackendNotLinkedReason;
-#endif
 }
 
 WiresharkRuntime::~WiresharkRuntime()
 {
-#if defined(TCPVIEWER_HAS_WIRESHARK) && TCPVIEWER_HAS_WIRESHARK
     if (available_) {
         std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
         epan_cleanup();
         wtap_cleanup();
     }
-#endif
 }
 
 bool WiresharkRuntime::isAvailable() const
@@ -926,17 +907,13 @@ WiresharkDissectionSession& WiresharkDissectionSession::operator=(WiresharkDisse
 bool WiresharkDissectionSession::observePacket(const PacketDissectionContext& context)
 {
     auto& runtime = WiresharkRuntime::shared();
-#if defined(TCPVIEWER_HAS_WIRESHARK) && TCPVIEWER_HAS_WIRESHARK
     if (runtime.isAvailable()) {
         std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
         std::lock_guard<std::mutex> sessionLock(impl_->mutex);
         return impl_->observePacketLocked(context);
     }
-#else
-    (void)context;
-#endif
     std::lock_guard<std::mutex> sessionLock(impl_->mutex);
-    // Count packets in fallback builds so live/offline plumbing remains observable and testable.
+    // Count packets when Wireshark is disabled so live/offline plumbing remains observable and testable.
     impl_->observedPacketCount += 1;
     impl_->unavailableReason = runtime.unavailableReason();
     return false;
@@ -945,13 +922,11 @@ bool WiresharkDissectionSession::observePacket(const PacketDissectionContext& co
 bool WiresharkDissectionSession::finishFirstPass()
 {
     auto& runtime = WiresharkRuntime::shared();
-#if defined(TCPVIEWER_HAS_WIRESHARK) && TCPVIEWER_HAS_WIRESHARK
     if (runtime.isAvailable()) {
         std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
         std::lock_guard<std::mutex> sessionLock(impl_->mutex);
         return impl_->finishFirstPassLocked();
     }
-#endif
     std::lock_guard<std::mutex> sessionLock(impl_->mutex);
     impl_->unavailableReason = runtime.unavailableReason();
     return false;
@@ -961,15 +936,11 @@ WiresharkDissectionResult WiresharkDissectionSession::summarizePacket(const Pack
 {
     auto& runtime = WiresharkRuntime::shared();
     WiresharkDissectionResult result;
-#if defined(TCPVIEWER_HAS_WIRESHARK) && TCPVIEWER_HAS_WIRESHARK
     if (runtime.isAvailable()) {
         std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
         std::lock_guard<std::mutex> sessionLock(impl_->mutex);
         return impl_->summarizePacketLocked(context);
     }
-#else
-    (void)context;
-#endif
     std::lock_guard<std::mutex> sessionLock(impl_->mutex);
     result.usedWireshark = false;
     result.fallbackReason = runtime.unavailableReason();
@@ -1005,7 +976,6 @@ WiresharkDissectionResult WiresharkPacketDissector::dissect(const PacketDissecti
         return result;
     }
 
-#if defined(TCPVIEWER_HAS_WIRESHARK) && TCPVIEWER_HAS_WIRESHARK
     if (session_ == nullptr) {
         result.fallbackReason = "Wireshark dissection requires a per-session first-pass state.";
         result.nodes.push_back(MakeUnavailableDetail(result.fallbackReason));
@@ -1015,12 +985,6 @@ WiresharkDissectionResult WiresharkPacketDissector::dissect(const PacketDissecti
     std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
     std::lock_guard<std::mutex> sessionLock(session_->impl_->mutex);
     return session_->impl_->dissectPacketLocked(context);
-#else
-    (void)context;
-    result.fallbackReason = kBackendNotLinkedReason;
-    result.nodes.push_back(MakeUnavailableDetail(result.fallbackReason));
-    return result;
-#endif
 }
 
 DetailNode MakeWiresharkFallbackWarning(const std::string& reason)
@@ -1029,7 +993,7 @@ DetailNode MakeWiresharkFallbackWarning(const std::string& reason)
     node.id = "wireshark.fallback";
     node.title = "Wireshark Dissector Unavailable";
     node.fieldName = "tcpviewer.wireshark.fallback";
-    node.displayValue = reason.empty() ? kBackendNotLinkedReason : reason;
+    node.displayValue = reason.empty() ? kBackendUnavailableReason : reason;
     node.kind = NodeKind::Warning;
     node.severity = NodeSeverity::Warning;
     return node;
