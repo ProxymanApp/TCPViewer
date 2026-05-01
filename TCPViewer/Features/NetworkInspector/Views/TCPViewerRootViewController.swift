@@ -471,15 +471,15 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestDeletePackets identifiers: [PacketSummary.ID]) {
         viewModel.deletePackets(identifiers)
     }
+
+    func packetWorkspaceViewControllerDidRequestResetQuickFilters(_ controller: PacketWorkspaceViewController) {
+        viewModel.resetQuickFilters()
+    }
 }
 
 extension TCPViewerRootViewController: PacketInspectorViewControllerDelegate {
     func packetInspectorViewController(_ controller: PacketInspectorViewController, didSelectDetailNode identifier: String?) {
         viewModel.selectDetailNode(identifier)
-    }
-
-    func packetInspectorViewControllerDidRequestResetQuickFilters(_ controller: PacketInspectorViewController) {
-        viewModel.resetQuickFilters()
     }
 }
 

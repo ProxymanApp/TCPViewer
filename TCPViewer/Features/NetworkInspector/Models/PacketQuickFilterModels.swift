@@ -46,6 +46,31 @@ enum PacketQuickFilterID: String, CaseIterable, Identifiable, Sendable, Hashable
             "Errors"
         }
     }
+
+    var toolTip: String {
+        switch self {
+        case .all:
+            "Show all packets"
+        case .tcp:
+            "Show packets that include TCP, including HTTP, TLS, and WebSocket over TCP"
+        case .udp:
+            "Show packets that include UDP"
+        case .dns:
+            "Show DNS packets"
+        case .http:
+            "Show HTTP packets"
+        case .tls:
+            "Show TLS packets"
+        case .websocket:
+            "Show WebSocket packets"
+        case .clientHello:
+            "Show TLS Client Hello packets"
+        case .serverHello:
+            "Show TLS Server Hello packets"
+        case .errors:
+            "Show partial, malformed, unsupported, or truncated packets"
+        }
+    }
 }
 
 struct PacketQuickFilterItem: Identifiable, Equatable, Sendable {

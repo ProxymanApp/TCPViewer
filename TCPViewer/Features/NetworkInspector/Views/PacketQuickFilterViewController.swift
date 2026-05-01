@@ -31,16 +31,18 @@ private final class PacketQuickFilterButton: NSButton {
 
 final class PacketQuickFilterViewController: NSTitlebarAccessoryViewController {
     private enum Metrics {
-        static let height: CGFloat = 38
-        static let buttonHeight: CGFloat = 28
+        static let height: CGFloat = 34
+        static let buttonHeight: CGFloat = 24
         static let horizontalInset: CGFloat = 16
-        static let buttonHorizontalPadding: CGFloat = 18
+        static let buttonHorizontalPadding: CGFloat = 16
+        static let bottomSeparatorHeight: CGFloat = 1
     }
 
     weak var delegate: PacketQuickFilterViewControllerDelegate?
 
     private let stackView = NSStackView()
     private let resetSeparator = NSBox()
+    private let bottomSeparator = NSBox()
     private let resetButton = NSButton(title: "Reset Filters", target: nil, action: nil)
     private var buttons: [PacketQuickFilterID: PacketQuickFilterButton] = [:]
 
@@ -71,7 +73,7 @@ final class PacketQuickFilterViewController: NSTitlebarAccessoryViewController {
             guard let button = buttons[item.id] else {
                 continue
             }
-            render(button: button, title: item.title, isSelected: item.isSelected)
+            render(button: button, title: item.title, toolTip: item.id.toolTip, isSelected: item.isSelected)
         }
 
         resetButton.isHidden = !snapshot.isQuickFilterResetVisible
@@ -94,21 +96,31 @@ final class PacketQuickFilterViewController: NSTitlebarAccessoryViewController {
         resetSeparator.translatesAutoresizingMaskIntoConstraints = false
         resetSeparator.isHidden = true
 
+        bottomSeparator.boxType = .separator
+        bottomSeparator.translatesAutoresizingMaskIntoConstraints = false
+
         resetButton.target = self
         resetButton.action = #selector(resetFilters(_:))
+        resetButton.image = TCPViewerUI.image("arrow.counterclockwise")
+        resetButton.imagePosition = .imageLeading
         configure(button: resetButton, isToggle: false)
-        render(button: resetButton, title: "Reset Filters", isSelected: false)
+        render(button: resetButton, title: "Reset Filters", toolTip: "Reset quick filters", isSelected: false)
         resetButton.isHidden = true
 
         view.addSubview(stackView)
+        view.addSubview(bottomSeparator)
         NSLayoutConstraint.activate([
             view.heightAnchor.constraint(equalToConstant: Metrics.height),
             stackView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             stackView.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor),
             stackView.topAnchor.constraint(equalTo: view.topAnchor),
-            stackView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            stackView.bottomAnchor.constraint(equalTo: bottomSeparator.topAnchor),
             resetSeparator.heightAnchor.constraint(equalToConstant: 18),
             resetButton.heightAnchor.constraint(equalToConstant: Metrics.buttonHeight),
+            bottomSeparator.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            bottomSeparator.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            bottomSeparator.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            bottomSeparator.heightAnchor.constraint(equalToConstant: Metrics.bottomSeparatorHeight),
         ])
     }
 
@@ -138,36 +150,36 @@ final class PacketQuickFilterViewController: NSTitlebarAccessoryViewController {
 
     private func configure(button: NSButton, isToggle: Bool) {
         if isToggle {
-            button.setButtonType(.toggle)
+            button.setButtonType(.pushOnPushOff)
         } else {
             button.setButtonType(.momentaryPushIn)
         }
         button.bezelStyle = .recessed
         button.isBordered = false
-        button.controlSize = .regular
+        button.controlSize = .small
         button.focusRingType = .none
         button.wantsLayer = true
-        button.layer?.cornerRadius = 7
+        button.layer?.cornerRadius = 6
         button.cell?.lineBreakMode = .byTruncatingTail
     }
 
-    private func render(button: NSButton, title: String, isSelected: Bool) {
+    private func render(button: NSButton, title: String, toolTip: String, isSelected: Bool) {
         button.state = isSelected ? .on : .off
-        button.toolTip = title
+        button.toolTip = toolTip
         button.layer?.backgroundColor = isSelected
             ? NSColor.controlAccentColor.withAlphaComponent(0.22).cgColor
             : NSColor.clear.cgColor
         button.attributedTitle = NSAttributedString(
             string: title,
             attributes: [
-                .font: NSFont.systemFont(ofSize: NSFont.systemFontSize, weight: .medium),
+                .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium),
                 .foregroundColor: isSelected ? NSColor.labelColor : NSColor.secondaryLabelColor,
             ]
         )
     }
 
     private func measuredWidth(for title: String) -> CGFloat {
-        let font = NSFont.systemFont(ofSize: NSFont.systemFontSize, weight: .medium)
+        let font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
         return ceil(title.size(withAttributes: [.font: font]).width + Metrics.buttonHorizontalPadding)
     }
 
