@@ -4157,7 +4157,8 @@ NSArray<PCPPNativePacketSummaryDescriptor *> *LoadPacketsFromURLIncrementally(Of
     bool wasCancelled = false;
     NSError *caughtError = nil;
     const bool wiresharkExactSummaries = wiresharkSession != nullptr && tcpviewer::dissection::WiresharkRuntime::shared().isAvailable();
-    SniReassemblyState summarySniReassembly;
+    SniReassemblyState firstPassSniReassembly;
+    SniReassemblyState exactSummarySniReassembly;
     auto flushPendingBatch = [&]() {
         if (pendingBatch.count == 0) {
             return;
@@ -4206,20 +4207,19 @@ NSArray<PCPPNativePacketSummaryDescriptor *> *LoadPacketsFromURLIncrementally(Of
 
                 processedBytes += static_cast<uint64_t>(rawPacket.getRawDataLen());
 
-                if (!wiresharkExactSummaries) {
-                    auto *summary = MakePacketSummary(rawPacket,
-                                                      identifier,
-                                                      nil,
-                                                      nil,
-                                                      NullableNSString(packetComment),
-                                                      &summarySniReassembly,
-                                                      wiresharkSession.get());
-                    [packets addObject:summary];
-                    [pendingBatch addObject:summary];
+                // Stream provisional rows during the Wireshark first pass so large files remain visible while loading.
+                auto *summary = MakePacketSummary(rawPacket,
+                                                  identifier,
+                                                  nil,
+                                                  nil,
+                                                  NullableNSString(packetComment),
+                                                  &firstPassSniReassembly,
+                                                  wiresharkExactSummaries ? nullptr : wiresharkSession.get());
+                [packets addObject:summary];
+                [pendingBatch addObject:summary];
 
-                    if (pendingBatch.count >= effectiveBatchSize) {
-                        flushPendingBatch();
-                    }
+                if (pendingBatch.count >= effectiveBatchSize) {
+                    flushPendingBatch();
                 }
 
                 identifier += 1;
@@ -4238,9 +4238,7 @@ NSArray<PCPPNativePacketSummaryDescriptor *> *LoadPacketsFromURLIncrementally(Of
     }
 
     reader->close();
-    if (!wiresharkExactSummaries) {
-        flushPendingBatch();
-    }
+    flushPendingBatch();
 
     {
         std::lock_guard<std::mutex> lock(state.mutex);
@@ -4276,6 +4274,7 @@ NSArray<PCPPNativePacketSummaryDescriptor *> *LoadPacketsFromURLIncrementally(Of
 
     if (wiresharkExactSummaries) {
         wiresharkSession->finishFirstPass();
+        [packets removeAllObjects];
         emitProgress(@"loading",
                      static_cast<NSUInteger>(identifier - 1),
                      processedBytes,
@@ -4296,17 +4295,11 @@ NSArray<PCPPNativePacketSummaryDescriptor *> *LoadPacketsFromURLIncrementally(Of
                                                   nil,
                                                   nil,
                                                   NullableNSString(storedPacket.packetComment),
-                                                  &summarySniReassembly,
+                                                  &exactSummarySniReassembly,
                                                   wiresharkSession.get());
                 [packets addObject:summary];
-                [pendingBatch addObject:summary];
-
-                if (pendingBatch.count >= effectiveBatchSize) {
-                    flushPendingBatch();
-                }
             }
         }
-        flushPendingBatch();
 
         if (wasCancelled) {
             {
