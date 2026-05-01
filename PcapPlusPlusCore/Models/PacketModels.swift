@@ -1,3 +1,10 @@
+//
+//  PacketModels.swift
+//  TCPViewer
+//
+//  Created by Proxyman LLC on 24/4/26.
+//
+
 import Foundation
 
 public enum TransportProtocolHint: String, Sendable, Codable {

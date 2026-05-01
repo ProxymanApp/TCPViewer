@@ -1,3 +1,10 @@
+//
+//  NativeLiveCaptureSession.swift
+//  TCPViewer
+//
+//  Created by Proxyman LLC on 23/4/26.
+//
+
 import Foundation
 @_implementationOnly import TCPViewerNativeBridge
 

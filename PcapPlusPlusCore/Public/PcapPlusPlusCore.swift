@@ -1,8 +1,8 @@
 //
 //  PcapPlusPlusCore.swift
-//  PcapPlusPlusCore
+//  TCPViewer
 //
-//  Created by nghiatran on 23/4/26.
+//  Created by Proxyman LLC on 23/4/26.
 //
 
 import Foundation
