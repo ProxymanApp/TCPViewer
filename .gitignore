@@ -2,3 +2,4 @@
 DerivedData/
 Vendor/.build/
 Vendor/.install/
+.env
