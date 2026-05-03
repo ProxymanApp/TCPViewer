@@ -118,6 +118,7 @@ private struct PacketTableContentCache {
     private var packetLineageRevision: UInt64?
     private var sourcePacketCount = 0
     private var displayFilterText: String?
+    private var quickFilterSelection: PacketQuickFilterSelection?
     private var sourceListSelection: PacketSourceListSelection?
     private var pinnedItems: [PacketPin] = []
     private var savedRecords: [SavedPacketRecord] = []
@@ -130,6 +131,7 @@ private struct PacketTableContentCache {
         packetLineageRevision = nil
         sourcePacketCount = 0
         displayFilterText = nil
+        quickFilterSelection = nil
         sourceListSelection = nil
         pinnedItems = []
         savedRecords = []
@@ -150,6 +152,8 @@ private struct PacketTableContentCache {
     mutating func content(
         for ingestState: PacketIngestState,
         displayFilterText: String,
+        quickFilterSelection: PacketQuickFilterSelection,
+        quickFilterService: PacketQuickFilterService,
         sourceListSelection: PacketSourceListSelection,
         pinnedItems: [PacketPin],
         savedRecords: [SavedPacketRecord]
@@ -157,6 +161,7 @@ private struct PacketTableContentCache {
         guard shouldRebuildContent(
             ingestState: ingestState,
             displayFilterText: displayFilterText,
+            quickFilterSelection: quickFilterSelection,
             sourceListSelection: sourceListSelection,
             pinnedItems: pinnedItems,
             savedRecords: savedRecords
@@ -167,6 +172,7 @@ private struct PacketTableContentCache {
         let displayFilter = PacketDisplayFilter(displayFilterText)
         let isStateStable = sourceListSelection != .saved &&
             self.displayFilterText == displayFilterText &&
+            self.quickFilterSelection == quickFilterSelection &&
             self.sourceListSelection == sourceListSelection &&
             self.pinnedItems == pinnedItems &&
             self.savedRecords == savedRecords &&
@@ -181,6 +187,8 @@ private struct PacketTableContentCache {
                     ingestState: ingestState,
                     displayFilter: displayFilter,
                     displayFilterText: displayFilterText,
+                    quickFilterSelection: quickFilterSelection,
+                    quickFilterService: quickFilterService,
                     sourceListSelection: sourceListSelection,
                     pinnedItems: pinnedItems,
                     savedRecords: savedRecords
@@ -192,6 +200,8 @@ private struct PacketTableContentCache {
                     ingestState: ingestState,
                     displayFilter: displayFilter,
                     displayFilterText: displayFilterText,
+                    quickFilterSelection: quickFilterSelection,
+                    quickFilterService: quickFilterService,
                     sourceListSelection: sourceListSelection,
                     pinnedItems: pinnedItems,
                     savedRecords: savedRecords
@@ -204,6 +214,8 @@ private struct PacketTableContentCache {
                     ingestState: ingestState,
                     displayFilter: displayFilter,
                     displayFilterText: displayFilterText,
+                    quickFilterSelection: quickFilterSelection,
+                    quickFilterService: quickFilterService,
                     sourceListSelection: sourceListSelection,
                     pinnedItems: pinnedItems,
                     savedRecords: savedRecords
@@ -219,6 +231,8 @@ private struct PacketTableContentCache {
             from: ingestState,
             displayFilter: displayFilter,
             displayFilterText: displayFilterText,
+            quickFilterSelection: quickFilterSelection,
+            quickFilterService: quickFilterService,
             sourceListSelection: sourceListSelection,
             pinnedItems: pinnedItems,
             savedRecords: savedRecords
@@ -228,6 +242,7 @@ private struct PacketTableContentCache {
     private func shouldRebuildContent(
         ingestState: PacketIngestState,
         displayFilterText: String,
+        quickFilterSelection: PacketQuickFilterSelection,
         sourceListSelection: PacketSourceListSelection,
         pinnedItems: [PacketPin],
         savedRecords: [SavedPacketRecord]
@@ -235,6 +250,7 @@ private struct PacketTableContentCache {
         let dependsOnIngestPackets = sourceListSelection != .saved
         return (dependsOnIngestPackets && packetRevision != ingestState.packetRevision) ||
             self.displayFilterText != displayFilterText ||
+            self.quickFilterSelection != quickFilterSelection ||
             self.sourceListSelection != sourceListSelection ||
             self.pinnedItems != pinnedItems ||
             self.savedRecords != savedRecords
@@ -244,6 +260,8 @@ private struct PacketTableContentCache {
         from ingestState: PacketIngestState,
         displayFilter: PacketDisplayFilter,
         displayFilterText: String,
+        quickFilterSelection: PacketQuickFilterSelection,
+        quickFilterService: PacketQuickFilterService,
         sourceListSelection: PacketSourceListSelection,
         pinnedItems: [PacketPin],
         savedRecords: [SavedPacketRecord]
@@ -268,7 +286,8 @@ private struct PacketTableContentCache {
             }
 
             guard matches(packet, selection: sourceListSelection, pinnedItems: pinnedItems),
-                  displayFilter.isEmpty || displayFilter.matches(packet) else {
+                  displayFilter.isEmpty || displayFilter.matches(packet),
+                  quickFilterService.matches(packet, selection: quickFilterSelection) else {
                 continue
             }
 
@@ -291,6 +310,7 @@ private struct PacketTableContentCache {
             content,
             ingestState: ingestState,
             displayFilterText: displayFilterText,
+            quickFilterSelection: quickFilterSelection,
             sourceListSelection: sourceListSelection,
             pinnedItems: pinnedItems,
             savedRecords: savedRecords,
@@ -303,6 +323,8 @@ private struct PacketTableContentCache {
         ingestState: PacketIngestState,
         displayFilter: PacketDisplayFilter,
         displayFilterText: String,
+        quickFilterSelection: PacketQuickFilterSelection,
+        quickFilterService: PacketQuickFilterService,
         sourceListSelection: PacketSourceListSelection,
         pinnedItems: [PacketPin],
         savedRecords: [SavedPacketRecord]
@@ -312,6 +334,7 @@ private struct PacketTableContentCache {
                 cachedContent,
                 ingestState: ingestState,
                 displayFilterText: displayFilterText,
+                quickFilterSelection: quickFilterSelection,
                 sourceListSelection: sourceListSelection,
                 pinnedItems: pinnedItems,
                 savedRecords: savedRecords
@@ -335,7 +358,8 @@ private struct PacketTableContentCache {
             }
 
             guard matches(packet, selection: sourceListSelection, pinnedItems: pinnedItems),
-                  displayFilter.isEmpty || displayFilter.matches(packet) else {
+                  displayFilter.isEmpty || displayFilter.matches(packet),
+                  quickFilterService.matches(packet, selection: quickFilterSelection) else {
                 continue
             }
 
@@ -361,6 +385,7 @@ private struct PacketTableContentCache {
             content,
             ingestState: ingestState,
             displayFilterText: displayFilterText,
+            quickFilterSelection: quickFilterSelection,
             sourceListSelection: sourceListSelection,
             pinnedItems: pinnedItems,
             savedRecords: savedRecords,
@@ -375,6 +400,8 @@ private struct PacketTableContentCache {
         ingestState: PacketIngestState,
         displayFilter: PacketDisplayFilter,
         displayFilterText: String,
+        quickFilterSelection: PacketQuickFilterSelection,
+        quickFilterService: PacketQuickFilterService,
         sourceListSelection: PacketSourceListSelection,
         pinnedItems: [PacketPin],
         savedRecords: [SavedPacketRecord]
@@ -383,6 +410,8 @@ private struct PacketTableContentCache {
             updatedPacketIDs: updatedPacketIDs,
             ingestState: ingestState,
             displayFilter: displayFilter,
+            quickFilterSelection: quickFilterSelection,
+            quickFilterService: quickFilterService,
             sourceListSelection: sourceListSelection,
             pinnedItems: pinnedItems,
             store: cachedContent.store,
@@ -408,6 +437,7 @@ private struct PacketTableContentCache {
             content,
             ingestState: ingestState,
             displayFilterText: displayFilterText,
+            quickFilterSelection: quickFilterSelection,
             sourceListSelection: sourceListSelection,
             pinnedItems: pinnedItems,
             savedRecords: savedRecords,
@@ -421,6 +451,8 @@ private struct PacketTableContentCache {
         ingestState: PacketIngestState,
         displayFilter: PacketDisplayFilter,
         displayFilterText: String,
+        quickFilterSelection: PacketQuickFilterSelection,
+        quickFilterService: PacketQuickFilterService,
         sourceListSelection: PacketSourceListSelection,
         pinnedItems: [PacketPin],
         savedRecords: [SavedPacketRecord]
@@ -431,6 +463,8 @@ private struct PacketTableContentCache {
             ingestState: ingestState,
             displayFilter: displayFilter,
             displayFilterText: displayFilterText,
+            quickFilterSelection: quickFilterSelection,
+            quickFilterService: quickFilterService,
             sourceListSelection: sourceListSelection,
             pinnedItems: pinnedItems,
             savedRecords: savedRecords
@@ -444,6 +478,8 @@ private struct PacketTableContentCache {
             updatedPacketIDs: updatedPacketIDs,
             ingestState: ingestState,
             displayFilter: displayFilter,
+            quickFilterSelection: quickFilterSelection,
+            quickFilterService: quickFilterService,
             sourceListSelection: sourceListSelection,
             pinnedItems: pinnedItems,
             store: appendedContent.store,
@@ -488,6 +524,7 @@ private struct PacketTableContentCache {
             content,
             ingestState: ingestState,
             displayFilterText: displayFilterText,
+            quickFilterSelection: quickFilterSelection,
             sourceListSelection: sourceListSelection,
             pinnedItems: pinnedItems,
             savedRecords: savedRecords,
@@ -508,6 +545,8 @@ private struct PacketTableContentCache {
         updatedPacketIDs: [PacketSummary.ID],
         ingestState: PacketIngestState,
         displayFilter: PacketDisplayFilter,
+        quickFilterSelection: PacketQuickFilterSelection,
+        quickFilterService: PacketQuickFilterService,
         sourceListSelection: PacketSourceListSelection,
         pinnedItems: [PacketPin],
         store: PacketTableRowStore,
@@ -521,7 +560,8 @@ private struct PacketTableContentCache {
                 continue
             }
             let isVisibleNow = matches(packet, selection: sourceListSelection, pinnedItems: pinnedItems) &&
-                (displayFilter.isEmpty || displayFilter.matches(packet))
+                (displayFilter.isEmpty || displayFilter.matches(packet)) &&
+                quickFilterService.matches(packet, selection: quickFilterSelection)
             let wasVisible = store.visiblePacketRowIndexByID[packetID] != nil
             guard wasVisible == isVisibleNow else {
                 return nil  // visibility flipped — caller falls back to rebuild
@@ -543,6 +583,7 @@ private struct PacketTableContentCache {
         _ content: PacketTableContent,
         ingestState: PacketIngestState,
         displayFilterText: String,
+        quickFilterSelection: PacketQuickFilterSelection,
         sourceListSelection: PacketSourceListSelection,
         pinnedItems: [PacketPin],
         savedRecords: [SavedPacketRecord],
@@ -552,6 +593,7 @@ private struct PacketTableContentCache {
         packetLineageRevision = ingestState.packetLineageRevision
         sourcePacketCount = ingestState.packets.count
         self.displayFilterText = displayFilterText
+        self.quickFilterSelection = quickFilterSelection
         self.sourceListSelection = sourceListSelection
         self.pinnedItems = pinnedItems
         self.savedRecords = savedRecords
@@ -642,6 +684,9 @@ protocol NetworkInspectorViewModelDelegate: AnyObject {
 }
 
 final class NetworkInspectorViewModel {
+    // Keep restored inspector widths from crowding out the packet workspace on launch.
+    private static let maximumInspectorThicknessFraction: CGFloat = 0.45
+
     weak var delegate: NetworkInspectorViewModelDelegate?
 
     private(set) var snapshot: NetworkInspectorSnapshot {
@@ -655,6 +700,7 @@ final class NetworkInspectorViewModel {
     private let sourceListService = PacketSourceListService()
     private let pinService: PacketPinService
     private let savedPacketService: SavedPacketService
+    private let quickFilterService: PacketQuickFilterService
     private let packetExportService: PacketExportService
     private var packetTableContentCache = PacketTableContentCache()
     private var hasPerformedInitialLoad = false
@@ -686,6 +732,7 @@ final class NetworkInspectorViewModel {
         interfaceHistoryStore: InterfaceSelectionHistoryStore? = nil,
         pinService: PacketPinService = PacketPinService(),
         savedPacketService: SavedPacketService = SavedPacketService(),
+        quickFilterService: PacketQuickFilterService = PacketQuickFilterService(),
         packetExportService: PacketExportService? = nil
     ) {
         self.controller = TCPViewerWorkspaceController(
@@ -696,6 +743,7 @@ final class NetworkInspectorViewModel {
         self.preferences = NetworkInspectorPreferences(defaults: userDefaults)
         self.pinService = pinService
         self.savedPacketService = savedPacketService
+        self.quickFilterService = quickFilterService
         self.packetExportService = packetExportService ?? PacketExportService(defaults: userDefaults)
         self.inspectorPlacement = .trailing
         self.isInspectorVisible = preferences.isInspectorVisible
@@ -708,6 +756,8 @@ final class NetworkInspectorViewModel {
         let packetTableContent = packetTableContentCache.content(
             for: controller.snapshot.packetIngestState,
             displayFilterText: displayFilterText,
+            quickFilterSelection: quickFilterService.selection,
+            quickFilterService: quickFilterService,
             sourceListSelection: selectedSourceListSelection,
             pinnedItems: pinService.pins(),
             savedRecords: savedPacketService.records()
@@ -718,6 +768,8 @@ final class NetworkInspectorViewModel {
             selectedSourceListSelection: selectedSourceListSelection,
             sourceListSnapshot: sourceListSnapshot,
             sourceListFilterText: sourceListFilterText,
+            quickFilterItems: quickFilterService.items(),
+            quickFilterSelection: quickFilterService.selection,
             workspaceMode: workspaceMode,
             inspectorTab: inspectorTab,
             inspectorPlacement: inspectorPlacement,
@@ -864,6 +916,16 @@ final class NetworkInspectorViewModel {
 
     func clearDisplayFilter() {
         updateDisplayFilterText("")
+    }
+
+    func toggleQuickFilter(_ id: PacketQuickFilterID) {
+        quickFilterService.toggle(id)
+        rebuildSnapshot(selectsFirstVisiblePacketForQuickFilter: true)
+    }
+
+    func resetQuickFilters() {
+        quickFilterService.reset()
+        rebuildSnapshot(clearsSelectedPacket: true)
     }
 
     func clearPackets() {
@@ -1360,11 +1422,12 @@ final class NetworkInspectorViewModel {
         preferences.persistInspectorThickness(thickness, for: placement)
     }
 
-    // Reject invalid saved widths so the root controller can reopen with a safe default instead.
+    // Reject invalid or oversized saved widths so the root controller can reopen with a safe default instead.
     func preferredInspectorThickness(for placement: NetworkInspectorPlacement, availableLength: CGFloat) -> CGFloat? {
         guard availableLength.isFinite, availableLength > 0,
               let thickness = preferences.inspectorThickness(for: placement),
-              thickness.isFinite, thickness > 0, thickness < availableLength else {
+              thickness.isFinite, thickness > 0, thickness < availableLength,
+              thickness <= availableLength * Self.maximumInspectorThicknessFraction else {
             return nil
         }
 
@@ -1387,7 +1450,10 @@ final class NetworkInspectorViewModel {
         snapshot.base.sessionState.canStop ? "stop.fill" : "play.fill"
     }
 
-    private func rebuildSnapshot() {
+    private func rebuildSnapshot(
+        selectsFirstVisiblePacketForQuickFilter: Bool = false,
+        clearsSelectedPacket: Bool = false
+    ) {
         cancelPendingRebuild()
         let pinnedItems = pinService.pins()
         let savedRecords = savedPacketService.records()
@@ -1403,16 +1469,29 @@ final class NetworkInspectorViewModel {
         let packetTableContent = packetTableContentCache.content(
             for: controller.snapshot.packetIngestState,
             displayFilterText: displayFilterText,
+            quickFilterSelection: quickFilterService.selection,
+            quickFilterService: quickFilterService,
             sourceListSelection: selectedSourceListSelection,
             pinnedItems: pinnedItems,
             savedRecords: savedRecords
         )
+        if clearsSelectedPacket {
+            applyPacketSelectionDuringRebuild(nil)
+        } else if selectsFirstVisiblePacketForQuickFilter {
+            let firstVisiblePacketID = quickFilterService.selection.isActive ? packetTableContent.rows.first?.id : nil
+            applyPacketSelectionDuringRebuild(firstVisiblePacketID)
+            if firstVisiblePacketID != nil {
+                inspectorTab = .summary
+            }
+        }
         let updatedSnapshot = NetworkInspectorSnapshot.make(
             base: controller.snapshot,
             selectedSidebar: selectedSidebar,
             selectedSourceListSelection: selectedSourceListSelection,
             sourceListSnapshot: sourceListSnapshot,
             sourceListFilterText: sourceListFilterText,
+            quickFilterItems: quickFilterService.items(),
+            quickFilterSelection: quickFilterService.selection,
             workspaceMode: workspaceMode,
             inspectorTab: inspectorTab,
             inspectorPlacement: inspectorPlacement,
@@ -1425,6 +1504,16 @@ final class NetworkInspectorViewModel {
         }
 
         snapshot = updatedSnapshot
+    }
+
+    private func applyPacketSelectionDuringRebuild(_ identifier: PacketSummary.ID?) {
+        guard controller.snapshot.selectedPacketID != identifier else {
+            return
+        }
+
+        // Model-driven selection emits a workspace callback; this rebuild already owns the update.
+        controller.selectPacket(identifier)
+        cancelPendingRebuild()
     }
 
     private func scheduleCoalescedRebuild() {

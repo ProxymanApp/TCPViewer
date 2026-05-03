@@ -1,0 +1,4 @@
+// Load local-only build values from .env. The real .env file is ignored by Git.
+#include? "../.env"
+
+DEVELOPMENT_TEAM = $(TCPVIEWER_DEVELOPMENT_TEAM)

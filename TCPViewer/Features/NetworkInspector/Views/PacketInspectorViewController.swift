@@ -47,6 +47,39 @@ enum PacketInspectorCopyFormatter {
     }
 }
 
+final class PacketInspectorOutlineExpansionState {
+    private enum Override {
+        case expanded
+        case collapsed
+    }
+
+    private var overrides: [String: Override] = [:]
+
+    // Resolve the persisted user choice first, then fall back to expanding only root groups.
+    func shouldExpand(item: PacketInspectorTreeItem, level: Int) -> Bool {
+        guard !item.children.isEmpty else {
+            return false
+        }
+
+        switch overrides[item.id] {
+        case .expanded:
+            return true
+        case .collapsed:
+            return false
+        case nil:
+            return level == 0
+        }
+    }
+
+    func recordExpanded(item: PacketInspectorTreeItem) {
+        overrides[item.id] = .expanded
+    }
+
+    func recordCollapsed(item: PacketInspectorTreeItem) {
+        overrides[item.id] = .collapsed
+    }
+}
+
 final class PacketInspectorTreeItem: NSObject {
     let id: String
     let nodeID: String?
@@ -388,6 +421,22 @@ fileprivate final class PacketInspectorOutlineView: NSOutlineView {
     }
 }
 
+private final class PacketInspectorSectionRowView: NSTableRowView {
+    override func drawBackground(in dirtyRect: NSRect) {
+        guard !isSelected else {
+            return
+        }
+
+        NSColor.separatorColor.withAlphaComponent(0.10).setFill()
+        dirtyRect.fill()
+    }
+
+    override func drawSeparator(in dirtyRect: NSRect) {
+        NSColor.separatorColor.withAlphaComponent(0.35).setFill()
+        NSRect(x: 0, y: bounds.maxY - 1, width: bounds.width, height: 1).fill()
+    }
+}
+
 final class PacketInspectorViewController: NSViewController {
     private enum Metrics {
         static let rowHeight: CGFloat = 20
@@ -400,12 +449,16 @@ final class PacketInspectorViewController: NSViewController {
 
     private let configuration: AppConfiguration
     private let viewModel = PacketInspectorTreeViewModel()
+    private let expansionState = PacketInspectorOutlineExpansionState()
     private let hexViewController: PacketHexViewController
     private let stackView = NSStackView()
     private let scrollView = NSScrollView()
     private let outlineView = PacketInspectorOutlineView()
     private let detailColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("detail"))
+    private var emptyStateView: NSView?
+    private var emptyStateMessage: String?
     private var isApplyingSelection = false
+    private var isApplyingExpansionState = false
 
     init(configuration: AppConfiguration) {
         self.configuration = configuration
@@ -430,6 +483,7 @@ final class PacketInspectorViewController: NSViewController {
     func render(snapshot: NetworkInspectorSnapshot) {
         let renderChange = viewModel.render(snapshot: snapshot)
         hexViewController.render(snapshot: snapshot)
+        updateContentVisibility(for: snapshot.base.inspectionState)
 
         switch renderChange {
         case .none:
@@ -445,9 +499,11 @@ final class PacketInspectorViewController: NSViewController {
            snapshot.base.inspectionState.selectedPacketID == inspection.packetID {
             print("[TCPViewer] \(NetworkInspectorDebugLog.timestamp()) ✅ Inspector View rendering data: packet=#\(inspection.packetNumber), rootNodes=\(viewModel.rootItems.count)")
         }
+        let preservedScrollOrigin = outlineScrollOrigin()
         outlineView.reloadData()
-        expandAllItems()
-        applySelectedNode(preservingExistingSelection: false)
+        applyExpansionState()
+        applySelectedNode(preservingExistingSelection: false, scrollToSelection: false)
+        restoreOutlineScrollOrigin(preservedScrollOrigin)
     }
 
     private func setupOutlineView() {
@@ -504,20 +560,98 @@ final class PacketInspectorViewController: NSViewController {
         ])
     }
 
-    private func expandAllItems() {
+    // Swap between the launch empty state and packet-detail controls.
+    private func updateContentVisibility(for inspectionState: PacketInspectionState) {
+        let shouldShowEmptyState = inspectionState.selectedPacketID == nil
+        scrollView.isHidden = shouldShowEmptyState
+        outlineView.isHidden = shouldShowEmptyState
+        hexViewController.view.isHidden = shouldShowEmptyState
+
+        if shouldShowEmptyState {
+            showEmptyState(message: inspectionState.statusMessage)
+        } else {
+            hideEmptyState()
+        }
+    }
+
+    // Build the centered no-selection placeholder only when the message changes.
+    private func showEmptyState(message: String) {
+        guard emptyStateView == nil || emptyStateMessage != message else {
+            return
+        }
+
+        emptyStateView?.removeFromSuperview()
+        let placeholder = TCPViewerUI.placeholder(
+            title: "No Packet Selected",
+            imageName: "list.bullet.rectangle",
+            message: message
+        )
+        TCPViewerUI.pin(placeholder, to: view)
+        emptyStateView = placeholder
+        emptyStateMessage = message
+    }
+
+    // Restore the outline and hex views once a packet selection exists.
+    private func hideEmptyState() {
+        emptyStateView?.removeFromSuperview()
+        emptyStateView = nil
+        emptyStateMessage = nil
+    }
+
+    // Restore expansion choices without recursively opening every packet-detail field.
+    private func applyExpansionState() {
+        isApplyingExpansionState = true
+        defer { isApplyingExpansionState = false }
+
         for item in viewModel.rootItems {
-            expand(item)
+            applyExpansionState(to: item, level: 0)
         }
     }
 
-    private func expand(_ item: PacketInspectorTreeItem) {
-        outlineView.expandItem(item)
+    private func applyExpansionState(to item: PacketInspectorTreeItem, level: Int) {
+        guard !item.children.isEmpty else {
+            return
+        }
+
+        if expansionState.shouldExpand(item: item, level: level) {
+            outlineView.expandItem(item)
+            applyExpansionStateToChildren(of: item, level: level + 1)
+        } else {
+            outlineView.collapseItem(item)
+        }
+    }
+
+    private func applyExpansionStateToChildren(of item: PacketInspectorTreeItem, level: Int) {
         for child in item.children {
-            expand(child)
+            applyExpansionState(to: child, level: level)
         }
     }
 
-    private func applySelectedNode(preservingExistingSelection: Bool) {
+    private func outlineScrollOrigin() -> NSPoint {
+        scrollView.contentView.bounds.origin
+    }
+
+    // Put the outline viewport back where it was, clamped to the new content height.
+    private func restoreOutlineScrollOrigin(_ origin: NSPoint) {
+        guard let documentView = scrollView.documentView else {
+            return
+        }
+
+        scrollView.layoutSubtreeIfNeeded()
+        outlineView.layoutSubtreeIfNeeded()
+
+        let clipView = scrollView.contentView
+        let maxX = max(0, documentView.bounds.width - clipView.bounds.width)
+        let maxY = max(0, documentView.bounds.height - clipView.bounds.height)
+        let clampedOrigin = NSPoint(
+            x: min(max(0, origin.x), maxX),
+            y: min(max(0, origin.y), maxY)
+        )
+        clipView.scroll(to: clampedOrigin)
+        scrollView.reflectScrolledClipView(clipView)
+    }
+
+    private func applySelectedNode(preservingExistingSelection: Bool, scrollToSelection: Bool = true) {
         isApplyingSelection = true
         defer { isApplyingSelection = false }
 
@@ -533,12 +667,16 @@ final class PacketInspectorViewController: NSViewController {
         }
 
         if preservingExistingSelection, outlineView.selectedRowIndexes.contains(row) {
-            outlineView.scrollRowToVisible(row)
+            if scrollToSelection {
+                outlineView.scrollRowToVisible(row)
+            }
             return
         }
 
         outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-        outlineView.scrollRowToVisible(row)
+        if scrollToSelection {
+            outlineView.scrollRowToVisible(row)
+        }
     }
 
     // Create the inspector outline context menu and update its state before it opens.
@@ -615,8 +753,9 @@ final class PacketInspectorViewController: NSViewController {
             ])
         }
 
+        let isSection = isTopLevelSectionItem(item)
         textField.stringValue = item.displayText
-        textField.font = font(for: item.kind)
+        textField.font = font(for: item.kind, isSection: isSection)
         textField.textColor = textColor(for: item)
         textField.lineBreakMode = .byTruncatingTail
         textField.maximumNumberOfLines = 1
@@ -629,12 +768,16 @@ final class PacketInspectorViewController: NSViewController {
         return cell
     }
 
-    private func font(for kind: PacketInspectorTreeItemKind) -> NSFont {
+    private func font(for kind: PacketInspectorTreeItemKind, isSection: Bool) -> NSFont {
+        if isSection {
+            return configuration.packetFont(weight: .bold)
+        }
+
         switch kind {
         case .layer:
-            configuration.packetFont(weight: .semibold)
+            return configuration.packetFont(weight: .semibold)
         case .field, .warning, .message:
-            configuration.packetFont()
+            return configuration.packetFont()
         }
     }
 
@@ -658,6 +801,10 @@ final class PacketInspectorViewController: NSViewController {
         case .layer, .field:
             return .labelColor
         }
+    }
+
+    private func isTopLevelSectionItem(_ item: PacketInspectorTreeItem) -> Bool {
+        item.kind == .layer && viewModel.rootItems.contains { $0 === item }
     }
 }
 
@@ -688,6 +835,15 @@ extension PacketInspectorViewController: NSOutlineViewDataSource {
 }
 
 extension PacketInspectorViewController: NSOutlineViewDelegate {
+    func outlineView(_ outlineView: NSOutlineView, rowViewForItem item: Any) -> NSTableRowView? {
+        guard let item = item as? PacketInspectorTreeItem,
+              isTopLevelSectionItem(item) else {
+            return nil
+        }
+
+        return PacketInspectorSectionRowView()
+    }
+
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
         guard let item = item as? PacketInspectorTreeItem else {
             return nil
@@ -717,6 +873,29 @@ extension PacketInspectorViewController: NSOutlineViewDelegate {
         }
 
         return item.nodeID != nil
+    }
+
+    func outlineViewItemDidExpand(_ notification: Notification) {
+        guard !isApplyingExpansionState,
+              let item = notification.userInfo?["NSObject"] as? PacketInspectorTreeItem else {
+            return
+        }
+
+        expansionState.recordExpanded(item: item)
+        let childLevel = outlineView.level(forItem: item) + 1
+
+        isApplyingExpansionState = true
+        defer { isApplyingExpansionState = false }
+        applyExpansionStateToChildren(of: item, level: childLevel)
+    }
+
+    func outlineViewItemDidCollapse(_ notification: Notification) {
+        guard !isApplyingExpansionState,
+              let item = notification.userInfo?["NSObject"] as? PacketInspectorTreeItem else {
+            return
+        }
+
+        expansionState.recordCollapsed(item: item)
     }
 }
 

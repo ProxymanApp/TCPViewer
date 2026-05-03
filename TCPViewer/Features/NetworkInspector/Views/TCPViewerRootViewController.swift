@@ -120,6 +120,14 @@ final class TCPViewerRootViewController: NSViewController {
         viewModel.toggleInspector()
     }
 
+    func toggleQuickFilter(_ filterID: PacketQuickFilterID) {
+        viewModel.toggleQuickFilter(filterID)
+    }
+
+    func resetQuickFilters() {
+        viewModel.resetQuickFilters()
+    }
+
     func showOpenPanel() {
         viewModel.presentOpenCapturePanel()
     }
@@ -171,8 +179,9 @@ final class TCPViewerRootViewController: NSViewController {
         // Use a regular split item so the same inspector view can resize correctly on both axes.
         let inspectorItem = NSSplitViewItem(viewController: inspectorViewController)
         inspectorItem.canCollapse = true
+        inspectorItem.allowsFullHeightLayout = false
         inspectorItem.minimumThickness = 200
-        inspectorItem.preferredThicknessFraction = 0.4
+        inspectorItem.preferredThicknessFraction = InspectorLayoutMetrics.trailingInspectorFraction
         contentSplitViewController.addSplitViewItem(inspectorItem)
         self.inspectorItem = inspectorItem
 
@@ -206,6 +215,7 @@ final class TCPViewerRootViewController: NSViewController {
         self.sidebarItem = sidebarItem
 
         let mainContainerItem = NSSplitViewItem(viewController: mainContainerViewController)
+        mainContainerItem.allowsFullHeightLayout = false
         mainSplitViewController.addSplitViewItem(mainContainerItem)
     }
 
@@ -462,6 +472,10 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
 
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestDeletePackets identifiers: [PacketSummary.ID]) {
         viewModel.deletePackets(identifiers)
+    }
+
+    func packetWorkspaceViewControllerDidRequestResetQuickFilters(_ controller: PacketWorkspaceViewController) {
+        viewModel.resetQuickFilters()
     }
 }
 

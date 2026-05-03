@@ -458,6 +458,10 @@ struct NetworkInspectorViewModelTests {
 
         #expect(reloadedViewModel.preferredInspectorThickness(for: .trailing, availableLength: 800) == 320)
 
+        reloadedViewModel.rememberInspectorThickness(700, for: .trailing)
+
+        #expect(reloadedViewModel.preferredInspectorThickness(for: .trailing, availableLength: 800) == nil)
+
         reloadedViewModel.rememberInspectorThickness(10_000, for: .trailing)
 
         #expect(reloadedViewModel.preferredInspectorThickness(for: .trailing, availableLength: 800) == nil)
@@ -1501,6 +1505,202 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.selectedPacketRowIndex == 2)
     }
 
+    @Test func quickFiltersCombineWithDisplayFilterAndSourceListSelection() async {
+        let client = makeClient(displayName: "Example", bundleIdentifier: "com.example.app")
+        let packets = [
+            makePacket(
+                packetNumber: 1,
+                source: .offline,
+                transportHint: .http1,
+                destinationPort: 80,
+                streamID: nil,
+                client: client,
+                layerNames: ["Ethernet", "TCP", "HTTP Request"]
+            ),
+            makePacket(
+                packetNumber: 2,
+                source: .offline,
+                transportHint: .udp,
+                destinationPort: 53,
+                streamID: nil,
+                client: client,
+                layerNames: ["Ethernet", "UDP", "DNS"]
+            ),
+            makePacket(
+                packetNumber: 3,
+                source: .offline,
+                transportHint: .tcp,
+                destinationPort: 443,
+                streamID: nil,
+                layerNames: ["Ethernet", "TCP"]
+            ),
+        ]
+        let viewModel = makeOfflineViewModel(packets: packets)
+
+        await viewModel.openDocument(at: URL(fileURLWithPath: "/tmp/quick-filter-combined.pcapng"))
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == 3
+        }
+
+        viewModel.selectSourceList(.apps)
+        viewModel.toggleQuickFilter(.tcp)
+        viewModel.updateDisplayFilterText("port:80")
+
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[0].id])
+
+        viewModel.toggleQuickFilter(.udp)
+        viewModel.clearDisplayFilter()
+
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[0].id, packets[1].id])
+        #expect(viewModel.snapshot.quickFilterSelection.selectedIDs == [.tcp, .udp])
+
+        viewModel.resetQuickFilters()
+
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[0].id, packets[1].id])
+        #expect(viewModel.snapshot.quickFilterSelection.selectedIDs == [.all])
+    }
+
+    @Test func quickFilterResetRestoresAllRowsWhenOnlyQuickFiltersAreActive() async {
+        let packets = [
+            makePacket(packetNumber: 1, source: .offline, transportHint: .tcp, streamID: nil, layerNames: ["Ethernet", "TCP"]),
+            makePacket(packetNumber: 2, source: .offline, transportHint: .udp, streamID: nil, layerNames: ["Ethernet", "UDP"]),
+            makePacket(packetNumber: 3, source: .offline, transportHint: .dns, streamID: nil, layerNames: ["Ethernet", "UDP", "DNS"]),
+        ]
+        let viewModel = makeOfflineViewModel(packets: packets)
+
+        await viewModel.openDocument(at: URL(fileURLWithPath: "/tmp/quick-filter-reset.pcapng"))
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == 3
+        }
+
+        viewModel.toggleQuickFilter(.tcp)
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[0].id])
+        #expect(viewModel.snapshot.selectedPacket?.id == packets[0].id)
+        #expect(viewModel.snapshot.selectedPacketRowIndex == 0)
+
+        viewModel.resetQuickFilters()
+        #expect(viewModel.snapshot.packetRows.map(\.id) == packets.map(\.id))
+        #expect(viewModel.snapshot.selectedPacketID == nil)
+        #expect(viewModel.snapshot.selectedPacket == nil)
+        #expect(viewModel.snapshot.selectedPacketRowIndex == nil)
+        #expect(viewModel.snapshot.base.inspectionState == .empty)
+    }
+
+    @Test func quickFilterSelectsFirstVisiblePacketAndLoadsInspector() async {
+        let packets = [
+            makePacket(packetNumber: 1, source: .offline, transportHint: .udp, streamID: nil, layerNames: ["Ethernet", "UDP"]),
+            makePacket(packetNumber: 2, source: .offline, transportHint: .tcp, streamID: nil, layerNames: ["Ethernet", "TCP"]),
+            makePacket(packetNumber: 3, source: .offline, transportHint: .tcp, streamID: nil, layerNames: ["Ethernet", "TCP"]),
+        ]
+        let viewModel = makeOfflineViewModel(packets: packets)
+
+        await viewModel.openDocument(at: URL(fileURLWithPath: "/tmp/quick-filter-select-first.pcapng"))
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == packets.count
+        }
+
+        viewModel.toggleQuickFilter(.tcp)
+
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[1].id, packets[2].id])
+        #expect(viewModel.snapshot.selectedPacket?.id == packets[1].id)
+        #expect(viewModel.snapshot.selectedPacketRowIndex == 0)
+        #expect(viewModel.snapshot.base.inspectionState.selectedPacketID == packets[1].id)
+
+        await waitUntil {
+            viewModel.snapshot.base.inspectionState.inspection?.packetID == packets[1].id
+        }
+    }
+
+    @Test func quickFilterLiveAppendOnlyShowsMatchingPackets() async {
+        let tcpPacket = makePacket(packetNumber: 1, source: .live, transportHint: .tcp, streamID: nil, layerNames: ["Ethernet", "TCP"])
+        let udpPacket = makePacket(packetNumber: 2, source: .live, transportHint: .udp, streamID: nil, layerNames: ["Ethernet", "UDP"])
+        let liveSession = InspectorFakeLiveSession()
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                liveSession: liveSession
+            )),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.performInitialLoadIfNeeded()
+        viewModel.toggleQuickFilter(.udp)
+        await viewModel.toggleLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        liveSession.send(.packetBatch([tcpPacket], disposition: .append))
+
+        await waitUntil {
+            viewModel.snapshot.totalPacketCount == 1
+        }
+        #expect(viewModel.snapshot.packetRows.isEmpty)
+
+        liveSession.send(.packetBatch([udpPacket], disposition: .append))
+        await waitUntil {
+            viewModel.snapshot.packetRows.map(\.id) == [udpPacket.id]
+        }
+
+        #expect(viewModel.snapshot.visiblePacketCount == 1)
+    }
+
+    @Test func quickFilterMetadataUpdateCanRevealClientHelloPacket() async {
+        let packet = makePacket(
+            packetNumber: 1,
+            source: .live,
+            transportHint: .tls,
+            streamID: nil,
+            infoSummary: "Application Data",
+            layerNames: ["Ethernet", "TCP", "TLSv1.2"]
+        )
+        let liveSession = InspectorFakeLiveSession()
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                liveSession: liveSession
+            )),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.performInitialLoadIfNeeded()
+        viewModel.toggleQuickFilter(.clientHello)
+        await viewModel.toggleLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        liveSession.send(.packetBatch([packet], disposition: .append))
+
+        await waitUntil {
+            viewModel.snapshot.totalPacketCount == 1
+        }
+        #expect(viewModel.snapshot.packetRows.isEmpty)
+
+        liveSession.send(.packetSummaryUpdates([
+            PacketSummaryUpdate(packetID: packet.id, protocolSummary: "TLSv1.3", infoSummary: "Client Hello")
+        ]))
+
+        await waitUntil {
+            viewModel.snapshot.packetRows.map(\.id) == [packet.id]
+        }
+    }
+
+    @Test func quickFilterSnapshotExposesInspectorEmptyStateResetData() async {
+        let packet = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp, streamID: nil, layerNames: ["Ethernet", "TCP"])
+        let viewModel = makeOfflineViewModel(packets: [packet])
+
+        await viewModel.openDocument(at: URL(fileURLWithPath: "/tmp/quick-filter-empty-state.pcapng"))
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == 1
+        }
+
+        viewModel.toggleQuickFilter(.udp)
+
+        #expect(viewModel.snapshot.packetRows.isEmpty)
+        #expect(viewModel.snapshot.selectedPacketRowIndex == nil)
+        #expect(viewModel.snapshot.quickFilterAppliedDescription == "Filtered by UDP")
+        #expect(viewModel.snapshot.isQuickFilterResetVisible)
+
+        viewModel.resetQuickFilters()
+        #expect(viewModel.snapshot.quickFilterAppliedDescription == nil)
+        #expect(!viewModel.snapshot.isQuickFilterResetVisible)
+    }
+
     private func isolatedDefaults() -> UserDefaults {
         let suiteName = "TCPViewer.NetworkInspectorTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -1640,9 +1840,15 @@ struct NetworkInspectorViewModelTests {
         interfaceName: String? = nil,
         transportDetailSummary: String? = nil,
         transportLayerName: String? = nil,
-        protocolSummary: String? = nil
+        protocolSummary: String? = nil,
+        infoSummary: String? = nil,
+        layerNames: [String]? = nil
     ) -> PacketSummary {
-        PacketSummary(
+        let packetLayers = layerNames?.map { PacketLayer(name: $0) } ?? [
+            PacketLayer(name: "Ethernet"),
+            PacketLayer(name: transportLayerName ?? transportHint.rawValue.uppercased(), detailSummary: transportDetailSummary),
+        ]
+        return PacketSummary(
             packetNumber: packetNumber,
             timestamp: Date(timeIntervalSince1970: TimeInterval(packetNumber)),
             source: source,
@@ -1659,11 +1865,8 @@ struct NetworkInspectorViewModelTests {
             direction: direction,
             tcpFlags: tcpFlags,
             tcpPayloadLength: tcpPayloadLength,
-            infoSummary: "Packet \(packetNumber)",
-            layers: [
-                PacketLayer(name: "Ethernet"),
-                PacketLayer(name: transportLayerName ?? transportHint.rawValue.uppercased(), detailSummary: transportDetailSummary),
-            ],
+            infoSummary: infoSummary ?? "Packet \(packetNumber)",
+            layers: packetLayers,
             decodeStatus: decodeStatus,
             captureMetadata: PacketCaptureMetadata(linkType: .ethernet, isTruncated: false, interfaceName: interfaceName),
             sniDomainName: sniDomainName,

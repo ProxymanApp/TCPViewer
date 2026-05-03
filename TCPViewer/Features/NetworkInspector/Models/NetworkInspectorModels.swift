@@ -494,6 +494,8 @@ struct NetworkInspectorSnapshot: Equatable {
     var selectedSourceListSelection: PacketSourceListSelection
     var sourceListSnapshot: PacketSourceListSnapshot
     var sourceListFilterText: String
+    var quickFilterItems: [PacketQuickFilterItem]
+    var quickFilterSelection: PacketQuickFilterSelection
     var workspaceMode: NetworkInspectorWorkspaceMode
     var inspectorTab: PacketInspectorTab
     var inspectorPlacement: NetworkInspectorPlacement
@@ -516,6 +518,8 @@ struct NetworkInspectorSnapshot: Equatable {
         selectedSourceListSelection: PacketSourceListSelection,
         sourceListSnapshot: PacketSourceListSnapshot,
         sourceListFilterText: String,
+        quickFilterItems: [PacketQuickFilterItem] = PacketQuickFilterService().items(),
+        quickFilterSelection: PacketQuickFilterSelection = .all,
         workspaceMode: NetworkInspectorWorkspaceMode,
         inspectorTab: PacketInspectorTab,
         inspectorPlacement: NetworkInspectorPlacement = .trailing,
@@ -529,6 +533,8 @@ struct NetworkInspectorSnapshot: Equatable {
             selectedSourceListSelection: selectedSourceListSelection,
             sourceListSnapshot: sourceListSnapshot,
             sourceListFilterText: sourceListFilterText,
+            quickFilterItems: quickFilterItems,
+            quickFilterSelection: quickFilterSelection,
             workspaceMode: workspaceMode,
             inspectorTab: inspectorTab,
             inspectorPlacement: inspectorPlacement,
@@ -556,6 +562,8 @@ struct NetworkInspectorSnapshot: Equatable {
             lhs.selectedSourceListSelection == rhs.selectedSourceListSelection &&
             lhs.sourceListSnapshot == rhs.sourceListSnapshot &&
             lhs.sourceListFilterText == rhs.sourceListFilterText &&
+            lhs.quickFilterItems == rhs.quickFilterItems &&
+            lhs.quickFilterSelection == rhs.quickFilterSelection &&
             lhs.workspaceMode == rhs.workspaceMode &&
             lhs.inspectorTab == rhs.inspectorTab &&
             lhs.inspectorPlacement == rhs.inspectorPlacement &&
@@ -580,6 +588,22 @@ struct NetworkInspectorSnapshot: Equatable {
 
     var totalPacketCount: Int {
         base.packetIngestState.totalPacketCount
+    }
+
+    var isQuickFilterActive: Bool {
+        quickFilterSelection.isActive
+    }
+
+    var isQuickFilterResetVisible: Bool {
+        quickFilterSelection.isActive
+    }
+
+    var quickFilterAppliedDescription: String? {
+        guard quickFilterSelection.isActive else {
+            return nil
+        }
+
+        return "Filtered by \(quickFilterSelection.activeLabels.joined(separator: ", "))"
     }
 
     var droppedPacketCount: UInt64 {

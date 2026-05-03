@@ -19,6 +19,17 @@ protocol PacketWorkspaceViewControllerDelegate: AnyObject {
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestSavePackets identifiers: [PacketSummary.ID])
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestExportPackets identifiers: [PacketSummary.ID], format: CaptureFileFormat)
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestDeletePackets identifiers: [PacketSummary.ID])
+    func packetWorkspaceViewControllerDidRequestResetQuickFilters(_ controller: PacketWorkspaceViewController)
+}
+
+private final class VerticallyCenteredTextFieldCell: NSTextFieldCell {
+    override func drawingRect(forBounds rect: NSRect) -> NSRect {
+        var drawingRect = super.drawingRect(forBounds: rect)
+        let textHeight = cellSize(forBounds: rect).height
+        drawingRect.origin.y += floor((drawingRect.height - textHeight) / 2)
+        drawingRect.size.height = textHeight
+        return drawingRect
+    }
 }
 
 final class PacketWorkspaceViewModel {
@@ -30,6 +41,8 @@ final class PacketWorkspaceViewModel {
     private(set) var emptyTitle = "No Packets"
     private(set) var emptyMessage = "Start a live capture or open a pcap/pcapng file."
     private(set) var emptyImageName = "list.bullet.rectangle"
+    private(set) var showsResetFiltersButton = false
+    private(set) var quickFilterLabels: [String] = []
 
     // Convert the root snapshot into packet-workspace-only render data.
     func render(snapshot: NetworkInspectorSnapshot) {
@@ -37,6 +50,15 @@ final class PacketWorkspaceViewModel {
         totalText = snapshot.visiblePacketCount == snapshot.totalPacketCount ? nil : "of \(snapshot.totalPacketCount)"
         chips = snapshot.displayFilterChips
         isEmpty = snapshot.packetRows.isEmpty
+        showsResetFiltersButton = isEmpty && snapshot.isQuickFilterActive
+        quickFilterLabels = showsResetFiltersButton ? snapshot.quickFilterSelection.activeLabels : []
+
+        if showsResetFiltersButton {
+            emptyTitle = "No Matching Packets"
+            emptyMessage = "Filtered by quick filters"
+            emptyImageName = "line.3.horizontal.decrease.circle"
+            return
+        }
 
         switch snapshot.selectedSourceListSelection {
         case .pinned:
@@ -96,7 +118,13 @@ final class PacketWorkspaceViewController: NSViewController {
         viewModel.render(snapshot: snapshot)
 
         if viewModel.isEmpty {
-            showPlaceholder(title: viewModel.emptyTitle, message: viewModel.emptyMessage, imageName: viewModel.emptyImageName)
+            showPlaceholder(
+                title: viewModel.emptyTitle,
+                message: viewModel.emptyMessage,
+                imageName: viewModel.emptyImageName,
+                showsResetFiltersButton: viewModel.showsResetFiltersButton,
+                quickFilterLabels: viewModel.quickFilterLabels
+            )
         } else {
             showTable()
             tableController.render(snapshot: snapshot)
@@ -117,20 +145,127 @@ final class PacketWorkspaceViewController: NSViewController {
         ])
     }
 
-    private func showPlaceholder(title: String, message: String, imageName: String) {
+    private func showPlaceholder(
+        title: String,
+        message: String,
+        imageName: String,
+        showsResetFiltersButton: Bool,
+        quickFilterLabels: [String]
+    ) {
         if tableController.view.superview != nil {
             tableController.view.removeFromSuperview()
         }
 
         placeholderView?.removeFromSuperview()
-        let placeholder = TCPViewerUI.placeholder(
+        let placeholder = makePlaceholder(
             title: title,
             imageName: imageName,
             message: message,
-            iconTitleSpacing: 18
+            showsResetFiltersButton: showsResetFiltersButton,
+            quickFilterLabels: quickFilterLabels
         )
         TCPViewerUI.pin(placeholder, to: contentContainer)
         placeholderView = placeholder
+    }
+
+    private func makePlaceholder(
+        title: String,
+        imageName: String,
+        message: String,
+        showsResetFiltersButton: Bool,
+        quickFilterLabels: [String]
+    ) -> NSView {
+        let imageView = NSImageView(image: TCPViewerUI.image(imageName) ?? NSImage())
+        imageView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 42, weight: .regular)
+        imageView.contentTintColor = .secondaryLabelColor
+
+        let titleLabel = TCPViewerUI.label(title, font: .systemFont(ofSize: 19, weight: .semibold))
+        titleLabel.alignment = .center
+
+        let messageView: NSView
+        let messageWidthConstraint: NSLayoutConstraint?
+        if quickFilterLabels.isEmpty {
+            let messageLabel = TCPViewerUI.label(message, font: .systemFont(ofSize: NSFont.systemFontSize), color: .secondaryLabelColor)
+            messageLabel.alignment = .center
+            messageLabel.maximumNumberOfLines = 3
+            messageView = messageLabel
+            messageWidthConstraint = messageLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 420)
+        } else {
+            messageView = makeQuickFilterMessage(labels: quickFilterLabels)
+            messageWidthConstraint = nil
+        }
+
+        var arrangedViews: [NSView] = [imageView, titleLabel, messageView]
+        if showsResetFiltersButton {
+            let resetButton = NSButton(title: "Reset Filters", target: self, action: #selector(resetQuickFilters(_:)))
+            resetButton.bezelStyle = .rounded
+            resetButton.controlSize = .regular
+            resetButton.image = TCPViewerUI.image("arrow.counterclockwise")
+            resetButton.imagePosition = .imageLeading
+            arrangedViews.append(resetButton)
+        }
+
+        let stack = NSStackView(views: arrangedViews)
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 10
+        stack.setCustomSpacing(18, after: imageView)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let container = NSView()
+        container.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            stack.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            stack.leadingAnchor.constraint(greaterThanOrEqualTo: container.leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -24),
+        ])
+        messageWidthConstraint?.isActive = true
+        return container
+    }
+
+    private func makeQuickFilterMessage(labels: [String]) -> NSView {
+        let prefixLabel = TCPViewerUI.label(
+            "Filtered by",
+            font: .systemFont(ofSize: NSFont.systemFontSize),
+            color: .secondaryLabelColor
+        )
+
+        let visibleLabels = Array(labels.prefix(4))
+        var views: [NSView] = [prefixLabel] + visibleLabels.map(makeQuickFilterChip(title:))
+        if labels.count > visibleLabels.count {
+            views.append(makeQuickFilterChip(title: "+\(labels.count - visibleLabels.count)"))
+        }
+
+        let stack = NSStackView(views: views)
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 6
+        return stack
+    }
+
+    private func makeQuickFilterChip(title: String) -> NSView {
+        let font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
+        let label = TCPViewerUI.label(title, font: font)
+        label.cell = VerticallyCenteredTextFieldCell(textCell: title)
+        label.font = font
+        label.textColor = .labelColor
+        label.alignment = .center
+        label.cell?.lineBreakMode = .byTruncatingTail
+
+        let chip = NSView()
+        chip.wantsLayer = true
+        chip.layer?.cornerRadius = 5
+        chip.layer?.borderWidth = 1
+        chip.layer?.borderColor = NSColor.separatorColor.cgColor
+        chip.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.65).cgColor
+
+        TCPViewerUI.pin(label, to: chip, insets: NSEdgeInsets(top: 0, left: 9, bottom: 0, right: 9))
+        NSLayoutConstraint.activate([
+            chip.heightAnchor.constraint(equalToConstant: 24),
+            chip.widthAnchor.constraint(lessThanOrEqualToConstant: 130),
+        ])
+        return chip
     }
 
     private func showTable() {
@@ -140,6 +275,10 @@ final class PacketWorkspaceViewController: NSViewController {
         if tableController.view.superview == nil {
             TCPViewerUI.pin(tableController.view, to: contentContainer)
         }
+    }
+
+    @objc private func resetQuickFilters(_ sender: Any?) {
+        delegate?.packetWorkspaceViewControllerDidRequestResetQuickFilters(self)
     }
 }
 

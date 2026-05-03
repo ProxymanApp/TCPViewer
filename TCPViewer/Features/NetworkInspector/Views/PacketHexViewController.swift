@@ -82,9 +82,9 @@ final class PacketHexViewController: NSViewController {
             return
         }
         let byteViews = byteViews(for: inspection)
-        if renderedPacketID != inspection?.packetID {
-            manualByteViewID = nil
-        } else if renderedHighlight?.sourceRange.sourceID != inspectionState.highlightedByteRange?.sourceID {
+        // Keep a user-picked byte source across packet changes; same-packet tree selection can override it.
+        if renderedPacketID == inspection?.packetID,
+           renderedHighlight?.sourceRange.sourceID != inspectionState.highlightedByteRange?.sourceID {
             manualByteViewID = nil
         }
 
