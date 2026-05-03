@@ -350,6 +350,132 @@ struct PacketInspectorTreeViewModelTests {
         #expect(viewModel.rootItems.first?.displayText == "Frame: Packet 2")
     }
 
+    @Test func expansionStateExpandsOnlyTopLevelItemsByDefault() {
+        let child = PacketInspectorTreeItem(id: "frame.flags", name: "Flags", kind: .field, children: [
+            PacketInspectorTreeItem(id: "frame.flags.df", name: "Don't Fragment", kind: .field),
+        ])
+        let root = PacketInspectorTreeItem(id: "frame", name: "Frame", kind: .layer, children: [child])
+        let expansionState = PacketInspectorOutlineExpansionState()
+
+        #expect(expansionState.shouldExpand(item: root, level: 0))
+        #expect(!expansionState.shouldExpand(item: child, level: 1))
+        #expect(!expansionState.shouldExpand(item: child.children[0], level: 2))
+    }
+
+    @Test func expansionStateUsesManualOverrides() {
+        let child = PacketInspectorTreeItem(id: "frame.flags", name: "Flags", kind: .field, children: [
+            PacketInspectorTreeItem(id: "frame.flags.df", name: "Don't Fragment", kind: .field),
+        ])
+        let root = PacketInspectorTreeItem(id: "frame", name: "Frame", kind: .layer, children: [child])
+        let expansionState = PacketInspectorOutlineExpansionState()
+
+        expansionState.recordCollapsed(item: root)
+        expansionState.recordExpanded(item: child)
+
+        #expect(!expansionState.shouldExpand(item: root, level: 0))
+        #expect(expansionState.shouldExpand(item: child, level: 1))
+    }
+
+    @MainActor
+    @Test func inspectorInitialRenderExpandsRootGroupsOnly() throws {
+        let packet = makePacket()
+        let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        controller.loadViewIfNeeded()
+
+        controller.render(snapshot: makeSnapshot(
+            packet: packet,
+            inspectionState: loadedInspectionState(packet: packet, inspection: makeNestedInspection(for: packet))
+        ))
+
+        let outlineView = try #require(firstSubview(ofType: NSOutlineView.self, in: controller.view))
+        let rootItem = try #require(outlineView.item(atRow: 0) as? PacketInspectorTreeItem)
+        let childItem = try #require(outlineView.item(atRow: 1) as? PacketInspectorTreeItem)
+
+        #expect(outlineView.numberOfRows == 2)
+        #expect(outlineView.isItemExpanded(rootItem))
+        #expect(!outlineView.isItemExpanded(childItem))
+    }
+
+    @MainActor
+    @Test func inspectorManualRootCollapsePersistsAcrossPackets() throws {
+        let firstPacket = makePacket(packetNumber: 1)
+        let secondPacket = makePacket(packetNumber: 2)
+        let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        controller.loadViewIfNeeded()
+
+        controller.render(snapshot: makeSnapshot(
+            packet: firstPacket,
+            inspectionState: loadedInspectionState(packet: firstPacket, inspection: makeNestedInspection(for: firstPacket))
+        ))
+        let outlineView = try #require(firstSubview(ofType: NSOutlineView.self, in: controller.view))
+        let firstRoot = try #require(outlineView.item(atRow: 0) as? PacketInspectorTreeItem)
+
+        outlineView.collapseItem(firstRoot)
+        controller.render(snapshot: makeSnapshot(
+            packet: secondPacket,
+            inspectionState: loadedInspectionState(packet: secondPacket, inspection: makeNestedInspection(for: secondPacket))
+        ))
+        let secondRoot = try #require(outlineView.item(atRow: 0) as? PacketInspectorTreeItem)
+
+        #expect(outlineView.numberOfRows == 1)
+        #expect(!outlineView.isItemExpanded(secondRoot))
+    }
+
+    @MainActor
+    @Test func inspectorManualNestedExpansionPersistsAcrossPackets() throws {
+        let firstPacket = makePacket(packetNumber: 1)
+        let secondPacket = makePacket(packetNumber: 2)
+        let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        controller.loadViewIfNeeded()
+
+        controller.render(snapshot: makeSnapshot(
+            packet: firstPacket,
+            inspectionState: loadedInspectionState(packet: firstPacket, inspection: makeNestedInspection(for: firstPacket))
+        ))
+        let outlineView = try #require(firstSubview(ofType: NSOutlineView.self, in: controller.view))
+        let firstChild = try #require(outlineView.item(atRow: 1) as? PacketInspectorTreeItem)
+
+        outlineView.expandItem(firstChild)
+        controller.render(snapshot: makeSnapshot(
+            packet: secondPacket,
+            inspectionState: loadedInspectionState(packet: secondPacket, inspection: makeNestedInspection(for: secondPacket))
+        ))
+        let secondChild = try #require(outlineView.item(atRow: 1) as? PacketInspectorTreeItem)
+
+        #expect(outlineView.numberOfRows == 3)
+        #expect(outlineView.isItemExpanded(secondChild))
+    }
+
+    @MainActor
+    @Test func inspectorReloadPreservesOutlineScrollPosition() throws {
+        let firstPacket = makePacket(packetNumber: 1)
+        let secondPacket = makePacket(packetNumber: 2)
+        let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        controller.loadViewIfNeeded()
+        controller.view.frame = NSRect(x: 0, y: 0, width: 420, height: 420)
+        controller.view.layoutSubtreeIfNeeded()
+
+        controller.render(snapshot: makeSnapshot(
+            packet: firstPacket,
+            inspectionState: loadedInspectionState(packet: firstPacket, inspection: makeLargeInspection(for: firstPacket))
+        ))
+        controller.view.layoutSubtreeIfNeeded()
+        let outlineScrollView = try #require(findOutlineScrollView(in: controller.view))
+
+        outlineScrollView.contentView.scroll(to: NSPoint(x: 0, y: 120))
+        outlineScrollView.reflectScrolledClipView(outlineScrollView.contentView)
+        let originalY = outlineScrollView.contentView.bounds.origin.y
+
+        controller.render(snapshot: makeSnapshot(
+            packet: secondPacket,
+            inspectionState: loadedInspectionState(packet: secondPacket, inspection: makeLargeInspection(for: secondPacket))
+        ))
+        controller.view.layoutSubtreeIfNeeded()
+
+        #expect(originalY > 0)
+        #expect(abs(outlineScrollView.contentView.bounds.origin.y - originalY) <= 1)
+    }
+
     private func makeSnapshot(packet: PacketSummary? = nil, inspectionState: PacketInspectionState) -> NetworkInspectorSnapshot {
         var base = TCPViewerWindowSnapshot.foundation
         if let packet {
@@ -433,6 +559,17 @@ struct PacketInspectorTreeViewModelTests {
         allSubviews(ofType: NSTextField.self, in: view).map(\.stringValue)
     }
 
+    private func loadedInspectionState(packet: PacketSummary, inspection: PacketInspection) -> PacketInspectionState {
+        PacketInspectionState(
+            selectedPacketID: packet.id,
+            inspection: inspection,
+            selectedDetailNodeID: nil,
+            highlightedByteRange: nil,
+            isLoading: false,
+            statusMessage: "Inspecting packet \(packet.packetNumber)."
+        )
+    }
+
     private func makeFrameInspection(for packet: PacketSummary) -> PacketInspection {
         PacketInspection(
             packetID: packet.id,
@@ -441,6 +578,54 @@ struct PacketInspectorTreeViewModelTests {
             detailNodes: [
                 PacketDetailNode(id: "frame", name: "Frame", value: "Packet \(packet.packetNumber)", kind: .layer),
             ],
+            decodeStatus: PacketDecodeStatus(kind: .complete)
+        )
+    }
+
+    private func makeNestedInspection(for packet: PacketSummary) -> PacketInspection {
+        PacketInspection(
+            packetID: packet.id,
+            packetNumber: packet.packetNumber,
+            rawBytes: Data([0x01, 0x02]),
+            detailNodes: [
+                PacketDetailNode(
+                    id: "frame",
+                    name: "Frame",
+                    value: "Packet \(packet.packetNumber)",
+                    kind: .layer,
+                    children: [
+                        PacketDetailNode(
+                            id: "frame.flags",
+                            name: "Flags",
+                            children: [
+                                PacketDetailNode(id: "frame.flags.df", name: "Don't Fragment", value: "Set"),
+                            ]
+                        ),
+                    ]
+                ),
+            ],
+            decodeStatus: PacketDecodeStatus(kind: .complete)
+        )
+    }
+
+    private func makeLargeInspection(for packet: PacketSummary) -> PacketInspection {
+        let nodes = (0..<40).map { index in
+            PacketDetailNode(
+                id: "layer-\(index)",
+                name: "Layer \(index)",
+                value: "Packet \(packet.packetNumber)",
+                kind: .layer,
+                children: [
+                    PacketDetailNode(id: "layer-\(index).field", name: "Field \(index)", value: "\(index)"),
+                ]
+            )
+        }
+
+        return PacketInspection(
+            packetID: packet.id,
+            packetNumber: packet.packetNumber,
+            rawBytes: Data([0x01, 0x02]),
+            detailNodes: nodes,
             decodeStatus: PacketDecodeStatus(kind: .complete)
         )
     }
