@@ -10,12 +10,13 @@ if [ ! -d "$SOURCE_LIB_DIR" ]; then
   exit 1
 fi
 
-if [ -z "${TARGET_BUILD_DIR:-}" ] || [ -z "${FRAMEWORKS_FOLDER_PATH:-}" ]; then
-  echo "error: TARGET_BUILD_DIR and FRAMEWORKS_FOLDER_PATH are required to stage Wireshark runtime libraries." >&2
+if [ -z "${TARGET_BUILD_DIR:-}" ] || [ -z "${FRAMEWORKS_FOLDER_PATH:-}" ] || [ -z "${EXECUTABLE_PATH:-}" ]; then
+  echo "error: TARGET_BUILD_DIR, FRAMEWORKS_FOLDER_PATH, and EXECUTABLE_PATH are required to stage Wireshark runtime libraries." >&2
   exit 1
 fi
 
 DESTINATION_DIR="$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH"
+CONSUMER_BINARY="$TARGET_BUILD_DIR/$EXECUTABLE_PATH"
 STAMP_FILE="${SCRIPT_OUTPUT_FILE_0:-${TARGET_TEMP_DIR:-/tmp}/wireshark-runtime-staged.stamp}"
 WORK_DIR="${TARGET_TEMP_DIR:-/tmp}/tcpviewer-wireshark-runtime"
 QUEUE_FILE="$WORK_DIR/queue.txt"
@@ -53,6 +54,19 @@ resolve_rpath_library() {
   return 0
 }
 
+resolve_relative_library() {
+  BASE_DIR="$1"
+  LIBRARY_PATH_SUFFIX="$2"
+  CANDIDATE="$BASE_DIR/$LIBRARY_PATH_SUFFIX"
+
+  if [ -f "$CANDIDATE" ]; then
+    printf '%s\n' "$CANDIDATE"
+    return
+  fi
+
+  return 0
+}
+
 queue_library() {
   LIBRARY_PATH="$1"
   LIBRARY_NAME="$(basename "$LIBRARY_PATH")"
@@ -71,6 +85,7 @@ queue_library() {
 
 queue_dependency() {
   DEPENDENCY="$1"
+  ORIGIN_PATH="$2"
 
   if is_system_dependency "$DEPENDENCY"; then
     return
@@ -87,7 +102,31 @@ queue_dependency() {
         exit 1
       fi
       ;;
-    @loader_path/*|@executable_path/*)
+    @loader_path/*)
+      DEPENDENCY_SUFFIX="${DEPENDENCY#@loader_path/}"
+      RESOLVED_DEPENDENCY="$(resolve_relative_library "$(dirname "$ORIGIN_PATH")" "$DEPENDENCY_SUFFIX")"
+      if [ -n "$RESOLVED_DEPENDENCY" ]; then
+        queue_library "$RESOLVED_DEPENDENCY"
+      elif [ ! -f "$DESTINATION_DIR/$(basename "$DEPENDENCY")" ]; then
+        echo "error: unable to resolve Wireshark @loader_path dependency: $DEPENDENCY" >&2
+        exit 1
+      fi
+      ;;
+    @executable_path/*)
+      DEPENDENCY_SUFFIX="${DEPENDENCY#@executable_path/}"
+      RESOLVED_DEPENDENCY="$(resolve_relative_library "$(dirname "$CONSUMER_BINARY")" "$DEPENDENCY_SUFFIX")"
+      if [ -n "$RESOLVED_DEPENDENCY" ]; then
+        queue_library "$RESOLVED_DEPENDENCY"
+      else
+        DEPENDENCY_NAME="$(basename "$DEPENDENCY")"
+        RESOLVED_DEPENDENCY="$(resolve_rpath_library "$DEPENDENCY_NAME")"
+        if [ -n "$RESOLVED_DEPENDENCY" ]; then
+          queue_library "$RESOLVED_DEPENDENCY"
+        elif [ ! -f "$DESTINATION_DIR/$DEPENDENCY_NAME" ]; then
+          echo "error: unable to resolve Wireshark @executable_path dependency: $DEPENDENCY" >&2
+          exit 1
+        fi
+      fi
       ;;
     /*)
       queue_library "$DEPENDENCY"
@@ -117,7 +156,7 @@ copy_next_library() {
   otool -L "$DESTINATION_PATH" | awk 'NR > 2 { print $1 }' > "$WORK_DIR/dependencies.txt"
   while IFS= read -r DEPENDENCY; do
     [ -n "$DEPENDENCY" ] || continue
-    queue_dependency "$DEPENDENCY"
+    queue_dependency "$DEPENDENCY" "$LIBRARY_PATH"
   done < "$WORK_DIR/dependencies.txt"
 }
 
@@ -146,7 +185,7 @@ patch_library() {
 patch_consumer_binary() {
   BINARY_PATH="$1"
 
-  install_name_tool -add_rpath "@loader_path/../../.." "$BINARY_PATH" 2>/dev/null || true
+  install_name_tool -add_rpath "@loader_path/Frameworks" "$BINARY_PATH" 2>/dev/null || true
 
   otool -L "$BINARY_PATH" | awk 'NR > 2 { print $1 }' > "$WORK_DIR/patch-consumer-dependencies.txt"
   while IFS= read -r DEPENDENCY; do
@@ -165,9 +204,9 @@ patch_consumer_binary() {
 
 sign_code() {
   CODE_PATH="$1"
-  SIGN_IDENTITY="${EXPANDED_CODE_SIGN_IDENTITY:-}"
+  SIGN_IDENTITY="${EXPANDED_CODE_SIGN_IDENTITY:-${CODE_SIGN_IDENTITY:-}}"
 
-  if [ -z "$SIGN_IDENTITY" ] || [ "$SIGN_IDENTITY" = "-" ]; then
+  if [ -z "$SIGN_IDENTITY" ]; then
     return
   fi
 
@@ -192,20 +231,17 @@ while IFS= read -r COPIED_LIBRARY; do
   patch_library "$COPIED_LIBRARY"
 done < "$COPIED_PATHS_FILE"
 
-PCAPPLUSPLUS_FRAMEWORK="$DESTINATION_DIR/PcapPlusPlusCore.framework"
-PCAPPLUSPLUS_BINARY="$PCAPPLUSPLUS_FRAMEWORK/Versions/A/PcapPlusPlusCore"
-if [ -f "$PCAPPLUSPLUS_BINARY" ]; then
-  patch_consumer_binary "$PCAPPLUSPLUS_BINARY"
+if [ ! -f "$CONSUMER_BINARY" ]; then
+  echo "error: built binary is missing at $CONSUMER_BINARY." >&2
+  exit 1
 fi
+
+patch_consumer_binary "$CONSUMER_BINARY"
 
 while IFS= read -r COPIED_LIBRARY; do
   [ -n "$COPIED_LIBRARY" ] || continue
   sign_code "$COPIED_LIBRARY"
 done < "$COPIED_PATHS_FILE"
-
-if [ -d "$PCAPPLUSPLUS_FRAMEWORK" ]; then
-  sign_code "$PCAPPLUSPLUS_FRAMEWORK"
-fi
 
 mkdir -p "$(dirname "$STAMP_FILE")"
 touch "$STAMP_FILE"

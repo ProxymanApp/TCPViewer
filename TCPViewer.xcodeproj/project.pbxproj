@@ -276,8 +276,7 @@
 				BA4D26D02F9A30770070BE17 /* Bootstrap PcapPlusPlus */,
 				BA4D26B02F9A2F760070BE17 /* Sources */,
 				BA4D26B12F9A2F760070BE17 /* Frameworks */,
-				BAWS00012F9E00000070BE17 /* Stage Wireshark Debug Libraries */,
-				BAWS00022F9E00000070BE17 /* Sign Wireshark Debug Libraries */,
+				BAWS00042F9E00000070BE17 /* Stage Wireshark Runtime Libraries */,
 				BA4D26B22F9A2F760070BE17 /* Resources */,
 			);
 			buildRules = (
@@ -322,7 +321,6 @@
 				BAAE975A2F9B815F00C52A7C /* Frameworks */,
 				BAAE975B2F9B815F00C52A7C /* Resources */,
 				BAPM00202F9D00000070BE17 /* Embed Frameworks */,
-				BAWS00042F9E00000070BE17 /* Stage Wireshark Runtime Libraries */,
 				BAPM00212F9D00000070BE17 /* Copy Network Helper Executable */,
 				BAPM00222F9D00000070BE17 /* Copy Network Helper LaunchDaemon */,
 			);
@@ -552,52 +550,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "\"$PROJECT_DIR/scripts/stage-wireshark-runtime.sh\"\n";
-			showEnvVarsInLog = 0;
-		};
-		BAWS00012F9E00000070BE17 /* Stage Wireshark Debug Libraries */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-				"$(PROJECT_DIR)/Vendor/.install/wireshark/lib",
-			);
-			name = "Stage Wireshark Debug Libraries";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-				"$(BUILT_PRODUCTS_DIR)/libwireshark.19.dylib",
-				"$(BUILT_PRODUCTS_DIR)/libwiretap.16.dylib",
-				"$(BUILT_PRODUCTS_DIR)/libwsutil.17.dylib",
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "if [ \"${CONFIGURATION}\" != \"Debug\" ]; then\n    exit 0\nfi\n\nwireshark_lib_dir=\"${PROJECT_DIR}/Vendor/.install/wireshark/lib\"\nif [ ! -d \"${wireshark_lib_dir}\" ]; then\n    echo \"error: Wireshark libraries are missing at ${wireshark_lib_dir}. Run scripts/bootstrap-wireshark.sh.\"\n    exit 1\nfi\n\nmkdir -p \"${BUILT_PRODUCTS_DIR}\"\nfor dylib in \"${wireshark_lib_dir}\"/libwireshark*.dylib \"${wireshark_lib_dir}\"/libwiretap*.dylib \"${wireshark_lib_dir}\"/libwsutil*.dylib; do\n    [ -e \"${dylib}\" ] || continue\n    cp -fP \"${dylib}\" \"${BUILT_PRODUCTS_DIR}/\"\ndone\n";
-			showEnvVarsInLog = 0;
-		};
-		BAWS00022F9E00000070BE17 /* Sign Wireshark Debug Libraries */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-				"$(BUILT_PRODUCTS_DIR)/libwireshark.19.dylib",
-				"$(BUILT_PRODUCTS_DIR)/libwiretap.16.dylib",
-				"$(BUILT_PRODUCTS_DIR)/libwsutil.17.dylib",
-			);
-			name = "Sign Wireshark Debug Libraries";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-				"$(BUILT_PRODUCTS_DIR)/.wireshark-debug-libs-signed",
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "if [ \"${CONFIGURATION}\" != \"Debug\" ]; then\n    exit 0\nfi\n\nsign_identity=\"${EXPANDED_CODE_SIGN_IDENTITY:-}\"\nif [ -z \"${sign_identity}\" ] || [ \"${sign_identity}\" = \"-\" ]; then\n    exit 0\nfi\n\nfor dylib in \"${BUILT_PRODUCTS_DIR}\"/libwireshark*.dylib \"${BUILT_PRODUCTS_DIR}\"/libwiretap*.dylib \"${BUILT_PRODUCTS_DIR}\"/libwsutil*.dylib; do\n    [ -f \"${dylib}\" ] || continue\n    codesign --force --sign \"${sign_identity}\" --timestamp=none \"${dylib}\"\ndone\n\ntouch \"${BUILT_PRODUCTS_DIR}/.wireshark-debug-libs-signed\"\n";
 			showEnvVarsInLog = 0;
 		};
 /* End PBXShellScriptBuildPhase section */
@@ -830,8 +782,6 @@
 					"@executable_path/../Frameworks",
 					"@loader_path/Frameworks",
 					"@loader_path/../../..",
-					"$(BUILT_PRODUCTS_DIR)",
-					"$(PROJECT_DIR)/Vendor/.install/wireshark/lib",
 				);
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1005,7 +955,6 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = TCPViewer/TCPViewerDebug.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -1029,8 +978,6 @@
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
-					"$(BUILT_PRODUCTS_DIR)",
-					"$(PROJECT_DIR)/Vendor/.install/wireshark/lib",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.6;
 				MARKETING_VERSION = 1.0;
