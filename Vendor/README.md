@@ -7,7 +7,7 @@
 
 `Vendor/.build/` and `Vendor/.install/` are intentionally ignored so the repository stores source pins, not generated artifacts.
 
-After `scripts/bootstrap-wireshark.sh` succeeds, Debug builds link the staged Wireshark libraries by default:
+After `scripts/bootstrap-wireshark.sh` succeeds, `PcapPlusPlusCore.framework` bundles the staged Wireshark runtime libraries in its own `Versions/A/Frameworks` directory for Debug and Release builds:
 
 ```sh
 xcodebuild -project TCPViewer.xcodeproj -scheme TCPViewer build
