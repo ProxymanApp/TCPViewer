@@ -8,6 +8,8 @@
 import Foundation
 
 struct TCPViewerLicense: Codable, Equatable {
+    private static let maximumOneYearUpdateWindowDays = 366
+
     private enum CodingKeys: String, CodingKey {
         case signature
         case deviceUUID = "device_uuid"
@@ -38,6 +40,14 @@ struct TCPViewerLicense: Codable, Equatable {
         return remainingDays < 0
     }
 
+    var hasOneYearUpdateWindow: Bool {
+        guard let updateWindowDays else {
+            return false
+        }
+
+        return (0...Self.maximumOneYearUpdateWindowDays).contains(updateWindowDays)
+    }
+
     var formattedExpiryDate: String {
         guard let date = TCPViewerLicenseDateParser.date(from: expiryDate) else {
             return expiryDate
@@ -46,6 +56,15 @@ struct TCPViewerLicense: Codable, Equatable {
         let formatter = DateFormatter()
         formatter.dateFormat = "d MMM yyyy"
         return formatter.string(from: date)
+    }
+
+    private var updateWindowDays: Int? {
+        guard let purchaseDate = TCPViewerLicenseDateParser.date(from: purchaseAt),
+              let expiryDate = TCPViewerLicenseDateParser.date(from: self.expiryDate) else {
+            return nil
+        }
+
+        return purchaseDate.tcpViewerLicenseDifferenceInDays(with: expiryDate)
     }
 }
 

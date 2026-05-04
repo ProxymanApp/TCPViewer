@@ -17,7 +17,7 @@ struct TCPViewerLicenseModelStorageTests {
           "device_uuid": "device-1",
           "email": "ada@example.com",
           "purchaseAt": "2026-05-01T10:20:30.123Z",
-          "expiryAt": "2028-05-01T10:20:30.123Z"
+          "expiryAt": "2027-05-01T10:20:30.123Z"
         }
         """.data(using: .utf8)!
 
@@ -26,8 +26,21 @@ struct TCPViewerLicenseModelStorageTests {
         #expect(license.signature == "abcdefghijklmnopqrstuvwxyz")
         #expect(license.deviceUUID == "device-1")
         #expect(license.email == "ada@example.com")
-        #expect(license.expiryDate == "2028-05-01T10:20:30.123Z")
-        #expect(license.formattedExpiryDate.contains("2028"))
+        #expect(license.expiryDate == "2027-05-01T10:20:30.123Z")
+        #expect(license.formattedExpiryDate.contains("2027"))
+        #expect(license.hasOneYearUpdateWindow)
+    }
+
+    @Test func updateWindowRejectsReceiptsLongerThanOneYear() {
+        let license = TCPViewerLicense(
+            signature: "abcdefghijklmnopqrstuvwxyz",
+            deviceUUID: "device-1",
+            email: "ada@example.com",
+            purchaseAt: "2026-05-01T10:20:30.123Z",
+            expiryDate: "2028-05-01T10:20:30.123Z"
+        )
+
+        #expect(!license.hasOneYearUpdateWindow)
     }
 
     @Test func encryptedStorageRoundTripsAndRemovesLicense() throws {
@@ -69,7 +82,7 @@ struct TCPViewerLicenseModelStorageTests {
             deviceUUID: "device-1",
             email: "ada@example.com",
             purchaseAt: "2026-05-01T10:20:30.123Z",
-            expiryDate: "2028-05-01T10:20:30.123Z"
+            expiryDate: "2027-05-01T10:20:30.123Z"
         )
     }
 

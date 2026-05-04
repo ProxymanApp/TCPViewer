@@ -137,8 +137,7 @@ final class TCPViewerLicenseService {
         deviceProvider: any TCPViewerLicenseDeviceProviding
     ) -> TCPViewerLicenseStatus {
         guard let license = storage.readLicense(),
-              !license.deviceUUID.isEmpty,
-              deviceProvider.isSameDeviceUUID(license.deviceUUID) else {
+              Self.locallyValidateStoredLicense(license, deviceProvider: deviceProvider) else {
             return .unauthorized(.invalidLicense)
         }
 
@@ -186,17 +185,27 @@ final class TCPViewerLicenseService {
     }
 
     private func locallyValidateStoredLicense(_ license: TCPViewerLicense) -> Bool {
+        Self.locallyValidateStoredLicense(license, deviceProvider: deviceProvider)
+    }
+
+    private static func locallyValidateStoredLicense(
+        _ license: TCPViewerLicense,
+        deviceProvider: any TCPViewerLicenseDeviceProviding
+    ) -> Bool {
         guard deviceProvider.isSameDeviceUUID(license.deviceUUID) else {
             return false
         }
         guard license.signature.count >= 20 else {
             return false
         }
+        guard license.hasOneYearUpdateWindow else {
+            return false
+        }
         guard let remainingDays = license.remainingDays else {
             return false
         }
 
-        // Extremely long expiry values are rejected locally to catch tampered receipts.
+        // Also reject far-future expiry values that still fit a forged one-year window.
         return remainingDays < 3000
     }
 

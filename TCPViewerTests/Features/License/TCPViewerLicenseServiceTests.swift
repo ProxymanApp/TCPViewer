@@ -151,6 +151,26 @@ struct TCPViewerLicenseServiceTests {
         #expect(storage.readLicense() == nil)
     }
 
+    @Test func launchVerificationRejectsStoredLicenseLongerThanOneYear() throws {
+        let storage = try makeStorage()
+        let license = makeLicense(expiryDate: "2028-05-01T10:20:30.123Z")
+        try storage.writeLicense(license)
+
+        let network = StubLicenseNetworkClient()
+        network.verifyResult = .success(license)
+        let service = makeService(storage: storage, network: network)
+
+        #expect(service.status == .unauthorized(.invalidLicense))
+
+        let status = waitForStatus {
+            service.verifyAtLaunch(completion: $0)
+        }
+
+        #expect(status == .unauthorized(.invalidLicense))
+        #expect(storage.readLicense() == nil)
+        #expect(network.verifiedSignature == nil)
+    }
+
     @Test func localRevokeAlwaysClearsStoredLicense() throws {
         let storage = try makeStorage()
         let license = makeLicense()
@@ -203,13 +223,17 @@ struct TCPViewerLicenseServiceTests {
         return defaults
     }
 
-    private func makeLicense(email: String = "ada@example.com", deviceUUID: String = "device-1") -> TCPViewerLicense {
+    private func makeLicense(
+        email: String = "ada@example.com",
+        deviceUUID: String = "device-1",
+        expiryDate: String = "2027-05-01T10:20:30.123Z"
+    ) -> TCPViewerLicense {
         TCPViewerLicense(
             signature: "abcdefghijklmnopqrstuvwxyz",
             deviceUUID: deviceUUID,
             email: email,
             purchaseAt: "2026-05-01T10:20:30.123Z",
-            expiryDate: "2028-05-01T10:20:30.123Z"
+            expiryDate: expiryDate
         )
     }
 

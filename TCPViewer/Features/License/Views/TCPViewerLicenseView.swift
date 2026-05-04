@@ -17,6 +17,7 @@ struct TCPViewerLicenseView: View {
     }
 
     private let licenseService: TCPViewerLicenseService
+    private let onDismiss: () -> Void
     private let features: [Feature] = [
         Feature(systemImage: "antenna.radiowaves.left.and.right", title: "Live Packet Capture", detail: "Capture TCP and UDP traffic from supported local interfaces."),
         Feature(systemImage: "doc.on.doc", title: "pcap and pcapng Workflows", detail: "Open, save, and export packet captures for repeatable analysis."),
@@ -29,44 +30,65 @@ struct TCPViewerLicenseView: View {
     @State private var isActivating = false
     @State private var isRevoking = false
 
-    init(licenseService: TCPViewerLicenseService) {
+    init(licenseService: TCPViewerLicenseService, onDismiss: @escaping () -> Void = {}) {
         self.licenseService = licenseService
+        self.onDismiss = onDismiss
         self._status = State(initialValue: licenseService.status)
     }
 
     var body: some View {
-        ScrollView {
-            HStack(alignment: .top, spacing: 28) {
-                VStack(alignment: .leading, spacing: 28) {
-                    header
-                    licenseState
-                    actionArea
-                    Spacer(minLength: 0)
+        VStack(spacing: 0) {
+            HStack {
+                Spacer()
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 14, weight: .semibold))
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
                 }
-                .frame(minWidth: 280, maxWidth: 330, alignment: .topLeading)
-
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("Included with TCP Viewer")
-                        .font(.system(size: 24, weight: .semibold))
-
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
-                        ForEach(features) { feature in
-                            FeatureTile(feature: feature)
-                        }
-                    }
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        Label("Simple perpetual license with 2 years of updates", systemImage: "checkmark.circle.fill")
-                        Label("Transfer seats through License Manager", systemImage: "checkmark.circle.fill")
-                        Label("Native macOS packet analyzer by Proxyman LLC", systemImage: "checkmark.circle.fill")
-                    }
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .labelStyle(.titleAndIcon)
-                }
-                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Close")
+                .help("Close")
+                .keyboardShortcut(.cancelAction)
             }
-            .padding(30)
+            .padding(.top, 16)
+            .padding(.horizontal, 18)
+
+            ScrollView {
+                HStack(alignment: .top, spacing: 28) {
+                    VStack(alignment: .leading, spacing: 28) {
+                        header
+                        licenseState
+                        actionArea
+                        Spacer(minLength: 0)
+                    }
+                    .frame(minWidth: 280, maxWidth: 330, alignment: .topLeading)
+
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("Included with TCP Viewer")
+                            .font(.system(size: 24, weight: .semibold))
+
+                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
+                            ForEach(features) { feature in
+                                FeatureTile(feature: feature)
+                            }
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Label("Simple perpetual license with 1 year of updates", systemImage: "checkmark.circle.fill")
+                            Label("Transfer seats through License Manager", systemImage: "checkmark.circle.fill")
+                            Label("Native macOS packet analyzer by Proxyman LLC", systemImage: "checkmark.circle.fill")
+                        }
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .labelStyle(.titleAndIcon)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                }
+                .padding(.horizontal, 30)
+                .padding(.top, 4)
+                .padding(.bottom, 30)
+            }
         }
         .frame(minWidth: 760, minHeight: 560)
         .background(.regularMaterial)

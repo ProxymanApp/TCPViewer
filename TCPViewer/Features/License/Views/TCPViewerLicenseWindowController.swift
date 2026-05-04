@@ -9,12 +9,14 @@ import AppKit
 import SwiftUI
 
 final class TCPViewerLicenseWindowController: NSWindowController {
-    init(licenseService: TCPViewerLicenseService = .shared) {
-        let contentView = TCPViewerLicenseView(licenseService: licenseService)
+    init(licenseService: TCPViewerLicenseService = .shared, onDismiss: @escaping () -> Void = {}) {
+        let contentView = TCPViewerLicenseView(licenseService: licenseService, onDismiss: onDismiss)
         let hostingController = NSHostingController(rootView: contentView)
         let window = NSWindow(contentViewController: hostingController)
-        window.title = "TCP Viewer License"
-        window.styleMask = [.titled, .closable, .miniaturizable]
+        window.title = ""
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.styleMask = [.titled, .fullSizeContentView]
         window.setContentSize(NSSize(width: 900, height: 660))
         window.contentMinSize = NSSize(width: 760, height: 560)
         window.isReleasedWhenClosed = false
