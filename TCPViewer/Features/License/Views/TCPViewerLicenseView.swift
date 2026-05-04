@@ -84,7 +84,7 @@ struct TCPViewerLicenseView: View {
                 .padding(.bottom, 30)
             }
         }
-        .frame(minWidth: 760, minHeight: 560)
+        .frame(minWidth: 900, minHeight: 720)
         .background(.regularMaterial)
         .onAppear(perform: startObservingStatus)
         .onDisappear(perform: stopObservingStatus)
