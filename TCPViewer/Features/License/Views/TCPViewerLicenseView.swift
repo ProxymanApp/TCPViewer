@@ -21,7 +21,8 @@ struct TCPViewerLicenseView: View {
     private let features: [Feature] = [
         Feature(systemImage: "antenna.radiowaves.left.and.right", title: "Live Packet Capture", detail: "Capture TCP and UDP traffic from supported local interfaces."),
         Feature(systemImage: "doc.on.doc", title: "pcap and pcapng Workflows", detail: "Open, save, and export packet captures for repeatable analysis."),
-        Feature(systemImage: "list.bullet.rectangle.portrait", title: "Packet Inspection", detail: "Browse Wireshark-style packet details, bytes, and decoded protocol fields."),
+        Feature(systemImage: "list.bullet.rectangle.portrait", title: "Packet Inspection", detail: "Browse decoded packet details, bytes, and protocol fields."),
+        Feature(systemImage: "magnifyingglass.circle", title: "libwireshark Protocol Details", detail: "Packet dissection is built on libwireshark, providing detailed fields across supported protocols."),
         Feature(systemImage: "line.3.horizontal.decrease.circle", title: "Focused Filtering", detail: "Use capture and packet workflows built for TCP/UDP investigation."),
     ]
 
@@ -74,14 +75,7 @@ struct TCPViewerLicenseView: View {
                             }
                         }
 
-                        VStack(alignment: .leading, spacing: 8) {
-                            Label("Simple perpetual license with 1 year of updates", systemImage: "checkmark.circle.fill")
-                            Label("Transfer seats through License Manager", systemImage: "checkmark.circle.fill")
-                            Label("Native macOS packet analyzer by Proxyman LLC", systemImage: "checkmark.circle.fill")
-                        }
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .labelStyle(.titleAndIcon)
+                        featureChecklist
                     }
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
@@ -187,6 +181,19 @@ struct TCPViewerLicenseView: View {
                 .foregroundStyle(.tertiary)
                 .padding(.top, 2)
         }
+    }
+
+    private var featureChecklist: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ChecklistRow(title: "Simple perpetual license with 1 year of updates")
+            ChecklistRow(title: "Transfer seats through License Manager")
+            ChecklistRow(title: "Native macOS packet analyzer by Proxyman LLC")
+            ChecklistLinkRow(
+                title: "Open source on GitHub: ProxymanApp/Packetry",
+                destination: URL(string: "https://github.com/ProxymanApp/Packetry")!
+            )
+        }
+        .font(.system(size: 13, weight: .medium))
     }
 
     private func showActivationAlert() {
@@ -360,6 +367,7 @@ private struct LicenseInfoPanel: View {
 
 private struct FeatureTile: View {
     let feature: TCPViewerLicenseView.Feature
+    @State private var isHovered = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -379,7 +387,61 @@ private struct FeatureTile: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, minHeight: 154, alignment: .topLeading)
-        .background(.thinMaterial)
+        .background {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(.thinMaterial)
+                .overlay(Color.accentColor.opacity(isHovered ? 0.08 : 0))
+        }
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.accentColor.opacity(isHovered ? 0.35 : 0), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(isHovered ? 0.16 : 0), radius: isHovered ? 10 : 0, y: 4)
+        .offset(y: isHovered ? -2 : 0)
+        .animation(.easeOut(duration: 0.16), value: isHovered)
+        .onHover { isHovered = $0 }
+    }
+}
+
+private struct ChecklistRow: View {
+    let title: String
+
+    var body: some View {
+        ChecklistRowContent(title: title, isLink: false)
+    }
+}
+
+private struct ChecklistLinkRow: View {
+    let title: String
+    let destination: URL
+
+    var body: some View {
+        Link(destination: destination) {
+            ChecklistRowContent(title: title, isLink: true)
+        }
+        .buttonStyle(.plain)
+        .help(destination.absoluteString)
+    }
+}
+
+private struct ChecklistRowContent: View {
+    let title: String
+    let isLink: Bool
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 7) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+                .imageScale(.small)
+
+            if isLink {
+                Text(title)
+                    .foregroundStyle(Color.accentColor)
+            } else {
+                Text(title)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 }

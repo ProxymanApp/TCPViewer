@@ -321,6 +321,7 @@
 				BAAE975A2F9B815F00C52A7C /* Frameworks */,
 				BAAE975B2F9B815F00C52A7C /* Resources */,
 				BAPM00202F9D00000070BE17 /* Embed Frameworks */,
+				BAOS00012FA400000070BE17 /* Stage Open Source Notices */,
 				BAPM00212F9D00000070BE17 /* Copy Network Helper Executable */,
 				BAPM00222F9D00000070BE17 /* Copy Network Helper LaunchDaemon */,
 			);
@@ -550,6 +551,35 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "\"$PROJECT_DIR/scripts/stage-wireshark-runtime.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+		BAOS00012FA400000070BE17 /* Stage Open Source Notices */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(PROJECT_DIR)/LICENSE",
+				"$(PROJECT_DIR)/COPYING",
+				"$(PROJECT_DIR)/SOURCE_CODE_OFFER.md",
+				"$(PROJECT_DIR)/THIRD_PARTY_NOTICES.md",
+				"$(PROJECT_DIR)/Vendor/Wireshark/COPYING",
+				"$(PROJECT_DIR)/Vendor/Wireshark/README.md",
+				"$(PROJECT_DIR)/Vendor/PcapPlusPlus/LICENSE",
+				"$(PROJECT_DIR)/Vendor/HexFiend/License.txt",
+				"$(PROJECT_DIR)/scripts/stage-open-source-notices.sh",
+			);
+			name = "Stage Open Source Notices";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/OpenSourceLicenses/.notices-staged.stamp",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"$PROJECT_DIR/scripts/stage-open-source-notices.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
 /* End PBXShellScriptBuildPhase section */
@@ -972,7 +1002,7 @@
 				INFOPLIST_FILE = TCPViewer/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "TCP Viewer";
 				INFOPLIST_KEY_CFBundleName = "TCP Viewer";
-				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright 2026 Proxyman LLC. Licensed under GPL-2.0-or-later. No warranty.";
 				INFOPLIST_KEY_NSMainStoryboardFile = Main;
 				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1017,7 +1047,7 @@
 				INFOPLIST_FILE = TCPViewer/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "TCP Viewer";
 				INFOPLIST_KEY_CFBundleName = "TCP Viewer";
-				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright 2026 Proxyman LLC. Licensed under GPL-2.0-or-later. No warranty.";
 				INFOPLIST_KEY_NSMainStoryboardFile = Main;
 				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
 				LD_RUNPATH_SEARCH_PATHS = (
