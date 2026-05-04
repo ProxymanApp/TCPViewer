@@ -63,6 +63,24 @@ struct TCPViewerLicenseServiceTests {
         #expect(network.verifiedDeviceUUID == "device-1")
     }
 
+    @Test func launchVerificationUsesStoredFallbackDeviceUUID() throws {
+        let storage = try makeStorage()
+        let license = makeLicense(deviceUUID: "device-2")
+        try storage.writeLicense(license)
+
+        let network = StubLicenseNetworkClient()
+        network.verifyResult = .success(license)
+        let deviceProvider = StubDeviceProvider(deviceIDs: ["device-1", "device-2"])
+        let service = makeService(storage: storage, network: network, deviceProvider: deviceProvider)
+
+        let status = waitForStatus {
+            service.verifyAtLaunch(completion: $0)
+        }
+
+        #expect(status == .authorized(license))
+        #expect(network.verifiedDeviceUUID == "device-2")
+    }
+
     @Test func launchVerificationKeepsStoredLicenseWhenOffline() throws {
         let storage = try makeStorage()
         let license = makeLicense()
@@ -155,12 +173,13 @@ struct TCPViewerLicenseServiceTests {
     private func makeService(
         storage: TCPViewerLicenseStorage,
         network: StubLicenseNetworkClient,
+        deviceProvider: any TCPViewerLicenseDeviceProviding = StubDeviceProvider(),
         defaults: UserDefaults? = nil
     ) -> TCPViewerLicenseService {
         TCPViewerLicenseService(
             storage: storage,
             networkClient: network,
-            deviceProvider: StubDeviceProvider(),
+            deviceProvider: deviceProvider,
             defaults: defaults ?? makeDefaults(),
             buildNumberProvider: { "999" },
             workerQueue: DispatchQueue(label: "TCPViewerLicenseServiceTests-\(UUID().uuidString)")
@@ -184,10 +203,10 @@ struct TCPViewerLicenseServiceTests {
         return defaults
     }
 
-    private func makeLicense(email: String = "ada@example.com") -> TCPViewerLicense {
+    private func makeLicense(email: String = "ada@example.com", deviceUUID: String = "device-1") -> TCPViewerLicense {
         TCPViewerLicense(
             signature: "abcdefghijklmnopqrstuvwxyz",
-            deviceUUID: "device-1",
+            deviceUUID: deviceUUID,
             email: email,
             purchaseAt: "2026-05-01T10:20:30.123Z",
             expiryDate: "2028-05-01T10:20:30.123Z"
@@ -222,12 +241,18 @@ struct TCPViewerLicenseServiceTests {
 }
 
 private struct StubDeviceProvider: TCPViewerLicenseDeviceProviding {
+    let deviceIDs: [String]
+
+    init(deviceIDs: [String] = ["device-1"]) {
+        self.deviceIDs = deviceIDs
+    }
+
     func deviceName() -> String {
         "Ada's Mac"
     }
 
     func hashedDeviceIDs() -> [String] {
-        ["device-1"]
+        deviceIDs
     }
 }
 

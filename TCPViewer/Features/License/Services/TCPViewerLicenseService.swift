@@ -156,14 +156,11 @@ final class TCPViewerLicenseService {
                 removeStoredLicenseAndComplete(completion)
                 return
             }
-            guard let deviceUUID = deviceProvider.currentDeviceUUID() else {
-                removeStoredLicenseAndComplete(completion, error: .couldNotGetDeviceUUID)
-                return
-            }
 
+            // The server checks the submitted UUID against the signed receipt payload.
             networkClient.verifyLicense(
                 license: license,
-                deviceUUID: deviceUUID,
+                deviceUUID: license.deviceUUID,
                 buildNumber: buildNumberProvider()
             ) { [weak self] result in
                 guard let self else { return }
