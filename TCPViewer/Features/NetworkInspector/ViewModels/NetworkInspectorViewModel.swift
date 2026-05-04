@@ -13,7 +13,6 @@ import UniformTypeIdentifiers
 private struct NetworkInspectorPreferences {
     private enum Key {
         static let displayFilterText = "TCPViewer.displayFilterText"
-        static let inspectorTrailingThickness = "TCPViewer.inspectorTrailingThickness"
         static let inspectorVisible = "TCPViewer.inspectorVisible"
         static let sidebarLeadingThickness = "TCPViewer.sidebarLeadingThickness"
         static let sidebarVisible = "TCPViewer.sidebarVisible"
@@ -45,15 +44,6 @@ private struct NetworkInspectorPreferences {
         return defaults.bool(forKey: Key.sidebarVisible)
     }
 
-    func inspectorThickness(for placement: NetworkInspectorPlacement) -> CGFloat? {
-        let key = thicknessKey(for: placement)
-        guard defaults.object(forKey: key) != nil else {
-            return nil
-        }
-
-        return CGFloat(defaults.double(forKey: key))
-    }
-
     var sidebarThickness: CGFloat? {
         guard defaults.object(forKey: Key.sidebarLeadingThickness) != nil else {
             return nil
@@ -66,10 +56,6 @@ private struct NetworkInspectorPreferences {
         defaults.set(text, forKey: Key.displayFilterText)
     }
 
-    func persistInspectorThickness(_ thickness: CGFloat, for placement: NetworkInspectorPlacement) {
-        defaults.set(Double(thickness), forKey: thicknessKey(for: placement))
-    }
-
     func persistInspectorVisible(_ isVisible: Bool) {
         defaults.set(isVisible, forKey: Key.inspectorVisible)
     }
@@ -80,13 +66,6 @@ private struct NetworkInspectorPreferences {
 
     func persistSidebarVisible(_ isVisible: Bool) {
         defaults.set(isVisible, forKey: Key.sidebarVisible)
-    }
-
-    private func thicknessKey(for placement: NetworkInspectorPlacement) -> String {
-        switch placement {
-        case .trailing:
-            Key.inspectorTrailingThickness
-        }
     }
 }
 
@@ -684,9 +663,6 @@ protocol NetworkInspectorViewModelDelegate: AnyObject {
 }
 
 final class NetworkInspectorViewModel {
-    // Keep restored inspector widths from crowding out the packet workspace on launch.
-    private static let maximumInspectorThicknessFraction: CGFloat = 0.45
-
     weak var delegate: NetworkInspectorViewModelDelegate?
 
     private(set) var snapshot: NetworkInspectorSnapshot {
@@ -1411,27 +1387,6 @@ final class NetworkInspectorViewModel {
     // Expose the launch preference without adding sidebar layout state to the main snapshot.
     func prefersSidebarVisibleOnLaunch() -> Bool {
         preferences.isSidebarVisible
-    }
-
-    // Remember the last usable right-side inspector width for future launches.
-    func rememberInspectorThickness(_ thickness: CGFloat, for placement: NetworkInspectorPlacement) {
-        guard thickness.isFinite, thickness > 0 else {
-            return
-        }
-
-        preferences.persistInspectorThickness(thickness, for: placement)
-    }
-
-    // Reject invalid or oversized saved widths so the root controller can reopen with a safe default instead.
-    func preferredInspectorThickness(for placement: NetworkInspectorPlacement, availableLength: CGFloat) -> CGFloat? {
-        guard availableLength.isFinite, availableLength > 0,
-              let thickness = preferences.inspectorThickness(for: placement),
-              thickness.isFinite, thickness > 0, thickness < availableLength,
-              thickness <= availableLength * Self.maximumInspectorThicknessFraction else {
-            return nil
-        }
-
-        return thickness
     }
 
     func selectedInterfaceTitle() -> String {

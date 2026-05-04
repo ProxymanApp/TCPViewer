@@ -14,10 +14,6 @@ protocol TCPViewerRootViewControllerDelegate: AnyObject {
 }
 
 final class TCPViewerRootViewController: NSViewController {
-    private enum InspectorLayoutMetrics {
-        static let trailingInspectorFraction: CGFloat = 0.28
-    }
-
     weak var delegate: TCPViewerRootViewControllerDelegate?
 
     let viewModel: NetworkInspectorViewModel
@@ -31,11 +27,8 @@ final class TCPViewerRootViewController: NSViewController {
     private let statusStripViewController = StatusStripViewController()
     private var sidebarItem: NSSplitViewItem?
     private var inspectorItem: NSSplitViewItem?
-    private var appliedInspectorPlacement: NetworkInspectorPlacement?
     private var appliedInspectorVisibility: Bool?
     private var needsSidebarDividerRefresh = false
-    private var needsInspectorDividerRefresh = false
-    private var hasRestoredInitialInspectorDivider = false
     private var hasRenderedHelperOnboarding = false
 
     deinit {
@@ -75,13 +68,6 @@ final class TCPViewerRootViewController: NSViewController {
             needsSidebarDividerRefresh = false
             applySidebarDividerPosition()
         }
-
-        guard needsInspectorDividerRefresh, viewModel.snapshot.isInspectorVisible else {
-            return
-        }
-
-        needsInspectorDividerRefresh = false
-        applyInspectorDividerPosition(for: viewModel.snapshot.inspectorPlacement)
     }
 
     func openDocument(at url: URL) {
@@ -176,12 +162,9 @@ final class TCPViewerRootViewController: NSViewController {
         let workspaceItem = NSSplitViewItem(contentListWithViewController: workspaceViewController)
         contentSplitViewController.addSplitViewItem(workspaceItem)
 
-        // Use a regular split item so the same inspector view can resize correctly on both axes.
         let inspectorItem = NSSplitViewItem(viewController: inspectorViewController)
         inspectorItem.canCollapse = true
         inspectorItem.allowsFullHeightLayout = false
-        inspectorItem.minimumThickness = 200
-        inspectorItem.preferredThicknessFraction = InspectorLayoutMetrics.trailingInspectorFraction
         contentSplitViewController.addSplitViewItem(inspectorItem)
         self.inspectorItem = inspectorItem
 
@@ -293,55 +276,20 @@ final class TCPViewerRootViewController: NSViewController {
     private func applyInspectorLayout(_ snapshot: NetworkInspectorSnapshot) {
         let visibilityChanged = appliedInspectorVisibility != snapshot.isInspectorVisible
 
-        persistCurrentInspectorThicknessIfVisible()
-
         contentSplitViewController.splitView.isVertical = true
         if visibilityChanged {
             inspectorItem?.isCollapsed = !snapshot.isInspectorVisible
         }
-        if snapshot.isInspectorVisible && (appliedInspectorPlacement == nil || visibilityChanged) {
-            applyInspectorDividerPosition(for: snapshot.inspectorPlacement)
-        }
 
-        appliedInspectorPlacement = snapshot.inspectorPlacement
         appliedInspectorVisibility = snapshot.isInspectorVisible
     }
 
-    // Reset the inspector size when it reappears so the right-side panel starts usable.
-    private func applyInspectorDividerPosition(for placement: NetworkInspectorPlacement) {
-        let splitView = contentSplitViewController.splitView
-        guard splitView.subviews.count == 2 else {
-            return
-        }
-
-        splitView.layoutSubtreeIfNeeded()
-        let totalLength = splitView.bounds.width
-        guard totalLength > 0 else {
-            needsInspectorDividerRefresh = true
-            return
-        }
-
-        let inspectorThickness = viewModel.preferredInspectorThickness(
-            for: placement,
-            availableLength: totalLength
-        ) ?? (totalLength * InspectorLayoutMetrics.trailingInspectorFraction)
-        hasRestoredInitialInspectorDivider = true
-        splitView.setPosition(totalLength - inspectorThickness, ofDividerAt: 0)
-    }
-
-    // Track divider changes so the right-side inspector restores the last usable width.
     private func configureSplitViewObservation() {
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(mainSplitViewDidResizeSubviews(_:)),
             name: NSSplitView.didResizeSubviewsNotification,
             object: mainSplitViewController.splitView
-        )
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(contentSplitViewDidResizeSubviews(_:)),
-            name: NSSplitView.didResizeSubviewsNotification,
-            object: contentSplitViewController.splitView
         )
     }
 
@@ -351,18 +299,6 @@ final class TCPViewerRootViewController: NSViewController {
         }
 
         persistCurrentSidebarLayout()
-    }
-
-    @objc private func contentSplitViewDidResizeSubviews(_ notification: Notification) {
-        guard notification.object as? NSSplitView === contentSplitViewController.splitView else {
-            return
-        }
-
-        guard hasRestoredInitialInspectorDivider else {
-            return
-        }
-
-        persistCurrentInspectorThicknessIfVisible()
     }
 
     // Persist the leading split state after manual drags and AppKit-driven collapses.
@@ -397,31 +333,6 @@ final class TCPViewerRootViewController: NSViewController {
         return thickness
     }
 
-    // Persist only visible inspector sizes so collapsing the pane never stores a broken zero value.
-    private func persistCurrentInspectorThicknessIfVisible() {
-        guard let placement = appliedInspectorPlacement,
-              appliedInspectorVisibility == true,
-              let thickness = currentInspectorThickness(for: placement) else {
-            return
-        }
-
-        viewModel.rememberInspectorThickness(thickness, for: placement)
-    }
-
-    private func currentInspectorThickness(for placement: NetworkInspectorPlacement) -> CGFloat? {
-        guard let inspectorView = inspectorItem?.viewController.view,
-              inspectorView.superview != nil,
-              inspectorItem?.isCollapsed == false else {
-            return nil
-        }
-
-        let thickness = inspectorView.frame.width
-        guard thickness.isFinite, thickness > 0 else {
-            return nil
-        }
-
-        return thickness
-    }
 }
 
 extension TCPViewerRootViewController: NetworkInspectorViewModelDelegate {

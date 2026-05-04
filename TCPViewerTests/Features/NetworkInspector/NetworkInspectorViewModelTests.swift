@@ -439,34 +439,6 @@ struct NetworkInspectorViewModelTests {
         #expect(hiddenReloadedViewModel.snapshot.isInspectorVisible)
     }
 
-    @Test func inspectorThicknessPersistsAndFallsBackWhenInvalid() {
-        let defaults = isolatedDefaults()
-        let services = TCPViewerServiceRegistry(core: InspectorFakeCore(
-            interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")]
-        ))
-        let viewModel = NetworkInspectorViewModel(
-            services: services,
-            userDefaults: defaults
-        )
-
-        viewModel.rememberInspectorThickness(320, for: .trailing)
-
-        let reloadedViewModel = NetworkInspectorViewModel(
-            services: services,
-            userDefaults: defaults
-        )
-
-        #expect(reloadedViewModel.preferredInspectorThickness(for: .trailing, availableLength: 800) == 320)
-
-        reloadedViewModel.rememberInspectorThickness(700, for: .trailing)
-
-        #expect(reloadedViewModel.preferredInspectorThickness(for: .trailing, availableLength: 800) == nil)
-
-        reloadedViewModel.rememberInspectorThickness(10_000, for: .trailing)
-
-        #expect(reloadedViewModel.preferredInspectorThickness(for: .trailing, availableLength: 800) == nil)
-    }
-
     @Test func sidebarVisibilityPersistsAcrossReloads() {
         let defaults = isolatedDefaults()
         let services = TCPViewerServiceRegistry(core: InspectorFakeCore(

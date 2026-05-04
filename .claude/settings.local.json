@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xcodebuild -project TCPViewer.xcodeproj -scheme TCPViewer -configuration Debug -quiet build)",
+      "Bash(xcodebuild -project TCPViewer.xcodeproj -scheme TCPViewer -configuration Debug -quiet build-for-testing)"
+    ]
+  }
+}
