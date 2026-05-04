@@ -17,8 +17,8 @@ final class TCPViewerLicenseWindowController: NSWindowController {
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.styleMask = [.titled, .fullSizeContentView]
-        window.setContentSize(NSSize(width: 900, height: 660))
-        window.contentMinSize = NSSize(width: 760, height: 560)
+        window.setContentSize(NSSize(width: 980, height: 780))
+        window.contentMinSize = NSSize(width: 900, height: 720)
         window.isReleasedWhenClosed = false
 
         super.init(window: window)
