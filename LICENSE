@@ -1,3 +1,6 @@
+TCP Viewer
+Copyright (C) 2026 Proxyman LLC
+
 SPDX-License-Identifier: GPL-2.0-or-later
 
 TCP Viewer is licensed under the GNU General Public License, version 2.0 or
@@ -15,3 +18,7 @@ The GPL-2.0-or-later text is available from:
 https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html
 
 The verbatim GPL-2.0 license text is included in `COPYING`.
+
+Third-party notices are included in `THIRD_PARTY_NOTICES.md`. Binary
+distributions should also include `SOURCE_CODE_OFFER.md` or the complete
+corresponding source code for the same release.

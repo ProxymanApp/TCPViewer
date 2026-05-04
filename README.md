@@ -19,7 +19,7 @@ Clone the repository with submodules, then let the bootstrap scripts prepare the
 
 ```bash
 git clone --recurse-submodules <repo-url>
-cd Packetry
+cd TCPViewer
 ./scripts/bootstrap-pcapplusplus.sh
 ./scripts/bootstrap-wireshark.sh
 ```
@@ -52,6 +52,22 @@ xcodebuild -project TCPViewer.xcodeproj -scheme TCPViewer build
 ```
 
 Release packaging still needs to bundle the required Wireshark dylibs before distribution.
+
+## License
+
+TCP Viewer is licensed under GPL-2.0-or-later. This matches the app's
+Wireshark integration: `libwireshark`, `libwiretap`, and `libwsutil` are
+GPL-covered Wireshark libraries, not LGPL libraries.
+
+The full GPL text is in `COPYING`, third-party notices are in
+`THIRD_PARTY_NOTICES.md`, and binary-release source availability terms are in
+`SOURCE_CODE_OFFER.md`. Xcode builds copy these files into
+`Contents/Resources/OpenSourceLicenses` so app bundles carry the required
+notices.
+
+Before publishing a binary release, follow
+`docs/open-source-release-compliance.md` and make the complete corresponding
+source code available for the same release.
 
 ## Run
 
