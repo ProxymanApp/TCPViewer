@@ -85,6 +85,34 @@ protocol TCPViewerNetworkHelperBPFChecking {
     func inspect() -> TCPViewerNetworkHelperBPFInspection
 }
 
+enum TCPViewerNetworkHelperAuthorizationRight {
+    case named(String)
+    case executeTool(String)
+
+    var name: String {
+        switch self {
+        case .named(let name):
+            name
+        case .executeTool:
+            kAuthorizationRightExecute
+        }
+    }
+}
+
+protocol TCPViewerNetworkHelperAuthorizationProviding {
+    func makeAuthorization(for rights: [TCPViewerNetworkHelperAuthorizationRight]) throws -> AuthorizationRef
+    func free(_ authorization: AuthorizationRef)
+}
+
+protocol TCPViewerNetworkHelperServiceManagementControlling {
+    func blessJob(label: String, authorization: AuthorizationRef) throws
+    func removeJob(label: String, authorization: AuthorizationRef, wait: Bool) throws
+}
+
+protocol TCPViewerNetworkHelperInstalledItemRemoving {
+    func removeItems(at urls: [URL], authorization: AuthorizationRef) throws
+}
+
 protocol TCPViewerNetworkHelperToolManaging: AnyObject {
     var snapshot: TCPViewerNetworkHelperToolSnapshot { get }
 
@@ -109,6 +137,7 @@ final class TCPViewerNetworkHelperToolManager: TCPViewerNetworkHelperToolManagin
     private let serviceController: any TCPViewerNetworkHelperServiceControlling
     private let legacyServiceControllers: [any TCPViewerNetworkHelperServiceControlling]
     private let bpfChecker: any TCPViewerNetworkHelperBPFChecking
+    private let logger: TCPViewerNetworkHelperLogger
     private let workerQueue = DispatchQueue(label: "com.proxyman.tcpviewer.NetworkHelperToolManager", qos: .userInitiated)
 
     convenience init() {
@@ -117,26 +146,45 @@ final class TCPViewerNetworkHelperToolManager: TCPViewerNetworkHelperToolManagin
             legacyServiceControllers: TCPViewerNetworkHelperConstants.legacyServiceLabels.map {
                 TCPViewerNetworkHelperSMJobBlessController(serviceLabel: $0)
             },
-            bpfChecker: TCPViewerNetworkHelperBPFChecker()
+            bpfChecker: TCPViewerNetworkHelperBPFChecker(),
+            logger: TCPViewerNetworkHelperLogger()
         )
     }
 
     init(
         serviceController: any TCPViewerNetworkHelperServiceControlling,
         legacyServiceControllers: [any TCPViewerNetworkHelperServiceControlling] = [],
-        bpfChecker: any TCPViewerNetworkHelperBPFChecking
+        bpfChecker: any TCPViewerNetworkHelperBPFChecking,
+        logger: TCPViewerNetworkHelperLogger = TCPViewerNetworkHelperLogger()
     ) {
         self.serviceController = serviceController
         self.legacyServiceControllers = legacyServiceControllers
         self.bpfChecker = bpfChecker
+        self.logger = logger
         self.snapshot = .notInstalled
     }
 
     @discardableResult
     func refreshStatus(completion: @escaping (TCPViewerNetworkHelperToolSnapshot) -> Void = { _ in }) -> TCPViewerNetworkHelperToolSnapshot {
+        refreshStatus(operation: nil, completion: completion)
+    }
+
+    @discardableResult
+    func refreshStatusForLaunch(completion: @escaping (TCPViewerNetworkHelperToolSnapshot) -> Void = { _ in }) -> TCPViewerNetworkHelperToolSnapshot {
+        refreshStatus(operation: .launchStatus, completion: completion)
+    }
+
+    @discardableResult
+    private func refreshStatus(
+        operation: TCPViewerNetworkHelperLogOperation?,
+        completion: @escaping (TCPViewerNetworkHelperToolSnapshot) -> Void
+    ) -> TCPViewerNetworkHelperToolSnapshot {
         let currentSnapshot = snapshot
         workerQueue.async {
             let updatedSnapshot = self.makeSnapshot()
+            if let operation {
+                self.logger.log(operation, snapshot: updatedSnapshot)
+            }
             self.publish(updatedSnapshot, completion: completion)
         }
         return currentSnapshot
@@ -144,6 +192,14 @@ final class TCPViewerNetworkHelperToolManager: TCPViewerNetworkHelperToolManagin
 
     @discardableResult
     func install(completion: @escaping (TCPViewerNetworkHelperToolSnapshot) -> Void = { _ in }) -> TCPViewerNetworkHelperToolSnapshot {
+        install(operation: .install, completion: completion)
+    }
+
+    @discardableResult
+    private func install(
+        operation: TCPViewerNetworkHelperLogOperation,
+        completion: @escaping (TCPViewerNetworkHelperToolSnapshot) -> Void
+    ) -> TCPViewerNetworkHelperToolSnapshot {
         let installingSnapshot = TCPViewerNetworkHelperToolSnapshot(
             status: .installing,
             authorizationStatus: serviceController.status,
@@ -156,10 +212,14 @@ final class TCPViewerNetworkHelperToolManager: TCPViewerNetworkHelperToolManagin
                 try self.serviceController.register()
                 self.unregisterLegacyServices()
                 let updatedSnapshot = self.makeSnapshot()
+                self.logger.log(operation, snapshot: updatedSnapshot)
                 self.publish(updatedSnapshot, completion: completion)
             } catch {
                 let refreshedSnapshot = self.makeSnapshot()
+                self.logger.logFailure(operation, error: error, snapshot: refreshedSnapshot)
+                // A failed bless call can still leave launchd usable, so trust the refreshed helper status.
                 guard refreshedSnapshot.status == .notInstalled else {
+                    self.logger.log(operation, snapshot: refreshedSnapshot)
                     self.publish(refreshedSnapshot, completion: completion)
                     return
                 }
@@ -170,6 +230,7 @@ final class TCPViewerNetworkHelperToolManager: TCPViewerNetworkHelperToolManagin
                     lastCheckedAt: Date(),
                     message: "TCP Viewer could not register the helper: \(error.localizedDescription)"
                 )
+                self.logger.log(operation, snapshot: failedSnapshot)
                 self.publish(failedSnapshot, completion: completion)
             }
         }
@@ -178,7 +239,7 @@ final class TCPViewerNetworkHelperToolManager: TCPViewerNetworkHelperToolManagin
 
     @discardableResult
     func repair(completion: @escaping (TCPViewerNetworkHelperToolSnapshot) -> Void = { _ in }) -> TCPViewerNetworkHelperToolSnapshot {
-        install(completion: completion)
+        install(operation: .repair, completion: completion)
     }
 
     @discardableResult
@@ -194,17 +255,21 @@ final class TCPViewerNetworkHelperToolManager: TCPViewerNetworkHelperToolManagin
 
             self.unregisterLegacyServices()
             let refreshedSnapshot = self.makeSnapshot()
+            // Removal succeeds only when launchd no longer reports the current helper.
             if let unregisterError, refreshedSnapshot.status != .notInstalled {
+                self.logger.logFailure(.remove, error: unregisterError, snapshot: refreshedSnapshot)
                 let failedSnapshot = TCPViewerNetworkHelperToolSnapshot(
                     status: .broken,
                     authorizationStatus: refreshedSnapshot.authorizationStatus,
                     lastCheckedAt: Date(),
                     message: "TCP Viewer could not uninstall the helper: \(unregisterError.localizedDescription)"
                 )
+                self.logger.log(.remove, snapshot: failedSnapshot)
                 self.publish(failedSnapshot, completion: completion)
                 return
             }
 
+            self.logger.log(.remove, snapshot: refreshedSnapshot)
             self.publish(refreshedSnapshot, completion: completion)
         }
         return currentSnapshot
@@ -312,13 +377,19 @@ struct TCPViewerNetworkHelperSMJobBlessController: TCPViewerNetworkHelperService
     private let privilegedHelperToolsDirectoryURL: URL
     private let launchDaemonsDirectoryURL: URL
     private let fileManager: FileManager
+    private let authorizationProvider: any TCPViewerNetworkHelperAuthorizationProviding
+    private let serviceManagementController: any TCPViewerNetworkHelperServiceManagementControlling
+    private let installedItemRemover: any TCPViewerNetworkHelperInstalledItemRemoving
 
     init(
         serviceLabel: String = TCPViewerNetworkHelperConstants.serviceLabel,
         bundleURL: URL = Bundle.main.bundleURL,
         privilegedHelperToolsDirectoryURL: URL = URL(fileURLWithPath: TCPViewerNetworkHelperConstants.privilegedHelperToolsDirectoryPath),
         launchDaemonsDirectoryURL: URL = URL(fileURLWithPath: TCPViewerNetworkHelperConstants.launchDaemonsDirectoryPath),
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        authorizationProvider: any TCPViewerNetworkHelperAuthorizationProviding = TCPViewerNetworkHelperAuthorizationProvider(),
+        serviceManagementController: any TCPViewerNetworkHelperServiceManagementControlling = TCPViewerNetworkHelperServiceManagementController(),
+        installedItemRemover: any TCPViewerNetworkHelperInstalledItemRemoving = TCPViewerNetworkHelperPrivilegedInstalledItemRemover()
     ) {
         self.serviceLabel = serviceLabel
         self.launchDaemonPlistName = "\(serviceLabel).plist"
@@ -326,6 +397,9 @@ struct TCPViewerNetworkHelperSMJobBlessController: TCPViewerNetworkHelperService
         self.privilegedHelperToolsDirectoryURL = privilegedHelperToolsDirectoryURL
         self.launchDaemonsDirectoryURL = launchDaemonsDirectoryURL
         self.fileManager = fileManager
+        self.authorizationProvider = authorizationProvider
+        self.serviceManagementController = serviceManagementController
+        self.installedItemRemover = installedItemRemover
     }
 
     private var bundledHelperToolURL: URL {
@@ -354,17 +428,11 @@ struct TCPViewerNetworkHelperSMJobBlessController: TCPViewerNetworkHelperService
 
     func register() throws {
         try validateBundledPayload()
-        let authorization = try makeAuthorization(for: kSMRightBlessPrivilegedHelper)
-        defer { _ = AuthorizationFree(authorization, []) }
+        let authorization = try authorizationProvider.makeAuthorization(for: [.named(kSMRightBlessPrivilegedHelper)])
+        defer { authorizationProvider.free(authorization) }
 
-        var blessError: Unmanaged<CFError>?
         // SMJobBless discovers the tool by launchd label, so the bundle payload must use the legacy fixed path.
-        guard SMJobBless(kSMDomainSystemLaunchd, serviceLabel as CFString, authorization, &blessError) else {
-            throw TCPViewerNetworkHelperSMJobBlessError.serviceManagementFailure(
-                blessError?.takeRetainedValue(),
-                fallbackMessage: "macOS could not install the privileged helper."
-            )
-        }
+        try serviceManagementController.blessJob(label: serviceLabel, authorization: authorization)
     }
 
     func unregister() throws {
@@ -373,15 +441,28 @@ struct TCPViewerNetworkHelperSMJobBlessController: TCPViewerNetworkHelperService
             return
         }
 
-        let authorization = try makeAuthorization(for: kSMRightModifySystemDaemons)
-        defer { _ = AuthorizationFree(authorization, []) }
+        let authorization = try authorizationProvider.makeAuthorization(
+            for: [
+                .named(kSMRightModifySystemDaemons),
+                .executeTool(TCPViewerNetworkHelperPrivilegedInstalledItemRemover.removalToolPath),
+            ]
+        )
+        defer { authorizationProvider.free(authorization) }
 
-        var removeError: Unmanaged<CFError>?
-        guard SMJobRemove(kSMDomainSystemLaunchd, serviceLabel as CFString, authorization, true, &removeError) else {
-            throw TCPViewerNetworkHelperSMJobBlessError.serviceManagementFailure(
-                removeError?.takeRetainedValue(),
-                fallbackMessage: "macOS could not remove the privileged helper."
-            )
+        var jobRemovalError: Error?
+        if installedLaunchDaemonPlistExists() {
+            do {
+                try serviceManagementController.removeJob(label: serviceLabel, authorization: authorization, wait: true)
+            } catch {
+                jobRemovalError = error
+            }
+        }
+
+        // SMJobRemove can unload launchd while leaving root-owned SMJobBless files behind.
+        try installedItemRemover.removeItems(at: installedItemURLs, authorization: authorization)
+        let remainingURLs = installedItemURLs.filter { fileManager.fileExists(atPath: $0.path) }
+        guard remainingURLs.isEmpty else {
+            throw TCPViewerNetworkHelperSMJobBlessError.installedItemsRemain(remainingURLs, underlyingError: jobRemovalError)
         }
     }
 
@@ -397,6 +478,14 @@ struct TCPViewerNetworkHelperSMJobBlessController: TCPViewerNetworkHelperService
             fileManager.fileExists(atPath: installedLaunchDaemonPlistURL.path)
     }
 
+    private func installedLaunchDaemonPlistExists() -> Bool {
+        fileManager.fileExists(atPath: installedLaunchDaemonPlistURL.path)
+    }
+
+    private var installedItemURLs: [URL] {
+        [installedHelperToolURL, installedLaunchDaemonPlistURL]
+    }
+
     private func validateBundledPayload() throws {
         guard fileManager.fileExists(atPath: bundledHelperToolURL.path) else {
             throw TCPViewerNetworkHelperSMJobBlessError.missingBundledHelper(bundledHelperToolURL)
@@ -407,7 +496,11 @@ struct TCPViewerNetworkHelperSMJobBlessController: TCPViewerNetworkHelperService
         }
     }
 
-    private func makeAuthorization(for rightName: String) throws -> AuthorizationRef {
+}
+
+struct TCPViewerNetworkHelperAuthorizationProvider: TCPViewerNetworkHelperAuthorizationProviding {
+    // Create short-lived admin credentials scoped to the requested helper operation.
+    func makeAuthorization(for rights: [TCPViewerNetworkHelperAuthorizationRight]) throws -> AuthorizationRef {
         var authorization: AuthorizationRef?
         let flags: AuthorizationFlags = [.interactionAllowed, .extendRights, .preAuthorize]
         let createStatus = AuthorizationCreate(nil, nil, flags, &authorization)
@@ -416,13 +509,12 @@ struct TCPViewerNetworkHelperSMJobBlessController: TCPViewerNetworkHelperService
         }
 
         do {
-            // Scope admin rights to the single ServiceManagement operation instead of keeping reusable credentials.
-            let copyStatus = rightName.withCString { authorizationRightName in
-                var item = AuthorizationItem(name: authorizationRightName, valueLength: 0, value: nil, flags: 0)
-                return withUnsafeMutablePointer(to: &item) { itemPointer in
-                    var rights = AuthorizationRights(count: 1, items: itemPointer)
-                    return AuthorizationCopyRights(authorization, &rights, nil, flags, nil)
-                }
+            let copyStatus = try withAuthorizationItems(for: rights) { items in
+                var authorizationRights = AuthorizationRights(
+                    count: UInt32(items.count),
+                    items: items.baseAddress
+                )
+                return AuthorizationCopyRights(authorization, &authorizationRights, nil, flags, nil)
             }
 
             guard copyStatus == errAuthorizationSuccess else {
@@ -435,6 +527,140 @@ struct TCPViewerNetworkHelperSMJobBlessController: TCPViewerNetworkHelperService
             throw error
         }
     }
+
+    func free(_ authorization: AuthorizationRef) {
+        _ = AuthorizationFree(authorization, [])
+    }
+
+    private func withAuthorizationItems<Result>(
+        for rights: [TCPViewerNetworkHelperAuthorizationRight],
+        _ body: (UnsafeMutableBufferPointer<AuthorizationItem>) throws -> Result
+    ) throws -> Result {
+        let names = rights.map { strdup($0.name)! }
+        let values = rights.map { right -> UnsafeMutablePointer<CChar>? in
+            guard case .executeTool(let toolPath) = right else {
+                return nil
+            }
+            return strdup(toolPath)
+        }
+        defer {
+            names.forEach { Darwin.free($0) }
+            values.forEach { value in
+                if let value {
+                    Darwin.free(value)
+                }
+            }
+        }
+
+        var items = rights.enumerated().map { index, _ in
+            AuthorizationItem(
+                name: names[index],
+                valueLength: values[index].map { strlen($0) } ?? 0,
+                value: values[index].map { UnsafeMutableRawPointer($0) },
+                flags: 0
+            )
+        }
+        return try items.withUnsafeMutableBufferPointer { buffer in
+            try body(buffer)
+        }
+    }
+}
+
+struct TCPViewerNetworkHelperServiceManagementController: TCPViewerNetworkHelperServiceManagementControlling {
+    func blessJob(label: String, authorization: AuthorizationRef) throws {
+        var blessError: Unmanaged<CFError>?
+        guard SMJobBless(kSMDomainSystemLaunchd, label as CFString, authorization, &blessError) else {
+            throw TCPViewerNetworkHelperSMJobBlessError.serviceManagementFailure(
+                blessError?.takeRetainedValue(),
+                fallbackMessage: "macOS could not install the privileged helper."
+            )
+        }
+    }
+
+    func removeJob(label: String, authorization: AuthorizationRef, wait: Bool) throws {
+        var removeError: Unmanaged<CFError>?
+        guard SMJobRemove(kSMDomainSystemLaunchd, label as CFString, authorization, wait, &removeError) else {
+            throw TCPViewerNetworkHelperSMJobBlessError.serviceManagementFailure(
+                removeError?.takeRetainedValue(),
+                fallbackMessage: "macOS could not remove the privileged helper."
+            )
+        }
+    }
+}
+
+struct TCPViewerNetworkHelperPrivilegedInstalledItemRemover: TCPViewerNetworkHelperInstalledItemRemoving {
+    static let removalToolPath = "/bin/rm"
+
+    private typealias ExecuteWithPrivilegesFunction = @convention(c) (
+        AuthorizationRef,
+        UnsafePointer<CChar>,
+        AuthorizationFlags,
+        UnsafePointer<UnsafeMutablePointer<CChar>>,
+        UnsafeMutablePointer<UnsafeMutablePointer<FILE>?>?
+    ) -> OSStatus
+
+    private let fileManager: FileManager
+
+    init(fileManager: FileManager = .default) {
+        self.fileManager = fileManager
+    }
+
+    func removeItems(at urls: [URL], authorization: AuthorizationRef) throws {
+        let existingURLs = urls.filter { fileManager.fileExists(atPath: $0.path) }
+        guard !existingURLs.isEmpty else {
+            return
+        }
+
+        try executePrivilegedRemove(arguments: ["-f"] + existingURLs.map(\.path), authorization: authorization)
+
+        let remainingURLs = existingURLs.filter { fileManager.fileExists(atPath: $0.path) }
+        guard remainingURLs.isEmpty else {
+            throw TCPViewerNetworkHelperSMJobBlessError.installedItemsRemain(remainingURLs, underlyingError: nil)
+        }
+    }
+
+    private func executePrivilegedRemove(arguments: [String], authorization: AuthorizationRef) throws {
+        var pipe: UnsafeMutablePointer<FILE>?
+        let executeWithPrivileges = try Self.loadExecuteWithPrivileges()
+        let status = try Self.removalToolPath.withCString { toolPath in
+            try arguments.withUnsafeMutableCStringArray { argumentPointer in
+                executeWithPrivileges(authorization, toolPath, [], argumentPointer, &pipe)
+            }
+        }
+
+        guard status == errAuthorizationSuccess else {
+            throw TCPViewerNetworkHelperSMJobBlessError.authorizationFailure(status)
+        }
+
+        if let pipe {
+            drain(pipe)
+        }
+    }
+
+    private static func loadExecuteWithPrivileges() throws -> ExecuteWithPrivilegesFunction {
+        guard let handle = dlopen("/System/Library/Frameworks/Security.framework/Security", RTLD_LAZY) else {
+            throw TCPViewerNetworkHelperSMJobBlessError.privilegedExecutionUnavailable(Self.dynamicLoaderErrorMessage())
+        }
+
+        guard let symbol = dlsym(handle, "AuthorizationExecuteWithPrivileges") else {
+            throw TCPViewerNetworkHelperSMJobBlessError.privilegedExecutionUnavailable(Self.dynamicLoaderErrorMessage())
+        }
+
+        return unsafeBitCast(symbol, to: ExecuteWithPrivilegesFunction.self)
+    }
+
+    private static func dynamicLoaderErrorMessage() -> String {
+        guard let message = dlerror() else {
+            return "Unknown dynamic loader error."
+        }
+        return String(cString: message)
+    }
+
+    private func drain(_ pipe: UnsafeMutablePointer<FILE>) {
+        var buffer = [CChar](repeating: 0, count: 1024)
+        while buffer.withUnsafeMutableBufferPointer({ fgets($0.baseAddress, Int32($0.count), pipe) }) != nil {}
+        fclose(pipe)
+    }
 }
 
 private enum TCPViewerNetworkHelperSMJobBlessError: LocalizedError {
@@ -442,22 +668,53 @@ private enum TCPViewerNetworkHelperSMJobBlessError: LocalizedError {
     case missingLaunchDaemonPlist(URL)
     case authorizationFailure(OSStatus)
     case serviceManagementFailure(CFError?, fallbackMessage: String)
+    case installedItemsRemain([URL], underlyingError: Error?)
+    case privilegedExecutionUnavailable(String)
 
     var errorDescription: String? {
         switch self {
         case .missingBundledHelper(let url):
-            "TCP Viewer could not find the bundled helper at \(url.path)."
+            return "TCP Viewer could not find the bundled helper at \(url.path)."
         case .missingLaunchDaemonPlist(let url):
-            "TCP Viewer could not find the bundled helper launchd plist at \(url.path)."
+            return "TCP Viewer could not find the bundled helper launchd plist at \(url.path)."
         case .authorizationFailure(let status):
-            "macOS authorization failed: \(Self.message(for: status))."
+            return "macOS authorization failed: \(Self.message(for: status))."
         case .serviceManagementFailure(let error, let fallbackMessage):
-            error?.localizedDescription ?? fallbackMessage
+            return error?.localizedDescription ?? fallbackMessage
+        case .installedItemsRemain(let urls, let underlyingError):
+            let paths = urls.map(\.path).joined(separator: ", ")
+            if let underlyingError {
+                return "macOS could not delete the installed helper files at \(paths): \(underlyingError.localizedDescription)"
+            }
+            return "macOS could not delete the installed helper files at \(paths)."
+        case .privilegedExecutionUnavailable(let message):
+            return "macOS could not start the privileged removal tool: \(message)"
         }
     }
 
     private static func message(for status: OSStatus) -> String {
         SecCopyErrorMessageString(status, nil) as String? ?? "OSStatus \(status)"
+    }
+}
+
+private extension Array where Element == String {
+    func withUnsafeMutableCStringArray<Result>(
+        _ body: (UnsafePointer<UnsafeMutablePointer<CChar>>) throws -> Result
+    ) throws -> Result {
+        let cStrings = map { strdup($0)! }
+        defer { cStrings.forEach { Darwin.free($0) } }
+
+        let arguments = UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>.allocate(capacity: cStrings.count + 1)
+        defer { arguments.deallocate() }
+
+        for (index, cString) in cStrings.enumerated() {
+            arguments[index] = cString
+        }
+        arguments[cStrings.count] = nil
+
+        return try arguments.withMemoryRebound(to: UnsafeMutablePointer<CChar>.self, capacity: cStrings.count + 1) { reboundArguments in
+            try body(UnsafePointer(reboundArguments))
+        }
     }
 }
 

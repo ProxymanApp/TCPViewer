@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import Security
 import Testing
 @testable import TCPViewer
 
@@ -55,6 +56,63 @@ struct TCPViewerNetworkHelperToolManagerTests {
         #expect(snapshot.status == .notInstalled)
     }
 
+    @Test func installSuccessLogsDebugStatus() async {
+        let logs = LockedLogSink()
+        let manager = makeManager(
+            current: FakeNetworkHelperServiceController(status: .notRegistered),
+            logger: TCPViewerNetworkHelperLogger(output: logs.append)
+        )
+
+        _ = await install(manager)
+
+        #expect(logs.messages.contains { $0.contains("🔧 DEBUG") && $0.contains("✅ Install helper tool succeeded") })
+    }
+
+    @Test func installFailureLogsUnderlyingError() async {
+        let logs = LockedLogSink()
+        let manager = makeManager(
+            current: FakeNetworkHelperServiceController(
+                status: .notRegistered,
+                registerError: FakeNetworkHelperError.intentionalFailure
+            ),
+            logger: TCPViewerNetworkHelperLogger(output: logs.append)
+        )
+
+        _ = await install(manager)
+
+        #expect(logs.messages.contains { $0.contains("❌ ERROR") && $0.contains("Install helper tool failed") })
+        #expect(logs.messages.contains { $0.contains("Intentional failure") })
+    }
+
+    @Test func uninstallFailureLogsUnderlyingError() async {
+        let logs = LockedLogSink()
+        let manager = makeManager(
+            current: FakeNetworkHelperServiceController(
+                status: .enabled,
+                unregisterError: FakeNetworkHelperError.intentionalFailure
+            ),
+            logger: TCPViewerNetworkHelperLogger(output: logs.append)
+        )
+
+        _ = await uninstall(manager)
+
+        #expect(logs.messages.contains { $0.contains("❌ ERROR") && $0.contains("Remove helper tool failed") })
+        #expect(logs.messages.contains { $0.contains("Intentional failure") })
+    }
+
+    @Test func launchStatusLogsErrorWhenHelperIsNotReady() async {
+        let logs = LockedLogSink()
+        let manager = TCPViewerNetworkHelperToolManager(
+            serviceController: FakeNetworkHelperServiceController(status: .notRegistered),
+            bpfChecker: ReadyNetworkHelperBPFChecker(),
+            logger: TCPViewerNetworkHelperLogger(output: logs.append)
+        )
+
+        _ = await refreshStatusForLaunch(manager)
+
+        #expect(logs.messages.contains { $0.contains("❌ ERROR") && $0.contains("Launch helper status failed") })
+    }
+
     @Test func constantsUseTCPViewerHelperIdentityAndFreshCaptureGroup() {
         #expect(TCPViewerNetworkHelperConstants.serviceLabel == "com.proxyman.tcpviewer.helpertool")
         #expect(TCPViewerNetworkHelperConstants.launchDaemonPlistName == "com.proxyman.tcpviewer.helpertool.plist")
@@ -94,6 +152,92 @@ struct TCPViewerNetworkHelperToolManagerTests {
         #expect(controller.status == .enabled)
     }
 
+    @Test func smJobBlessUnregisterDeletesInstalledHelperFilesWhenLaunchdRemoveSucceeds() throws {
+        let fixture = try makeBlessFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.rootURL) }
+        try createBundledBlessPayload(in: fixture.bundleURL)
+        let installedHelperURL = fixture.privilegedHelperToolsDirectoryURL
+            .appendingPathComponent(TCPViewerNetworkHelperConstants.serviceLabel)
+        let installedPlistURL = fixture.launchDaemonsDirectoryURL
+            .appendingPathComponent(TCPViewerNetworkHelperConstants.launchDaemonPlistName)
+        try createEmptyFile(at: installedHelperURL)
+        try createEmptyFile(at: installedPlistURL)
+        let serviceManagement = FakeNetworkHelperServiceManagementController()
+        let remover = FakeNetworkHelperInstalledItemRemover()
+        let controller = makeBlessController(
+            fixture: fixture,
+            serviceManagementController: serviceManagement,
+            installedItemRemover: remover
+        )
+
+        try controller.unregister()
+
+        #expect(serviceManagement.removeJobCallCount == 1)
+        #expect(remover.removedURLs.map(\.path).contains(installedHelperURL.path))
+        #expect(remover.removedURLs.map(\.path).contains(installedPlistURL.path))
+        #expect(!FileManager.default.fileExists(atPath: installedHelperURL.path))
+        #expect(!FileManager.default.fileExists(atPath: installedPlistURL.path))
+        #expect(controller.status == .notRegistered)
+    }
+
+    @Test func smJobBlessUnregisterCleansFilesWhenLaunchdJobIsAlreadyMissing() throws {
+        let fixture = try makeBlessFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.rootURL) }
+        try createBundledBlessPayload(in: fixture.bundleURL)
+        let installedHelperURL = fixture.privilegedHelperToolsDirectoryURL
+            .appendingPathComponent(TCPViewerNetworkHelperConstants.serviceLabel)
+        let installedPlistURL = fixture.launchDaemonsDirectoryURL
+            .appendingPathComponent(TCPViewerNetworkHelperConstants.launchDaemonPlistName)
+        try createEmptyFile(at: installedHelperURL)
+        try createEmptyFile(at: installedPlistURL)
+        let serviceManagement = FakeNetworkHelperServiceManagementController(removeError: FakeNetworkHelperError.intentionalFailure)
+        let controller = makeBlessController(fixture: fixture, serviceManagementController: serviceManagement)
+
+        try controller.unregister()
+
+        #expect(serviceManagement.removeJobCallCount == 1)
+        #expect(!FileManager.default.fileExists(atPath: installedHelperURL.path))
+        #expect(!FileManager.default.fileExists(atPath: installedPlistURL.path))
+        #expect(controller.status == .notRegistered)
+    }
+
+    @Test func smJobBlessUnregisterSkipsLaunchdRemoveForStaleHelperOnlyInstall() throws {
+        let fixture = try makeBlessFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.rootURL) }
+        try createBundledBlessPayload(in: fixture.bundleURL)
+        let installedHelperURL = fixture.privilegedHelperToolsDirectoryURL
+            .appendingPathComponent(TCPViewerNetworkHelperConstants.serviceLabel)
+        try createEmptyFile(at: installedHelperURL)
+        let serviceManagement = FakeNetworkHelperServiceManagementController()
+        let controller = makeBlessController(fixture: fixture, serviceManagementController: serviceManagement)
+
+        try controller.unregister()
+
+        #expect(serviceManagement.removeJobCallCount == 0)
+        #expect(!FileManager.default.fileExists(atPath: installedHelperURL.path))
+        #expect(controller.status == .notRegistered)
+    }
+
+    @Test func smJobBlessUnregisterThrowsWhenInstalledFileCleanupFails() throws {
+        let fixture = try makeBlessFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.rootURL) }
+        let installedHelperURL = fixture.privilegedHelperToolsDirectoryURL
+            .appendingPathComponent(TCPViewerNetworkHelperConstants.serviceLabel)
+        try createEmptyFile(at: installedHelperURL)
+        let remover = FakeNetworkHelperInstalledItemRemover(removeError: FakeNetworkHelperError.intentionalFailure)
+        let controller = makeBlessController(fixture: fixture, installedItemRemover: remover)
+
+        var didThrow = false
+        do {
+            try controller.unregister()
+        } catch {
+            didThrow = true
+        }
+
+        #expect(didThrow)
+        #expect(FileManager.default.fileExists(atPath: installedHelperURL.path))
+    }
+
     @Test func userFacingSnapshotTextUsesTCPViewerDisplayName() {
         #expect(TCPViewerNetworkHelperToolSnapshot.notInstalled.message == "TCP Viewer Network Helper Tool is not installed.")
         #expect(TCPViewerNetworkHelperToolSnapshot.notInstalled.title == "Install TCP Viewer Network Helper Tool")
@@ -101,12 +245,14 @@ struct TCPViewerNetworkHelperToolManagerTests {
 
     private func makeManager(
         current: FakeNetworkHelperServiceController,
-        legacy: [FakeNetworkHelperServiceController] = []
+        legacy: [FakeNetworkHelperServiceController] = [],
+        logger: TCPViewerNetworkHelperLogger = TCPViewerNetworkHelperLogger(output: { _ in })
     ) -> TCPViewerNetworkHelperToolManager {
         TCPViewerNetworkHelperToolManager(
             serviceController: current,
             legacyServiceControllers: legacy,
-            bpfChecker: ReadyNetworkHelperBPFChecker()
+            bpfChecker: ReadyNetworkHelperBPFChecker(),
+            logger: logger
         )
     }
 
@@ -121,6 +267,14 @@ struct TCPViewerNetworkHelperToolManagerTests {
     private func uninstall(_ manager: TCPViewerNetworkHelperToolManager) async -> TCPViewerNetworkHelperToolSnapshot {
         await withCheckedContinuation { continuation in
             manager.uninstall { snapshot in
+                continuation.resume(returning: snapshot)
+            }
+        }
+    }
+
+    private func refreshStatusForLaunch(_ manager: TCPViewerNetworkHelperToolManager) async -> TCPViewerNetworkHelperToolSnapshot {
+        await withCheckedContinuation { continuation in
+            manager.refreshStatusForLaunch { snapshot in
                 continuation.resume(returning: snapshot)
             }
         }
@@ -145,11 +299,18 @@ struct TCPViewerNetworkHelperToolManagerTests {
         )
     }
 
-    private func makeBlessController(fixture: BlessFixture) -> TCPViewerNetworkHelperSMJobBlessController {
+    private func makeBlessController(
+        fixture: BlessFixture,
+        serviceManagementController: any TCPViewerNetworkHelperServiceManagementControlling = FakeNetworkHelperServiceManagementController(),
+        installedItemRemover: any TCPViewerNetworkHelperInstalledItemRemoving = FakeNetworkHelperInstalledItemRemover()
+    ) -> TCPViewerNetworkHelperSMJobBlessController {
         TCPViewerNetworkHelperSMJobBlessController(
             bundleURL: fixture.bundleURL,
             privilegedHelperToolsDirectoryURL: fixture.privilegedHelperToolsDirectoryURL,
-            launchDaemonsDirectoryURL: fixture.launchDaemonsDirectoryURL
+            launchDaemonsDirectoryURL: fixture.launchDaemonsDirectoryURL,
+            authorizationProvider: FakeNetworkHelperAuthorizationProvider(),
+            serviceManagementController: serviceManagementController,
+            installedItemRemover: installedItemRemover
         )
     }
 
@@ -171,6 +332,23 @@ private struct BlessFixture {
     let bundleURL: URL
     let privilegedHelperToolsDirectoryURL: URL
     let launchDaemonsDirectoryURL: URL
+}
+
+private final class LockedLogSink {
+    private let lock = NSLock()
+    private var storedMessages: [String] = []
+
+    var messages: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedMessages
+    }
+
+    func append(_ message: String) {
+        lock.lock()
+        storedMessages.append(message)
+        lock.unlock()
+    }
 }
 
 private final class FakeNetworkHelperServiceController: TCPViewerNetworkHelperServiceControlling {
@@ -238,5 +416,69 @@ private enum FakeNetworkHelperError: LocalizedError {
 
     var errorDescription: String? {
         "Intentional failure"
+    }
+}
+
+private final class FakeNetworkHelperAuthorizationProvider: TCPViewerNetworkHelperAuthorizationProviding {
+    private(set) var requestedRights: [[TCPViewerNetworkHelperAuthorizationRight]] = []
+
+    func makeAuthorization(for rights: [TCPViewerNetworkHelperAuthorizationRight]) throws -> AuthorizationRef {
+        requestedRights.append(rights)
+        var authorization: AuthorizationRef?
+        let status = AuthorizationCreate(nil, nil, [], &authorization)
+        guard status == errAuthorizationSuccess, let authorization else {
+            throw FakeNetworkHelperError.intentionalFailure
+        }
+        return authorization
+    }
+
+    func free(_ authorization: AuthorizationRef) {
+        _ = AuthorizationFree(authorization, [])
+    }
+}
+
+private final class FakeNetworkHelperServiceManagementController: TCPViewerNetworkHelperServiceManagementControlling {
+    private let blessError: Error?
+    private let removeError: Error?
+    private(set) var blessJobCallCount = 0
+    private(set) var removeJobCallCount = 0
+
+    init(blessError: Error? = nil, removeError: Error? = nil) {
+        self.blessError = blessError
+        self.removeError = removeError
+    }
+
+    func blessJob(label: String, authorization: AuthorizationRef) throws {
+        blessJobCallCount += 1
+        if let blessError {
+            throw blessError
+        }
+    }
+
+    func removeJob(label: String, authorization: AuthorizationRef, wait: Bool) throws {
+        removeJobCallCount += 1
+        if let removeError {
+            throw removeError
+        }
+    }
+}
+
+private final class FakeNetworkHelperInstalledItemRemover: TCPViewerNetworkHelperInstalledItemRemoving {
+    private let removeError: Error?
+    private(set) var removedURLs: [URL] = []
+
+    init(removeError: Error? = nil) {
+        self.removeError = removeError
+    }
+
+    func removeItems(at urls: [URL], authorization: AuthorizationRef) throws {
+        removedURLs = urls
+        if let removeError {
+            throw removeError
+        }
+
+        for url in urls where FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+        }
     }
 }

@@ -24,6 +24,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         observeLicenseStatusChanges()
         wirePreferencesMenu()
         TCPViewerLicenseService.shared.verifyAtLaunch()
+        networkHelperToolManager.refreshStatusForLaunch()
     }
 
     func applicationWillTerminate(_ aNotification: Notification) {
