@@ -185,6 +185,7 @@ struct TCPViewerHelperToolSettingsView: View {
     let manager: any TCPViewerNetworkHelperToolManaging
 
     @State private var snapshot: TCPViewerNetworkHelperToolSnapshot
+    @State private var isShowingHelperError = false
 
     init(manager: any TCPViewerNetworkHelperToolManaging) {
         self.manager = manager
@@ -201,11 +202,19 @@ struct TCPViewerHelperToolSettingsView: View {
                     .frame(width: 42, height: 42)
 
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(snapshot.title)
-                        .font(.system(size: 17, weight: .semibold))
-                    Text(snapshot.message)
+                    HStack(spacing: 8) {
+                        Text(statusTitle)
+                            .font(.system(size: 17, weight: .semibold))
+
+                        if shouldShowHelperErrorButton {
+                            helperErrorButton
+                        }
+                    }
+
+                    Text(statusMessage)
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(.secondary)
+
                     Text(lastCheckedText)
                         .font(.system(size: 12))
                         .foregroundStyle(.tertiary)
@@ -258,7 +267,7 @@ struct TCPViewerHelperToolSettingsView: View {
         switch snapshot.status {
         case .notInstalled, .unsupported:
             Button {
-                snapshot = manager.install { snapshot = $0 }
+                installHelper()
             } label: {
                 Label("Install", systemImage: "arrow.down.circle")
             }
@@ -298,6 +307,75 @@ struct TCPViewerHelperToolSettingsView: View {
         }
     }
 
+    private var shouldShowHelperErrorButton: Bool {
+        snapshot.status == .notInstalled
+    }
+
+    private var statusTitle: String {
+        switch snapshot.status {
+        case .notInstalled:
+            TCPViewerNetworkHelperConstants.displayName
+        default:
+            snapshot.title
+        }
+    }
+
+    private var statusMessage: String {
+        switch snapshot.status {
+        case .notInstalled:
+            // Keep the header compact; the detailed installation reason lives in the error popover.
+            "Not installed"
+        default:
+            snapshot.message
+        }
+    }
+
+    private var helperErrorButton: some View {
+        Button {
+            isShowingHelperError = true
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .foregroundStyle(.red)
+                Text("Error")
+            }
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .popover(isPresented: $isShowingHelperError, arrowEdge: .bottom) {
+            helperErrorPopover
+        }
+    }
+
+    private var helperErrorPopover: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Helper Tool Not Installed", systemImage: "exclamationmark.circle.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.red)
+
+            Text(snapshot.message)
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                Button {
+                    isShowingHelperError = false
+                    installHelper()
+                } label: {
+                    Label("Install Helper Tool", systemImage: "arrow.down.circle")
+                }
+                .keyboardShortcut(.defaultAction)
+
+                Button("Dismiss") {
+                    isShowingHelperError = false
+                }
+            }
+        }
+        .padding(14)
+        .frame(width: 320, alignment: .leading)
+    }
+
     private var statusImageName: String {
         switch snapshot.status {
         case .ready:
@@ -334,6 +412,10 @@ struct TCPViewerHelperToolSettingsView: View {
 
     private func refreshStatus() {
         snapshot = manager.refreshStatus { snapshot = $0 }
+    }
+
+    private func installHelper() {
+        snapshot = manager.install { snapshot = $0 }
     }
 
     private func uninstallHelper() {

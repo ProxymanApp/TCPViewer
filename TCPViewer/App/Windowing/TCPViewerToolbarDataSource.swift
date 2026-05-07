@@ -13,6 +13,7 @@ private enum TCPViewerToolbarItemMetadata: String, CaseIterable {
     case captureToggle = "CaptureToggle"
     case clearAll = "ClearAll"
     case status = "Status"
+    case trial = "Trial"
     case share = "Share"
     case inspector = "Inspector"
     case flexibleSpace
@@ -40,6 +41,8 @@ protocol TCPViewerToolbarDataSourceDelegate: AnyObject {
     func tcpviewerToolbarDataSourceDidRequestClearAllPackets(_ dataSource: TCPViewerToolbarDataSource)
     func tcpviewerToolbarDataSource(_ dataSource: TCPViewerToolbarDataSource, didRequestExport format: CaptureFileFormat)
     func tcpviewerToolbarDataSourceDidToggleInspector(_ dataSource: TCPViewerToolbarDataSource)
+    func tcpviewerToolbarDataSourceDidRequestInstallHelperTool(_ dataSource: TCPViewerToolbarDataSource)
+    func tcpviewerToolbarDataSourceDidRequestPaywall(_ dataSource: TCPViewerToolbarDataSource)
 }
 
 final class TCPViewerToolbarDataSource: NSObject {
@@ -59,20 +62,26 @@ final class TCPViewerToolbarDataSource: NSObject {
     private let captureButton = NSButton(frame: NSRect(x: 0, y: 0, width: 34, height: 30))
     private let clearAllButton = NSButton(frame: NSRect(x: 0, y: 0, width: 34, height: 30))
     private let statusView = TCPViewerToolbarStatusView(frame: NSRect(x: 0, y: 0, width: 360, height: 28))
+    private let trialButton = NSButton(frame: NSRect(x: 0, y: 0, width: 150, height: 30))
     private let sharePopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 42, height: 30), pullsDown: true)
     private let inspectorButton = NSButton(frame: NSRect(x: 0, y: 0, width: 34, height: 30))
     private var interfacePopupWidthConstraint: NSLayoutConstraint?
+    private var isTrialButtonRequired = !TCPViewerLicenseService.shared.isLicenseAuthorized
 
     private var allowedItemIdentifiers: [NSToolbarItem.Identifier] {
-        TCPViewerToolbarItemMetadata.allCases.map(\.identifier) + [
+        var identifiers = TCPViewerToolbarItemMetadata.allCases
+            .filter { isTrialButtonRequired || $0 != .trial }
+            .map(\.identifier)
+        identifiers += [
             .toggleSidebar,
             .sidebarTrackingSeparator,
             .space,
         ]
+        return identifiers
     }
 
     private var defaultItemIdentifiers: [NSToolbarItem.Identifier] {
-        [
+        var identifiers: [NSToolbarItem.Identifier] = [
             .toggleSidebar,
             .sidebarTrackingSeparator,
             TCPViewerToolbarItemMetadata.captureSource.identifier,
@@ -81,10 +90,19 @@ final class TCPViewerToolbarDataSource: NSObject {
             TCPViewerToolbarItemMetadata.clearAll.identifier,
             TCPViewerToolbarItemMetadata.flexibleSpace.identifier,
             TCPViewerToolbarItemMetadata.status.identifier,
+        ]
+
+        if isTrialButtonRequired {
+            identifiers.append(TCPViewerToolbarItemMetadata.trial.identifier)
+        }
+
+        identifiers += [
             TCPViewerToolbarItemMetadata.flexibleSpace.identifier,
             TCPViewerToolbarItemMetadata.share.identifier,
             TCPViewerToolbarItemMetadata.inspector.identifier,
         ]
+
+        return identifiers
     }
 
     override init() {
@@ -95,14 +113,17 @@ final class TCPViewerToolbarDataSource: NSObject {
     }
 
     // Apply root state to the toolbar controls without leaking toolbar view ownership to the window.
-    func render(snapshot: NetworkInspectorSnapshot, inspectorViewModel: NetworkInspectorViewModel) {
-        viewModel.render(snapshot: snapshot, viewModel: inspectorViewModel)
+    func render(snapshot: NetworkInspectorSnapshot, inspectorViewModel: NetworkInspectorViewModel, isLicenseAuthorized: Bool) {
+        viewModel.render(snapshot: snapshot, viewModel: inspectorViewModel, isLicenseAuthorized: isLicenseAuthorized)
+        isTrialButtonRequired = viewModel.showsTrialButton
         renderInterfacePopup()
         renderCaptureButton()
         renderClearAllButton()
+        renderTrialButton()
         renderSharePopup()
         renderInspectorButton()
         statusView.render(viewModel: viewModel)
+        syncTrialToolbarItem()
     }
 
     private func configureToolbar() {
@@ -124,6 +145,7 @@ final class TCPViewerToolbarDataSource: NSObject {
         constrainToolbarView(captureButton, width: 34, height: 30)
         constrainToolbarView(clearAllButton, width: 34, height: 30)
         constrainToolbarView(statusView, width: 360, height: 28)
+        constrainToolbarView(trialButton, width: 150, height: 30)
         constrainToolbarView(sharePopup, width: 42, height: 30)
         constrainToolbarView(inspectorButton, width: 34, height: 30)
 
@@ -148,6 +170,20 @@ final class TCPViewerToolbarDataSource: NSObject {
         clearAllButton.imagePosition = .imageOnly
         clearAllButton.toolTip = "Clear All Packets"
 
+        trialButton.target = self
+        trialButton.action = #selector(trialButtonPressed(_:))
+        trialButton.bezelStyle = .regularSquare
+        trialButton.isBordered = false
+        trialButton.wantsLayer = true
+        trialButton.layer?.backgroundColor = NSColor.systemYellow.cgColor
+        trialButton.layer?.cornerRadius = 15
+        trialButton.layer?.masksToBounds = true
+        trialButton.font = .systemFont(ofSize: 14, weight: .semibold)
+        trialButton.image = TCPViewerUI.image("exclamationmark.circle.fill")
+        trialButton.imagePosition = .imageLeading
+        trialButton.contentTintColor = .black
+        trialButton.toolTip = "Upgrade to TCP Viewer PRO"
+
         sharePopup.controlSize = .regular
         sharePopup.addItem(withTitle: "")
         sharePopup.item(at: 0)?.image = TCPViewerUI.image("square.and.arrow.up")
@@ -167,6 +203,14 @@ final class TCPViewerToolbarDataSource: NSObject {
         inspectorButton.imagePosition = .imageOnly
         inspectorButton.title = ""
         inspectorButton.toolTip = "Toggle Inspector"
+
+        statusView.onInstallHelperTool = { [weak self] in
+            guard let self else {
+                return
+            }
+
+            delegate?.tcpviewerToolbarDataSourceDidRequestInstallHelperTool(self)
+        }
     }
 
     private func constrainToolbarView(_ view: NSView, width: CGFloat, height: CGFloat) {
@@ -296,6 +340,11 @@ final class TCPViewerToolbarDataSource: NSObject {
         clearAllButton.alphaValue = viewModel.canClearAllPackets ? 1 : 0.45
     }
 
+    private func renderTrialButton() {
+        trialButton.title = "TRIAL VERSION"
+        trialButton.isHidden = !viewModel.showsTrialButton
+    }
+
     private func renderSharePopup() {
         sharePopup.item(at: 1)?.isEnabled = viewModel.canExport
         sharePopup.item(at: 2)?.isEnabled = viewModel.canExport
@@ -304,6 +353,29 @@ final class TCPViewerToolbarDataSource: NSObject {
 
     private func renderInspectorButton() {
         inspectorButton.state = viewModel.isInspectorVisible ? .on : .off
+    }
+
+    private func syncTrialToolbarItem() {
+        let trialIdentifier = TCPViewerToolbarItemMetadata.trial.identifier
+        let trialItemIndexes = toolbar.items.enumerated()
+            .filter { $0.element.itemIdentifier == trialIdentifier }
+            .map(\.offset)
+
+        if viewModel.showsTrialButton {
+            guard trialItemIndexes.isEmpty else {
+                return
+            }
+
+            let statusIndex = toolbar.items.firstIndex {
+                $0.itemIdentifier == TCPViewerToolbarItemMetadata.status.identifier
+            }
+            let insertionIndex = statusIndex.map { min($0 + 1, toolbar.items.count) } ?? toolbar.items.count
+            toolbar.insertItem(withItemIdentifier: trialIdentifier, at: insertionIndex)
+        } else {
+            for index in trialItemIndexes.reversed() {
+                toolbar.removeItem(at: index)
+            }
+        }
     }
 
     @objc private func interfaceChanged(_ sender: NSPopUpButton) {
@@ -325,6 +397,10 @@ final class TCPViewerToolbarDataSource: NSObject {
 
     @objc private func clearAllButtonPressed(_ sender: NSButton) {
         delegate?.tcpviewerToolbarDataSourceDidRequestClearAllPackets(self)
+    }
+
+    @objc private func trialButtonPressed(_ sender: NSButton) {
+        delegate?.tcpviewerToolbarDataSourceDidRequestPaywall(self)
     }
 
     @objc private func shareActionSelected(_ sender: NSPopUpButton) {
@@ -354,6 +430,22 @@ extension TCPViewerToolbarDataSource: NSToolbarDelegate {
         defaultItemIdentifiers
     }
 
+    func toolbarImmovableItemIdentifiers(_ toolbar: NSToolbar) -> Set<NSToolbarItem.Identifier> {
+        isTrialButtonRequired ? [TCPViewerToolbarItemMetadata.trial.identifier] : []
+    }
+
+    func toolbar(
+        _ toolbar: NSToolbar,
+        itemIdentifier: NSToolbarItem.Identifier,
+        canBeInsertedAt index: Int
+    ) -> Bool {
+        guard itemIdentifier == TCPViewerToolbarItemMetadata.trial.identifier else {
+            return true
+        }
+
+        return isTrialButtonRequired && index != NSNotFound
+    }
+
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         let item = NSToolbarItem(itemIdentifier: itemIdentifier)
         switch itemIdentifier {
@@ -376,6 +468,15 @@ extension TCPViewerToolbarDataSource: NSToolbarDelegate {
             item.label = "Status"
             item.paletteLabel = "Status"
             item.view = statusView
+            item.visibilityPriority = .high
+        case TCPViewerToolbarItemMetadata.trial.identifier:
+            guard isTrialButtonRequired else {
+                return nil
+            }
+
+            item.label = "Trial"
+            item.paletteLabel = "Trial Version"
+            item.view = trialButton
             item.visibilityPriority = .high
         case TCPViewerToolbarItemMetadata.share.identifier:
             item.label = "Share"
@@ -414,9 +515,11 @@ private final class TCPViewerToolbarViewModel {
     private(set) var emphasizedText: String?
     private(set) var statusTint = NSColor.secondaryLabelColor
     private(set) var helpText = ""
+    private(set) var helperError: TCPViewerToolbarHelperError?
+    private(set) var showsTrialButton = false
 
     // Build toolbar-only presentation state from the root inspector snapshot.
-    func render(snapshot: NetworkInspectorSnapshot, viewModel: NetworkInspectorViewModel) {
+    func render(snapshot: NetworkInspectorSnapshot, viewModel: NetworkInspectorViewModel, isLicenseAuthorized: Bool) {
         interfaces = snapshot.base.sessionState.interfaceInventory
         selectedInterfaceID = snapshot.base.sessionState.selectedInterfaceID
         lastUsedInterfaceIDs = snapshot.base.sessionState.lastUsedInterfaceIDs
@@ -434,6 +537,8 @@ private final class TCPViewerToolbarViewModel {
         statusTint = Self.tint(for: snapshot)
         statusText = Self.statusText(for: snapshot)
         emphasizedText = Self.emphasizedText(for: snapshot)
+        helperError = Self.helperError(for: viewModel.networkHelperToolSnapshot)
+        showsTrialButton = !isLicenseAuthorized
         helpText = [
             snapshot.base.sessionState.statusMessage,
             "\(snapshot.totalPacketCount) packets",
@@ -518,12 +623,35 @@ private final class TCPViewerToolbarViewModel {
 
         return snapshot.base.sessionState.selectedInterface.map { $0.friendlyName ?? $0.displayName }
     }
+
+    private static func helperError(for snapshot: TCPViewerNetworkHelperToolSnapshot) -> TCPViewerToolbarHelperError? {
+        guard snapshot.status == .notInstalled else {
+            return nil
+        }
+
+        return TCPViewerToolbarHelperError(
+            title: "Helper Tool Not Installed",
+            message: snapshot.message,
+            actionTitle: "Install Helper Tool"
+        )
+    }
+}
+
+private struct TCPViewerToolbarHelperError {
+    let title: String
+    let message: String
+    let actionTitle: String
 }
 
 private final class TCPViewerToolbarStatusView: NSView {
+    var onInstallHelperTool: (() -> Void)?
+
     private let dot = NSView()
     private let statusLabel = TCPViewerUI.label("", font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium), color: .secondaryLabelColor)
     private let emphasizedLabel = TCPViewerUI.label("", font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold))
+    private let helperErrorButton = NSButton(title: "Error", target: nil, action: nil)
+    private var helperError: TCPViewerToolbarHelperError?
+    private var helperErrorPopover: NSPopover?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -540,7 +668,15 @@ private final class TCPViewerToolbarStatusView: NSView {
         statusLabel.stringValue = viewModel.statusText
         emphasizedLabel.stringValue = viewModel.emphasizedText ?? ""
         emphasizedLabel.isHidden = viewModel.emphasizedText == nil
+        helperError = viewModel.helperError
+        helperErrorButton.isHidden = viewModel.helperError == nil
+        helperErrorButton.toolTip = viewModel.helperError?.message
         toolTip = viewModel.helpText
+
+        if viewModel.helperError == nil {
+            helperErrorPopover?.close()
+            helperErrorPopover = nil
+        }
     }
 
     private func setupLayout() {
@@ -549,8 +685,9 @@ private final class TCPViewerToolbarStatusView: NSView {
         dot.translatesAutoresizingMaskIntoConstraints = false
         statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         emphasizedLabel.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+        configureHelperErrorButton()
 
-        let stack = NSStackView(views: [dot, statusLabel, emphasizedLabel])
+        let stack = NSStackView(views: [dot, statusLabel, emphasizedLabel, helperErrorButton])
         stack.orientation = .horizontal
         stack.alignment = .centerY
         stack.spacing = 7
@@ -566,5 +703,102 @@ private final class TCPViewerToolbarStatusView: NSView {
             stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             stack.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
+    }
+
+    private func configureHelperErrorButton() {
+        helperErrorButton.target = self
+        helperErrorButton.action = #selector(helperErrorButtonPressed(_:))
+        helperErrorButton.bezelStyle = .rounded
+        helperErrorButton.controlSize = .small
+        helperErrorButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
+        helperErrorButton.image = TCPViewerUI.image("exclamationmark.circle.fill")
+        helperErrorButton.imagePosition = .imageLeading
+        helperErrorButton.contentTintColor = .systemRed
+        helperErrorButton.isHidden = true
+        helperErrorButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+    }
+
+    @objc private func helperErrorButtonPressed(_ sender: NSButton) {
+        guard let helperError else {
+            return
+        }
+
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = makeHelperErrorPopoverController(helperError)
+        helperErrorPopover = popover
+        popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxY)
+    }
+
+    private func makeHelperErrorPopoverController(_ helperError: TCPViewerToolbarHelperError) -> NSViewController {
+        let controller = NSViewController()
+        let contentView = NSView()
+
+        let titleImageView = NSImageView(image: TCPViewerUI.image("exclamationmark.circle.fill") ?? NSImage())
+        titleImageView.contentTintColor = .systemRed
+        titleImageView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
+        titleImageView.translatesAutoresizingMaskIntoConstraints = false
+
+        let titleLabel = TCPViewerUI.label(helperError.title, font: .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold))
+        titleLabel.textColor = .systemRed
+
+        let titleStack = NSStackView(views: [titleImageView, titleLabel])
+        titleStack.orientation = .horizontal
+        titleStack.alignment = .centerY
+        titleStack.spacing = 6
+        titleStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let messageLabel = TCPViewerUI.label(helperError.message, font: .systemFont(ofSize: NSFont.smallSystemFontSize), color: .secondaryLabelColor)
+        messageLabel.maximumNumberOfLines = 0
+        messageLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        let installButton = NSButton(title: helperError.actionTitle, target: self, action: #selector(installHelperButtonPressed(_:)))
+        installButton.bezelStyle = .rounded
+        installButton.controlSize = .regular
+        installButton.image = TCPViewerUI.image("arrow.down.circle")
+        installButton.imagePosition = .imageLeading
+
+        let dismissButton = NSButton(title: "Dismiss", target: self, action: #selector(dismissHelperErrorPopover(_:)))
+        dismissButton.bezelStyle = .rounded
+        dismissButton.controlSize = .regular
+
+        let buttonStack = NSStackView(views: [installButton, dismissButton])
+        buttonStack.orientation = .horizontal
+        buttonStack.alignment = .centerY
+        buttonStack.spacing = 8
+        buttonStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let stack = NSStackView(views: [titleStack, messageLabel, buttonStack])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 12
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        contentView.addSubview(stack)
+        controller.view = contentView
+
+        NSLayoutConstraint.activate([
+            contentView.widthAnchor.constraint(equalToConstant: 320),
+            titleImageView.widthAnchor.constraint(equalToConstant: 16),
+            titleImageView.heightAnchor.constraint(equalToConstant: 16),
+            messageLabel.widthAnchor.constraint(equalToConstant: 292),
+            stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 14),
+            stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -14),
+            stack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 14),
+            stack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -14),
+        ])
+
+        return controller
+    }
+
+    @objc private func installHelperButtonPressed(_ sender: NSButton) {
+        helperErrorPopover?.close()
+        helperErrorPopover = nil
+        onInstallHelperTool?()
+    }
+
+    @objc private func dismissHelperErrorPopover(_ sender: NSButton) {
+        helperErrorPopover?.close()
+        helperErrorPopover = nil
     }
 }

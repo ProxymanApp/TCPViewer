@@ -9,8 +9,19 @@ import AppKit
 import SwiftUI
 
 final class TCPViewerLicenseWindowController: NSWindowController {
-    init(licenseService: TCPViewerLicenseService = .shared, onDismiss: @escaping () -> Void = {}) {
-        let contentView = TCPViewerLicenseView(licenseService: licenseService, onDismiss: onDismiss)
+    let presentationMode: TCPViewerLicensePresentationMode
+
+    init(
+        licenseService: TCPViewerLicenseService = .shared,
+        presentationMode: TCPViewerLicensePresentationMode = .license,
+        onDismiss: @escaping () -> Void = {}
+    ) {
+        self.presentationMode = presentationMode
+        let contentView = TCPViewerLicenseView(
+            licenseService: licenseService,
+            presentationMode: presentationMode,
+            onDismiss: onDismiss
+        )
         let hostingController = NSHostingController(rootView: contentView)
         let window = NSWindow(contentViewController: hostingController)
         window.title = ""
