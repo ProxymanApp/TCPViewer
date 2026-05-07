@@ -18,6 +18,7 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<!-- Rewritten in a derived Info.plist by scripts/update-smjobbless-requirements.sh before signing. -->
 	<key>SMAuthorizedClients</key>
 	<array>
 		<string>identifier "com.proxyman.tcpviewer" and anchor apple generic and certificate leaf[subject.OU] = "$(TCPVIEWER_DEVELOPMENT_TEAM)"</string>

@@ -327,6 +327,7 @@
 			buildConfigurationList = BAAE97882F9B816000C52A7C /* Build configuration list for PBXNativeTarget "TCPViewer" */;
 			buildPhases = (
 				BAE100042FA300000070BE17 /* Validate Local Build Environment */,
+				BASM00012FA700000070BE17 /* Update SMJobBless Requirements */,
 				BAAE97592F9B815F00C52A7C /* Sources */,
 				BAAE975A2F9B815F00C52A7C /* Frameworks */,
 				BAAE975B2F9B815F00C52A7C /* Resources */,
@@ -375,6 +376,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = BACE00102F9C00000070BE17 /* Build configuration list for PBXNativeTarget "TCPViewerHelperTool" */;
 			buildPhases = (
+				BASM00022FA700000070BE17 /* Update SMJobBless Requirements */,
 				BACE00112F9C00000070BE17 /* Sources */,
 				BACE000C2F9C00000070BE17 /* Frameworks */,
 				BACE00122F9C00000070BE17 /* Resources */,
@@ -499,6 +501,50 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "\"$PROJECT_DIR/scripts/validate-local-build-env.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+		BASM00012FA700000070BE17 /* Update SMJobBless Requirements */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(PROJECT_DIR)/scripts/update-smjobbless-requirements.sh",
+				"$(PROJECT_DIR)/TCPViewer/Info.plist",
+			);
+			name = "Update SMJobBless Requirements";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/TCPViewer-SMJobBless-Info.plist",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"$PROJECT_DIR/scripts/update-smjobbless-requirements.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+		BASM00022FA700000070BE17 /* Update SMJobBless Requirements */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(PROJECT_DIR)/scripts/update-smjobbless-requirements.sh",
+				"$(PROJECT_DIR)/TCPViewerHelperTool/Info.plist",
+			);
+			name = "Update SMJobBless Requirements";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/TCPViewerHelperTool-SMJobBless-Info.plist",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"$PROJECT_DIR/scripts/update-smjobbless-requirements.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
 		BA4D26D02F9A30770070BE17 /* Bootstrap PcapPlusPlus */ = {
@@ -1009,7 +1055,7 @@
 					"$(PROJECT_DIR)/Vendor/HexFiend",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = TCPViewer/Info.plist;
+				INFOPLIST_FILE = "$(DERIVED_FILE_DIR)/TCPViewer-SMJobBless-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "TCP Viewer";
 				INFOPLIST_KEY_CFBundleName = "TCP Viewer";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright 2026 Proxyman LLC. Licensed under GPL-2.0-or-later. No warranty.";
@@ -1031,6 +1077,7 @@
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
+				TCPVIEWER_INFOPLIST_TEMPLATE_FILE = TCPViewer/Info.plist;
 			};
 			name = Debug;
 		};
@@ -1054,7 +1101,7 @@
 					"$(PROJECT_DIR)/Vendor/HexFiend",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = TCPViewer/Info.plist;
+				INFOPLIST_FILE = "$(DERIVED_FILE_DIR)/TCPViewer-SMJobBless-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "TCP Viewer";
 				INFOPLIST_KEY_CFBundleName = "TCP Viewer";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright 2026 Proxyman LLC. Licensed under GPL-2.0-or-later. No warranty.";
@@ -1076,6 +1123,7 @@
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
+				TCPVIEWER_INFOPLIST_TEMPLATE_FILE = TCPViewer/Info.plist;
 			};
 			name = Release;
 		};
@@ -1141,7 +1189,7 @@
 				DEVELOPMENT_TEAM = "$(TCPVIEWER_DEVELOPMENT_TEAM)";
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = TCPViewerHelperTool/Info.plist;
+				INFOPLIST_FILE = "$(DERIVED_FILE_DIR)/TCPViewerHelperTool-SMJobBless-Info.plist";
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 1.0;
 				OTHER_LDFLAGS = (
@@ -1158,6 +1206,7 @@
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
+				TCPVIEWER_INFOPLIST_TEMPLATE_FILE = TCPViewerHelperTool/Info.plist;
 			};
 			name = Debug;
 		};
@@ -1171,7 +1220,7 @@
 				DEVELOPMENT_TEAM = "$(TCPVIEWER_DEVELOPMENT_TEAM)";
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = TCPViewerHelperTool/Info.plist;
+				INFOPLIST_FILE = "$(DERIVED_FILE_DIR)/TCPViewerHelperTool-SMJobBless-Info.plist";
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 1.0;
 				OTHER_LDFLAGS = (
@@ -1188,6 +1237,7 @@
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
+				TCPVIEWER_INFOPLIST_TEMPLATE_FILE = TCPViewerHelperTool/Info.plist;
 			};
 			name = Release;
 		};
