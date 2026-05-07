@@ -2,6 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>SMPrivilegedExecutables</key>
+	<dict>
+		<key>com.proxyman.tcpviewer.helpertool</key>
+		<string>identifier "com.proxyman.tcpviewer.helpertool" and anchor apple generic and certificate leaf[subject.OU] = "$(TCPVIEWER_DEVELOPMENT_TEAM)"</string>
+	</dict>
 	<key>TCPViewerBuildKey</key>
 	<string>$(TCPVIEWER_BUILD_KEY)</string>
 	<key>CFBundleDocumentTypes</key>

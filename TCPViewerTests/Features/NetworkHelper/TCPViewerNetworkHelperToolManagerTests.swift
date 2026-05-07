@@ -58,8 +58,40 @@ struct TCPViewerNetworkHelperToolManagerTests {
     @Test func constantsUseTCPViewerHelperIdentityAndFreshCaptureGroup() {
         #expect(TCPViewerNetworkHelperConstants.serviceLabel == "com.proxyman.tcpviewer.helpertool")
         #expect(TCPViewerNetworkHelperConstants.launchDaemonPlistName == "com.proxyman.tcpviewer.helpertool.plist")
+        #expect(TCPViewerNetworkHelperConstants.bundledHelperToolRelativePath == "Contents/Library/LaunchServices/com.proxyman.tcpviewer.helpertool")
         #expect(TCPViewerNetworkHelperConstants.captureGroupName == "tcpviewer_capture")
         #expect(TCPViewerNetworkHelperConstants.displayName == "TCP Viewer Network Helper Tool")
+    }
+
+    @Test func smJobBlessStatusReportsNotFoundWhenBundledPayloadIsMissing() throws {
+        let fixture = try makeBlessFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.rootURL) }
+
+        let controller = makeBlessController(fixture: fixture)
+
+        #expect(controller.status == .notFound)
+    }
+
+    @Test func smJobBlessStatusReportsNotRegisteredWhenBundledPayloadExists() throws {
+        let fixture = try makeBlessFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.rootURL) }
+        try createBundledBlessPayload(in: fixture.bundleURL)
+
+        let controller = makeBlessController(fixture: fixture)
+
+        #expect(controller.status == .notRegistered)
+    }
+
+    @Test func smJobBlessStatusReportsEnabledWhenInstalledHelperExists() throws {
+        let fixture = try makeBlessFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.rootURL) }
+        let installedHelperURL = fixture.privilegedHelperToolsDirectoryURL
+            .appendingPathComponent(TCPViewerNetworkHelperConstants.serviceLabel)
+        try createEmptyFile(at: installedHelperURL)
+
+        let controller = makeBlessController(fixture: fixture)
+
+        #expect(controller.status == .enabled)
     }
 
     @Test func userFacingSnapshotTextUsesTCPViewerDisplayName() {
@@ -93,6 +125,52 @@ struct TCPViewerNetworkHelperToolManagerTests {
             }
         }
     }
+
+    private func makeBlessFixture() throws -> BlessFixture {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TCPViewerNetworkHelperToolManagerTests-\(UUID().uuidString)", isDirectory: true)
+        let bundleURL = rootURL.appendingPathComponent("TCP Viewer.app", isDirectory: true)
+        let privilegedHelperToolsDirectoryURL = rootURL.appendingPathComponent("PrivilegedHelperTools", isDirectory: true)
+        let launchDaemonsDirectoryURL = rootURL.appendingPathComponent("LaunchDaemons", isDirectory: true)
+
+        try FileManager.default.createDirectory(at: bundleURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: privilegedHelperToolsDirectoryURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: launchDaemonsDirectoryURL, withIntermediateDirectories: true)
+
+        return BlessFixture(
+            rootURL: rootURL,
+            bundleURL: bundleURL,
+            privilegedHelperToolsDirectoryURL: privilegedHelperToolsDirectoryURL,
+            launchDaemonsDirectoryURL: launchDaemonsDirectoryURL
+        )
+    }
+
+    private func makeBlessController(fixture: BlessFixture) -> TCPViewerNetworkHelperSMJobBlessController {
+        TCPViewerNetworkHelperSMJobBlessController(
+            bundleURL: fixture.bundleURL,
+            privilegedHelperToolsDirectoryURL: fixture.privilegedHelperToolsDirectoryURL,
+            launchDaemonsDirectoryURL: fixture.launchDaemonsDirectoryURL
+        )
+    }
+
+    private func createBundledBlessPayload(in bundleURL: URL) throws {
+        let helperURL = bundleURL.appendingPathComponent(TCPViewerNetworkHelperConstants.bundledHelperToolRelativePath)
+        let launchDaemonPlistURL = bundleURL.appendingPathComponent(TCPViewerNetworkHelperConstants.bundledLaunchDaemonPlistRelativePath)
+        try createEmptyFile(at: helperURL)
+        try createEmptyFile(at: launchDaemonPlistURL)
+    }
+
+    private func createEmptyFile(at url: URL) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data().write(to: url)
+    }
+}
+
+private struct BlessFixture {
+    let rootURL: URL
+    let bundleURL: URL
+    let privilegedHelperToolsDirectoryURL: URL
+    let launchDaemonsDirectoryURL: URL
 }
 
 private final class FakeNetworkHelperServiceController: TCPViewerNetworkHelperServiceControlling {

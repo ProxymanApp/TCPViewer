@@ -341,11 +341,11 @@ struct TCPViewerHelperToolSettingsView: View {
     }
 
     private func openHelperToolPath() {
-        let helperURL = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/TCPViewerHelperTool")
+        let helperURL = URL(fileURLWithPath: TCPViewerNetworkHelperConstants.installedHelperToolPath)
         if FileManager.default.fileExists(atPath: helperURL.path) {
             NSWorkspace.shared.activateFileViewerSelecting([helperURL])
         } else {
-            NSWorkspace.shared.open(Bundle.main.bundleURL)
+            NSWorkspace.shared.open(helperURL.deletingLastPathComponent())
         }
     }
 

@@ -7,6 +7,7 @@
 
 import Darwin
 import Foundation
+import Security
 import ServiceManagement
 
 enum TCPViewerNetworkHelperToolStatus: String, Sendable, Equatable {
@@ -112,9 +113,9 @@ final class TCPViewerNetworkHelperToolManager: TCPViewerNetworkHelperToolManagin
 
     convenience init() {
         self.init(
-            serviceController: TCPViewerNetworkHelperSMAppServiceController(),
-            legacyServiceControllers: TCPViewerNetworkHelperConstants.legacyLaunchDaemonPlistNames.map {
-                TCPViewerNetworkHelperSMAppServiceController(plistName: $0)
+            serviceController: TCPViewerNetworkHelperSMJobBlessController(),
+            legacyServiceControllers: TCPViewerNetworkHelperConstants.legacyServiceLabels.map {
+                TCPViewerNetworkHelperSMJobBlessController(serviceLabel: $0)
             },
             bpfChecker: TCPViewerNetworkHelperBPFChecker()
         )
@@ -225,7 +226,7 @@ final class TCPViewerNetworkHelperToolManager: TCPViewerNetworkHelperToolManagin
             message = "TCP Viewer Network Helper Tool has not been registered with macOS."
         case .notFound:
             status = .notInstalled
-            message = "TCP Viewer could not find the bundled helper plist in this app build."
+            message = "TCP Viewer could not find the bundled helper payload in this app build."
         case .requiresApproval:
             status = .waitingForApproval
             message = "Approve TCP Viewer in System Settings > General > Login Items, then retry."
@@ -304,42 +305,159 @@ final class ReadyTCPViewerNetworkHelperToolManager: TCPViewerNetworkHelperToolMa
     func openSystemSettings() {}
 }
 
-struct TCPViewerNetworkHelperSMAppServiceController: TCPViewerNetworkHelperServiceControlling {
-    private let plistName: String
+struct TCPViewerNetworkHelperSMJobBlessController: TCPViewerNetworkHelperServiceControlling {
+    private let serviceLabel: String
+    private let launchDaemonPlistName: String
+    private let bundleURL: URL
+    private let privilegedHelperToolsDirectoryURL: URL
+    private let launchDaemonsDirectoryURL: URL
+    private let fileManager: FileManager
 
-    init(plistName: String = TCPViewerNetworkHelperConstants.launchDaemonPlistName) {
-        self.plistName = plistName
+    init(
+        serviceLabel: String = TCPViewerNetworkHelperConstants.serviceLabel,
+        bundleURL: URL = Bundle.main.bundleURL,
+        privilegedHelperToolsDirectoryURL: URL = URL(fileURLWithPath: TCPViewerNetworkHelperConstants.privilegedHelperToolsDirectoryPath),
+        launchDaemonsDirectoryURL: URL = URL(fileURLWithPath: TCPViewerNetworkHelperConstants.launchDaemonsDirectoryPath),
+        fileManager: FileManager = .default
+    ) {
+        self.serviceLabel = serviceLabel
+        self.launchDaemonPlistName = "\(serviceLabel).plist"
+        self.bundleURL = bundleURL
+        self.privilegedHelperToolsDirectoryURL = privilegedHelperToolsDirectoryURL
+        self.launchDaemonsDirectoryURL = launchDaemonsDirectoryURL
+        self.fileManager = fileManager
     }
 
-    private var service: SMAppService {
-        SMAppService.daemon(plistName: plistName)
+    private var bundledHelperToolURL: URL {
+        bundleURL.appendingPathComponent("Contents/Library/LaunchServices/\(serviceLabel)")
+    }
+
+    private var bundledLaunchDaemonPlistURL: URL {
+        bundleURL.appendingPathComponent("Contents/Library/LaunchDaemons/\(launchDaemonPlistName)")
+    }
+
+    private var installedHelperToolURL: URL {
+        privilegedHelperToolsDirectoryURL.appendingPathComponent(serviceLabel)
+    }
+
+    private var installedLaunchDaemonPlistURL: URL {
+        launchDaemonsDirectoryURL.appendingPathComponent(launchDaemonPlistName)
     }
 
     var status: TCPViewerNetworkHelperAuthorizationStatus {
-        switch service.status {
-        case .notRegistered:
-            .notRegistered
-        case .enabled:
-            .enabled
-        case .requiresApproval:
-            .requiresApproval
-        case .notFound:
-            .notFound
-        @unknown default:
-            .unknown(service.status.rawValue)
+        if installedServiceExists() {
+            return .enabled
         }
+
+        return bundledPayloadExists() ? .notRegistered : .notFound
     }
 
     func register() throws {
-        try service.register()
+        try validateBundledPayload()
+        let authorization = try makeAuthorization(for: kSMRightBlessPrivilegedHelper)
+        defer { _ = AuthorizationFree(authorization, []) }
+
+        var blessError: Unmanaged<CFError>?
+        // SMJobBless discovers the tool by launchd label, so the bundle payload must use the legacy fixed path.
+        guard SMJobBless(kSMDomainSystemLaunchd, serviceLabel as CFString, authorization, &blessError) else {
+            throw TCPViewerNetworkHelperSMJobBlessError.serviceManagementFailure(
+                blessError?.takeRetainedValue(),
+                fallbackMessage: "macOS could not install the privileged helper."
+            )
+        }
     }
 
     func unregister() throws {
-        try service.unregister()
+        // Avoid prompting for admin credentials when no blessed helper is present on disk.
+        guard installedServiceExists() else {
+            return
+        }
+
+        let authorization = try makeAuthorization(for: kSMRightModifySystemDaemons)
+        defer { _ = AuthorizationFree(authorization, []) }
+
+        var removeError: Unmanaged<CFError>?
+        guard SMJobRemove(kSMDomainSystemLaunchd, serviceLabel as CFString, authorization, true, &removeError) else {
+            throw TCPViewerNetworkHelperSMJobBlessError.serviceManagementFailure(
+                removeError?.takeRetainedValue(),
+                fallbackMessage: "macOS could not remove the privileged helper."
+            )
+        }
     }
 
-    func openSystemSettings() {
-        SMAppService.openSystemSettingsLoginItems()
+    func openSystemSettings() {}
+
+    private func bundledPayloadExists() -> Bool {
+        fileManager.fileExists(atPath: bundledHelperToolURL.path) &&
+            fileManager.fileExists(atPath: bundledLaunchDaemonPlistURL.path)
+    }
+
+    private func installedServiceExists() -> Bool {
+        fileManager.fileExists(atPath: installedHelperToolURL.path) ||
+            fileManager.fileExists(atPath: installedLaunchDaemonPlistURL.path)
+    }
+
+    private func validateBundledPayload() throws {
+        guard fileManager.fileExists(atPath: bundledHelperToolURL.path) else {
+            throw TCPViewerNetworkHelperSMJobBlessError.missingBundledHelper(bundledHelperToolURL)
+        }
+
+        guard fileManager.fileExists(atPath: bundledLaunchDaemonPlistURL.path) else {
+            throw TCPViewerNetworkHelperSMJobBlessError.missingLaunchDaemonPlist(bundledLaunchDaemonPlistURL)
+        }
+    }
+
+    private func makeAuthorization(for rightName: String) throws -> AuthorizationRef {
+        var authorization: AuthorizationRef?
+        let flags: AuthorizationFlags = [.interactionAllowed, .extendRights, .preAuthorize]
+        let createStatus = AuthorizationCreate(nil, nil, flags, &authorization)
+        guard createStatus == errAuthorizationSuccess, let authorization else {
+            throw TCPViewerNetworkHelperSMJobBlessError.authorizationFailure(createStatus)
+        }
+
+        do {
+            // Scope admin rights to the single ServiceManagement operation instead of keeping reusable credentials.
+            let copyStatus = rightName.withCString { authorizationRightName in
+                var item = AuthorizationItem(name: authorizationRightName, valueLength: 0, value: nil, flags: 0)
+                return withUnsafeMutablePointer(to: &item) { itemPointer in
+                    var rights = AuthorizationRights(count: 1, items: itemPointer)
+                    return AuthorizationCopyRights(authorization, &rights, nil, flags, nil)
+                }
+            }
+
+            guard copyStatus == errAuthorizationSuccess else {
+                throw TCPViewerNetworkHelperSMJobBlessError.authorizationFailure(copyStatus)
+            }
+
+            return authorization
+        } catch {
+            _ = AuthorizationFree(authorization, [])
+            throw error
+        }
+    }
+}
+
+private enum TCPViewerNetworkHelperSMJobBlessError: LocalizedError {
+    case missingBundledHelper(URL)
+    case missingLaunchDaemonPlist(URL)
+    case authorizationFailure(OSStatus)
+    case serviceManagementFailure(CFError?, fallbackMessage: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .missingBundledHelper(let url):
+            "TCP Viewer could not find the bundled helper at \(url.path)."
+        case .missingLaunchDaemonPlist(let url):
+            "TCP Viewer could not find the bundled helper launchd plist at \(url.path)."
+        case .authorizationFailure(let status):
+            "macOS authorization failed: \(Self.message(for: status))."
+        case .serviceManagementFailure(let error, let fallbackMessage):
+            error?.localizedDescription ?? fallbackMessage
+        }
+    }
+
+    private static func message(for status: OSStatus) -> String {
+        SecCopyErrorMessageString(status, nil) as String? ?? "OSStatus \(status)"
     }
 }
 
