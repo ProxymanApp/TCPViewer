@@ -199,6 +199,9 @@ enum PacketProtocolPalette {
 
 final class PacketClientCell: NSTextFieldCell {
     private static let iconCache = PacketClientIconCache()
+    private static let horizontalPadding: CGFloat = 6
+    private static let iconSize: CGFloat = 16
+    private static let iconTextSpacing: CGFloat = 4
     private var client: PacketClient?
 
     override init(textCell string: String) {
@@ -246,21 +249,26 @@ final class PacketClientCell: NSTextFieldCell {
 
     override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
         guard let icon = Self.iconCache.image(for: client) else {
-            let textFrame = cellFrame.insetBy(dx: 6, dy: 0)
+            let textFrame = cellFrame.insetBy(dx: Self.horizontalPadding, dy: 0)
             super.drawInterior(withFrame: textFrame, in: controlView)
             return
         }
 
-        let iconSize: CGFloat = 16
         let iconFrame = NSRect(
-            x: cellFrame.minX + 6,
-            y: cellFrame.midY - iconSize / 2,
-            width: iconSize,
-            height: iconSize
+            x: cellFrame.minX + Self.horizontalPadding,
+            y: cellFrame.midY - Self.iconSize / 2,
+            width: Self.iconSize,
+            height: Self.iconSize
         )
         icon.draw(in: iconFrame)
 
-        let textFrame = cellFrame.insetBy(dx: 6, dy: 0).offsetBy(dx: iconSize + 4, dy: 0)
+        let textX = iconFrame.maxX + Self.iconTextSpacing
+        let textFrame = NSRect(
+            x: textX,
+            y: cellFrame.minY,
+            width: max(0, cellFrame.maxX - textX - Self.horizontalPadding),
+            height: cellFrame.height
+        )
         super.drawInterior(withFrame: textFrame, in: controlView)
     }
 }
