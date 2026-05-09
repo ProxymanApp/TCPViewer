@@ -33,6 +33,7 @@ private enum TCPViewerToolbarLayout {
     static let interfacePopupMaximumWidth: CGFloat = 260
     static let interfacePopupTitlePadding: CGFloat = 48
     static let toolbarControlHeight: CGFloat = 30
+    static let trialButtonWidth: CGFloat = 132
 }
 
 protocol TCPViewerToolbarDataSourceDelegate: AnyObject {
@@ -62,7 +63,9 @@ final class TCPViewerToolbarDataSource: NSObject {
     private let captureButton = NSButton(frame: NSRect(x: 0, y: 0, width: 34, height: 30))
     private let clearAllButton = NSButton(frame: NSRect(x: 0, y: 0, width: 34, height: 30))
     private let statusView = TCPViewerToolbarStatusView(frame: NSRect(x: 0, y: 0, width: 360, height: 28))
-    private let trialButton = NSButton(frame: NSRect(x: 0, y: 0, width: 150, height: 30))
+    private let trialButton = NSButton(
+        frame: NSRect(x: 0, y: 0, width: TCPViewerToolbarLayout.trialButtonWidth, height: 30)
+    )
     private let sharePopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 42, height: 30), pullsDown: true)
     private let inspectorButton = NSButton(frame: NSRect(x: 0, y: 0, width: 34, height: 30))
     private var interfacePopupWidthConstraint: NSLayoutConstraint?
@@ -145,7 +148,7 @@ final class TCPViewerToolbarDataSource: NSObject {
         constrainToolbarView(captureButton, width: 34, height: 30)
         constrainToolbarView(clearAllButton, width: 34, height: 30)
         constrainToolbarView(statusView, width: 360, height: 28)
-        constrainToolbarView(trialButton, width: 150, height: 30)
+        constrainToolbarView(trialButton, width: TCPViewerToolbarLayout.trialButtonWidth, height: 30)
         constrainToolbarView(sharePopup, width: 42, height: 30)
         constrainToolbarView(inspectorButton, width: 34, height: 30)
 
@@ -178,9 +181,11 @@ final class TCPViewerToolbarDataSource: NSObject {
         trialButton.layer?.backgroundColor = NSColor.systemYellow.cgColor
         trialButton.layer?.cornerRadius = 15
         trialButton.layer?.masksToBounds = true
-        trialButton.font = .systemFont(ofSize: 14, weight: .semibold)
+        trialButton.font = .systemFont(ofSize: 15, weight: .bold)
         trialButton.image = TCPViewerUI.image("exclamationmark.circle.fill")
         trialButton.imagePosition = .imageLeading
+        trialButton.imageHugsTitle = true
+        trialButton.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
         trialButton.contentTintColor = .black
         trialButton.toolTip = "Upgrade to TCP Viewer PRO"
 
