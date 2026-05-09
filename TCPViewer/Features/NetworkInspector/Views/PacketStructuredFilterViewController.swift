@@ -210,7 +210,13 @@ private final class PacketStructuredFilterTextField: NSSearchField {
 private final class PacketStructuredFilterRowView: NSView {
     private static let checkboxWidth: CGFloat = 20
     private static let iconButtonSize: CGFloat = 22
+    private static let controlSpacing: CGFloat = 10
+    private static let queryPopupWidth: CGFloat = 140
+    private static let conditionPopupWidth: CGFloat = 146
     private static let rowHeight: CGFloat = 26
+    static let queryPopupLeadingOffset = checkboxWidth + controlSpacing
+    static let conditionPopupLeadingOffset = queryPopupLeadingOffset + queryPopupWidth + controlSpacing
+    static let textFieldLeadingOffset = conditionPopupLeadingOffset + conditionPopupWidth + controlSpacing
 
     private static let queryMenuGroups: [[PacketStructuredFilterQuery]] = [
         [.anyText, .urlDomain, .summary, .tags],
@@ -277,7 +283,7 @@ private final class PacketStructuredFilterRowView: NSView {
         let stack = NSStackView(views: [enabledCheckbox, queryPopup, conditionPopup, textField, removeButton, addButton])
         stack.orientation = .horizontal
         stack.alignment = .centerY
-        stack.spacing = 10
+        stack.spacing = Self.controlSpacing
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
 
@@ -288,8 +294,8 @@ private final class PacketStructuredFilterRowView: NSView {
             stack.topAnchor.constraint(equalTo: topAnchor),
             stack.bottomAnchor.constraint(equalTo: bottomAnchor),
             enabledCheckbox.widthAnchor.constraint(equalToConstant: Self.checkboxWidth),
-            queryPopup.widthAnchor.constraint(equalToConstant: 180),
-            conditionPopup.widthAnchor.constraint(equalToConstant: 156),
+            queryPopup.widthAnchor.constraint(equalToConstant: Self.queryPopupWidth),
+            conditionPopup.widthAnchor.constraint(equalToConstant: Self.conditionPopupWidth),
             removeButton.widthAnchor.constraint(equalToConstant: Self.iconButtonSize),
             removeButton.heightAnchor.constraint(equalToConstant: Self.iconButtonSize),
             addButton.widthAnchor.constraint(equalToConstant: Self.iconButtonSize),
@@ -373,10 +379,12 @@ private struct PacketStructuredFilterActionProvider {
 
 final class PacketStructuredFilterViewController: NSViewController {
     private enum Metrics {
-        static let horizontalInset: CGFloat = 14
-        static let verticalInset: CGFloat = 8
-        static let footerLeadingOffset: CGFloat = 34
-        static let operatorWidth: CGFloat = 150
+        static let horizontalInset: CGFloat = 10
+        static let verticalInset: CGFloat = 6
+        static let operatorWidth: CGFloat = 110
+        static let footerOperatorLeadingOffset = PacketStructuredFilterRowView.queryPopupLeadingOffset
+        static let footerShortcutLeadingOffset = PacketStructuredFilterRowView.textFieldLeadingOffset
+        static let footerShortcutSpacing = max(0, footerShortcutLeadingOffset - footerOperatorLeadingOffset - operatorWidth)
         static let textChangeDebounceInterval: TimeInterval = 0.25
     }
 
@@ -488,11 +496,19 @@ final class PacketStructuredFilterViewController: NSViewController {
             arrangedView.removeFromSuperview()
         }
 
+        // Keep footer controls aligned with the row controls they describe.
         let spacer = NSView()
         spacer.translatesAutoresizingMaskIntoConstraints = false
-        spacer.widthAnchor.constraint(equalToConstant: Metrics.footerLeadingOffset).isActive = true
+        let showsOperatorPopup = group.filters.count > 1
+        let leadingOffset = showsOperatorPopup ? Metrics.footerOperatorLeadingOffset : Metrics.footerShortcutLeadingOffset
+        spacer.widthAnchor.constraint(equalToConstant: leadingOffset).isActive = true
         footerStack.addArrangedSubview(spacer)
-        footerStack.addArrangedSubview(operatorPopup)
+        footerStack.setCustomSpacing(0, after: spacer)
+
+        if showsOperatorPopup {
+            footerStack.addArrangedSubview(operatorPopup)
+            footerStack.setCustomSpacing(Metrics.footerShortcutSpacing, after: operatorPopup)
+        }
 
         ["Show: ⌘F", "New: ⌘N", "Remove: ⇧⌘N", "Up: ⌘↑", "Down: ⌘↓", "On/Off: ⌘B", "Hide: ESC"].forEach { title in
             let label = TCPViewerUI.label(
@@ -510,6 +526,7 @@ final class PacketStructuredFilterViewController: NSViewController {
             arrangedView.removeFromSuperview()
         }
         rowViews.removeAll(keepingCapacity: true)
+        rebuildFooter()
 
         let actionProvider = PacketStructuredFilterActionProvider(
             toggleEnabled: #selector(toggleEnabled(_:)),
@@ -657,8 +674,15 @@ final class PacketStructuredFilterViewController: NSViewController {
 
     private func removeFilter(rowView: PacketStructuredFilterRowView, focusesReplacement: Bool) {
         let currentGroup = consumePendingTextChange()
+        guard currentGroup.filters.count > 1 else {
+            if currentGroup != group {
+                apply(currentGroup)
+            }
+            return
+        }
+
         let currentIndex = rowViews.firstIndex(where: { $0.filterID == rowView.filterID }) ?? rowViews.startIndex
-        let nextGroup = currentGroup.removingOrClearing(filterID: rowView.filterID)
+        let nextGroup = currentGroup.removing(filterID: rowView.filterID)
         let focusFilterID: PacketStructuredFilter.ID?
         if focusesReplacement {
             let nextIndex = min(currentIndex, nextGroup.filters.index(before: nextGroup.filters.endIndex))

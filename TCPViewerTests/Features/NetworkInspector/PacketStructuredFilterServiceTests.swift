@@ -41,11 +41,8 @@ struct PacketStructuredFilterServiceTests {
         #expect(copiedFilter.text == "")
 
         let singleFilterID = try #require(defaultGroup.filters.first?.id)
-        let clearedGroup = defaultGroup.removingOrClearing(filterID: singleFilterID)
-        #expect(clearedGroup.filters.count == 1)
-        #expect(clearedGroup.filters.first?.id == singleFilterID)
-        #expect(clearedGroup.filters.first?.isEnabled == false)
-        #expect(clearedGroup.filters.first?.text == "")
+        let unchangedGroup = defaultGroup.removing(filterID: singleFilterID)
+        #expect(unchangedGroup == defaultGroup)
 
         let data = try JSONEncoder().encode(clampedGroup)
         let decodedGroup = try JSONDecoder().decode(PacketStructuredFilterGroup.self, from: data)

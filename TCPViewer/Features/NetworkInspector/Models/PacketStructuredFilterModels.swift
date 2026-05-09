@@ -222,12 +222,10 @@ struct PacketStructuredFilterGroup: Codable, Sendable, Hashable {
         )
     }
 
-    func removingOrClearing(filterID: PacketStructuredFilter.ID) -> PacketStructuredFilterGroup {
+    // Remove a row only when another filter remains available.
+    func removing(filterID: PacketStructuredFilter.ID) -> PacketStructuredFilterGroup {
         guard filters.count > 1 else {
-            return PacketStructuredFilterGroup(
-                filters: [PacketStructuredFilter(id: filterID, query: filters.first?.query ?? .urlDomain, condition: filters.first?.condition ?? .contains, isEnabled: false)],
-                operator: `operator`
-            )
+            return self
         }
 
         let nextFilters = filters.filter { $0.id != filterID }
