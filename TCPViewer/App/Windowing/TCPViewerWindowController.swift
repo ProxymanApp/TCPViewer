@@ -16,6 +16,7 @@ final class TCPViewerWindowController: NSWindowController {
     private let filterController = PacketQuickFilterViewController()
     private var helperSheetController: NSHostingController<TCPViewerNetworkHelperOnboardingSheet>?
     private var helperSheetWindow: NSWindow?
+    private var licenseStatusObserver: NSObjectProtocol?
 
     init(services: TCPViewerServiceRegistry, configuration: AppConfiguration, initialURL: URL? = nil) {
         let viewModel = NetworkInspectorViewModel(
@@ -38,6 +39,7 @@ final class TCPViewerWindowController: NSWindowController {
         self.rootViewController.delegate = self
         setupToolbar()
         setupQuickFilters()
+        observeLicenseStatusChanges()
         // Persist size and position across launches. If a saved frame exists
         // for this name, it overrides the default size/center set above.
         window.setFrameAutosaveName(Self.frameAutosaveName)
@@ -62,6 +64,12 @@ final class TCPViewerWindowController: NSWindowController {
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        if let licenseStatusObserver {
+            NotificationCenter.default.removeObserver(licenseStatusObserver)
+        }
     }
 
     @IBAction func openDocumentPanel(_ sender: Any?) {
@@ -94,9 +102,23 @@ final class TCPViewerWindowController: NSWindowController {
 
     private func renderToolbar() {
         let snapshot = rootViewController.viewModel.snapshot
-        toolbarDataSource.render(snapshot: snapshot, inspectorViewModel: rootViewController.viewModel)
+        toolbarDataSource.render(
+            snapshot: snapshot,
+            inspectorViewModel: rootViewController.viewModel,
+            isLicenseAuthorized: TCPViewerLicenseService.shared.isLicenseAuthorized
+        )
         filterController.render(snapshot: snapshot)
         window?.title = snapshot.base.documentState.fileURL?.lastPathComponent ?? "TCP Viewer"
+    }
+
+    private func observeLicenseStatusChanges() {
+        licenseStatusObserver = NotificationCenter.default.addObserver(
+            forName: TCPViewerLicenseService.statusDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.renderToolbar()
+        }
     }
 
     private func presentHelperOnboarding(snapshot: TCPViewerNetworkHelperToolSnapshot) {
@@ -182,6 +204,14 @@ extension TCPViewerWindowController: TCPViewerToolbarDataSourceDelegate {
 
     func tcpviewerToolbarDataSourceDidToggleInspector(_ dataSource: TCPViewerToolbarDataSource) {
         rootViewController.toggleInspector()
+    }
+
+    func tcpviewerToolbarDataSourceDidRequestInstallHelperTool(_ dataSource: TCPViewerToolbarDataSource) {
+        rootViewController.installNetworkHelperTool()
+    }
+
+    func tcpviewerToolbarDataSourceDidRequestPaywall(_ dataSource: TCPViewerToolbarDataSource) {
+        (NSApp.delegate as? AppDelegate)?.showPaywall(self)
     }
 }
 

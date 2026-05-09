@@ -24,6 +24,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         observeLicenseStatusChanges()
         wirePreferencesMenu()
         TCPViewerLicenseService.shared.verifyAtLaunch()
+        networkHelperToolManager.refreshStatusForLaunch()
     }
 
     func applicationWillTerminate(_ aNotification: Notification) {
@@ -63,9 +64,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @IBAction func showLicense(_ sender: Any?) {
+        presentLicenseSheet(presentationMode: .license, sender: sender)
+    }
+
+    @IBAction func showPaywall(_ sender: Any?) {
+        presentLicenseSheet(presentationMode: .paywall, sender: sender)
+    }
+
+    private func presentLicenseSheet(presentationMode: TCPViewerLicensePresentationMode, sender: Any?) {
+        // Reuse one sheet owner while allowing Trial and menu actions to open different license modes.
         guard let parentWindow = licenseSheetParentWindow() ?? createLicenseSheetParentWindow() else {
             NSApp.activate(ignoringOtherApps: true)
             return
+        }
+
+        if let controller = licenseWindowController, controller.presentationMode != presentationMode {
+            dismissLicenseSheet()
         }
 
         if let sheetWindow = licenseWindowController?.window {
@@ -78,7 +92,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        let controller = TCPViewerLicenseWindowController { [weak self] in
+        let controller = TCPViewerLicenseWindowController(presentationMode: presentationMode) { [weak self] in
             self?.dismissLicenseSheet()
         }
         licenseWindowController = controller

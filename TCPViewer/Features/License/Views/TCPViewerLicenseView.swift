@@ -8,6 +8,11 @@
 import AppKit
 import SwiftUI
 
+enum TCPViewerLicensePresentationMode {
+    case license
+    case paywall
+}
+
 struct TCPViewerLicenseView: View {
     fileprivate struct Feature: Identifiable {
         let id = UUID()
@@ -17,6 +22,7 @@ struct TCPViewerLicenseView: View {
     }
 
     private let licenseService: TCPViewerLicenseService
+    private let presentationMode: TCPViewerLicensePresentationMode
     private let onDismiss: () -> Void
     private let features: [Feature] = [
         Feature(systemImage: "antenna.radiowaves.left.and.right", title: "Live Packet Capture", detail: "Capture TCP and UDP traffic from supported local interfaces."),
@@ -31,8 +37,13 @@ struct TCPViewerLicenseView: View {
     @State private var isActivating = false
     @State private var isRevoking = false
 
-    init(licenseService: TCPViewerLicenseService, onDismiss: @escaping () -> Void = {}) {
+    init(
+        licenseService: TCPViewerLicenseService,
+        presentationMode: TCPViewerLicensePresentationMode = .license,
+        onDismiss: @escaping () -> Void = {}
+    ) {
         self.licenseService = licenseService
+        self.presentationMode = presentationMode
         self.onDismiss = onDismiss
         self._status = State(initialValue: licenseService.status)
     }
@@ -93,7 +104,7 @@ struct TCPViewerLicenseView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Text("TCP Viewer")
+                Text(headerTitle)
                     .font(.system(size: 38, weight: .bold))
                 Text("PRO")
                     .font(.system(size: 13, weight: .bold))
@@ -104,7 +115,7 @@ struct TCPViewerLicenseView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 4))
             }
 
-            Text("Native packet capture and inspection for focused TCP/UDP workflows.")
+            Text(headerSubtitle)
                 .font(.system(size: 15))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -118,10 +129,10 @@ struct TCPViewerLicenseView: View {
             LicenseInfoPanel(license: license)
         case .unauthorized:
             VStack(alignment: .leading, spacing: 5) {
-                Text("You're using the free version.")
+                Text(unauthorizedTitle)
                     .font(.headline)
                     .foregroundStyle(.orange)
-                Text("Activate TCP Viewer PRO to register this Mac with your license.")
+                Text(unauthorizedMessage)
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
             }
@@ -138,7 +149,7 @@ struct TCPViewerLicenseView: View {
                 Button {
                     TCPViewerLicenseWebsiteService.open(.buyLicense)
                 } label: {
-                    Label("Buy License", systemImage: "cart")
+                    Label(purchaseButtonTitle, systemImage: "cart")
                 }
                 .buttonStyle(.borderedProminent)
 
@@ -150,19 +161,31 @@ struct TCPViewerLicenseView: View {
                 .disabled(isActivating)
             }
 
-            HStack(spacing: 8) {
-                Button {
-                    revokeLicense()
-                } label: {
-                    Label("Remove License", systemImage: "trash")
-                }
-                .disabled(!status.isAuthorized || isRevoking)
+            if isPaywallMode {
+                Text("Already purchased? Activate your license key to unlock PRO on this Mac.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.tertiary)
+                    .padding(.top, 2)
+            } else {
+                HStack(spacing: 8) {
+                    Button {
+                        revokeLicense()
+                    } label: {
+                        Label("Remove License", systemImage: "trash")
+                    }
+                    .disabled(!status.isAuthorized || isRevoking)
 
-                Button {
-                    TCPViewerLicenseWebsiteService.open(.licenseManager)
-                } label: {
-                    Label("License Manager", systemImage: "person.2.badge.key")
+                    Button {
+                        TCPViewerLicenseWebsiteService.open(.licenseManager)
+                    } label: {
+                        Label("License Manager", systemImage: "person.2.badge.key")
+                    }
                 }
+
+                Text("Find, transfer, or revoke devices from License Manager.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.tertiary)
+                    .padding(.top, 2)
             }
 
             if isActivating || isRevoking {
@@ -175,12 +198,39 @@ struct TCPViewerLicenseView: View {
                 }
                 .padding(.top, 4)
             }
-
-            Text("Find, transfer, or revoke devices from License Manager.")
-                .font(.system(size: 12))
-                .foregroundStyle(.tertiary)
-                .padding(.top, 2)
         }
+    }
+
+    private var isPaywallMode: Bool {
+        presentationMode == .paywall && !status.isAuthorized
+    }
+
+    private var headerTitle: String {
+        isPaywallMode ? "Upgrade to TCP Viewer" : "TCP Viewer"
+    }
+
+    private var headerSubtitle: String {
+        if isPaywallMode {
+            return "Unlock native packet capture and inspection for focused TCP/UDP workflows."
+        }
+
+        return "Native packet capture and inspection for focused TCP/UDP workflows."
+    }
+
+    private var unauthorizedTitle: String {
+        isPaywallMode ? "You're using the trial version." : "You're using the free version."
+    }
+
+    private var unauthorizedMessage: String {
+        if isPaywallMode {
+            return "Upgrade to TCP Viewer PRO or activate an existing license to remove trial limits."
+        }
+
+        return "Activate TCP Viewer PRO to register this Mac with your license."
+    }
+
+    private var purchaseButtonTitle: String {
+        isPaywallMode ? "Upgrade Now" : "Buy License"
     }
 
     private var featureChecklist: some View {

@@ -16,7 +16,7 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "BACE00082F9C00000070BE17"
-               BuildableName = "TCPViewerHelperTool"
+               BuildableName = "com.proxyman.tcpviewer.helpertool"
                BlueprintName = "TCPViewerHelperTool"
                ReferencedContainer = "container:TCPViewer.xcodeproj">
             </BuildableReference>
@@ -44,7 +44,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "BACE00082F9C00000070BE17"
-            BuildableName = "TCPViewerHelperTool"
+            BuildableName = "com.proxyman.tcpviewer.helpertool"
             BlueprintName = "TCPViewerHelperTool"
             ReferencedContainer = "container:TCPViewer.xcodeproj">
          </BuildableReference>
@@ -61,7 +61,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "BACE00082F9C00000070BE17"
-            BuildableName = "TCPViewerHelperTool"
+            BuildableName = "com.proxyman.tcpviewer.helpertool"
             BlueprintName = "TCPViewerHelperTool"
             ReferencedContainer = "container:TCPViewer.xcodeproj">
          </BuildableReference>

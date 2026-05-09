@@ -11,6 +11,11 @@ enum TCPViewerNetworkHelperConstants {
     static let displayName = "TCP Viewer Network Helper Tool"
     static let serviceLabel = "com.proxyman.tcpviewer.helpertool"
     static let launchDaemonPlistName = "\(serviceLabel).plist"
+    static let bundledHelperToolRelativePath = "Contents/Library/LaunchServices/\(serviceLabel)"
+    static let bundledLaunchDaemonPlistRelativePath = "Contents/Library/LaunchDaemons/\(launchDaemonPlistName)"
+    static let privilegedHelperToolsDirectoryPath = "/Library/PrivilegedHelperTools"
+    static let installedHelperToolPath = "\(privilegedHelperToolsDirectoryPath)/\(serviceLabel)"
+    static let launchDaemonsDirectoryPath = "/Library/LaunchDaemons"
     static let legacyServiceLabels = [
         "com.proxyman.Packetry.NetworkHelper",
         "com.proxyman.Packetman.NetworkHelper",

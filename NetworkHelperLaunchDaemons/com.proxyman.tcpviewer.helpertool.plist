@@ -4,8 +4,6 @@
 <dict>
 	<key>Label</key>
 	<string>com.proxyman.tcpviewer.helpertool</string>
-	<key>BundleProgram</key>
-	<string>Contents/MacOS/TCPViewerHelperTool</string>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>
