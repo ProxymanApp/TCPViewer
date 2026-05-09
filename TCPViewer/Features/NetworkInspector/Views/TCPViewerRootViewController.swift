@@ -114,6 +114,10 @@ final class TCPViewerRootViewController: NSViewController {
         viewModel.resetQuickFilters()
     }
 
+    func focusStructuredFilter() {
+        workspaceViewController.focusStructuredFilter()
+    }
+
     func showOpenPanel() {
         viewModel.presentOpenCapturePanel()
     }

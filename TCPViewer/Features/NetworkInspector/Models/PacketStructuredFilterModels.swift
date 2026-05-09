@@ -169,11 +169,11 @@ struct PacketStructuredFilter: Identifiable, Codable, Sendable, Hashable {
         isEnabled && !normalizedText.isEmpty
     }
 
-    func duplicated() -> PacketStructuredFilter {
+    func duplicatedForNewRow() -> PacketStructuredFilter {
         PacketStructuredFilter(
             query: query,
             condition: condition,
-            text: text,
+            text: "",
             isEnabled: isEnabled
         )
     }
@@ -217,7 +217,7 @@ struct PacketStructuredFilterGroup: Codable, Sendable, Hashable {
 
         let sourceFilter = filterID.flatMap { id in filters.first { $0.id == id } } ?? PacketStructuredFilter()
         return PacketStructuredFilterGroup(
-            filters: filters + [sourceFilter.duplicated()],
+            filters: filters + [sourceFilter.duplicatedForNewRow()],
             operator: `operator`
         )
     }

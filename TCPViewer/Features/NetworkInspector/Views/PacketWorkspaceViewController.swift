@@ -135,6 +135,10 @@ final class PacketWorkspaceViewController: NSViewController {
         }
     }
 
+    func focusStructuredFilter() {
+        structuredFilterController.focusLastFilterTextField()
+    }
+
     private func setupContent() {
         contentContainer.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(contentContainer)

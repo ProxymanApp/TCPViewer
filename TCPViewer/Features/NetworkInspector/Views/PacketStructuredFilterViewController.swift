@@ -12,6 +12,23 @@ protocol PacketStructuredFilterViewControllerDelegate: AnyObject {
 }
 
 private final class PacketStructuredFilterRowView: NSView {
+    private static let iconButtonSize: CGFloat = 24
+
+    private static let queryMenuGroups: [[PacketStructuredFilterQuery]] = [
+        [.anyText, .urlDomain, .summary, .tags],
+        [.protocol, .direction, .tcpFlags, .tcpPayload, .decodeStatus],
+        [.source, .destination, .sourcePort, .destinationPort],
+        [.client, .pid, .bundleIdentifier],
+        [.streamID, .interface, .length],
+    ]
+
+    private static let conditionMenuGroups: [[PacketStructuredFilterCondition]] = [
+        [.contains, .notContains],
+        [.hasPrefix, .notHasPrefix, .hasSuffix, .notHasSuffix],
+        [.lessThan, .greaterThanOrEqual],
+        [.matchesRegex, .notMatchesRegex],
+    ]
+
     let filterID: PacketStructuredFilter.ID
     let enabledCheckbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     let queryPopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -40,16 +57,10 @@ private final class PacketStructuredFilterRowView: NSView {
         enabledCheckbox.toolTip = "Enable filter"
 
         configurePopup(queryPopup, target: target, action: actionProvider.changeQuery)
-        PacketStructuredFilterQuery.allCases.forEach { query in
-            let item = queryPopup.menu?.addItem(withTitle: query.title, action: nil, keyEquivalent: "")
-            item?.representedObject = query.rawValue
-        }
+        populateQueryMenu()
 
         configurePopup(conditionPopup, target: target, action: actionProvider.changeCondition)
-        PacketStructuredFilterCondition.allCases.forEach { condition in
-            let item = conditionPopup.menu?.addItem(withTitle: condition.title, action: nil, keyEquivalent: "")
-            item?.representedObject = condition.rawValue
-        }
+        populateConditionMenu()
 
         textField.target = target
         textField.action = actionProvider.changeText
@@ -80,8 +91,10 @@ private final class PacketStructuredFilterRowView: NSView {
             enabledCheckbox.widthAnchor.constraint(equalToConstant: 24),
             queryPopup.widthAnchor.constraint(equalToConstant: 180),
             conditionPopup.widthAnchor.constraint(equalToConstant: 156),
-            removeButton.widthAnchor.constraint(equalToConstant: 24),
-            addButton.widthAnchor.constraint(equalToConstant: 24),
+            removeButton.widthAnchor.constraint(equalToConstant: Self.iconButtonSize),
+            removeButton.heightAnchor.constraint(equalToConstant: Self.iconButtonSize),
+            addButton.widthAnchor.constraint(equalToConstant: Self.iconButtonSize),
+            addButton.heightAnchor.constraint(equalToConstant: Self.iconButtonSize),
         ])
 
         textField.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -101,6 +114,33 @@ private final class PacketStructuredFilterRowView: NSView {
         popup.controlSize = .regular
         popup.bezelStyle = .rounded
         popup.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .medium)
+    }
+
+    // Build native popup menus with separators between related filter sections.
+    private func populateQueryMenu() {
+        queryPopup.removeAllItems()
+        Self.queryMenuGroups.enumerated().forEach { index, group in
+            if index > 0 {
+                queryPopup.menu?.addItem(.separator())
+            }
+            group.forEach { query in
+                let item = queryPopup.menu?.addItem(withTitle: query.title, action: nil, keyEquivalent: "")
+                item?.representedObject = query.rawValue
+            }
+        }
+    }
+
+    private func populateConditionMenu() {
+        conditionPopup.removeAllItems()
+        Self.conditionMenuGroups.enumerated().forEach { index, group in
+            if index > 0 {
+                conditionPopup.menu?.addItem(.separator())
+            }
+            group.forEach { condition in
+                let item = conditionPopup.menu?.addItem(withTitle: condition.title, action: nil, keyEquivalent: "")
+                item?.representedObject = condition.rawValue
+            }
+        }
     }
 
     private func configureIconButton(
@@ -167,6 +207,15 @@ final class PacketStructuredFilterViewController: NSViewController {
         rebuildRows()
     }
 
+    func focusLastFilterTextField() {
+        loadViewIfNeeded()
+        guard let filterID = group.filters.last?.id else {
+            return
+        }
+
+        focusTextField(for: filterID)
+    }
+
     private func setupLayout() {
         rootStack.orientation = .vertical
         rootStack.alignment = .leading
@@ -194,6 +243,9 @@ final class PacketStructuredFilterViewController: NSViewController {
 
         view.addSubview(rootStack)
         view.addSubview(bottomSeparator)
+        rootStack.addArrangedSubview(rowStack)
+        rootStack.addArrangedSubview(footerStack)
+
         NSLayoutConstraint.activate([
             rootStack.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             rootStack.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -205,9 +257,6 @@ final class PacketStructuredFilterViewController: NSViewController {
             bottomSeparator.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             bottomSeparator.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
-
-        rootStack.addArrangedSubview(rowStack)
-        rootStack.addArrangedSubview(footerStack)
     }
 
     private func configureOperatorPopup() {
@@ -294,7 +343,11 @@ final class PacketStructuredFilterViewController: NSViewController {
         group.filters.first { $0.id == filterID }
     }
 
-    private func apply(_ nextGroup: PacketStructuredFilterGroup, rebuildsRows: Bool = false) {
+    private func apply(
+        _ nextGroup: PacketStructuredFilterGroup,
+        rebuildsRows: Bool = false,
+        focusFilterID: PacketStructuredFilter.ID? = nil
+    ) {
         group = PacketStructuredFilterGroup(filters: nextGroup.filters, operator: nextGroup.operator)
         if rebuildsRows {
             rebuildRows()
@@ -302,6 +355,18 @@ final class PacketStructuredFilterViewController: NSViewController {
             updateAddButtonStates()
         }
         delegate?.packetStructuredFilterViewController(self, didUpdate: group)
+
+        if let focusFilterID {
+            focusTextField(for: focusFilterID)
+        }
+    }
+
+    private func focusTextField(for filterID: PacketStructuredFilter.ID) {
+        guard let rowView = rowViews.first(where: { $0.filterID == filterID }) else {
+            return
+        }
+
+        view.window?.makeFirstResponder(rowView.textField)
     }
 
     @objc private func toggleEnabled(_ sender: Any?) {
@@ -361,7 +426,8 @@ final class PacketStructuredFilterViewController: NSViewController {
             return
         }
 
-        apply(group.addingCopy(of: rowView(for: sender)?.filterID), rebuildsRows: true)
+        let nextGroup = group.addingCopy(of: rowView(for: sender)?.filterID)
+        apply(nextGroup, rebuildsRows: true, focusFilterID: nextGroup.filters.last?.id)
     }
 
     @objc private func changeOperator(_ sender: Any?) {

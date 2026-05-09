@@ -31,6 +31,15 @@ struct PacketStructuredFilterServiceTests {
         #expect(fullGroup.filters.count == PacketStructuredFilterGroup.maxFilterCount)
         #expect(fullGroup.addingCopy(of: fullGroup.filters.first?.id).filters.count == PacketStructuredFilterGroup.maxFilterCount)
 
+        let sourceFilter = PacketStructuredFilter(query: .protocol, condition: .matchesRegex, text: "tcp|udp", isEnabled: true)
+        let copiedGroup = PacketStructuredFilterGroup(filters: [sourceFilter]).addingCopy(of: sourceFilter.id)
+        let copiedFilter = try #require(copiedGroup.filters.last)
+        #expect(copiedFilter.id != sourceFilter.id)
+        #expect(copiedFilter.query == sourceFilter.query)
+        #expect(copiedFilter.condition == sourceFilter.condition)
+        #expect(copiedFilter.isEnabled == sourceFilter.isEnabled)
+        #expect(copiedFilter.text == "")
+
         let singleFilterID = try #require(defaultGroup.filters.first?.id)
         let clearedGroup = defaultGroup.removingOrClearing(filterID: singleFilterID)
         #expect(clearedGroup.filters.count == 1)

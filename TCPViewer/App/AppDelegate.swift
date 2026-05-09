@@ -23,6 +23,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         appConfiguration.applyAppearance()
         observeLicenseStatusChanges()
         wirePreferencesMenu()
+        wireFilterMenu()
         TCPViewerLicenseService.shared.verifyAtLaunch()
         networkHelperToolManager.refreshStatusForLaunch()
     }
@@ -151,6 +152,55 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         addLicenseMenuItemIfNeeded(to: appMenu)
+    }
+
+    private func wireFilterMenu() {
+        guard let editMenu = NSApp.mainMenu?.items.first(where: { $0.title == "Edit" })?.submenu else {
+            return
+        }
+
+        // Cmd-F belongs to the packet filter, so remove the storyboard Find conflict.
+        removeFindShortcutConflict(in: editMenu)
+
+        if let existingItem = editMenu.items.first(where: { $0.action == #selector(TCPViewerWindowController.focusStructuredFilter(_:)) }) {
+            configureFilterMenuItem(existingItem)
+            return
+        }
+
+        let item = NSMenuItem(
+            title: "Filter",
+            action: #selector(TCPViewerWindowController.focusStructuredFilter(_:)),
+            keyEquivalent: "f"
+        )
+        configureFilterMenuItem(item)
+
+        let insertionIndex = editMenu.items.firstIndex { $0.title == "Find" } ?? editMenu.items.count
+        editMenu.insertItem(item, at: insertionIndex)
+    }
+
+    private func configureFilterMenuItem(_ item: NSMenuItem) {
+        item.title = "Filter"
+        item.target = nil
+        item.action = #selector(TCPViewerWindowController.focusStructuredFilter(_:))
+        item.keyEquivalent = "f"
+        item.keyEquivalentModifierMask = [.command]
+    }
+
+    private func removeFindShortcutConflict(in menu: NSMenu) {
+        let findPanelAction = NSSelectorFromString("performFindPanelAction:")
+
+        for item in menu.items {
+            if item.action == findPanelAction,
+               item.keyEquivalent.lowercased() == "f",
+               item.keyEquivalentModifierMask.intersection([.option, .control, .shift]).isEmpty {
+                item.keyEquivalent = ""
+                item.keyEquivalentModifierMask = []
+            }
+
+            if let submenu = item.submenu {
+                removeFindShortcutConflict(in: submenu)
+            }
+        }
     }
 
     private func addLicenseMenuItemIfNeeded(to appMenu: NSMenu) {
