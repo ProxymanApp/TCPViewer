@@ -298,14 +298,19 @@ final class PacketStructuredFilterService {
 
     fileprivate struct PreparedFilter {
         let filter: PacketStructuredFilter
+        let normalizedText: String
         let regex: NSRegularExpression?
         let hasInvalidRegex: Bool
+        let cost: Int
 
         init(filter: PacketStructuredFilter) {
+            let normalizedText = filter.normalizedText
             self.filter = filter
+            self.normalizedText = normalizedText
+            self.cost = Self.evaluationCost(for: filter)
             switch filter.condition {
             case .matchesRegex, .notMatchesRegex:
-                if let regex = try? NSRegularExpression(pattern: filter.normalizedText, options: [.caseInsensitive]) {
+                if let regex = try? NSRegularExpression(pattern: normalizedText, options: [.caseInsensitive]) {
                     self.regex = regex
                     self.hasInvalidRegex = false
                 } else {
@@ -317,13 +322,36 @@ final class PacketStructuredFilterService {
                 self.hasInvalidRegex = false
             }
         }
+
+        private static func evaluationCost(for filter: PacketStructuredFilter) -> Int {
+            if filter.condition == .lessThan || filter.condition == .greaterThanOrEqual {
+                return 0
+            }
+
+            switch (filter.query, filter.condition) {
+            case (_, .matchesRegex), (_, .notMatchesRegex):
+                return 4
+            case (.anyText, _):
+                return 5
+            case (.sourcePort, _), (.destinationPort, _), (.pid, _), (.streamID, _), (.tcpPayload, _), (.length, _):
+                return 1
+            case (.direction, _), (.tcpFlags, _), (.decodeStatus, _), (.interface, _), (.tags, _):
+                return 2
+            default:
+                return 3
+            }
+        }
     }
 
     // Prepare filters once before scanning packet rows so regex patterns are not compiled per packet.
     func evaluationContext(for group: PacketStructuredFilterGroup) -> EvaluationContext {
-        EvaluationContext(
+        let filters = group.activeFilters.map(PreparedFilter.init)
+        let orderedFilters = group.operator == .and
+            ? filters.sorted { $0.cost < $1.cost }
+            : filters
+        return EvaluationContext(
             groupOperator: group.operator,
-            filters: group.activeFilters.map(PreparedFilter.init)
+            filters: orderedFilters
         )
     }
 
@@ -357,7 +385,7 @@ final class PacketStructuredFilterService {
             return true
         }
 
-        let text = filter.normalizedText
+        let text = preparedFilter.normalizedText
         if filter.condition == .lessThan || filter.condition == .greaterThanOrEqual {
             return matchesNumeric(packet, query: filter.query, condition: filter.condition, text: text)
         }
