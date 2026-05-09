@@ -21,6 +21,8 @@ protocol PacketWorkspaceViewControllerDelegate: AnyObject {
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestDeletePackets identifiers: [PacketSummary.ID])
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didUpdateStructuredFilterGroup group: PacketStructuredFilterGroup)
     func packetWorkspaceViewControllerDidRequestResetQuickFilters(_ controller: PacketWorkspaceViewController)
+    func packetWorkspaceViewControllerCanAddStructuredFilter(_ controller: PacketWorkspaceViewController) -> Bool
+    func packetWorkspaceViewControllerDidRequestStructuredFilterPaywall(_ controller: PacketWorkspaceViewController)
 }
 
 private final class VerticallyCenteredTextFieldCell: NSTextFieldCell {
@@ -332,5 +334,13 @@ extension PacketWorkspaceViewController: PacketTableViewControllerDelegate {
 extension PacketWorkspaceViewController: PacketStructuredFilterViewControllerDelegate {
     func packetStructuredFilterViewController(_ controller: PacketStructuredFilterViewController, didUpdate group: PacketStructuredFilterGroup) {
         delegate?.packetWorkspaceViewController(self, didUpdateStructuredFilterGroup: group)
+    }
+
+    func packetStructuredFilterViewControllerCanAddFilter(_ controller: PacketStructuredFilterViewController) -> Bool {
+        delegate?.packetWorkspaceViewControllerCanAddStructuredFilter(self) ?? true
+    }
+
+    func packetStructuredFilterViewControllerDidRequestPaywall(_ controller: PacketStructuredFilterViewController) {
+        delegate?.packetWorkspaceViewControllerDidRequestStructuredFilterPaywall(self)
     }
 }

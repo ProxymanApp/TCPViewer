@@ -9,6 +9,8 @@ import AppKit
 
 protocol PacketStructuredFilterViewControllerDelegate: AnyObject {
     func packetStructuredFilterViewController(_ controller: PacketStructuredFilterViewController, didUpdate group: PacketStructuredFilterGroup)
+    func packetStructuredFilterViewControllerCanAddFilter(_ controller: PacketStructuredFilterViewController) -> Bool
+    func packetStructuredFilterViewControllerDidRequestPaywall(_ controller: PacketStructuredFilterViewController)
 }
 
 private enum PacketStructuredFilterShortcutKeyCode {
@@ -205,7 +207,9 @@ private final class PacketStructuredFilterTextField: NSSearchField {
 }
 
 private final class PacketStructuredFilterRowView: NSView {
-    private static let iconButtonSize: CGFloat = 24
+    private static let checkboxWidth: CGFloat = 20
+    private static let iconButtonSize: CGFloat = 22
+    private static let rowHeight: CGFloat = 26
 
     private static let queryMenuGroups: [[PacketStructuredFilterQuery]] = [
         [.anyText, .urlDomain, .summary, .tags],
@@ -246,7 +250,7 @@ private final class PacketStructuredFilterRowView: NSView {
     private func setupControls(target: AnyObject, actionProvider: PacketStructuredFilterActionProvider) {
         enabledCheckbox.target = target
         enabledCheckbox.action = actionProvider.toggleEnabled
-        enabledCheckbox.controlSize = .regular
+        enabledCheckbox.controlSize = .small
         enabledCheckbox.toolTip = "Enable filter"
 
         configurePopup(queryPopup, target: target, action: actionProvider.changeQuery)
@@ -260,8 +264,8 @@ private final class PacketStructuredFilterRowView: NSView {
         textField.delegate = target as? NSSearchFieldDelegate
         textField.shortcutHandler = target as? PacketStructuredFilterTextFieldShortcutHandling
         textField.placeholderString = "Text"
-        textField.controlSize = .regular
-        textField.font = .systemFont(ofSize: NSFont.systemFontSize)
+        textField.controlSize = .small
+        textField.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         textField.focusRingType = .default
         textField.sendsWholeSearchString = false
         textField.cell?.lineBreakMode = .byTruncatingTail
@@ -277,12 +281,12 @@ private final class PacketStructuredFilterRowView: NSView {
         addSubview(stack)
 
         NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: 30),
+            heightAnchor.constraint(equalToConstant: Self.rowHeight),
             stack.leadingAnchor.constraint(equalTo: leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: trailingAnchor),
             stack.topAnchor.constraint(equalTo: topAnchor),
             stack.bottomAnchor.constraint(equalTo: bottomAnchor),
-            enabledCheckbox.widthAnchor.constraint(equalToConstant: 24),
+            enabledCheckbox.widthAnchor.constraint(equalToConstant: Self.checkboxWidth),
             queryPopup.widthAnchor.constraint(equalToConstant: 180),
             conditionPopup.widthAnchor.constraint(equalToConstant: 156),
             removeButton.widthAnchor.constraint(equalToConstant: Self.iconButtonSize),
@@ -305,9 +309,9 @@ private final class PacketStructuredFilterRowView: NSView {
     private func configurePopup(_ popup: NSPopUpButton, target: AnyObject, action: Selector) {
         popup.target = target
         popup.action = action
-        popup.controlSize = .regular
+        popup.controlSize = .small
         popup.bezelStyle = .rounded
-        popup.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .medium)
+        popup.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
     }
 
     // Build native popup menus with separators between related filter sections.
@@ -352,7 +356,7 @@ private final class PacketStructuredFilterRowView: NSView {
         button.imagePosition = .imageOnly
         button.isBordered = false
         button.bezelStyle = .recessed
-        button.controlSize = .regular
+        button.controlSize = .small
         button.toolTip = toolTip
     }
 }
@@ -372,6 +376,7 @@ final class PacketStructuredFilterViewController: NSViewController {
         static let verticalInset: CGFloat = 8
         static let footerLeadingOffset: CGFloat = 34
         static let operatorWidth: CGFloat = 150
+        static let textChangeDebounceInterval: TimeInterval = 0.25
     }
 
     weak var delegate: PacketStructuredFilterViewControllerDelegate?
@@ -383,6 +388,12 @@ final class PacketStructuredFilterViewController: NSViewController {
     private let bottomSeparator = TCPViewerUI.separator()
     private var rowViews: [PacketStructuredFilterRowView] = []
     private var group = PacketStructuredFilterGroup.default
+    private var pendingTextChanges: [PacketStructuredFilter.ID: String] = [:]
+    private var pendingTextChangeWorkItem: DispatchWorkItem?
+
+    deinit {
+        pendingTextChangeWorkItem?.cancel()
+    }
 
     override func loadView() {
         view = NSView()
@@ -458,9 +469,9 @@ final class PacketStructuredFilterViewController: NSViewController {
     private func configureOperatorPopup() {
         operatorPopup.target = self
         operatorPopup.action = #selector(changeOperator(_:))
-        operatorPopup.controlSize = .regular
+        operatorPopup.controlSize = .small
         operatorPopup.bezelStyle = .rounded
-        operatorPopup.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .medium)
+        operatorPopup.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
         operatorPopup.toolTip = "Choose how enabled filters are combined."
         PacketStructuredFilterGroupOperator.allCases.forEach { filterOperator in
             let item = operatorPopup.menu?.addItem(withTitle: filterOperator.title, action: nil, keyEquivalent: "")
@@ -485,7 +496,7 @@ final class PacketStructuredFilterViewController: NSViewController {
         ["Show: ⌘F", "New: ⌘N", "Remove: ⇧⌘N", "Up: ⌘↑", "Down: ⌘↓", "On/Off: ⌘B", "Hide: ESC"].forEach { title in
             let label = TCPViewerUI.label(
                 title,
-                font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold),
+                font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium),
                 color: .secondaryLabelColor
             )
             footerStack.addArrangedSubview(label)
@@ -537,10 +548,6 @@ final class PacketStructuredFilterViewController: NSViewController {
         return nil
     }
 
-    private func filter(withID filterID: PacketStructuredFilter.ID) -> PacketStructuredFilter? {
-        group.filters.first { $0.id == filterID }
-    }
-
     private func apply(
         _ nextGroup: PacketStructuredFilterGroup,
         rebuildsRows: Bool = false,
@@ -556,6 +563,47 @@ final class PacketStructuredFilterViewController: NSViewController {
 
         if let focusFilterID {
             focusTextField(for: focusFilterID)
+        }
+    }
+
+    // Delay expensive packet table filtering until the user pauses typing.
+    private func scheduleTextChange(rowView: PacketStructuredFilterRowView) {
+        pendingTextChangeWorkItem?.cancel()
+        pendingTextChanges[rowView.filterID] = rowView.textField.stringValue
+
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.applyPendingTextChange()
+        }
+        pendingTextChangeWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + Metrics.textChangeDebounceInterval, execute: workItem)
+    }
+
+    private func applyPendingTextChange() {
+        let nextGroup = consumePendingTextChange()
+        guard nextGroup != group else {
+            return
+        }
+
+        apply(nextGroup)
+    }
+
+    private func consumePendingTextChange() -> PacketStructuredFilterGroup {
+        pendingTextChangeWorkItem?.cancel()
+        pendingTextChangeWorkItem = nil
+
+        guard !pendingTextChanges.isEmpty else {
+            return group
+        }
+
+        let pendingTextChanges = pendingTextChanges
+        self.pendingTextChanges.removeAll()
+        return pendingTextChanges.reduce(group) { nextGroup, pendingTextChange in
+            guard var filter = nextGroup.filters.first(where: { $0.id == pendingTextChange.key }) else {
+                return nextGroup
+            }
+
+            filter.text = pendingTextChange.value
+            return nextGroup.replacing(filter)
         }
     }
 
@@ -586,17 +634,30 @@ final class PacketStructuredFilterViewController: NSViewController {
     }
 
     private func addFilter(copying filterID: PacketStructuredFilter.ID?) {
-        guard group.canAddFilter else {
+        let currentGroup = consumePendingTextChange()
+        guard currentGroup.canAddFilter else {
+            if currentGroup != group {
+                apply(currentGroup)
+            }
             return
         }
 
-        let nextGroup = group.addingCopy(of: filterID)
+        guard delegate?.packetStructuredFilterViewControllerCanAddFilter(self) ?? true else {
+            if currentGroup != group {
+                apply(currentGroup)
+            }
+            delegate?.packetStructuredFilterViewControllerDidRequestPaywall(self)
+            return
+        }
+
+        let nextGroup = currentGroup.addingCopy(of: filterID)
         apply(nextGroup, rebuildsRows: true, focusFilterID: nextGroup.filters.last?.id)
     }
 
     private func removeFilter(rowView: PacketStructuredFilterRowView, focusesReplacement: Bool) {
+        let currentGroup = consumePendingTextChange()
         let currentIndex = rowViews.firstIndex(where: { $0.filterID == rowView.filterID }) ?? rowViews.startIndex
-        let nextGroup = group.removingOrClearing(filterID: rowView.filterID)
+        let nextGroup = currentGroup.removingOrClearing(filterID: rowView.filterID)
         let focusFilterID: PacketStructuredFilter.ID?
         if focusesReplacement {
             let nextIndex = min(currentIndex, nextGroup.filters.index(before: nextGroup.filters.endIndex))
@@ -609,13 +670,14 @@ final class PacketStructuredFilterViewController: NSViewController {
     }
 
     private func toggleEnabled(rowView: PacketStructuredFilterRowView) {
-        guard var filter = filter(withID: rowView.filterID) else {
+        let currentGroup = consumePendingTextChange()
+        guard var filter = currentGroup.filters.first(where: { $0.id == rowView.filterID }) else {
             return
         }
 
         filter.isEnabled.toggle()
         rowView.enabledCheckbox.state = filter.isEnabled ? .on : .off
-        apply(group.replacing(filter), focusFilterID: filter.id)
+        apply(currentGroup.replacing(filter), focusFilterID: filter.id)
     }
 
     private func hideFilterTextFieldFocus() {
@@ -623,47 +685,57 @@ final class PacketStructuredFilterViewController: NSViewController {
     }
 
     @objc private func toggleEnabled(_ sender: Any?) {
-        guard let rowView = rowView(for: sender),
-              var filter = filter(withID: rowView.filterID) else {
+        guard let rowView = rowView(for: sender) else {
+            return
+        }
+
+        let currentGroup = consumePendingTextChange()
+        guard var filter = currentGroup.filters.first(where: { $0.id == rowView.filterID }) else {
             return
         }
 
         filter.isEnabled = rowView.enabledCheckbox.state == .on
-        apply(group.replacing(filter))
+        apply(currentGroup.replacing(filter))
     }
 
     @objc private func changeQuery(_ sender: Any?) {
         guard let rowView = rowView(for: sender),
-              var filter = filter(withID: rowView.filterID),
               let rawValue = rowView.queryPopup.selectedItem?.representedObject as? String,
               let query = PacketStructuredFilterQuery(rawValue: rawValue) else {
             return
         }
 
+        let currentGroup = consumePendingTextChange()
+        guard var filter = currentGroup.filters.first(where: { $0.id == rowView.filterID }) else {
+            return
+        }
+
         filter.query = query
-        apply(group.replacing(filter))
+        apply(currentGroup.replacing(filter))
     }
 
     @objc private func changeCondition(_ sender: Any?) {
         guard let rowView = rowView(for: sender),
-              var filter = filter(withID: rowView.filterID),
               let rawValue = rowView.conditionPopup.selectedItem?.representedObject as? String,
               let condition = PacketStructuredFilterCondition(rawValue: rawValue) else {
             return
         }
 
-        filter.condition = condition
-        apply(group.replacing(filter))
-    }
-
-    @objc private func changeText(_ sender: Any?) {
-        guard let rowView = rowView(for: sender),
-              var filter = filter(withID: rowView.filterID) else {
+        let currentGroup = consumePendingTextChange()
+        guard var filter = currentGroup.filters.first(where: { $0.id == rowView.filterID }) else {
             return
         }
 
-        filter.text = rowView.textField.stringValue
-        apply(group.replacing(filter))
+        filter.condition = condition
+        apply(currentGroup.replacing(filter))
+    }
+
+    @objc private func changeText(_ sender: Any?) {
+        guard let rowView = rowView(for: sender) else {
+            return
+        }
+
+        scheduleTextChange(rowView: rowView)
     }
 
     @objc private func removeFilter(_ sender: Any?) {
@@ -684,7 +756,8 @@ final class PacketStructuredFilterViewController: NSViewController {
             return
         }
 
-        apply(group.updatingOperator(nextOperator))
+        let currentGroup = consumePendingTextChange()
+        apply(currentGroup.updatingOperator(nextOperator))
     }
 }
 

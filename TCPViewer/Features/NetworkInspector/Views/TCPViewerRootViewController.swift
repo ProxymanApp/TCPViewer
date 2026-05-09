@@ -11,6 +11,7 @@ import PcapPlusPlusCore
 protocol TCPViewerRootViewControllerDelegate: AnyObject {
     func tcpviewerRootViewControllerDidChangeToolbarState(_ controller: TCPViewerRootViewController)
     func tcpviewerRootViewController(_ controller: TCPViewerRootViewController, didRequestHelperOnboarding snapshot: TCPViewerNetworkHelperToolSnapshot)
+    func tcpviewerRootViewControllerDidRequestPaywall(_ controller: TCPViewerRootViewController)
 }
 
 final class TCPViewerRootViewController: NSViewController {
@@ -395,6 +396,14 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
 
     func packetWorkspaceViewControllerDidRequestResetQuickFilters(_ controller: PacketWorkspaceViewController) {
         viewModel.resetQuickFilters()
+    }
+
+    func packetWorkspaceViewControllerCanAddStructuredFilter(_ controller: PacketWorkspaceViewController) -> Bool {
+        TCPViewerLicenseService.shared.isLicenseAuthorized
+    }
+
+    func packetWorkspaceViewControllerDidRequestStructuredFilterPaywall(_ controller: PacketWorkspaceViewController) {
+        delegate?.tcpviewerRootViewControllerDidRequestPaywall(self)
     }
 }
 

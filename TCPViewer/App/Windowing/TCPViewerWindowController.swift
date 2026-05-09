@@ -187,6 +187,10 @@ extension TCPViewerWindowController: TCPViewerRootViewControllerDelegate {
     func tcpviewerRootViewController(_ controller: TCPViewerRootViewController, didRequestHelperOnboarding snapshot: TCPViewerNetworkHelperToolSnapshot) {
         presentHelperOnboarding(snapshot: snapshot)
     }
+
+    func tcpviewerRootViewControllerDidRequestPaywall(_ controller: TCPViewerRootViewController) {
+        (NSApp.delegate as? AppDelegate)?.showPaywall(self)
+    }
 }
 
 extension TCPViewerWindowController: TCPViewerToolbarDataSourceDelegate {
