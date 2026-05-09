@@ -88,6 +88,10 @@ final class TCPViewerWindowController: NSWindowController {
         rootViewController.toggleInspector()
     }
 
+    @IBAction func focusStructuredFilter(_ sender: Any?) {
+        rootViewController.focusStructuredFilter()
+    }
+
     private func setupToolbar() {
         toolbarDataSource.delegate = self
         window?.toolbar = toolbarDataSource.toolbar
@@ -182,6 +186,10 @@ extension TCPViewerWindowController: TCPViewerRootViewControllerDelegate {
 
     func tcpviewerRootViewController(_ controller: TCPViewerRootViewController, didRequestHelperOnboarding snapshot: TCPViewerNetworkHelperToolSnapshot) {
         presentHelperOnboarding(snapshot: snapshot)
+    }
+
+    func tcpviewerRootViewControllerDidRequestPaywall(_ controller: TCPViewerRootViewController) {
+        (NSApp.delegate as? AppDelegate)?.showPaywall(self)
     }
 }
 

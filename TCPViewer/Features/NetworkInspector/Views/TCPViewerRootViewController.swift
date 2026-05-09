@@ -11,6 +11,7 @@ import PcapPlusPlusCore
 protocol TCPViewerRootViewControllerDelegate: AnyObject {
     func tcpviewerRootViewControllerDidChangeToolbarState(_ controller: TCPViewerRootViewController)
     func tcpviewerRootViewController(_ controller: TCPViewerRootViewController, didRequestHelperOnboarding snapshot: TCPViewerNetworkHelperToolSnapshot)
+    func tcpviewerRootViewControllerDidRequestPaywall(_ controller: TCPViewerRootViewController)
 }
 
 final class TCPViewerRootViewController: NSViewController {
@@ -112,6 +113,11 @@ final class TCPViewerRootViewController: NSViewController {
 
     func resetQuickFilters() {
         viewModel.resetQuickFilters()
+    }
+
+    func focusStructuredFilter() {
+        viewModel.setStructuredFilterVisible(true)
+        workspaceViewController.focusStructuredFilter()
     }
 
     func showOpenPanel() {
@@ -385,8 +391,24 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
         viewModel.deletePackets(identifiers)
     }
 
+    func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didUpdateStructuredFilterGroup group: PacketStructuredFilterGroup) {
+        viewModel.updateStructuredFilterGroup(group)
+    }
+
     func packetWorkspaceViewControllerDidRequestResetQuickFilters(_ controller: PacketWorkspaceViewController) {
         viewModel.resetQuickFilters()
+    }
+
+    func packetWorkspaceViewControllerCanAddStructuredFilter(_ controller: PacketWorkspaceViewController) -> Bool {
+        TCPViewerLicenseService.shared.isLicenseAuthorized
+    }
+
+    func packetWorkspaceViewControllerDidRequestStructuredFilterPaywall(_ controller: PacketWorkspaceViewController) {
+        delegate?.tcpviewerRootViewControllerDidRequestPaywall(self)
+    }
+
+    func packetWorkspaceViewControllerDidRequestHideStructuredFilter(_ controller: PacketWorkspaceViewController) {
+        viewModel.setStructuredFilterVisible(false)
     }
 }
 
@@ -403,5 +425,13 @@ extension TCPViewerRootViewController: StatusStripViewControllerDelegate {
 
     func statusStripViewControllerDidRequestClearPackets(_ controller: StatusStripViewController) {
         viewModel.clearTablePackets()
+    }
+
+    func statusStripViewControllerDidToggleStructuredFilter(_ controller: StatusStripViewController) {
+        let shouldShow = !viewModel.snapshot.isStructuredFilterVisible
+        viewModel.setStructuredFilterVisible(shouldShow)
+        if shouldShow {
+            workspaceViewController.focusStructuredFilter()
+        }
     }
 }

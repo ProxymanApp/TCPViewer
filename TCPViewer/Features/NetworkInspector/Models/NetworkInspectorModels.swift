@@ -188,7 +188,7 @@ struct PacketTableRow: Identifiable, Sendable, Hashable {
         self.timestamp = packet.timestamp
         self.streamID = packet.streamID
         self.numberText = "\(packet.packetNumber)"
-        self.timeText = NetworkInspectorFormatters.packetTime.string(from: packet.timestamp)
+        self.timeText = NetworkInspectorFormatters.packetTimeString(packet.timestamp)
         self.sourceText = NetworkInspectorFormatters.endpointLabel(packet.endpoints.source)
         self.destinationText = NetworkInspectorFormatters.endpointLabel(packet.endpoints.destination)
         self.sourcePortText = NetworkInspectorFormatters.portLabel(packet.endpoints.source.port)
@@ -500,9 +500,12 @@ struct NetworkInspectorSnapshot: Equatable {
     var inspectorTab: PacketInspectorTab
     var inspectorPlacement: NetworkInspectorPlacement
     var isInspectorVisible: Bool
+    var isStructuredFilterVisible: Bool
     var displayFilterText: String
     var displayFilter: PacketDisplayFilter
     var displayFilterChips: [PacketFilterChip]
+    var structuredFilterGroup: PacketStructuredFilterGroup
+    var isPacketTableFiltering: Bool
     var packetTableRowStore: PacketTableRowStore
     var packetTableGeneration: UInt64
     var packetTableUpdatePlan: PacketTableUpdatePlan
@@ -524,7 +527,10 @@ struct NetworkInspectorSnapshot: Equatable {
         inspectorTab: PacketInspectorTab,
         inspectorPlacement: NetworkInspectorPlacement = .trailing,
         isInspectorVisible: Bool,
+        isStructuredFilterVisible: Bool = false,
         displayFilterText: String,
+        structuredFilterGroup: PacketStructuredFilterGroup = .default,
+        isPacketTableFiltering: Bool = false,
         packetTableContent: PacketTableContent
     ) -> NetworkInspectorSnapshot {
         return NetworkInspectorSnapshot(
@@ -539,9 +545,12 @@ struct NetworkInspectorSnapshot: Equatable {
             inspectorTab: inspectorTab,
             inspectorPlacement: inspectorPlacement,
             isInspectorVisible: isInspectorVisible,
+            isStructuredFilterVisible: isStructuredFilterVisible,
             displayFilterText: displayFilterText,
             displayFilter: packetTableContent.displayFilter,
             displayFilterChips: packetTableContent.displayFilterChips,
+            structuredFilterGroup: structuredFilterGroup,
+            isPacketTableFiltering: isPacketTableFiltering,
             packetTableRowStore: packetTableContent.store,
             packetTableGeneration: packetTableContent.generation,
             packetTableUpdatePlan: packetTableContent.updatePlan,
@@ -568,9 +577,12 @@ struct NetworkInspectorSnapshot: Equatable {
             lhs.inspectorTab == rhs.inspectorTab &&
             lhs.inspectorPlacement == rhs.inspectorPlacement &&
             lhs.isInspectorVisible == rhs.isInspectorVisible &&
+            lhs.isStructuredFilterVisible == rhs.isStructuredFilterVisible &&
             lhs.displayFilterText == rhs.displayFilterText &&
             lhs.displayFilter == rhs.displayFilter &&
             lhs.displayFilterChips == rhs.displayFilterChips &&
+            lhs.structuredFilterGroup == rhs.structuredFilterGroup &&
+            lhs.isPacketTableFiltering == rhs.isPacketTableFiltering &&
             lhs.packetTableGeneration == rhs.packetTableGeneration &&
             lhs.packetTableUpdatePlan == rhs.packetTableUpdatePlan &&
             lhs.malformedPacketCount == rhs.malformedPacketCount &&
@@ -681,11 +693,19 @@ struct PacketTableContent: Sendable {
 }
 
 enum NetworkInspectorFormatters {
-    static let packetTime: DateFormatter = {
+    private static let packetTimeFormatterKey = "TCPViewer.NetworkInspectorFormatters.packetTimeFormatter"
+
+    static func packetTimeString(_ date: Date) -> String {
+        let threadDictionary = Thread.current.threadDictionary
+        if let formatter = threadDictionary[packetTimeFormatterKey] as? DateFormatter {
+            return formatter.string(from: date)
+        }
+
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss.SSS"
-        return formatter
-    }()
+        threadDictionary[packetTimeFormatterKey] = formatter
+        return formatter.string(from: date)
+    }
 
     static func endpointLabel(_ endpoint: PacketEndpoint) -> String {
         guard let address = endpoint.address else {
