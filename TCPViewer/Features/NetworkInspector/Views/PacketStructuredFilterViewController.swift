@@ -11,6 +11,199 @@ protocol PacketStructuredFilterViewControllerDelegate: AnyObject {
     func packetStructuredFilterViewController(_ controller: PacketStructuredFilterViewController, didUpdate group: PacketStructuredFilterGroup)
 }
 
+private enum PacketStructuredFilterShortcutKeyCode {
+    static let escape: UInt16 = 53
+    static let arrowDown: UInt16 = 125
+    static let arrowUp: UInt16 = 126
+}
+
+private enum PacketStructuredFilterCommandSelector {
+    static let cancelOperation = NSSelectorFromString("cancelOperation:")
+    static let moveToBeginningOfDocument = NSSelectorFromString("moveToBeginningOfDocument:")
+    static let moveToEndOfDocument = NSSelectorFromString("moveToEndOfDocument:")
+}
+
+private enum PacketStructuredFilterTextShortcut {
+    case show
+    case newFilter
+    case removeFilter
+    case focusPrevious
+    case focusNext
+    case toggleEnabled
+    case hide
+
+    init?(event: NSEvent) {
+        let flags = Self.normalizedFlags(for: event)
+
+        let characters = event.charactersIgnoringModifiers?.lowercased()
+        if flags == .command, characters == "f" {
+            self = .show
+        } else if flags == .command, characters == "n" {
+            self = .newFilter
+        } else if flags == [.command, .shift], characters == "n" {
+            self = .removeFilter
+        } else if flags == .command, event.keyCode == PacketStructuredFilterShortcutKeyCode.arrowUp {
+            self = .focusPrevious
+        } else if flags == .command, event.keyCode == PacketStructuredFilterShortcutKeyCode.arrowDown {
+            self = .focusNext
+        } else if flags == .command, characters == "b" {
+            self = .toggleEnabled
+        } else if flags.isEmpty, event.keyCode == PacketStructuredFilterShortcutKeyCode.escape {
+            self = .hide
+        } else {
+            return nil
+        }
+    }
+
+    init?(commandSelector: Selector, event: NSEvent?) {
+        if let event, let shortcut = Self(event: event) {
+            self = shortcut
+            return
+        }
+
+        if commandSelector == PacketStructuredFilterCommandSelector.cancelOperation {
+            self = .hide
+            return
+        }
+
+        guard let event, Self.normalizedFlags(for: event) == .command else {
+            return nil
+        }
+
+        if commandSelector == PacketStructuredFilterCommandSelector.moveToBeginningOfDocument {
+            self = .focusPrevious
+        } else if commandSelector == PacketStructuredFilterCommandSelector.moveToEndOfDocument {
+            self = .focusNext
+        } else {
+            return nil
+        }
+    }
+
+    private static func normalizedFlags(for event: NSEvent) -> NSEvent.ModifierFlags {
+        var flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        flags.subtract([.capsLock, .numericPad, .function])
+        return flags
+    }
+}
+
+private protocol PacketStructuredFilterTextFieldShortcutHandling: AnyObject {
+    func packetStructuredFilterTextField(_ textField: PacketStructuredFilterTextField, didReceive shortcut: PacketStructuredFilterTextShortcut) -> Bool
+}
+
+private extension PacketStructuredFilterQuery {
+    var menuToolTip: String {
+        switch self {
+        case .anyText:
+            "Search across packet number, protocol, endpoints, client, summary, layers, status, and interface."
+        case .urlDomain:
+            "Search URL and domain-like values such as SNI, summary text, and decoded layer details."
+        case .protocol:
+            "Search protocol labels, transport hints, protocol summary, and decoded layer names."
+        case .source:
+            "Search the source address, source port, and formatted source endpoint."
+        case .destination:
+            "Search the destination address, destination port, and formatted destination endpoint."
+        case .sourcePort:
+            "Search or compare the numeric source port."
+        case .destinationPort:
+            "Search or compare the numeric destination port."
+        case .client:
+            "Search the client app name, display name, executable path, and bundle path."
+        case .pid:
+            "Search or compare the client process ID."
+        case .bundleIdentifier:
+            "Search the client bundle identifier."
+        case .streamID:
+            "Search or compare the packet stream ID."
+        case .direction:
+            "Search the packet direction, such as inbound or outbound."
+        case .tcpFlags:
+            "Search decoded TCP flags."
+        case .tcpPayload:
+            "Search or compare the TCP payload byte length."
+        case .decodeStatus:
+            "Search decode status and decode failure reasons."
+        case .interface:
+            "Search the capture interface name and interface ID."
+        case .length:
+            "Search or compare the captured packet length."
+        case .summary:
+            "Search the packet summary column text."
+        case .tags:
+            "Search generated packet tags such as truncated or malformed."
+        }
+    }
+}
+
+private extension PacketStructuredFilterCondition {
+    var menuToolTip: String {
+        switch self {
+        case .contains:
+            "Matches when any selected field value contains the filter text."
+        case .notContains:
+            "Matches when no selected field value contains the filter text."
+        case .hasPrefix:
+            "Matches when any selected field value starts with the filter text."
+        case .notHasPrefix:
+            "Matches when no selected field value starts with the filter text."
+        case .hasSuffix:
+            "Matches when any selected field value ends with the filter text."
+        case .notHasSuffix:
+            "Matches when no selected field value ends with the filter text."
+        case .lessThan:
+            "Matches numeric fields with a value less than the filter number."
+        case .greaterThanOrEqual:
+            "Matches numeric fields with a value greater than or equal to the filter number."
+        case .matchesRegex:
+            "Matches when any selected field value matches the regular expression."
+        case .notMatchesRegex:
+            "Matches when no selected field value matches the regular expression."
+        }
+    }
+}
+
+private extension PacketStructuredFilterGroupOperator {
+    var menuToolTip: String {
+        switch self {
+        case .and:
+            "Show packets only when every enabled filter matches."
+        case .or:
+            "Show packets when any enabled filter matches."
+        }
+    }
+}
+
+// Intercept filter-local shortcuts before the main menu handles equivalents like Cmd-N.
+private final class PacketStructuredFilterTextField: NSSearchField {
+    weak var shortcutHandler: PacketStructuredFilterTextFieldShortcutHandling?
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if isEditing, let shortcut = PacketStructuredFilterTextShortcut(event: event),
+           shortcutHandler?.packetStructuredFilterTextField(self, didReceive: shortcut) == true {
+            return true
+        }
+
+        return super.performKeyEquivalent(with: event)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if isEditing, let shortcut = PacketStructuredFilterTextShortcut(event: event),
+           shortcutHandler?.packetStructuredFilterTextField(self, didReceive: shortcut) == true {
+            return
+        }
+
+        super.keyDown(with: event)
+    }
+
+    private var isEditing: Bool {
+        guard let editor = currentEditor() else {
+            return false
+        }
+
+        return window?.firstResponder === editor
+    }
+}
+
 private final class PacketStructuredFilterRowView: NSView {
     private static let iconButtonSize: CGFloat = 24
 
@@ -33,7 +226,7 @@ private final class PacketStructuredFilterRowView: NSView {
     let enabledCheckbox = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     let queryPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     let conditionPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    let textField = NSSearchField()
+    let textField = PacketStructuredFilterTextField()
     let removeButton = NSButton(title: "", target: nil, action: nil)
     let addButton = NSButton(title: "", target: nil, action: nil)
 
@@ -65,6 +258,7 @@ private final class PacketStructuredFilterRowView: NSView {
         textField.target = target
         textField.action = actionProvider.changeText
         textField.delegate = target as? NSSearchFieldDelegate
+        textField.shortcutHandler = target as? PacketStructuredFilterTextFieldShortcutHandling
         textField.placeholderString = "Text"
         textField.controlSize = .regular
         textField.font = .systemFont(ofSize: NSFont.systemFontSize)
@@ -126,6 +320,7 @@ private final class PacketStructuredFilterRowView: NSView {
             group.forEach { query in
                 let item = queryPopup.menu?.addItem(withTitle: query.title, action: nil, keyEquivalent: "")
                 item?.representedObject = query.rawValue
+                item?.toolTip = query.menuToolTip
             }
         }
     }
@@ -139,6 +334,7 @@ private final class PacketStructuredFilterRowView: NSView {
             group.forEach { condition in
                 let item = conditionPopup.menu?.addItem(withTitle: condition.title, action: nil, keyEquivalent: "")
                 item?.representedObject = condition.rawValue
+                item?.toolTip = condition.menuToolTip
             }
         }
     }
@@ -265,9 +461,11 @@ final class PacketStructuredFilterViewController: NSViewController {
         operatorPopup.controlSize = .regular
         operatorPopup.bezelStyle = .rounded
         operatorPopup.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .medium)
+        operatorPopup.toolTip = "Choose how enabled filters are combined."
         PacketStructuredFilterGroupOperator.allCases.forEach { filterOperator in
             let item = operatorPopup.menu?.addItem(withTitle: filterOperator.title, action: nil, keyEquivalent: "")
             item?.representedObject = filterOperator.rawValue
+            item?.toolTip = filterOperator.menuToolTip
         }
         operatorPopup.widthAnchor.constraint(equalToConstant: Metrics.operatorWidth).isActive = true
     }
@@ -369,6 +567,61 @@ final class PacketStructuredFilterViewController: NSViewController {
         view.window?.makeFirstResponder(rowView.textField)
     }
 
+    private func selectTextField(for filterID: PacketStructuredFilter.ID) {
+        guard let rowView = rowViews.first(where: { $0.filterID == filterID }) else {
+            return
+        }
+
+        view.window?.makeFirstResponder(rowView.textField)
+        rowView.textField.selectText(nil)
+    }
+
+    private func focusAdjacentTextField(from filterID: PacketStructuredFilter.ID, offset: Int) {
+        guard let currentIndex = rowViews.firstIndex(where: { $0.filterID == filterID }) else {
+            return
+        }
+
+        let nextIndex = min(max(currentIndex + offset, rowViews.startIndex), rowViews.index(before: rowViews.endIndex))
+        view.window?.makeFirstResponder(rowViews[nextIndex].textField)
+    }
+
+    private func addFilter(copying filterID: PacketStructuredFilter.ID?) {
+        guard group.canAddFilter else {
+            return
+        }
+
+        let nextGroup = group.addingCopy(of: filterID)
+        apply(nextGroup, rebuildsRows: true, focusFilterID: nextGroup.filters.last?.id)
+    }
+
+    private func removeFilter(rowView: PacketStructuredFilterRowView, focusesReplacement: Bool) {
+        let currentIndex = rowViews.firstIndex(where: { $0.filterID == rowView.filterID }) ?? rowViews.startIndex
+        let nextGroup = group.removingOrClearing(filterID: rowView.filterID)
+        let focusFilterID: PacketStructuredFilter.ID?
+        if focusesReplacement {
+            let nextIndex = min(currentIndex, nextGroup.filters.index(before: nextGroup.filters.endIndex))
+            focusFilterID = nextGroup.filters[nextIndex].id
+        } else {
+            focusFilterID = nil
+        }
+
+        apply(nextGroup, rebuildsRows: true, focusFilterID: focusFilterID)
+    }
+
+    private func toggleEnabled(rowView: PacketStructuredFilterRowView) {
+        guard var filter = filter(withID: rowView.filterID) else {
+            return
+        }
+
+        filter.isEnabled.toggle()
+        rowView.enabledCheckbox.state = filter.isEnabled ? .on : .off
+        apply(group.replacing(filter), focusFilterID: filter.id)
+    }
+
+    private func hideFilterTextFieldFocus() {
+        view.window?.makeFirstResponder(nil)
+    }
+
     @objc private func toggleEnabled(_ sender: Any?) {
         guard let rowView = rowView(for: sender),
               var filter = filter(withID: rowView.filterID) else {
@@ -418,16 +671,11 @@ final class PacketStructuredFilterViewController: NSViewController {
             return
         }
 
-        apply(group.removingOrClearing(filterID: rowView.filterID), rebuildsRows: true)
+        removeFilter(rowView: rowView, focusesReplacement: false)
     }
 
     @objc private func addFilter(_ sender: Any?) {
-        guard group.canAddFilter else {
-            return
-        }
-
-        let nextGroup = group.addingCopy(of: rowView(for: sender)?.filterID)
-        apply(nextGroup, rebuildsRows: true, focusFilterID: nextGroup.filters.last?.id)
+        addFilter(copying: rowView(for: sender)?.filterID)
     }
 
     @objc private func changeOperator(_ sender: Any?) {
@@ -443,5 +691,44 @@ final class PacketStructuredFilterViewController: NSViewController {
 extension PacketStructuredFilterViewController: NSSearchFieldDelegate {
     func controlTextDidChange(_ notification: Notification) {
         changeText(notification.object)
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        guard let textField = control as? PacketStructuredFilterTextField,
+              let shortcut = PacketStructuredFilterTextShortcut(commandSelector: commandSelector, event: NSApp.currentEvent) else {
+            return false
+        }
+
+        return packetStructuredFilterTextField(textField, didReceive: shortcut)
+    }
+}
+
+extension PacketStructuredFilterViewController: PacketStructuredFilterTextFieldShortcutHandling {
+    fileprivate func packetStructuredFilterTextField(
+        _ textField: PacketStructuredFilterTextField,
+        didReceive shortcut: PacketStructuredFilterTextShortcut
+    ) -> Bool {
+        guard let rowView = rowView(for: textField) else {
+            return false
+        }
+
+        switch shortcut {
+        case .show:
+            selectTextField(for: rowView.filterID)
+        case .newFilter:
+            addFilter(copying: rowView.filterID)
+        case .removeFilter:
+            removeFilter(rowView: rowView, focusesReplacement: true)
+        case .focusPrevious:
+            focusAdjacentTextField(from: rowView.filterID, offset: -1)
+        case .focusNext:
+            focusAdjacentTextField(from: rowView.filterID, offset: 1)
+        case .toggleEnabled:
+            toggleEnabled(rowView: rowView)
+        case .hide:
+            hideFilterTextFieldFocus()
+        }
+
+        return true
     }
 }
