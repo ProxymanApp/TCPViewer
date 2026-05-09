@@ -796,12 +796,13 @@ final class NetworkInspectorViewModel {
             pinnedItems: pinService.pins(),
             savedPacketCount: savedPacketService.records().count
         )
+        let activeStructuredFilterGroup = isStructuredFilterVisible ? structuredFilterGroup : .default
         let packetTableContent = packetTableContentCache.content(
             for: controller.snapshot.packetIngestState,
             displayFilterText: displayFilterText,
             quickFilterSelection: quickFilterService.selection,
             quickFilterService: quickFilterService,
-            structuredFilterGroup: structuredFilterGroup,
+            structuredFilterGroup: activeStructuredFilterGroup,
             structuredFilterService: structuredFilterService,
             sourceListSelection: selectedSourceListSelection,
             pinnedItems: pinService.pins(),
@@ -1508,12 +1509,14 @@ final class NetworkInspectorViewModel {
             selectedSourceListSelection = .allPackets
         }
 
+        // A hidden structured filter panel behaves like no structured filter, but keeps row state for restore.
+        let activeStructuredFilterGroup = isStructuredFilterVisible ? structuredFilterGroup : .default
         let packetTableContent = packetTableContentCache.content(
             for: controller.snapshot.packetIngestState,
             displayFilterText: displayFilterText,
             quickFilterSelection: quickFilterService.selection,
             quickFilterService: quickFilterService,
-            structuredFilterGroup: structuredFilterGroup,
+            structuredFilterGroup: activeStructuredFilterGroup,
             structuredFilterService: structuredFilterService,
             sourceListSelection: selectedSourceListSelection,
             pinnedItems: pinnedItems,

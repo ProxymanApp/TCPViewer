@@ -1739,6 +1739,7 @@ struct NetworkInspectorViewModelTests {
             viewModel.snapshot.packetRows.count == packets.count
         }
 
+        viewModel.setStructuredFilterVisible(true)
         let filters = [
             PacketStructuredFilter(query: .urlDomain, condition: .contains, text: "example.com"),
             PacketStructuredFilter(query: .protocol, condition: .contains, text: "tcp"),
@@ -1748,6 +1749,31 @@ struct NetworkInspectorViewModelTests {
 
         viewModel.updateStructuredFilterGroup(PacketStructuredFilterGroup(filters: filters, operator: .or))
         #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[0].id, packets[2].id])
+    }
+
+    @Test func hiddenStructuredFiltersDoNotFilterRowsAndQuickFiltersStillApply() async {
+        let packets = [
+            makePacket(packetNumber: 1, source: .offline, transportHint: .tcp, streamID: nil, layerNames: ["Ethernet", "TCP"]),
+            makePacket(packetNumber: 2, source: .offline, transportHint: .udp, streamID: nil, layerNames: ["Ethernet", "UDP"]),
+        ]
+        let viewModel = makeOfflineViewModel(packets: packets)
+
+        await viewModel.openDocument(at: URL(fileURLWithPath: "/tmp/hidden-structured-filter.pcapng"))
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == packets.count
+        }
+
+        viewModel.updateStructuredFilterGroup(PacketStructuredFilterGroup(filters: [
+            PacketStructuredFilter(query: .protocol, condition: .contains, text: "tcp")
+        ]))
+        #expect(!viewModel.snapshot.isStructuredFilterVisible)
+        #expect(viewModel.snapshot.packetRows.map(\.id) == packets.map(\.id))
+
+        viewModel.toggleQuickFilter(.udp)
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[1].id])
+
+        viewModel.setStructuredFilterVisible(true)
+        #expect(viewModel.snapshot.packetRows.isEmpty)
     }
 
     @Test func structuredFilterAppliesToLiveAppends() async {
@@ -1762,6 +1788,7 @@ struct NetworkInspectorViewModelTests {
         let lowPortPacket = makePacket(packetNumber: 1, source: .live, transportHint: .tcp, destinationPort: 80)
         let httpsPacket = makePacket(packetNumber: 2, source: .live, transportHint: .tcp, destinationPort: 443)
 
+        viewModel.setStructuredFilterVisible(true)
         viewModel.updateStructuredFilterGroup(PacketStructuredFilterGroup(filters: [
             PacketStructuredFilter(query: .destinationPort, condition: .greaterThanOrEqual, text: "400")
         ]))
@@ -1775,6 +1802,37 @@ struct NetworkInspectorViewModelTests {
         }
 
         #expect(viewModel.snapshot.packetRows.map(\.id) == [httpsPacket.id])
+    }
+
+    @Test func hiddenStructuredFilterDoesNotFilterLiveAppends() async {
+        let tcpPacket = makePacket(packetNumber: 1, source: .live, transportHint: .tcp, destinationPort: 80, layerNames: ["Ethernet", "TCP"])
+        let udpPacket = makePacket(packetNumber: 2, source: .live, transportHint: .udp, destinationPort: 443, layerNames: ["Ethernet", "UDP"])
+        let liveSession = InspectorFakeLiveSession()
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                liveSession: liveSession
+            )),
+            userDefaults: isolatedDefaults()
+        )
+
+        viewModel.updateStructuredFilterGroup(PacketStructuredFilterGroup(filters: [
+            PacketStructuredFilter(query: .destinationPort, condition: .greaterThanOrEqual, text: "400")
+        ]))
+        await viewModel.performInitialLoadIfNeeded()
+        await viewModel.toggleLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        liveSession.send(.packetBatch([tcpPacket, udpPacket], disposition: .append))
+
+        await waitUntil {
+            viewModel.snapshot.totalPacketCount == 2
+        }
+
+        #expect(!viewModel.snapshot.isStructuredFilterVisible)
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [tcpPacket.id, udpPacket.id])
+
+        viewModel.toggleQuickFilter(.udp)
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [udpPacket.id])
     }
 
     private func isolatedDefaults() -> UserDefaults {
