@@ -116,6 +116,7 @@ final class TCPViewerRootViewController: NSViewController {
     }
 
     func focusStructuredFilter() {
+        viewModel.setStructuredFilterVisible(true)
         workspaceViewController.focusStructuredFilter()
     }
 
@@ -405,6 +406,10 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
     func packetWorkspaceViewControllerDidRequestStructuredFilterPaywall(_ controller: PacketWorkspaceViewController) {
         delegate?.tcpviewerRootViewControllerDidRequestPaywall(self)
     }
+
+    func packetWorkspaceViewControllerDidRequestHideStructuredFilter(_ controller: PacketWorkspaceViewController) {
+        viewModel.setStructuredFilterVisible(false)
+    }
 }
 
 extension TCPViewerRootViewController: PacketInspectorViewControllerDelegate {
@@ -420,5 +425,13 @@ extension TCPViewerRootViewController: StatusStripViewControllerDelegate {
 
     func statusStripViewControllerDidRequestClearPackets(_ controller: StatusStripViewController) {
         viewModel.clearTablePackets()
+    }
+
+    func statusStripViewControllerDidToggleStructuredFilter(_ controller: StatusStripViewController) {
+        let shouldShow = !viewModel.snapshot.isStructuredFilterVisible
+        viewModel.setStructuredFilterVisible(shouldShow)
+        if shouldShow {
+            workspaceViewController.focusStructuredFilter()
+        }
     }
 }

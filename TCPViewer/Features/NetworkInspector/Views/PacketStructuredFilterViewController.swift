@@ -11,6 +11,7 @@ protocol PacketStructuredFilterViewControllerDelegate: AnyObject {
     func packetStructuredFilterViewController(_ controller: PacketStructuredFilterViewController, didUpdate group: PacketStructuredFilterGroup)
     func packetStructuredFilterViewControllerCanAddFilter(_ controller: PacketStructuredFilterViewController) -> Bool
     func packetStructuredFilterViewControllerDidRequestPaywall(_ controller: PacketStructuredFilterViewController)
+    func packetStructuredFilterViewControllerDidRequestHide(_ controller: PacketStructuredFilterViewController)
 }
 
 private enum PacketStructuredFilterShortcutKeyCode {
@@ -682,6 +683,7 @@ final class PacketStructuredFilterViewController: NSViewController {
 
     private func hideFilterTextFieldFocus() {
         view.window?.makeFirstResponder(nil)
+        delegate?.packetStructuredFilterViewControllerDidRequestHide(self)
     }
 
     @objc private func toggleEnabled(_ sender: Any?) {

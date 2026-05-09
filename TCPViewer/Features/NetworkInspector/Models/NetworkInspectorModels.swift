@@ -500,6 +500,7 @@ struct NetworkInspectorSnapshot: Equatable {
     var inspectorTab: PacketInspectorTab
     var inspectorPlacement: NetworkInspectorPlacement
     var isInspectorVisible: Bool
+    var isStructuredFilterVisible: Bool
     var displayFilterText: String
     var displayFilter: PacketDisplayFilter
     var displayFilterChips: [PacketFilterChip]
@@ -525,6 +526,7 @@ struct NetworkInspectorSnapshot: Equatable {
         inspectorTab: PacketInspectorTab,
         inspectorPlacement: NetworkInspectorPlacement = .trailing,
         isInspectorVisible: Bool,
+        isStructuredFilterVisible: Bool = false,
         displayFilterText: String,
         structuredFilterGroup: PacketStructuredFilterGroup = .default,
         packetTableContent: PacketTableContent
@@ -541,6 +543,7 @@ struct NetworkInspectorSnapshot: Equatable {
             inspectorTab: inspectorTab,
             inspectorPlacement: inspectorPlacement,
             isInspectorVisible: isInspectorVisible,
+            isStructuredFilterVisible: isStructuredFilterVisible,
             displayFilterText: displayFilterText,
             displayFilter: packetTableContent.displayFilter,
             displayFilterChips: packetTableContent.displayFilterChips,
@@ -571,6 +574,7 @@ struct NetworkInspectorSnapshot: Equatable {
             lhs.inspectorTab == rhs.inspectorTab &&
             lhs.inspectorPlacement == rhs.inspectorPlacement &&
             lhs.isInspectorVisible == rhs.isInspectorVisible &&
+            lhs.isStructuredFilterVisible == rhs.isStructuredFilterVisible &&
             lhs.displayFilterText == rhs.displayFilterText &&
             lhs.displayFilter == rhs.displayFilter &&
             lhs.displayFilterChips == rhs.displayFilterChips &&

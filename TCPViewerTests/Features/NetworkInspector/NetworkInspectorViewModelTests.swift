@@ -470,6 +470,36 @@ struct NetworkInspectorViewModelTests {
         #expect(visibleReloadedViewModel.prefersSidebarVisibleOnLaunch())
     }
 
+    @Test func structuredFilterVisibilityDefaultsHiddenAndPersistsAcrossReloads() {
+        let defaults = isolatedDefaults()
+        let services = TCPViewerServiceRegistry(core: InspectorFakeCore(
+            interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")]
+        ))
+        let viewModel = NetworkInspectorViewModel(
+            services: services,
+            userDefaults: defaults
+        )
+
+        #expect(!viewModel.snapshot.isStructuredFilterVisible)
+
+        viewModel.setStructuredFilterVisible(true)
+        #expect(viewModel.snapshot.isStructuredFilterVisible)
+
+        let visibleReloadedViewModel = NetworkInspectorViewModel(
+            services: services,
+            userDefaults: defaults
+        )
+        #expect(visibleReloadedViewModel.snapshot.isStructuredFilterVisible)
+
+        visibleReloadedViewModel.setStructuredFilterVisible(false)
+
+        let hiddenReloadedViewModel = NetworkInspectorViewModel(
+            services: services,
+            userDefaults: defaults
+        )
+        #expect(!hiddenReloadedViewModel.snapshot.isStructuredFilterVisible)
+    }
+
     @Test func sidebarThicknessPersistsAndFallsBackWhenInvalid() {
         let defaults = isolatedDefaults()
         let services = TCPViewerServiceRegistry(core: InspectorFakeCore(

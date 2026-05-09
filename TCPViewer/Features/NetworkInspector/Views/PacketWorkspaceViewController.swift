@@ -23,6 +23,7 @@ protocol PacketWorkspaceViewControllerDelegate: AnyObject {
     func packetWorkspaceViewControllerDidRequestResetQuickFilters(_ controller: PacketWorkspaceViewController)
     func packetWorkspaceViewControllerCanAddStructuredFilter(_ controller: PacketWorkspaceViewController) -> Bool
     func packetWorkspaceViewControllerDidRequestStructuredFilterPaywall(_ controller: PacketWorkspaceViewController)
+    func packetWorkspaceViewControllerDidRequestHideStructuredFilter(_ controller: PacketWorkspaceViewController)
 }
 
 private final class VerticallyCenteredTextFieldCell: NSTextFieldCell {
@@ -94,6 +95,9 @@ final class PacketWorkspaceViewController: NSViewController {
     private let structuredFilterController = PacketStructuredFilterViewController()
     private let tableController: PacketTableViewController
     private var placeholderView: NSView?
+    private var isStructuredFilterVisible = false
+    private var contentTopToFilterBottomConstraint: NSLayoutConstraint?
+    private var contentTopToSafeAreaConstraint: NSLayoutConstraint?
 
     init(configuration: AppConfiguration) {
         self.tableController = PacketTableViewController(configuration: configuration)
@@ -122,6 +126,7 @@ final class PacketWorkspaceViewController: NSViewController {
     func render(snapshot: NetworkInspectorSnapshot) {
         viewModel.render(snapshot: snapshot)
         structuredFilterController.render(group: snapshot.structuredFilterGroup)
+        applyStructuredFilterVisibility(snapshot.isStructuredFilterVisible)
 
         if viewModel.isEmpty {
             showPlaceholder(
@@ -138,6 +143,7 @@ final class PacketWorkspaceViewController: NSViewController {
     }
 
     func focusStructuredFilter() {
+        applyStructuredFilterVisibility(true)
         structuredFilterController.focusLastFilterTextField()
     }
 
@@ -150,16 +156,38 @@ final class PacketWorkspaceViewController: NSViewController {
         structuredFilterController.view.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(structuredFilterController.view)
 
+        let contentTopToFilterBottomConstraint = contentContainer.topAnchor.constraint(equalTo: structuredFilterController.view.bottomAnchor)
+        let contentTopToSafeAreaConstraint = contentContainer.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor)
+        self.contentTopToFilterBottomConstraint = contentTopToFilterBottomConstraint
+        self.contentTopToSafeAreaConstraint = contentTopToSafeAreaConstraint
+        structuredFilterController.view.isHidden = true
+
         NSLayoutConstraint.activate([
             contentContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             contentContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            contentContainer.topAnchor.constraint(equalTo: structuredFilterController.view.bottomAnchor),
+            contentTopToSafeAreaConstraint,
             contentContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
             structuredFilterController.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             structuredFilterController.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             structuredFilterController.view.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
         ])
+    }
+
+    private func applyStructuredFilterVisibility(_ isVisible: Bool) {
+        guard isStructuredFilterVisible != isVisible else {
+            return
+        }
+
+        isStructuredFilterVisible = isVisible
+        structuredFilterController.view.isHidden = !isVisible
+        if isVisible {
+            contentTopToSafeAreaConstraint?.isActive = false
+            contentTopToFilterBottomConstraint?.isActive = true
+        } else {
+            contentTopToFilterBottomConstraint?.isActive = false
+            contentTopToSafeAreaConstraint?.isActive = true
+        }
     }
 
     private func showPlaceholder(
@@ -342,5 +370,9 @@ extension PacketWorkspaceViewController: PacketStructuredFilterViewControllerDel
 
     func packetStructuredFilterViewControllerDidRequestPaywall(_ controller: PacketStructuredFilterViewController) {
         delegate?.packetWorkspaceViewControllerDidRequestStructuredFilterPaywall(self)
+    }
+
+    func packetStructuredFilterViewControllerDidRequestHide(_ controller: PacketStructuredFilterViewController) {
+        delegate?.packetWorkspaceViewControllerDidRequestHideStructuredFilter(self)
     }
 }

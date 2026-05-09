@@ -16,6 +16,7 @@ private struct NetworkInspectorPreferences {
         static let inspectorVisible = "TCPViewer.inspectorVisible"
         static let sidebarLeadingThickness = "TCPViewer.sidebarLeadingThickness"
         static let sidebarVisible = "TCPViewer.sidebarVisible"
+        static let structuredFilterVisible = "TCPViewer.structuredFilterVisible"
     }
 
     let defaults: UserDefaults
@@ -44,6 +45,14 @@ private struct NetworkInspectorPreferences {
         return defaults.bool(forKey: Key.sidebarVisible)
     }
 
+    var isStructuredFilterVisible: Bool {
+        guard defaults.object(forKey: Key.structuredFilterVisible) != nil else {
+            return false
+        }
+
+        return defaults.bool(forKey: Key.structuredFilterVisible)
+    }
+
     var sidebarThickness: CGFloat? {
         guard defaults.object(forKey: Key.sidebarLeadingThickness) != nil else {
             return nil
@@ -66,6 +75,10 @@ private struct NetworkInspectorPreferences {
 
     func persistSidebarVisible(_ isVisible: Bool) {
         defaults.set(isVisible, forKey: Key.sidebarVisible)
+    }
+
+    func persistStructuredFilterVisible(_ isVisible: Bool) {
+        defaults.set(isVisible, forKey: Key.structuredFilterVisible)
     }
 }
 
@@ -742,6 +755,7 @@ final class NetworkInspectorViewModel {
     private var inspectorTab: PacketInspectorTab = .summary
     private var inspectorPlacement: NetworkInspectorPlacement
     private var isInspectorVisible: Bool
+    private var isStructuredFilterVisible: Bool
     private var displayFilterText: String
     private var structuredFilterGroup: PacketStructuredFilterGroup
     private var helperOnboardingDismissed = false
@@ -774,6 +788,7 @@ final class NetworkInspectorViewModel {
         self.packetExportService = packetExportService ?? PacketExportService(defaults: userDefaults)
         self.inspectorPlacement = .trailing
         self.isInspectorVisible = preferences.isInspectorVisible
+        self.isStructuredFilterVisible = preferences.isStructuredFilterVisible
         self.displayFilterText = preferences.displayFilterText
         self.structuredFilterGroup = structuredFilterStore.load()
         let sourceListSnapshot = sourceListService.snapshot(
@@ -804,6 +819,7 @@ final class NetworkInspectorViewModel {
             inspectorTab: inspectorTab,
             inspectorPlacement: inspectorPlacement,
             isInspectorVisible: isInspectorVisible,
+            isStructuredFilterVisible: isStructuredFilterVisible,
             displayFilterText: displayFilterText,
             structuredFilterGroup: structuredFilterGroup,
             packetTableContent: packetTableContent
@@ -952,6 +968,16 @@ final class NetworkInspectorViewModel {
     func updateStructuredFilterGroup(_ group: PacketStructuredFilterGroup) {
         structuredFilterGroup = PacketStructuredFilterGroup(filters: group.filters, operator: group.operator)
         structuredFilterStore.save(structuredFilterGroup)
+        rebuildSnapshot()
+    }
+
+    func setStructuredFilterVisible(_ isVisible: Bool) {
+        guard isStructuredFilterVisible != isVisible else {
+            return
+        }
+
+        isStructuredFilterVisible = isVisible
+        preferences.persistStructuredFilterVisible(isVisible)
         rebuildSnapshot()
     }
 
@@ -1514,6 +1540,7 @@ final class NetworkInspectorViewModel {
             inspectorTab: inspectorTab,
             inspectorPlacement: inspectorPlacement,
             isInspectorVisible: isInspectorVisible,
+            isStructuredFilterVisible: isStructuredFilterVisible,
             displayFilterText: displayFilterText,
             structuredFilterGroup: structuredFilterGroup,
             packetTableContent: packetTableContent

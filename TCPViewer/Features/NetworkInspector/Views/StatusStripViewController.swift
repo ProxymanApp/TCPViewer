@@ -11,6 +11,7 @@ import PcapPlusPlusCore
 protocol StatusStripViewControllerDelegate: AnyObject {
     func statusStripViewControllerDidRequestCancelLoad(_ controller: StatusStripViewController)
     func statusStripViewControllerDidRequestClearPackets(_ controller: StatusStripViewController)
+    func statusStripViewControllerDidToggleStructuredFilter(_ controller: StatusStripViewController)
 }
 
 final class StatusStripViewModel {
@@ -20,6 +21,7 @@ final class StatusStripViewModel {
     private(set) var statusColor = NSColor.secondaryLabelColor
     private(set) var canCancelLoad = false
     private(set) var canClear = false
+    private(set) var isStructuredFilterVisible = false
 
     // Build the compact bottom status strip from the current packet/capture snapshot.
     func render(snapshot: NetworkInspectorSnapshot) {
@@ -27,6 +29,7 @@ final class StatusStripViewModel {
         totalText = packetCount == 1 ? "1 packet" : "\(packetCount) packets"
         canCancelLoad = snapshot.base.loadState.canCancel
         canClear = snapshot.visiblePacketCount > 0 && !canCancelLoad
+        isStructuredFilterVisible = snapshot.isStructuredFilterVisible
 
         let phase = snapshot.base.sessionState.phase
         statusText = title(for: phase)
@@ -76,6 +79,7 @@ final class StatusStripViewController: NSViewController {
     private let viewModel = StatusStripViewModel()
     private let cancelButton = NSButton(title: "Cancel Load", target: nil, action: nil)
     private let clearButton = NSButton(title: "Clear", target: nil, action: nil)
+    private let filterButton = NSButton(title: "Filter", target: nil, action: nil)
     private let totalLabel = TCPViewerUI.label(
         "",
         font: .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
@@ -97,6 +101,8 @@ final class StatusStripViewController: NSViewController {
         cancelButton.action = #selector(cancelLoad(_:))
         clearButton.target = self
         clearButton.action = #selector(clearPackets(_:))
+        filterButton.target = self
+        filterButton.action = #selector(toggleStructuredFilter(_:))
     }
 
     func render(snapshot: NetworkInspectorSnapshot) {
@@ -104,6 +110,7 @@ final class StatusStripViewController: NSViewController {
         cancelButton.isHidden = !viewModel.canCancelLoad
         clearButton.isHidden = viewModel.canCancelLoad
         clearButton.isEnabled = viewModel.canClear
+        filterButton.state = viewModel.isStructuredFilterVisible ? .on : .off
         totalLabel.stringValue = viewModel.totalText
         statusLabel.stringValue = viewModel.statusText
         statusLabel.textColor = viewModel.statusColor
@@ -119,6 +126,13 @@ final class StatusStripViewController: NSViewController {
         clearButton.controlSize = .small
         clearButton.image = TCPViewerUI.image("trash")
         clearButton.imagePosition = .imageLeading
+
+        filterButton.setButtonType(.pushOnPushOff)
+        filterButton.bezelStyle = .rounded
+        filterButton.controlSize = .small
+        filterButton.image = TCPViewerUI.image("line.3.horizontal.decrease.circle")
+        filterButton.imagePosition = .imageLeading
+        filterButton.toolTip = "Show or hide packet filters"
 
         totalLabel.alignment = .center
 
@@ -138,6 +152,7 @@ final class StatusStripViewController: NSViewController {
         let stack = NSStackView(views: [
             cancelButton,
             clearButton,
+            filterButton,
             leadingSpacer,
             totalLabel,
             trailingSpacer,
@@ -175,5 +190,9 @@ final class StatusStripViewController: NSViewController {
 
     @objc private func clearPackets(_ sender: Any?) {
         delegate?.statusStripViewControllerDidRequestClearPackets(self)
+    }
+
+    @objc private func toggleStructuredFilter(_ sender: Any?) {
+        delegate?.statusStripViewControllerDidToggleStructuredFilter(self)
     }
 }
