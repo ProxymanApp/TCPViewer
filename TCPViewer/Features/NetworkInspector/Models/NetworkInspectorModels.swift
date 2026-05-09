@@ -503,6 +503,7 @@ struct NetworkInspectorSnapshot: Equatable {
     var displayFilterText: String
     var displayFilter: PacketDisplayFilter
     var displayFilterChips: [PacketFilterChip]
+    var structuredFilterGroup: PacketStructuredFilterGroup
     var packetTableRowStore: PacketTableRowStore
     var packetTableGeneration: UInt64
     var packetTableUpdatePlan: PacketTableUpdatePlan
@@ -525,6 +526,7 @@ struct NetworkInspectorSnapshot: Equatable {
         inspectorPlacement: NetworkInspectorPlacement = .trailing,
         isInspectorVisible: Bool,
         displayFilterText: String,
+        structuredFilterGroup: PacketStructuredFilterGroup = .default,
         packetTableContent: PacketTableContent
     ) -> NetworkInspectorSnapshot {
         return NetworkInspectorSnapshot(
@@ -542,6 +544,7 @@ struct NetworkInspectorSnapshot: Equatable {
             displayFilterText: displayFilterText,
             displayFilter: packetTableContent.displayFilter,
             displayFilterChips: packetTableContent.displayFilterChips,
+            structuredFilterGroup: structuredFilterGroup,
             packetTableRowStore: packetTableContent.store,
             packetTableGeneration: packetTableContent.generation,
             packetTableUpdatePlan: packetTableContent.updatePlan,
@@ -571,6 +574,7 @@ struct NetworkInspectorSnapshot: Equatable {
             lhs.displayFilterText == rhs.displayFilterText &&
             lhs.displayFilter == rhs.displayFilter &&
             lhs.displayFilterChips == rhs.displayFilterChips &&
+            lhs.structuredFilterGroup == rhs.structuredFilterGroup &&
             lhs.packetTableGeneration == rhs.packetTableGeneration &&
             lhs.packetTableUpdatePlan == rhs.packetTableUpdatePlan &&
             lhs.malformedPacketCount == rhs.malformedPacketCount &&

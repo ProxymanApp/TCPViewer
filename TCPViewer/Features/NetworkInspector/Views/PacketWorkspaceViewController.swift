@@ -19,6 +19,7 @@ protocol PacketWorkspaceViewControllerDelegate: AnyObject {
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestSavePackets identifiers: [PacketSummary.ID])
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestExportPackets identifiers: [PacketSummary.ID], format: CaptureFileFormat)
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestDeletePackets identifiers: [PacketSummary.ID])
+    func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didUpdateStructuredFilterGroup group: PacketStructuredFilterGroup)
     func packetWorkspaceViewControllerDidRequestResetQuickFilters(_ controller: PacketWorkspaceViewController)
 }
 
@@ -88,6 +89,7 @@ final class PacketWorkspaceViewController: NSViewController {
 
     private let viewModel = PacketWorkspaceViewModel()
     private let contentContainer = NSView()
+    private let structuredFilterController = PacketStructuredFilterViewController()
     private let tableController: PacketTableViewController
     private var placeholderView: NSView?
 
@@ -111,11 +113,13 @@ final class PacketWorkspaceViewController: NSViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         tableController.delegate = self
+        structuredFilterController.delegate = self
     }
 
     // Render the packet workspace and swap between the table and empty state as needed.
     func render(snapshot: NetworkInspectorSnapshot) {
         viewModel.render(snapshot: snapshot)
+        structuredFilterController.render(group: snapshot.structuredFilterGroup)
 
         if viewModel.isEmpty {
             showPlaceholder(
@@ -135,13 +139,20 @@ final class PacketWorkspaceViewController: NSViewController {
         contentContainer.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(contentContainer)
 
+        addChild(structuredFilterController)
         addChild(tableController)
+        structuredFilterController.view.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(structuredFilterController.view)
 
         NSLayoutConstraint.activate([
             contentContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             contentContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            contentContainer.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            contentContainer.topAnchor.constraint(equalTo: structuredFilterController.view.bottomAnchor),
             contentContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            structuredFilterController.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            structuredFilterController.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            structuredFilterController.view.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
         ])
     }
 
@@ -311,5 +322,11 @@ extension PacketWorkspaceViewController: PacketTableViewControllerDelegate {
 
     func packetTableViewController(_ controller: PacketTableViewController, didRequestDeletePackets identifiers: [PacketSummary.ID]) {
         delegate?.packetWorkspaceViewController(self, didRequestDeletePackets: identifiers)
+    }
+}
+
+extension PacketWorkspaceViewController: PacketStructuredFilterViewControllerDelegate {
+    func packetStructuredFilterViewController(_ controller: PacketStructuredFilterViewController, didUpdate group: PacketStructuredFilterGroup) {
+        delegate?.packetWorkspaceViewController(self, didUpdateStructuredFilterGroup: group)
     }
 }

@@ -1673,6 +1673,80 @@ struct NetworkInspectorViewModelTests {
         #expect(!viewModel.snapshot.isQuickFilterResetVisible)
     }
 
+    @Test func structuredFiltersPersistAndRestoreThroughViewModel() {
+        let defaults = isolatedDefaults()
+        let group = PacketStructuredFilterGroup(
+            filters: [
+                PacketStructuredFilter(query: .protocol, condition: .contains, text: "tcp"),
+                PacketStructuredFilter(query: .length, condition: .greaterThanOrEqual, text: "128"),
+            ],
+            operator: .and
+        )
+        let firstViewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(interfaces: [])),
+            userDefaults: defaults
+        )
+
+        firstViewModel.updateStructuredFilterGroup(group)
+
+        let restoredViewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(interfaces: [])),
+            userDefaults: defaults
+        )
+        #expect(restoredViewModel.snapshot.structuredFilterGroup == group)
+    }
+
+    @Test func structuredFiltersComposeWithPacketRowsUsingAndOr() async {
+        let packets = [
+            makePacket(packetNumber: 1, source: .offline, transportHint: .tcp, streamID: nil, sniDomainName: "api.example.com"),
+            makePacket(packetNumber: 2, source: .offline, transportHint: .udp, streamID: nil, sniDomainName: "openai.com"),
+            makePacket(packetNumber: 3, source: .offline, transportHint: .tcp, streamID: nil, sniDomainName: nil),
+        ]
+        let viewModel = makeOfflineViewModel(packets: packets)
+
+        await viewModel.openDocument(at: URL(fileURLWithPath: "/tmp/structured-filter-and-or.pcapng"))
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == packets.count
+        }
+
+        let filters = [
+            PacketStructuredFilter(query: .urlDomain, condition: .contains, text: "example.com"),
+            PacketStructuredFilter(query: .protocol, condition: .contains, text: "tcp"),
+        ]
+        viewModel.updateStructuredFilterGroup(PacketStructuredFilterGroup(filters: filters, operator: .and))
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[0].id])
+
+        viewModel.updateStructuredFilterGroup(PacketStructuredFilterGroup(filters: filters, operator: .or))
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[0].id, packets[2].id])
+    }
+
+    @Test func structuredFilterAppliesToLiveAppends() async {
+        let liveSession = InspectorFakeLiveSession()
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                liveSession: liveSession
+            )),
+            userDefaults: isolatedDefaults()
+        )
+        let lowPortPacket = makePacket(packetNumber: 1, source: .live, transportHint: .tcp, destinationPort: 80)
+        let httpsPacket = makePacket(packetNumber: 2, source: .live, transportHint: .tcp, destinationPort: 443)
+
+        viewModel.updateStructuredFilterGroup(PacketStructuredFilterGroup(filters: [
+            PacketStructuredFilter(query: .destinationPort, condition: .greaterThanOrEqual, text: "400")
+        ]))
+        await viewModel.performInitialLoadIfNeeded()
+        await viewModel.toggleLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        liveSession.send(.packetBatch([lowPortPacket, httpsPacket], disposition: .append))
+
+        await waitUntil {
+            viewModel.snapshot.totalPacketCount == 2
+        }
+
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [httpsPacket.id])
+    }
+
     private func isolatedDefaults() -> UserDefaults {
         let suiteName = "TCPViewer.NetworkInspectorTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

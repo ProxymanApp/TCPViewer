@@ -385,6 +385,10 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
         viewModel.deletePackets(identifiers)
     }
 
+    func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didUpdateStructuredFilterGroup group: PacketStructuredFilterGroup) {
+        viewModel.updateStructuredFilterGroup(group)
+    }
+
     func packetWorkspaceViewControllerDidRequestResetQuickFilters(_ controller: PacketWorkspaceViewController) {
         viewModel.resetQuickFilters()
     }
