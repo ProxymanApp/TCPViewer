@@ -397,6 +397,7 @@ final class PacketStructuredFilterViewController: NSViewController {
     private let bottomSeparator = TCPViewerUI.separator()
     private var rowViews: [PacketStructuredFilterRowView] = []
     private var group = PacketStructuredFilterGroup.default
+    private var isFiltering = false
     private var pendingTextChanges: [PacketStructuredFilter.ID: String] = [:]
     private var pendingTextChangeWorkItem: DispatchWorkItem?
 
@@ -412,15 +413,24 @@ final class PacketStructuredFilterViewController: NSViewController {
         rebuildRows()
     }
 
-    func render(group: PacketStructuredFilterGroup) {
+    func render(group: PacketStructuredFilterGroup, isFiltering: Bool) {
         let normalizedGroup = PacketStructuredFilterGroup(filters: group.filters, operator: group.operator)
-        guard normalizedGroup != self.group else {
+        let rebuildsRows = normalizedGroup != self.group
+        let rebuildsFooter = isFiltering != self.isFiltering
+        self.isFiltering = isFiltering
+
+        guard rebuildsRows || rebuildsFooter else {
             updateAddButtonStates()
             return
         }
 
         self.group = normalizedGroup
-        rebuildRows()
+        if rebuildsRows {
+            rebuildRows()
+        } else {
+            rebuildFooter()
+            updateAddButtonStates()
+        }
     }
 
     func focusLastFilterTextField() {
@@ -510,6 +520,12 @@ final class PacketStructuredFilterViewController: NSViewController {
             footerStack.setCustomSpacing(Metrics.footerShortcutSpacing, after: operatorPopup)
         }
 
+        if isFiltering {
+            let filteringIndicator = makeFilteringIndicator()
+            footerStack.addArrangedSubview(filteringIndicator)
+            footerStack.setCustomSpacing(8, after: filteringIndicator)
+        }
+
         ["Show: ⌘F", "New: ⌘N", "Remove: ⇧⌘N", "Up: ⌘↑", "Down: ⌘↓", "On/Off: ⌘B", "Hide: ESC"].forEach { title in
             let label = TCPViewerUI.label(
                 title,
@@ -518,6 +534,22 @@ final class PacketStructuredFilterViewController: NSViewController {
             )
             footerStack.addArrangedSubview(label)
         }
+    }
+
+    // Build the small inline loader that sits before the shortcut hints.
+    private func makeFilteringIndicator() -> NSProgressIndicator {
+        let indicator = NSProgressIndicator()
+        indicator.style = .spinning
+        indicator.controlSize = .small
+        indicator.isIndeterminate = true
+        indicator.toolTip = "Filtering packets"
+        indicator.startAnimation(nil)
+        indicator.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            indicator.widthAnchor.constraint(equalToConstant: 14),
+            indicator.heightAnchor.constraint(equalToConstant: 14),
+        ])
+        return indicator
     }
 
     private func rebuildRows() {
