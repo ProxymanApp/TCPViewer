@@ -8,6 +8,10 @@
 		<key>com.proxyman.tcpviewer.helpertool</key>
 		<string>identifier "com.proxyman.tcpviewer.helpertool" and anchor apple generic and certificate leaf[subject.OU] = "$(TCPVIEWER_DEVELOPMENT_TEAM)"</string>
 	</dict>
+	<key>SUFeedURL</key>
+	<string>$(TCPVIEWER_APPCAST_URL)</string>
+	<key>SUPublicEDKey</key>
+	<string>$(TCPVIEWER_SPARKLE_PUBLIC_ED_KEY)</string>
 	<key>TCPViewerBuildKey</key>
 	<string>$(TCPVIEWER_BUILD_KEY)</string>
 	<key>CFBundleDocumentTypes</key>

@@ -3,3 +3,4 @@ DerivedData/
 Vendor/.build/
 Vendor/.install/
 .env
+node_modules/
