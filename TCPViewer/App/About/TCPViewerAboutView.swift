@@ -44,7 +44,7 @@ struct TCPViewerAboutView: View {
 
             VStack(alignment: .leading, spacing: 0) {
                 Text(info.appName)
-                    .font(.system(size: 36, weight: .regular))
+                    .font(.system(size: 36, weight: .bold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.72)
@@ -79,7 +79,7 @@ struct TCPViewerAboutView: View {
         Image(nsImage: appIcon)
             .resizable()
             .aspectRatio(contentMode: .fit)
-            .frame(width: 92, height: 92)
+            .frame(width: 120, height: 120)
             .shadow(color: .black.opacity(0.24), radius: 10, y: 6)
     }
 
