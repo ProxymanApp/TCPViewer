@@ -62,7 +62,10 @@ async function main() {
   const outputDir = releaseOutputDir({ releaseType, version, buildNumber, timestamp });
 
   console.log(`Preparing ${releaseType} release ${version} (${buildNumber})`);
-  await preflight({ env, envFileExists, releaseType, objectKey, settings });
+  if (!envFileExists) {
+    console.warn("No .env found; using shell environment values only.");
+  }
+  await preflight({ env, releaseType, objectKey, settings });
 
   let releaseNote = null;
   if (releaseType === "production") {
@@ -73,7 +76,7 @@ async function main() {
 
   await runFastlaneBuild({ env, version, buildNumber, outputDir });
   const dmgPath = path.join(outputDir, "tcpviewer.dmg");
-  const signature = await signDMG({ env, dmgPath });
+  const signature = await signDMG({ env, dmgPath, settings });
   await uploadDMGToR2({ env, objectKey, dmgPath });
 
   if (releaseType === "production") {
@@ -110,12 +113,8 @@ async function loadReleaseEnv() {
   };
 }
 
-async function preflight({ env, envFileExists, releaseType, objectKey, settings }) {
+async function preflight({ env, releaseType, objectKey, settings }) {
   // Keep preflight strict because it runs before long signing and notarization work.
-  if (!envFileExists) {
-    throw new Error("Missing .env. Copy .env.example to .env and fill local release values.");
-  }
-
   const missing = missingRequiredEnv(env, requiredEnvNames(releaseType));
   if (missing.length) {
     throw new Error(`Missing required env values: ${missing.join(", ")}`);
@@ -138,7 +137,7 @@ async function preflight({ env, envFileExists, releaseType, objectKey, settings 
   }
 
   await verifyDeveloperID(env.TCPVIEWER_DEVELOPER_ID_APPLICATION);
-  await findSparkleSignUpdate(env);
+  await findSparkleSignUpdate(env, settings);
   await ensureR2ObjectDoesNotExist(env, objectKey);
   console.log("Pre-flight check passed.");
 }
@@ -213,8 +212,8 @@ async function runFastlaneBuild({ env, version, buildNumber, outputDir }) {
   ], { env });
 }
 
-async function signDMG({ env, dmgPath }) {
-  const signUpdatePath = await findSparkleSignUpdate(env);
+async function signDMG({ env, dmgPath, settings }) {
+  const signUpdatePath = await findSparkleSignUpdate(env, settings);
   const keyDir = await mkdtemp(path.join(tmpdir(), "tcpviewer-sparkle-"));
   const keyPath = path.join(keyDir, "ed-key");
 
@@ -280,17 +279,23 @@ function makeR2Client(S3Client, env) {
   });
 }
 
-async function findSparkleSignUpdate(env) {
+async function findSparkleSignUpdate(env, settings) {
   if (env.TCPVIEWER_SPARKLE_SIGN_UPDATE_PATH) {
     await access(env.TCPVIEWER_SPARKLE_SIGN_UPDATE_PATH);
     return env.TCPVIEWER_SPARKLE_SIGN_UPDATE_PATH;
   }
 
-  const derivedDataPath = path.join(homedir(), "Library/Developer/Xcode/DerivedData");
+  const derivedDataPath = derivedDataPathFromBuildSettings(settings);
+  if (!derivedDataPath) {
+    throw new Error("Could not resolve TCPViewer DerivedData path. Set TCPVIEWER_SPARKLE_SIGN_UPDATE_PATH.");
+  }
+
+  const artifactPath = path.join(derivedDataPath, "SourcePackages/artifacts/sparkle/Sparkle/bin/sign_update");
   try {
-    await access(derivedDataPath);
+    await access(artifactPath);
+    return artifactPath;
   } catch {
-    throw new Error("Could not find Xcode DerivedData. Build once or set TCPVIEWER_SPARKLE_SIGN_UPDATE_PATH.");
+    // Fall through to a scoped find for alternate artifact layouts.
   }
 
   const result = await runCommand("/usr/bin/find", [
@@ -309,6 +314,21 @@ async function findSparkleSignUpdate(env) {
   }
 
   return candidate;
+}
+
+function derivedDataPathFromBuildSettings(settings) {
+  const buildDir = settings?.BUILD_DIR;
+  if (!buildDir) {
+    return null;
+  }
+
+  const marker = `${path.sep}Build${path.sep}`;
+  const markerIndex = buildDir.indexOf(marker);
+  if (markerIndex === -1) {
+    return null;
+  }
+
+  return buildDir.slice(0, markerIndex);
 }
 
 async function verifyDeveloperID(identity) {

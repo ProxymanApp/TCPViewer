@@ -4,3 +4,5 @@ Vendor/.build/
 Vendor/.install/
 .env
 node_modules/
+fastlane/README.md
+fastlane/report.xml
