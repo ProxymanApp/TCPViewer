@@ -71,6 +71,99 @@ struct PacketInspectorTreeViewModelTests {
         #expect(!textFieldValues(in: controller.view).contains("No Packet Selected"))
     }
 
+    @MainActor
+    @Test func inspectorFilterIsAlwaysVisibleAndCommandShiftFPreservesQuery() throws {
+        let packet = makePacket()
+        let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: makeSnapshot(
+            packet: packet,
+            inspectionState: loadedInspectionState(packet: packet, inspection: makeNestedInspection(for: packet))
+        ))
+
+        let outlineView = try #require(firstSubview(ofType: NSOutlineView.self, in: controller.view))
+        let searchField = try #require(firstSubview(ofType: NSSearchField.self, in: controller.view))
+        outlineView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+
+        #expect(!isEffectivelyHidden(searchField))
+        #expect(!outlineView.performKeyEquivalent(with: commandFEvent()))
+        #expect(outlineView.performKeyEquivalent(with: commandShiftFEvent()))
+        #expect(!isEffectivelyHidden(searchField))
+
+        searchField.stringValue = "source"
+        #expect(outlineView.performKeyEquivalent(with: commandShiftFEvent()))
+
+        #expect(!isEffectivelyHidden(searchField))
+        #expect(searchField.stringValue == "source")
+    }
+
+    @MainActor
+    @Test func inspectorContentStartsBelowWindowToolbarSafeArea() throws {
+        let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        controller.loadViewIfNeeded()
+
+        let stackView = try #require(firstSubview(ofType: NSStackView.self, in: controller.view))
+
+        #expect(hasTopConstraint(from: stackView, to: controller.view.safeAreaLayoutGuide, in: controller.view))
+    }
+
+    @MainActor
+    @Test func inspectorContextMenuIncludesFilterCommandForRows() throws {
+        let packet = makePacket()
+        let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: makeSnapshot(
+            packet: packet,
+            inspectionState: loadedInspectionState(packet: packet, inspection: makeFrameInspection(for: packet))
+        ))
+
+        let outlineView = try #require(firstSubview(ofType: NSOutlineView.self, in: controller.view))
+        let menu = try #require(outlineView.menu)
+        outlineView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+
+        controller.menuNeedsUpdate(menu)
+
+        #expect(menu.items.count == 3)
+        let copyItem = menu.items[0]
+        let separatorItem = menu.items[1]
+        let filterItem = menu.items[2]
+
+        #expect(copyItem.title == "Copy")
+        #expect(copyItem.isEnabled)
+        #expect(separatorItem.isSeparatorItem)
+        #expect(filterItem.title == "Filter")
+        #expect(filterItem.isEnabled)
+        #expect(filterItem.keyEquivalent == "f")
+        #expect(filterItem.keyEquivalentModifierMask.contains(.command))
+        #expect(filterItem.keyEquivalentModifierMask.contains(.shift))
+    }
+
+    @MainActor
+    @Test func inspectorLongSummaryRowsAreSelectableOutlineRows() throws {
+        let packet = makePacket()
+        let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        let delegate = PacketInspectorDelegateSpy()
+        controller.delegate = delegate
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: makeSnapshot(
+            packet: packet,
+            inspectionState: loadedInspectionState(packet: packet, inspection: makeLongLayerSummaryInspection(for: packet))
+        ))
+
+        let outlineView = try #require(firstSubview(ofType: NSOutlineView.self, in: controller.view))
+        let summaryItem = try #require(outlineView.item(atRow: 1) as? PacketInspectorTreeItem)
+        let summarySelectionID = try #require(summaryItem.selectionID)
+
+        #expect(summaryItem.nodeID == nil)
+        #expect(controller.outlineView(outlineView, shouldSelectItem: summaryItem))
+
+        outlineView.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        controller.outlineViewSelectionDidChange(Notification(name: NSTableView.selectionDidChangeNotification, object: outlineView))
+
+        #expect(outlineView.selectedRow == 1)
+        #expect(delegate.selectedDetailNodeID == summarySelectionID)
+    }
+
     @Test func loadingStateShowsStatusMessage() {
         let packet = makePacket()
         let state = PacketInspectionState(
@@ -128,26 +221,66 @@ struct PacketInspectorTreeViewModelTests {
         #expect(viewModel.rootItems[1].displayText == "Decode Warning: Partial decode")
     }
 
-    @Test func longLayerSummaryBreaksIntoReadableChildRows() throws {
+    @Test func filterMatchesKeysFieldNamesAndValuesCaseInsensitively() throws {
         let packet = makePacket()
-        let layerName = "IEEE 802.3 Ethernet, Src: 90:e7:36:d2:00:00, Dst: 24:b2:7f:41:80:10"
         let inspection = PacketInspection(
             packetID: packet.id,
             packetNumber: packet.packetNumber,
             rawBytes: Data([0x01, 0x02]),
             detailNodes: [
                 PacketDetailNode(
-                    id: "layer-0",
-                    name: layerName,
-                    value: "Detailed field decoding is not available yet for \(layerName).",
+                    id: "ipv4",
+                    name: "IPv4",
+                    fieldName: "ip",
                     kind: .layer,
                     children: [
-                        PacketDetailNode(id: "layer-0.bytes", name: "Bytes", value: "14 bytes"),
+                        PacketDetailNode(id: "ipv4.src", name: "Source", fieldName: "ip.src", value: "10.0.0.1"),
+                        PacketDetailNode(id: "ipv4.dst", name: "Destination", fieldName: "ip.dst", value: "10.0.0.2"),
                     ]
                 ),
+                PacketDetailNode(id: "tcp", name: "TCP", value: "443 -> 1234", kind: .layer),
             ],
-            decodeStatus: PacketDecodeStatus(kind: .partial, reason: "Unsupported layer")
+            decodeStatus: PacketDecodeStatus(kind: .complete)
         )
+        let state = loadedInspectionState(packet: packet, inspection: inspection)
+        let viewModel = PacketInspectorTreeViewModel()
+
+        #expect(viewModel.render(snapshot: makeSnapshot(packet: packet, inspectionState: state), filterText: "IP.SRC") == .reload)
+
+        let rootItem = try #require(viewModel.rootItems.first)
+        #expect(viewModel.rootItems.count == 1)
+        #expect(rootItem.displayText == "IPv4")
+        #expect(rootItem.children.map(\.displayText) == ["Source: 10.0.0.1"])
+    }
+
+    @Test func activeFilterAppliesWhenPacketInspectionChanges() throws {
+        let firstPacket = makePacket(packetNumber: 1)
+        let secondPacket = makePacket(packetNumber: 2)
+        let filterText = "Packet 2"
+        let viewModel = PacketInspectorTreeViewModel()
+
+        #expect(viewModel.render(
+            snapshot: makeSnapshot(
+                packet: firstPacket,
+                inspectionState: loadedInspectionState(packet: firstPacket, inspection: makeFrameInspection(for: firstPacket))
+            ),
+            filterText: filterText
+        ) == .reload)
+        #expect(viewModel.rootItems.first?.displayText == "No inspector fields match \"Packet 2\".")
+
+        #expect(viewModel.render(
+            snapshot: makeSnapshot(
+                packet: secondPacket,
+                inspectionState: loadedInspectionState(packet: secondPacket, inspection: makeFrameInspection(for: secondPacket))
+            ),
+            filterText: filterText
+        ) == .reload)
+        #expect(viewModel.rootItems.first?.displayText == "Frame: Packet 2")
+    }
+
+    @Test func longLayerSummaryBreaksIntoReadableChildRows() throws {
+        let packet = makePacket()
+        let inspection = makeLongLayerSummaryInspection(for: packet)
         let state = PacketInspectionState(
             selectedPacketID: packet.id,
             inspection: inspection,
@@ -168,8 +301,23 @@ struct PacketInspectorTreeViewModelTests {
             "Decode Status: Field decoding is not available yet.",
             "Bytes: 14 bytes",
         ])
-        #expect(rootItem.children.prefix(3).allSatisfy { $0.nodeID == nil })
+        let summaryItems = Array(rootItem.children.prefix(3))
+        #expect(summaryItems.allSatisfy { $0.nodeID == nil && $0.selectionID != nil })
         #expect(viewModel.item(withNodeID: "layer-0") === rootItem)
+
+        let summarySelectionID = try #require(summaryItems.first?.selectionID)
+        let selectedState = PacketInspectionState(
+            selectedPacketID: packet.id,
+            inspection: inspection,
+            selectedDetailNodeID: summarySelectionID,
+            highlightedByteRange: nil,
+            isLoading: false,
+            statusMessage: "Inspecting packet 1."
+        )
+
+        #expect(viewModel.render(snapshot: makeSnapshot(packet: packet, inspectionState: selectedState)) == .selection)
+        #expect(viewModel.selectedNodeID == summarySelectionID)
+        #expect(viewModel.item(withNodeID: summarySelectionID)?.displayText == "Source: 90:e7:36:d2:00:00")
     }
 
     @Test func longLayerSummaryReusesExistingDecodedChildRows() throws {
@@ -543,6 +691,50 @@ struct PacketInspectorTreeViewModelTests {
         }
     }
 
+    private func hasTopConstraint(from view: NSView, to layoutGuide: NSLayoutGuide, in container: NSView) -> Bool {
+        container.constraints.contains { constraint in
+            guard let firstItem = constraint.firstItem as AnyObject?,
+                  let secondItem = constraint.secondItem as AnyObject? else {
+                return false
+            }
+
+            return firstItem === view &&
+                secondItem === layoutGuide &&
+                constraint.firstAttribute == .top &&
+                constraint.secondAttribute == .top
+        }
+    }
+
+    private func commandFEvent() -> NSEvent {
+        NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: .command,
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "f",
+            charactersIgnoringModifiers: "f",
+            isARepeat: false,
+            keyCode: 3
+        )!
+    }
+
+    private func commandShiftFEvent() -> NSEvent {
+        NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.command, .shift],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "F",
+            charactersIgnoringModifiers: "f",
+            isARepeat: false,
+            keyCode: 3
+        )!
+    }
+
     private func isEffectivelyHidden(_ view: NSView) -> Bool {
         var current: NSView? = view
         while let view = current {
@@ -579,6 +771,27 @@ struct PacketInspectorTreeViewModelTests {
                 PacketDetailNode(id: "frame", name: "Frame", value: "Packet \(packet.packetNumber)", kind: .layer),
             ],
             decodeStatus: PacketDecodeStatus(kind: .complete)
+        )
+    }
+
+    private func makeLongLayerSummaryInspection(for packet: PacketSummary) -> PacketInspection {
+        let layerName = "IEEE 802.3 Ethernet, Src: 90:e7:36:d2:00:00, Dst: 24:b2:7f:41:80:10"
+        return PacketInspection(
+            packetID: packet.id,
+            packetNumber: packet.packetNumber,
+            rawBytes: Data([0x01, 0x02]),
+            detailNodes: [
+                PacketDetailNode(
+                    id: "layer-0",
+                    name: layerName,
+                    value: "Detailed field decoding is not available yet for \(layerName).",
+                    kind: .layer,
+                    children: [
+                        PacketDetailNode(id: "layer-0.bytes", name: "Bytes", value: "14 bytes"),
+                    ]
+                ),
+            ],
+            decodeStatus: PacketDecodeStatus(kind: .partial, reason: "Unsupported layer")
         )
     }
 
@@ -647,5 +860,13 @@ struct PacketInspectorTreeViewModelTests {
             decodeStatus: PacketDecodeStatus(kind: .complete),
             captureMetadata: PacketCaptureMetadata(linkType: .ethernet, isTruncated: false)
         )
+    }
+}
+
+private final class PacketInspectorDelegateSpy: PacketInspectorViewControllerDelegate {
+    var selectedDetailNodeID: String?
+
+    func packetInspectorViewController(_ controller: PacketInspectorViewController, didSelectDetailNode identifier: String?) {
+        selectedDetailNodeID = identifier
     }
 }

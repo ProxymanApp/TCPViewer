@@ -270,7 +270,7 @@ private final class PacketStructuredFilterRowView: NSView {
         textField.action = actionProvider.changeText
         textField.delegate = target as? NSSearchFieldDelegate
         textField.shortcutHandler = target as? PacketStructuredFilterTextFieldShortcutHandling
-        textField.placeholderString = "Text"
+        textField.placeholderString = "Filter… (⌘F)"
         textField.controlSize = .small
         textField.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         textField.focusRingType = .default

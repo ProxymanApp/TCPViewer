@@ -83,7 +83,9 @@ final class PacketInspectorOutlineExpansionState {
 final class PacketInspectorTreeItem: NSObject {
     let id: String
     let nodeID: String?
+    let selectionID: String?
     let name: String
+    let fieldName: String?
     let value: String?
     let kind: PacketInspectorTreeItemKind
     let severity: PacketDetailNodeSeverity
@@ -93,7 +95,9 @@ final class PacketInspectorTreeItem: NSObject {
     init(
         id: String,
         nodeID: String? = nil,
+        selectionID: String? = nil,
         name: String,
+        fieldName: String? = nil,
         value: String? = nil,
         kind: PacketInspectorTreeItemKind,
         severity: PacketDetailNodeSeverity = .normal,
@@ -102,7 +106,9 @@ final class PacketInspectorTreeItem: NSObject {
     ) {
         self.id = id
         self.nodeID = nodeID
+        self.selectionID = selectionID ?? nodeID
         self.name = name
+        self.fieldName = fieldName
         self.value = value
         self.kind = kind
         self.severity = severity
@@ -137,28 +143,44 @@ final class PacketInspectorTreeViewModel {
 
     private(set) var rootItems: [PacketInspectorTreeItem] = []
     private(set) var selectedNodeID: String?
-    private var itemByNodeID: [String: PacketInspectorTreeItem] = [:]
+    private var unfilteredRootItems: [PacketInspectorTreeItem] = []
+    private var allItemBySelectionID: [String: PacketInspectorTreeItem] = [:]
+    private var itemBySelectionID: [String: PacketInspectorTreeItem] = [:]
     private var renderedContentState: PacketInspectorTreeContentState?
+    private var renderedFilterText = ""
 
     @discardableResult
-    func render(snapshot: NetworkInspectorSnapshot) -> PacketInspectorTreeRenderChange {
+    func render(snapshot: NetworkInspectorSnapshot, filterText: String = "") -> PacketInspectorTreeRenderChange {
         let inspectionState = snapshot.base.inspectionState
         let contentState = nextContentState(from: inspectionState)
         let contentChanged = contentState.map { $0 != renderedContentState } ?? false
+        let nextFilterText = normalizedFilterText(filterText)
+        let filterChanged = nextFilterText != renderedFilterText
 
         if contentChanged, let contentState {
             renderedContentState = contentState
-            itemByNodeID = [:]
-            rootItems = makeRootItems(from: inspectionState)
+            unfilteredRootItems = makeRootItems(from: inspectionState)
+            allItemBySelectionID = visibleItemMap(from: unfilteredRootItems)
+        }
+
+        if contentChanged || filterChanged {
+            renderedFilterText = nextFilterText
+            if nextFilterText.isEmpty {
+                rootItems = unfilteredRootItems
+                itemBySelectionID = allItemBySelectionID
+            } else {
+                rootItems = visibleRootItems(from: unfilteredRootItems, filterText: nextFilterText)
+                itemBySelectionID = visibleItemMap(from: rootItems)
+            }
         }
 
         let nextSelectedNodeID = validSelectedNodeID(from: inspectionState)
         guard nextSelectedNodeID != selectedNodeID else {
-            return contentChanged ? .reload : .none
+            return contentChanged || filterChanged ? .reload : .none
         }
 
         selectedNodeID = nextSelectedNodeID
-        return contentChanged ? .reload : .selection
+        return contentChanged || filterChanged ? .reload : .selection
     }
 
     func item(withNodeID nodeID: String?) -> PacketInspectorTreeItem? {
@@ -166,7 +188,7 @@ final class PacketInspectorTreeViewModel {
             return nil
         }
 
-        return itemByNodeID[nodeID]
+        return itemBySelectionID[nodeID]
     }
 
     private func makeRootItems(from inspectionState: PacketInspectionState) -> [PacketInspectorTreeItem] {
@@ -188,9 +210,82 @@ final class PacketInspectorTreeViewModel {
         return inspection.detailNodes.map { makeItem(from: $0, parentPath: "") }
     }
 
+    private func normalizedFilterText(_ filterText: String) -> String {
+        filterText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // Keep matching rows plus their ancestors so filtered fields retain packet context.
+    private func visibleRootItems(
+        from items: [PacketInspectorTreeItem],
+        filterText: String
+    ) -> [PacketInspectorTreeItem] {
+        guard !filterText.isEmpty else {
+            return items
+        }
+        guard !items.allSatisfy({ $0.kind == .message }) else {
+            return items
+        }
+
+        let filteredItems = items.compactMap { filteredItem($0, filterText: filterText) }
+        guard !filteredItems.isEmpty else {
+            return [messageItem(id: "filter-empty", message: "No inspector fields match \"\(filterText)\".")]
+        }
+
+        return filteredItems
+    }
+
+    private func filteredItem(
+        _ item: PacketInspectorTreeItem,
+        filterText: String
+    ) -> PacketInspectorTreeItem? {
+        let filteredChildren = item.children.compactMap { filteredItem($0, filterText: filterText) }
+        guard matchesFilter(filterText, item: item) || !filteredChildren.isEmpty else {
+            return nil
+        }
+
+        return PacketInspectorTreeItem(
+            id: item.id,
+            nodeID: item.nodeID,
+            selectionID: item.selectionID,
+            name: item.name,
+            fieldName: item.fieldName,
+            value: item.value,
+            kind: item.kind,
+            severity: item.severity,
+            byteRange: item.byteRange,
+            children: filteredChildren
+        )
+    }
+
+    private func matchesFilter(_ filterText: String, item: PacketInspectorTreeItem) -> Bool {
+        [item.name, item.fieldName, item.value]
+            .compactMap(\.self)
+            .contains { value in
+                value.range(of: filterText, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+            }
+    }
+
+    private func visibleItemMap(from items: [PacketInspectorTreeItem]) -> [String: PacketInspectorTreeItem] {
+        var map: [String: PacketInspectorTreeItem] = [:]
+        collectVisibleItems(items, into: &map)
+        return map
+    }
+
+    private func collectVisibleItems(
+        _ items: [PacketInspectorTreeItem],
+        into map: inout [String: PacketInspectorTreeItem]
+    ) {
+        for item in items {
+            if let selectionID = item.selectionID {
+                map[selectionID] = item
+            }
+            collectVisibleItems(item.children, into: &map)
+        }
+    }
+
     private func validSelectedNodeID(from inspectionState: PacketInspectionState) -> String? {
         guard let selectedDetailNodeID = inspectionState.selectedDetailNodeID,
-              itemByNodeID[selectedDetailNodeID] != nil else {
+              itemBySelectionID[selectedDetailNodeID] != nil else {
             return nil
         }
 
@@ -222,13 +317,13 @@ final class PacketInspectorTreeViewModel {
             id: path,
             nodeID: node.id,
             name: displayParts.name,
+            fieldName: node.fieldName,
             value: displayParts.value,
             kind: itemKind(from: node.kind),
             severity: node.severity,
             byteRange: node.byteRange,
             children: children
         )
-        itemByNodeID[node.id] = treeItem
         return treeItem
     }
 
@@ -293,6 +388,7 @@ final class PacketInspectorTreeViewModel {
         rows.enumerated().map { index, row in
             PacketInspectorTreeItem(
                 id: "\(parentPath).__summary.\(index)",
+                selectionID: "\(parentPath).__summary.\(index)",
                 name: row.name,
                 value: row.value,
                 kind: .field,
@@ -409,15 +505,43 @@ private extension PacketInspectionState {
     }
 }
 
-fileprivate protocol PacketInspectorOutlineViewCopyHandling: AnyObject {
+fileprivate protocol PacketInspectorOutlineViewActionHandling: AnyObject {
     func packetInspectorOutlineViewDidRequestCopy(_ outlineView: PacketInspectorOutlineView)
+    func packetInspectorOutlineViewDidRequestFind(_ outlineView: PacketInspectorOutlineView)
 }
 
 fileprivate final class PacketInspectorOutlineView: NSOutlineView {
-    weak var copyActionHandler: PacketInspectorOutlineViewCopyHandling?
+    weak var actionHandler: PacketInspectorOutlineViewActionHandling?
 
     @objc func copy(_ sender: Any?) {
-        copyActionHandler?.packetInspectorOutlineViewDidRequestCopy(self)
+        actionHandler?.packetInspectorOutlineViewDidRequestCopy(self)
+    }
+
+    @objc func find(_ sender: Any?) {
+        actionHandler?.packetInspectorOutlineViewDidRequestFind(self)
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if isInspectorFindShortcut(event) {
+            find(nil)
+            return true
+        }
+
+        return super.performKeyEquivalent(with: event)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if isInspectorFindShortcut(event) {
+            find(nil)
+            return
+        }
+
+        super.keyDown(with: event)
+    }
+
+    private func isInspectorFindShortcut(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        return flags == [.command, .shift] && event.charactersIgnoringModifiers?.lowercased() == "f"
     }
 }
 
@@ -443,6 +567,7 @@ final class PacketInspectorViewController: NSViewController {
         static let cellIdentifier = NSUserInterfaceItemIdentifier("PacketInspectorCell")
         static let hexPanelHeight: CGFloat = 180
         static let minimumHexPanelHeight: CGFloat = 120
+        static let filterBarHeight: CGFloat = 34
     }
 
     weak var delegate: PacketInspectorViewControllerDelegate?
@@ -452,11 +577,14 @@ final class PacketInspectorViewController: NSViewController {
     private let expansionState = PacketInspectorOutlineExpansionState()
     private let hexViewController: PacketHexViewController
     private let stackView = NSStackView()
+    private let filterBarView = NSView()
+    private let filterSearchField = NSSearchField()
     private let scrollView = NSScrollView()
     private let outlineView = PacketInspectorOutlineView()
     private let detailColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("detail"))
     private var emptyStateView: NSView?
     private var emptyStateMessage: String?
+    private var latestSnapshot: NetworkInspectorSnapshot?
     private var isApplyingSelection = false
     private var isApplyingExpansionState = false
 
@@ -475,16 +603,25 @@ final class PacketInspectorViewController: NSViewController {
         view = NSView()
         view.wantsLayer = true
         view.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        setupFilterBar()
         setupOutlineView()
         setupLayout()
     }
 
     // Render the current packet inspection tree as a single Wireshark-style outline.
     func render(snapshot: NetworkInspectorSnapshot) {
-        let renderChange = viewModel.render(snapshot: snapshot)
+        latestSnapshot = snapshot
+        let renderChange = viewModel.render(snapshot: snapshot, filterText: filterSearchField.stringValue)
         hexViewController.render(snapshot: snapshot)
         updateContentVisibility(for: snapshot.base.inspectionState)
 
+        applyTreeRenderChange(renderChange, snapshot: snapshot)
+    }
+
+    private func applyTreeRenderChange(
+        _ renderChange: PacketInspectorTreeRenderChange,
+        snapshot: NetworkInspectorSnapshot
+    ) {
         switch renderChange {
         case .none:
             return
@@ -504,6 +641,28 @@ final class PacketInspectorViewController: NSViewController {
         applyExpansionState()
         applySelectedNode(preservingExistingSelection: false, scrollToSelection: false)
         restoreOutlineScrollOrigin(preservedScrollOrigin)
+    }
+
+    private func setupFilterBar() {
+        filterBarView.translatesAutoresizingMaskIntoConstraints = false
+        filterBarView.wantsLayer = true
+        filterBarView.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+
+        filterSearchField.placeholderString = "Filter key or value (⌘⇧F)"
+        filterSearchField.sendsSearchStringImmediately = true
+        filterSearchField.sendsWholeSearchString = false
+        filterSearchField.delegate = self
+        filterSearchField.target = self
+        filterSearchField.action = #selector(filterSearchFieldDidChange(_:))
+        filterSearchField.translatesAutoresizingMaskIntoConstraints = false
+
+        filterBarView.addSubview(filterSearchField)
+        NSLayoutConstraint.activate([
+            filterBarView.heightAnchor.constraint(equalToConstant: Metrics.filterBarHeight),
+            filterSearchField.leadingAnchor.constraint(equalTo: filterBarView.leadingAnchor, constant: 8),
+            filterSearchField.trailingAnchor.constraint(equalTo: filterBarView.trailingAnchor, constant: -8),
+            filterSearchField.centerYAnchor.constraint(equalTo: filterBarView.centerYAnchor),
+        ])
     }
 
     private func setupOutlineView() {
@@ -526,7 +685,7 @@ final class PacketInspectorViewController: NSViewController {
         outlineView.allowsMultipleSelection = true
         outlineView.backgroundColor = .controlBackgroundColor
         outlineView.style = .fullWidth
-        outlineView.copyActionHandler = self
+        outlineView.actionHandler = self
         outlineView.menu = makeContextMenu()
 
         scrollView.borderType = .noBorder
@@ -543,6 +702,7 @@ final class PacketInspectorViewController: NSViewController {
         stackView.spacing = 0
         stackView.edgeInsets = NSEdgeInsetsZero
         stackView.translatesAutoresizingMaskIntoConstraints = false
+        stackView.addArrangedSubview(filterBarView)
         stackView.addArrangedSubview(scrollView)
         stackView.addArrangedSubview(hexViewController.view)
 
@@ -553,8 +713,11 @@ final class PacketInspectorViewController: NSViewController {
         hexHeight.priority = .defaultHigh
 
         view.addSubview(stackView)
-        TCPViewerUI.pin(stackView, to: view)
         NSLayoutConstraint.activate([
+            stackView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            stackView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            stackView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            stackView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             hexHeight,
             hexViewController.view.heightAnchor.constraint(greaterThanOrEqualToConstant: Metrics.minimumHexPanelHeight),
         ])
@@ -574,6 +737,25 @@ final class PacketInspectorViewController: NSViewController {
         }
     }
 
+    // Focus the always-visible filter field without changing the active query.
+    private func focusFilterField() {
+        view.window?.makeFirstResponder(filterSearchField)
+        filterSearchField.currentEditor()?.selectAll(nil)
+    }
+
+    private func applyFilterText(to snapshot: NetworkInspectorSnapshot) {
+        let renderChange = viewModel.render(snapshot: snapshot, filterText: filterSearchField.stringValue)
+        applyTreeRenderChange(renderChange, snapshot: snapshot)
+    }
+
+    @objc private func filterSearchFieldDidChange(_ sender: NSSearchField) {
+        guard let snapshot = latestSnapshot else {
+            return
+        }
+
+        applyFilterText(to: snapshot)
+    }
+
     // Build the centered no-selection placeholder only when the message changes.
     private func showEmptyState(message: String) {
         guard emptyStateView == nil || emptyStateMessage != message else {
@@ -586,9 +768,20 @@ final class PacketInspectorViewController: NSViewController {
             imageName: "list.bullet.rectangle",
             message: message
         )
-        TCPViewerUI.pin(placeholder, to: view)
+        pinToInspectorContentArea(placeholder)
         emptyStateView = placeholder
         emptyStateMessage = message
+    }
+
+    private func pinToInspectorContentArea(_ contentView: NSView) {
+        contentView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(contentView)
+        NSLayoutConstraint.activate([
+            contentView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            contentView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            contentView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            contentView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
     }
 
     // Restore the outline and hex views once a packet selection exists.
@@ -698,7 +891,7 @@ final class PacketInspectorViewController: NSViewController {
         let row = outlineView.row(at: point)
         guard row >= 0,
               let item = outlineView.item(atRow: row) as? PacketInspectorTreeItem,
-              item.nodeID != nil else {
+              item.selectionID != nil else {
             return
         }
 
@@ -736,6 +929,10 @@ final class PacketInspectorViewController: NSViewController {
 
     @objc private func copySelectedRowsFromMenu(_ sender: Any?) {
         copySelectedRowsToPasteboard()
+    }
+
+    @objc private func showFilterFromMenu(_ sender: Any?) {
+        focusFilterField()
     }
 
     private func configuredCell(for item: PacketInspectorTreeItem) -> NSTableCellView {
@@ -864,7 +1061,7 @@ extension PacketInspectorViewController: NSOutlineViewDelegate {
             return
         }
 
-        delegate?.packetInspectorViewController(self, didSelectDetailNode: item.nodeID)
+        delegate?.packetInspectorViewController(self, didSelectDetailNode: item.selectionID)
     }
 
     func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool {
@@ -872,7 +1069,7 @@ extension PacketInspectorViewController: NSOutlineViewDelegate {
             return false
         }
 
-        return item.nodeID != nil
+        return item.selectionID != nil
     }
 
     func outlineViewItemDidExpand(_ notification: Notification) {
@@ -899,9 +1096,24 @@ extension PacketInspectorViewController: NSOutlineViewDelegate {
     }
 }
 
-extension PacketInspectorViewController: PacketInspectorOutlineViewCopyHandling {
+extension PacketInspectorViewController: PacketInspectorOutlineViewActionHandling {
     fileprivate func packetInspectorOutlineViewDidRequestCopy(_ outlineView: PacketInspectorOutlineView) {
         copySelectedRowsToPasteboard()
+    }
+
+    fileprivate func packetInspectorOutlineViewDidRequestFind(_ outlineView: PacketInspectorOutlineView) {
+        focusFilterField()
+    }
+}
+
+extension PacketInspectorViewController: NSSearchFieldDelegate {
+    func controlTextDidChange(_ obj: Notification) {
+        guard obj.object as? NSSearchField === filterSearchField,
+              let snapshot = latestSnapshot else {
+            return
+        }
+
+        applyFilterText(to: snapshot)
     }
 }
 
@@ -910,15 +1122,29 @@ extension PacketInspectorViewController: NSMenuDelegate {
         updateSelectionFromCurrentMenuEvent()
 
         menu.removeAllItems()
+        let hasSelectedRows = !selectedCopyRows().isEmpty
         let copyItem = NSMenuItem(
             title: "Copy",
             action: #selector(copySelectedRowsFromMenu(_:)),
             keyEquivalent: "c"
         )
         copyItem.target = self
-        copyItem.isEnabled = !selectedCopyRows().isEmpty
+        copyItem.isEnabled = hasSelectedRows
         copyItem.toolTip = "Copy the selected inspector rows."
         copyItem.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Copy")
         menu.addItem(copyItem)
+        menu.addItem(.separator())
+
+        let filterItem = NSMenuItem(
+            title: "Filter",
+            action: #selector(showFilterFromMenu(_:)),
+            keyEquivalent: "f"
+        )
+        filterItem.target = self
+        filterItem.keyEquivalentModifierMask = [.command, .shift]
+        filterItem.isEnabled = hasSelectedRows
+        filterItem.toolTip = "Focus the inspector filter."
+        filterItem.image = NSImage(systemSymbolName: "line.3.horizontal.decrease.circle", accessibilityDescription: "Filter")
+        menu.addItem(filterItem)
     }
 }
