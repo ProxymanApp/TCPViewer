@@ -100,11 +100,11 @@
 		BA7A10022F9B00000070BE17 /* HexFiend.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = HexFiend.framework; path = Vendor/HexFiend/HexFiend.framework; sourceTree = "<group>"; };
 		BAAE975D2F9B815F00C52A7C /* TCP Viewer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "TCP Viewer.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		BAAE976F2F9B816000C52A7C /* TCPViewerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TCPViewerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		BAE100012FA300000070BE17 /* TCPViewer.shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = TCPViewer.shared.xcconfig; sourceTree = "<group>"; };
-		BAE100022FA300000070BE17 /* .env.example */ = {isa = PBXFileReference; lastKnownFileType = text; path = .env.example; sourceTree = "<group>"; };
 		BACE00022F9C00000070BE17 /* com.proxyman.tcpviewer.helpertool */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = com.proxyman.tcpviewer.helpertool; sourceTree = BUILT_PRODUCTS_DIR; };
 		BACE00042F9C00000070BE17 /* NetworkHelperLaunchDaemons/com.proxyman.tcpviewer.helpertool.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = NetworkHelperLaunchDaemons/com.proxyman.tcpviewer.helpertool.plist; sourceTree = "<group>"; };
 		BACE00062F9C00000070BE17 /* TCPViewerHelperTool/TCPViewerNetworkHelperCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TCPViewerHelperTool/TCPViewerNetworkHelperCore.swift; sourceTree = "<group>"; };
+		BAE100012FA300000070BE17 /* TCPViewer.shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = TCPViewer.shared.xcconfig; sourceTree = "<group>"; };
+		BAE100022FA300000070BE17 /* .env.example */ = {isa = PBXFileReference; lastKnownFileType = text; path = .env.example; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -248,20 +248,20 @@
 			name = "Recovered References";
 			sourceTree = "<group>";
 		};
-		BAE100032FA300000070BE17 /* Config */ = {
-			isa = PBXGroup;
-			children = (
-				BAE100012FA300000070BE17 /* TCPViewer.shared.xcconfig */,
-			);
-			path = Config;
-			sourceTree = "<group>";
-		};
 		BACE000D2F9C00000070BE17 /* NetworkHelperLaunchDaemons */ = {
 			isa = PBXGroup;
 			children = (
 				BACE00042F9C00000070BE17 /* NetworkHelperLaunchDaemons/com.proxyman.tcpviewer.helpertool.plist */,
 			);
 			name = NetworkHelperLaunchDaemons;
+			sourceTree = "<group>";
+		};
+		BAE100032FA300000070BE17 /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				BAE100012FA300000070BE17 /* TCPViewer.shared.xcconfig */,
+			);
+			path = Config;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -483,6 +483,26 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		BA4D26D02F9A30770070BE17 /* Bootstrap PcapPlusPlus */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Bootstrap PcapPlusPlus";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(PROJECT_DIR)/Vendor/.install/pcapplusplus/.tcpviewer-build-stamp",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"$PROJECT_DIR/scripts/bootstrap-pcapplusplus.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
 		BAE100042FA300000070BE17 /* Validate Local Build Environment */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -501,6 +521,35 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "\"$PROJECT_DIR/scripts/validate-local-build-env.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+		BAOS00012FA400000070BE17 /* Stage Open Source Notices */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(PROJECT_DIR)/LICENSE",
+				"$(PROJECT_DIR)/COPYING",
+				"$(PROJECT_DIR)/SOURCE_CODE_OFFER.md",
+				"$(PROJECT_DIR)/THIRD_PARTY_NOTICES.md",
+				"$(PROJECT_DIR)/Vendor/Wireshark/COPYING",
+				"$(PROJECT_DIR)/Vendor/Wireshark/README.md",
+				"$(PROJECT_DIR)/Vendor/PcapPlusPlus/LICENSE",
+				"$(PROJECT_DIR)/Vendor/HexFiend/License.txt",
+				"$(PROJECT_DIR)/scripts/stage-open-source-notices.sh",
+			);
+			name = "Stage Open Source Notices";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/OpenSourceLicenses/.notices-staged.stamp",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"$PROJECT_DIR/scripts/stage-open-source-notices.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
 		BASM00012FA700000070BE17 /* Update SMJobBless Requirements */ = {
@@ -547,26 +596,6 @@
 			shellScript = "\"$PROJECT_DIR/scripts/update-smjobbless-requirements.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
-		BA4D26D02F9A30770070BE17 /* Bootstrap PcapPlusPlus */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-			);
-			name = "Bootstrap PcapPlusPlus";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-				"$(PROJECT_DIR)/Vendor/.install/pcapplusplus/.tcpviewer-build-stamp",
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "\"$PROJECT_DIR/scripts/bootstrap-pcapplusplus.sh\"\n";
-			showEnvVarsInLog = 0;
-		};
 		BAWS00032F9E00000070BE17 /* Bootstrap Wireshark */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
@@ -607,35 +636,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "\"$PROJECT_DIR/scripts/stage-wireshark-runtime.sh\"\n";
-			showEnvVarsInLog = 0;
-		};
-		BAOS00012FA400000070BE17 /* Stage Open Source Notices */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-				"$(PROJECT_DIR)/LICENSE",
-				"$(PROJECT_DIR)/COPYING",
-				"$(PROJECT_DIR)/SOURCE_CODE_OFFER.md",
-				"$(PROJECT_DIR)/THIRD_PARTY_NOTICES.md",
-				"$(PROJECT_DIR)/Vendor/Wireshark/COPYING",
-				"$(PROJECT_DIR)/Vendor/Wireshark/README.md",
-				"$(PROJECT_DIR)/Vendor/PcapPlusPlus/LICENSE",
-				"$(PROJECT_DIR)/Vendor/HexFiend/License.txt",
-				"$(PROJECT_DIR)/scripts/stage-open-source-notices.sh",
-			);
-			name = "Stage Open Source Notices";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/OpenSourceLicenses/.notices-staged.stamp",
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "\"$PROJECT_DIR/scripts/stage-open-source-notices.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
 /* End PBXShellScriptBuildPhase section */
