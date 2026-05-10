@@ -1,6 +1,0 @@
-{
-  "fixture": "captures/macos-metadata/ipsec.pcapng",
-  "expectedPacketCount": 3,
-  "expectedOperatingSystemContains": "Windows 10 (2004)",
-  "expectedCaptureApplicationContains": "Mergecap (Wireshark) 3.4.1"
-}

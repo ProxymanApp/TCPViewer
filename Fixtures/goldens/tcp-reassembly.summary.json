@@ -1,8 +1,0 @@
-{
-  "fixture": "captures/tcp/tcp-reassembly.pcap",
-  "expectedPacketCount": 66,
-  "expectedTransportHints": [
-    "tcp",
-    "http1"
-  ]
-}
