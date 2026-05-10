@@ -12,6 +12,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let networkHelperToolManager = TCPViewerNetworkHelperToolManager()
     let appConfiguration = AppConfiguration()
 
+    private var aboutWindowController: TCPViewerAboutWindowController?
     private var settingsWindowController: NSWindowController?
     private var licenseWindowController: TCPViewerLicenseWindowController?
     private weak var licenseMenuItem: NSMenuItem?
@@ -22,6 +23,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ aNotification: Notification) {
         appConfiguration.applyAppearance()
         observeLicenseStatusChanges()
+        wireAboutMenu()
         wirePreferencesMenu()
         wireFilterMenu()
         TCPViewerLicenseService.shared.verifyAtLaunch()
@@ -47,6 +49,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         return .terminateLater
+    }
+
+    @IBAction func showAbout(_ sender: Any?) {
+        // Reuse one About window so repeated menu clicks keep the window stable.
+        if let aboutWindowController {
+            aboutWindowController.showWindow(sender)
+            aboutWindowController.window?.makeKeyAndOrderFront(sender)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let controller = TCPViewerAboutWindowController()
+        aboutWindowController = controller
+        controller.showWindow(sender)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     @IBAction func showSettings(_ sender: Any?) {
@@ -138,6 +155,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             sheetWindow.close()
         }
         licenseWindowController = nil
+    }
+
+    private func wireAboutMenu() {
+        // Replace the storyboard standard About panel with the custom SwiftUI About window.
+        guard let appMenu = NSApp.mainMenu?.items.first?.submenu else {
+            return
+        }
+
+        let standardAboutAction = NSSelectorFromString("orderFrontStandardAboutPanel:")
+        guard let item = appMenu.items.first(where: { $0.action == standardAboutAction || $0.title.hasPrefix("About ") }) else {
+            return
+        }
+
+        item.target = self
+        item.action = #selector(showAbout(_:))
+        item.title = "About TCP Viewer"
     }
 
     private func wirePreferencesMenu() {
