@@ -291,10 +291,16 @@ struct TCPViewerLicenseView: View {
 
     private func revokeLicense() {
         isRevoking = true
-        licenseService.revokeCurrentDevice { _ in
+        licenseService.revokeCurrentDevice { result in
             DispatchQueue.main.async {
                 isRevoking = false
                 status = licenseService.status
+                if case .failure(let error) = result {
+                    showErrorAlert(
+                        title: "Could Not Remove License",
+                        message: "TCP Viewer could not remove this Mac from License Manager. \(error.errorDescription ?? error.localizedDescription)"
+                    )
+                }
             }
         }
     }
@@ -313,11 +319,11 @@ struct TCPViewerLicenseView: View {
             }
         case .expired, .renewalRequired:
             let alert = NSAlert()
-            alert.messageText = "License renewal required"
+            alert.messageText = "This Build Is Not Covered"
             alert.informativeText = error.errorDescription ?? "Please renew your TCP Viewer license."
             alert.alertStyle = .warning
             alert.addButton(withTitle: "Renew License")
-            alert.addButton(withTitle: "Later")
+            alert.addButton(withTitle: "OK")
             if alert.runModal() == .alertFirstButtonReturn {
                 TCPViewerLicenseWebsiteService.open(.renewLicense)
             }
@@ -335,9 +341,9 @@ struct TCPViewerLicenseView: View {
         alert.runModal()
     }
 
-    private func showErrorAlert(message: String) {
+    private func showErrorAlert(title: String = "License Activation Failed", message: String) {
         let alert = NSAlert()
-        alert.messageText = "License Activation Failed"
+        alert.messageText = title
         alert.informativeText = message
         alert.alertStyle = .warning
         alert.addButton(withTitle: "OK")
@@ -401,7 +407,7 @@ private struct LicenseInfoPanel: View {
         }
 
         if remainingDays < 0 {
-            return "License expired \(abs(remainingDays)) days ago"
+            return "Updates expired \(abs(remainingDays)) days ago"
         }
         if remainingDays == 0 {
             return "Updates available until today"

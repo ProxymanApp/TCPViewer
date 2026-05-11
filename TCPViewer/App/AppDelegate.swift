@@ -17,10 +17,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindowController: NSWindowController?
     private var licenseWindowController: TCPViewerLicenseWindowController?
     private var updaterController: SPUStandardUpdaterController?
+    private let sparkleUpdaterDelegate = TCPViewerSparkleUpdaterDelegate()
     private weak var checkForUpdatesMenuItem: NSMenuItem?
     private weak var licenseMenuItem: NSMenuItem?
     private var licenseStatusObserver: NSObjectProtocol?
     private var isHandlingTermination = false
+    private var isShowingRenewalRequiredAlert = false
 
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
@@ -30,8 +32,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         wirePreferencesMenu()
         wireUpdatesMenu()
         wireFilterMenu()
-        TCPViewerLicenseService.shared.verifyAtLaunch()
+        verifyLicenseAtLaunch()
         networkHelperToolManager.refreshStatusForLaunch()
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        verifyLicenseIfNeededForForeground()
     }
 
     func applicationWillTerminate(_ aNotification: Notification) {
@@ -237,7 +243,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let controller = SPUStandardUpdaterController(
             startingUpdater: true,
-            updaterDelegate: nil,
+            updaterDelegate: sparkleUpdaterDelegate,
             userDriverDelegate: nil
         )
         updaterController = controller
@@ -343,5 +349,71 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         licenseMenuItem?.title = TCPViewerLicenseService.shared.isLicenseAuthorized
             ? "TCP Viewer License…"
             : "Buy TCP Viewer License…"
+    }
+
+    private func verifyLicenseAtLaunch() {
+        TCPViewerLicenseService.shared.verifyAtLaunch { [weak self] status in
+            self?.handleLicenseVerificationStatus(status)
+        }
+    }
+
+    private func verifyLicenseIfNeededForForeground() {
+        TCPViewerLicenseService.shared.verifyIfNeeded { [weak self] status in
+            self?.handleLicenseVerificationStatus(status)
+        }
+    }
+
+    private func handleLicenseVerificationStatus(_ status: TCPViewerLicenseStatus) {
+        guard case .unauthorized(.renewalRequired) = status else {
+            return
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            self?.showRenewalRequiredAlertIfNeeded()
+        }
+    }
+
+    private func showRenewalRequiredAlertIfNeeded() {
+        guard !isShowingRenewalRequiredAlert else {
+            return
+        }
+
+        isShowingRenewalRequiredAlert = true
+        let alert = NSAlert()
+        alert.messageText = "TCP Viewer PRO Was Disabled"
+        alert.informativeText = TCPViewerLicenseError.renewalRequired.errorDescription ?? "This TCP Viewer build is not covered by your license."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Renew License")
+        alert.addButton(withTitle: "OK")
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            TCPViewerLicenseWebsiteService.open(.renewLicense)
+        }
+        isShowingRenewalRequiredAlert = false
+    }
+}
+
+private final class TCPViewerSparkleUpdaterDelegate: NSObject, SPUUpdaterDelegate {
+    func feedParameters(for updater: SPUUpdater, sendingSystemProfile sendingProfile: Bool) -> [[String: String]] {
+        var parameters = [
+            [
+                "key": "platform",
+                "value": "macos",
+                "displayKey": "Platform",
+                "displayValue": "macOS",
+            ],
+        ]
+
+        if let signature = TCPViewerLicenseService.shared.currentLicense?.signature {
+            // Sparkle cannot add custom headers for appcast checks, so pass the receipt signature as a query parameter.
+            parameters.append([
+                "key": "signature",
+                "value": signature,
+                "displayKey": "License Receipt",
+                "displayValue": "Activated",
+            ])
+        }
+
+        return parameters
     }
 }

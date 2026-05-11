@@ -27,6 +27,8 @@ struct TCPViewerLicenseServiceTests {
         #expect(network.registeredLicenseKey == "TCPV-KEY")
         #expect(network.registeredDeviceUUID == "device-1")
         #expect(network.registeredBuildNumber == "999")
+        #expect(network.registeredAppVersion == "1.2.3")
+        #expect(network.registeredOSVersion == "macOS 15.6")
     }
 
     @Test func activationRejectsInvalidPrefixBeforeNetworkCall() throws {
@@ -41,6 +43,23 @@ struct TCPViewerLicenseServiceTests {
         #expect(status == .unauthorized(.invalidLicense))
         #expect(network.registeredLicenseKey == nil)
         #expect(storage.readLicense() == nil)
+    }
+
+    @Test func activationRejectsBuildOutsideUpdateWindowWithoutStoringReceipt() throws {
+        let storage = try makeStorage()
+        let network = StubLicenseNetworkClient()
+        network.registerResult = .failure(.renewalRequired)
+        let service = makeService(storage: storage, network: network)
+
+        let status = waitForStatus {
+            service.activate(licenseKey: "TCPV-EXPIRED", completion: $0)
+        }
+
+        #expect(status == .unauthorized(.renewalRequired))
+        #expect(storage.readLicense() == nil)
+        #expect(network.registeredBuildNumber == "999")
+        #expect(network.registeredAppVersion == "1.2.3")
+        #expect(network.registeredOSVersion == "macOS 15.6")
     }
 
     @Test func launchVerificationSuccessRefreshesStoredLicense() throws {
@@ -98,6 +117,42 @@ struct TCPViewerLicenseServiceTests {
         #expect(storage.readLicense() == license)
     }
 
+    @Test func launchVerificationRemovesStoredLicenseWhenBuildNeedsRenewal() throws {
+        let storage = try makeStorage()
+        let license = makeLicense()
+        try storage.writeLicense(license)
+
+        let network = StubLicenseNetworkClient()
+        network.verifyResult = .failure(.renewalRequired)
+        let service = makeService(storage: storage, network: network)
+
+        let status = waitForStatus {
+            service.verifyAtLaunch(completion: $0)
+        }
+
+        #expect(status == .unauthorized(.renewalRequired))
+        #expect(storage.readLicense() == nil)
+        #expect(service.status == .unauthorized(.renewalRequired))
+    }
+
+    @Test func launchVerificationRejectsCopiedReceiptFromDifferentDevice() throws {
+        let storage = try makeStorage()
+        let license = makeLicense(deviceUUID: "device-1")
+        try storage.writeLicense(license)
+
+        let network = StubLicenseNetworkClient()
+        let deviceProvider = StubDeviceProvider(deviceIDs: ["device-2"])
+        let service = makeService(storage: storage, network: network, deviceProvider: deviceProvider)
+
+        let status = waitForStatus {
+            service.verifyAtLaunch(completion: $0)
+        }
+
+        #expect(status == .unauthorized(.invalidLicense))
+        #expect(storage.readLicense() == nil)
+        #expect(network.verifiedSignature == nil)
+    }
+
     @Test func verifyIfNeededWithoutPreviousTimestampVerifiesStoredLicense() throws {
         let storage = try makeStorage()
         let oldLicense = makeLicense(email: "old@example.com")
@@ -114,6 +169,8 @@ struct TCPViewerLicenseServiceTests {
 
         #expect(status == .authorized(updatedLicense))
         #expect(network.verifiedSignature == oldLicense.signature)
+        #expect(network.verifiedAppVersion == "1.2.3")
+        #expect(network.verifiedOSVersion == "macOS 15.6")
     }
 
     @Test func verifyIfNeededSkipsFreshVerification() throws {
@@ -171,13 +228,37 @@ struct TCPViewerLicenseServiceTests {
         #expect(network.verifiedSignature == nil)
     }
 
-    @Test func localRevokeAlwaysClearsStoredLicense() throws {
+    @Test func localRevokeKeepsStoredLicenseWhenBackendFails() throws {
         let storage = try makeStorage()
         let license = makeLicense()
         try storage.writeLicense(license)
 
         let network = StubLicenseNetworkClient()
         network.revokeResult = .failure(.noInternetConnection)
+        let service = makeService(storage: storage, network: network)
+
+        let result = waitForVoid {
+            service.revokeCurrentDevice(completion: $0)
+        }
+
+        switch result {
+        case .failure(.noInternetConnection):
+            break
+        default:
+            Issue.record("Expected revoke failure to preserve the local receipt.")
+        }
+        #expect(storage.readLicense() == license)
+        #expect(service.status == .authorized(license))
+        #expect(network.revokedSignature == license.signature)
+    }
+
+    @Test func localRevokeClearsStoredLicenseWhenBackendAlreadyLostDevice() throws {
+        let storage = try makeStorage()
+        let license = makeLicense()
+        try storage.writeLicense(license)
+
+        let network = StubLicenseNetworkClient()
+        network.revokeResult = .failure(.invalidLicense)
         let service = makeService(storage: storage, network: network)
 
         let result = waitForVoid {
@@ -202,6 +283,8 @@ struct TCPViewerLicenseServiceTests {
             deviceProvider: deviceProvider,
             defaults: defaults ?? makeDefaults(),
             buildNumberProvider: { "999" },
+            appVersionProvider: { "1.2.3" },
+            osVersionProvider: { "macOS 15.6" },
             workerQueue: DispatchQueue(label: "TCPViewerLicenseServiceTests-\(UUID().uuidString)")
         )
     }
@@ -288,8 +371,12 @@ private final class StubLicenseNetworkClient: TCPViewerLicenseNetworkClienting {
     var registeredLicenseKey: String?
     var registeredDeviceUUID: String?
     var registeredBuildNumber: String?
+    var registeredAppVersion: String?
+    var registeredOSVersion: String?
     var verifiedSignature: String?
     var verifiedDeviceUUID: String?
+    var verifiedAppVersion: String?
+    var verifiedOSVersion: String?
     var revokedSignature: String?
 
     func registerLicense(
@@ -297,11 +384,15 @@ private final class StubLicenseNetworkClient: TCPViewerLicenseNetworkClienting {
         deviceName: String,
         deviceUUID: String,
         buildNumber: String,
+        appVersion: String,
+        osVersion: String,
         completion: @escaping (Result<TCPViewerLicense, TCPViewerLicenseError>) -> Void
     ) {
         registeredLicenseKey = licenseKey
         registeredDeviceUUID = deviceUUID
         registeredBuildNumber = buildNumber
+        registeredAppVersion = appVersion
+        registeredOSVersion = osVersion
         completion(registerResult)
     }
 
@@ -309,10 +400,14 @@ private final class StubLicenseNetworkClient: TCPViewerLicenseNetworkClienting {
         license: TCPViewerLicense,
         deviceUUID: String,
         buildNumber: String,
+        appVersion: String,
+        osVersion: String,
         completion: @escaping (Result<TCPViewerLicense, TCPViewerLicenseError>) -> Void
     ) {
         verifiedSignature = license.signature
         verifiedDeviceUUID = deviceUUID
+        verifiedAppVersion = appVersion
+        verifiedOSVersion = osVersion
         completion(verifyResult)
     }
 

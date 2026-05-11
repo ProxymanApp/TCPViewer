@@ -23,7 +23,7 @@ enum TCPViewerLicenseError: Error, Equatable, LocalizedError {
         case .outOfSeats:
             return "Your license has no available device seats."
         case .renewalRequired:
-            return "Please renew your license to use this TCP Viewer build."
+            return "This TCP Viewer build was released after your license update window. Your license is still valid for builds released before the update expiry date; download an older build or renew to use this build."
         case .expired:
             return "Your license is expired."
         case .couldNotGetDeviceUUID:
