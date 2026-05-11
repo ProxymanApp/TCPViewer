@@ -6,6 +6,7 @@
 //
 
 import Cocoa
+import Sparkle
 
 @main
 class AppDelegate: NSObject, NSApplicationDelegate {
@@ -15,6 +16,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var aboutWindowController: TCPViewerAboutWindowController?
     private var settingsWindowController: NSWindowController?
     private var licenseWindowController: TCPViewerLicenseWindowController?
+    private var updaterController: SPUStandardUpdaterController?
+    private weak var checkForUpdatesMenuItem: NSMenuItem?
     private weak var licenseMenuItem: NSMenuItem?
     private var licenseStatusObserver: NSObjectProtocol?
     private var isHandlingTermination = false
@@ -25,6 +28,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         observeLicenseStatusChanges()
         wireAboutMenu()
         wirePreferencesMenu()
+        wireUpdatesMenu()
         wireFilterMenu()
         TCPViewerLicenseService.shared.verifyAtLaunch()
         networkHelperToolManager.refreshStatusForLaunch()
@@ -185,6 +189,76 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         addLicenseMenuItemIfNeeded(to: appMenu)
+    }
+
+    private func wireUpdatesMenu() {
+        // Sparkle owns validation and presentation once the update menu item is connected.
+        guard let appMenu = NSApp.mainMenu?.items.first?.submenu else {
+            return
+        }
+
+        let item = findOrCreateUpdatesMenuItem(in: appMenu)
+        checkForUpdatesMenuItem = item
+
+        guard let updaterController = makeUpdaterControllerIfConfigured() else {
+            item.target = nil
+            item.action = nil
+            item.isEnabled = false
+            return
+        }
+
+        item.target = updaterController
+        item.action = #selector(SPUStandardUpdaterController.checkForUpdates(_:))
+        item.isEnabled = true
+    }
+
+    private func findOrCreateUpdatesMenuItem(in appMenu: NSMenu) -> NSMenuItem {
+        // Keep the standard Sparkle command near About where macOS users expect it.
+        if let existingItem = appMenu.items.first(where: { $0.action == #selector(SPUStandardUpdaterController.checkForUpdates(_:)) || $0.title == "Check for Updates…" }) {
+            existingItem.title = "Check for Updates…"
+            return existingItem
+        }
+
+        let item = NSMenuItem(title: "Check for Updates…", action: nil, keyEquivalent: "")
+        let insertionIndex = appMenu.items.firstIndex { $0.isSeparatorItem } ?? min(1, appMenu.items.count)
+        appMenu.insertItem(item, at: insertionIndex)
+        return item
+    }
+
+    private func makeUpdaterControllerIfConfigured() -> SPUStandardUpdaterController? {
+        // Local debug builds can omit Sparkle env values, while release builds must provide them.
+        guard isSparkleConfigured() else {
+            return nil
+        }
+
+        if let updaterController {
+            return updaterController
+        }
+
+        let controller = SPUStandardUpdaterController(
+            startingUpdater: true,
+            updaterDelegate: nil,
+            userDriverDelegate: nil
+        )
+        updaterController = controller
+        return controller
+    }
+
+    private func isSparkleConfigured() -> Bool {
+        // Reject unresolved build-setting placeholders so development builds stay quiet.
+        let feedURL = Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String
+        let publicKey = Bundle.main.object(forInfoDictionaryKey: "SUPublicEDKey") as? String
+
+        return isResolvedSparkleValue(feedURL) && isResolvedSparkleValue(publicKey)
+    }
+
+    private func isResolvedSparkleValue(_ value: String?) -> Bool {
+        // Sparkle requires both values before it can safely check for updates.
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            return false
+        }
+
+        return !value.isEmpty && !value.contains("$(")
     }
 
     private func wireFilterMenu() {

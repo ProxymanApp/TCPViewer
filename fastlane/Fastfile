@@ -1,0 +1,95 @@
+require "fileutils"
+require "shellwords"
+
+default_platform(:mac)
+
+def required_env!(names)
+  missing = names.select { |name| ENV[name].to_s.strip.empty? }
+  UI.user_error!("Missing release environment values: #{missing.join(', ')}") unless missing.empty?
+end
+
+def shell_escape(value)
+  Shellwords.escape(value.to_s)
+end
+
+def prepare_output_dir!(output_dir)
+  expected_root = File.expand_path(File.join(Dir.home, "Desktop", "tcpviewer-production"))
+  unless output_dir.start_with?(expected_root + File::SEPARATOR)
+    UI.user_error!("Refusing to clean unexpected output_dir: #{output_dir}")
+  end
+
+  FileUtils.rm_rf(output_dir)
+  FileUtils.mkdir_p(output_dir)
+end
+
+platform :mac do
+  desc "Validate local macOS release prerequisites."
+  lane :preflight do
+    required_env!([
+      "TCPVIEWER_DEVELOPMENT_TEAM",
+      "TCPVIEWER_DEVELOPER_ID_APPLICATION",
+      "TCPVIEWER_NOTARY_KEYCHAIN_PROFILE"
+    ])
+
+    sh("xcodebuild -project TCPViewer.xcodeproj -scheme TCPViewer -configuration Release -showBuildSettings > /dev/null")
+    sh("test -d Vendor/.install/wireshark/lib")
+    sh("security find-identity -p codesigning -v | grep #{shell_escape(ENV.fetch('TCPVIEWER_DEVELOPER_ID_APPLICATION'))}")
+    sh("xcrun notarytool history --keychain-profile #{shell_escape(ENV.fetch('TCPVIEWER_NOTARY_KEYCHAIN_PROFILE'))} > /dev/null")
+  end
+
+  desc "Build, notarize, staple, and package the TCP Viewer release DMG."
+  lane :build_release do |options|
+    required_env!([
+      "TCPVIEWER_DEVELOPMENT_TEAM",
+      "TCPVIEWER_DEVELOPER_ID_APPLICATION",
+      "TCPVIEWER_NOTARY_KEYCHAIN_PROFILE"
+    ])
+
+    version = options[:version].to_s
+    build_number = options[:build_number].to_s
+    output_dir = File.expand_path(options[:output_dir].to_s)
+    UI.user_error!("Missing version") if version.empty?
+    UI.user_error!("Missing build_number") if build_number.empty?
+    UI.user_error!("Missing output_dir") if output_dir.empty?
+
+    archive_path = File.join(output_dir, "TCPViewer.xcarchive")
+    staging_dir = File.join(output_dir, "dmg-staging")
+    app_path = File.join(archive_path, "Products", "Applications", "TCP Viewer.app")
+    staged_app_path = File.join(staging_dir, "TCP Viewer.app")
+    dmg_path = File.join(output_dir, "tcpviewer.dmg")
+
+    prepare_output_dir!(output_dir)
+
+    sh([
+      "xcodebuild",
+      "-project", "TCPViewer.xcodeproj",
+      "-scheme", "TCPViewer",
+      "-configuration", "Release",
+      "-archivePath", archive_path,
+      "archive",
+      "MARKETING_VERSION=#{version}",
+      "CURRENT_PROJECT_VERSION=#{build_number}",
+      "DEVELOPMENT_TEAM=#{ENV.fetch('TCPVIEWER_DEVELOPMENT_TEAM')}",
+      "CODE_SIGN_IDENTITY=#{ENV.fetch('TCPVIEWER_DEVELOPER_ID_APPLICATION')}"
+    ].map { |part| shell_escape(part) }.join(" "))
+
+    UI.user_error!("Archived app was not found at #{app_path}") unless File.directory?(app_path)
+
+    FileUtils.mkdir_p(staging_dir)
+    FileUtils.cp_r(app_path, staged_app_path)
+
+    sh([
+      "hdiutil",
+      "create",
+      "-volname", "TCP Viewer",
+      "-srcfolder", staging_dir,
+      "-ov",
+      "-format", "UDZO",
+      dmg_path
+    ].map { |part| shell_escape(part) }.join(" "))
+
+    sh("xcrun notarytool submit #{shell_escape(dmg_path)} --keychain-profile #{shell_escape(ENV.fetch('TCPVIEWER_NOTARY_KEYCHAIN_PROFILE'))} --wait")
+    sh("xcrun stapler staple #{shell_escape(dmg_path)}")
+    sh("spctl -a -vv -t open --context context:primary-signature #{shell_escape(dmg_path)}")
+  end
+end

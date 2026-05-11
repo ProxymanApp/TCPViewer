@@ -206,6 +206,11 @@ sign_code() {
   CODE_PATH="$1"
   SIGN_IDENTITY="${EXPANDED_CODE_SIGN_IDENTITY:-${CODE_SIGN_IDENTITY:-}}"
 
+  # Unsigned verification builds should not touch local signing identities.
+  if [ "${CODE_SIGNING_ALLOWED:-YES}" = "NO" ]; then
+    return
+  fi
+
   if [ -z "$SIGN_IDENTITY" ]; then
     return
   fi

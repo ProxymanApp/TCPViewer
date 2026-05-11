@@ -89,6 +89,60 @@ xcodebuild test \
   -destination 'platform=macOS'
 ```
 
+## Production Release
+
+TCP Viewer uses Sparkle 2 for macOS app updates. Release builds are packaged by
+the Node.js release script, built/notarized by fastlane, signed with Sparkle's
+EdDSA update key, uploaded to Cloudflare R2, and registered with the TCP Viewer
+backend.
+
+Release secrets must stay out of Git. Keep them in local `.env`, shell env, or
+Keychain-backed tools. Because `.env` is also included by Xcode as an
+`.xcconfig`, URL values that contain `://` should use Xcode's escaped form,
+for example `https:/$()/api-tcpviewer.proxyman.com`.
+
+First-time release setup:
+
+```bash
+npm install
+bundle install
+xcrun notarytool store-credentials "<profile-name>"
+```
+
+Generate or transfer the Sparkle EdDSA key with Sparkle's `generate_keys` tool.
+Store the private key in `TCPVIEWER_SPARKLE_PRIVATE_ED_KEY` and the public key
+in `TCPVIEWER_SPARKLE_PUBLIC_ED_KEY`. The public key is embedded into the app's
+`SUPublicEDKey`; the private key is only used by the local release script.
+
+Before production, add a matching entry to `ReleaseNote.json`:
+
+```json
+{
+  "version": "1.1.0",
+  "features": [],
+  "improvements": [],
+  "bugs": []
+}
+```
+
+Run the release flow:
+
+```bash
+npm run release
+```
+
+Choose `beta` to build, notarize, sign, upload to R2, and print a private beta
+DMG URL. Choose `production` to enter the next version; the script increments
+the build number, validates the release with the backend, uploads the signed
+DMG, generates the Sparkle appcast XML from `ReleaseNote.json`, and calls the
+backend release endpoint.
+
+Production artifacts are exported under:
+
+```bash
+~/Desktop/tcpviewer-production/production/<version>-<build>/
+```
+
 ## Troubleshooting
 
 Missing submodule:
