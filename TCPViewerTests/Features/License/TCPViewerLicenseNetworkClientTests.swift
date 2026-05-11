@@ -177,7 +177,8 @@ struct TCPViewerLicenseNetworkClientTests {
           "device_uuid": "device-1",
           "email": "ada@example.com",
           "purchaseAt": "2026-05-01T10:20:30.123Z",
-          "expiryAt": "2027-05-01T10:20:30.123Z"
+          "expiryAt": "2027-05-01T10:20:30.123Z",
+          "licenseType": "standard_license"
         }
         """.data(using: .utf8)!
     }

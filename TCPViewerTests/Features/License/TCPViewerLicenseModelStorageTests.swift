@@ -17,7 +17,8 @@ struct TCPViewerLicenseModelStorageTests {
           "device_uuid": "device-1",
           "email": "ada@example.com",
           "purchaseAt": "2026-05-01T10:20:30.123Z",
-          "expiryAt": "2027-05-01T10:20:30.123Z"
+          "expiryAt": "2027-05-01T10:20:30.123Z",
+          "licenseType": "standard_license"
         }
         """.data(using: .utf8)!
 
@@ -27,8 +28,25 @@ struct TCPViewerLicenseModelStorageTests {
         #expect(license.deviceUUID == "device-1")
         #expect(license.email == "ada@example.com")
         #expect(license.expiryDate == "2027-05-01T10:20:30.123Z")
+        #expect(license.licenseType == .standardLicense)
         #expect(license.formattedExpiryDate.contains("2027"))
         #expect(license.hasOneYearUpdateWindow)
+    }
+
+    @Test func decodesOldPayloadWithoutLicenseTypeAsStandard() throws {
+        let data = """
+        {
+          "signature": "abcdefghijklmnopqrstuvwxyz",
+          "device_uuid": "device-1",
+          "email": "ada@example.com",
+          "purchaseAt": "2026-05-01T10:20:30.123Z",
+          "expiryAt": "2027-05-01T10:20:30.123Z"
+        }
+        """.data(using: .utf8)!
+
+        let license = try JSONDecoder().decode(TCPViewerLicense.self, from: data)
+
+        #expect(license.licenseType == .standardLicense)
     }
 
     @Test func updateWindowRejectsReceiptsLongerThanOneYear() {
@@ -41,6 +59,21 @@ struct TCPViewerLicenseModelStorageTests {
         )
 
         #expect(!license.hasOneYearUpdateWindow)
+    }
+
+    @Test func lifetimeLicenseAllowsUnlimitedUpdateWindow() {
+        let license = TCPViewerLicense(
+            signature: "abcdefghijklmnopqrstuvwxyz",
+            deviceUUID: "device-1",
+            email: "ada@example.com",
+            purchaseAt: "2026-05-01T10:20:30.123Z",
+            expiryDate: "2036-05-01T10:20:30.123Z",
+            licenseType: .lifetimeLicense
+        )
+
+        #expect(!license.hasOneYearUpdateWindow)
+        #expect(license.hasValidUpdateEntitlement)
+        #expect(license.updateAvailabilityDescription == "Lifetime updates included")
     }
 
     @Test func encryptedStorageRoundTripsAndRemovesLicense() throws {

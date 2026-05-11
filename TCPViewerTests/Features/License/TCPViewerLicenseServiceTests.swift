@@ -228,6 +228,27 @@ struct TCPViewerLicenseServiceTests {
         #expect(network.verifiedSignature == nil)
     }
 
+    @Test func launchVerificationAcceptsLifetimeLicenseLongerThanOneYear() throws {
+        let storage = try makeStorage()
+        let license = makeLicense(
+            expiryDate: "2036-05-01T10:20:30.123Z",
+            licenseType: .lifetimeLicense
+        )
+        try storage.writeLicense(license)
+
+        let network = StubLicenseNetworkClient()
+        network.verifyResult = .success(license)
+        let service = makeService(storage: storage, network: network)
+
+        let status = waitForStatus {
+            service.verifyAtLaunch(completion: $0)
+        }
+
+        #expect(status == .authorized(license))
+        #expect(storage.readLicense() == license)
+        #expect(network.verifiedSignature == license.signature)
+    }
+
     @Test func localRevokeKeepsStoredLicenseWhenBackendFails() throws {
         let storage = try makeStorage()
         let license = makeLicense()
@@ -309,14 +330,16 @@ struct TCPViewerLicenseServiceTests {
     private func makeLicense(
         email: String = "ada@example.com",
         deviceUUID: String = "device-1",
-        expiryDate: String = "2027-05-01T10:20:30.123Z"
+        expiryDate: String = "2027-05-01T10:20:30.123Z",
+        licenseType: TCPViewerLicenseType = .standardLicense
     ) -> TCPViewerLicense {
         TCPViewerLicense(
             signature: "abcdefghijklmnopqrstuvwxyz",
             deviceUUID: deviceUUID,
             email: email,
             purchaseAt: "2026-05-01T10:20:30.123Z",
-            expiryDate: expiryDate
+            expiryDate: expiryDate,
+            licenseType: licenseType
         )
     }
 

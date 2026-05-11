@@ -402,22 +402,7 @@ private struct LicenseInfoPanel: View {
     }
 
     private var expiryText: String {
-        guard let remainingDays = license.remainingDays else {
-            return "Updates available until \(license.formattedExpiryDate)"
-        }
-
-        if remainingDays < 0 {
-            return "Updates expired \(abs(remainingDays)) days ago"
-        }
-        if remainingDays == 0 {
-            return "Updates available until today"
-        }
-        if remainingDays < 30 {
-            return "Updates available until \(license.formattedExpiryDate) (\(remainingDays) days from now)"
-        }
-
-        let months = remainingDays / 30
-        return "Updates available until \(license.formattedExpiryDate) (\(months + 1) months from now)"
+        license.updateAvailabilityDescription
     }
 }
 

@@ -218,8 +218,11 @@ final class TCPViewerLicenseService {
         guard license.signature.count >= 20 else {
             return false
         }
-        guard license.hasOneYearUpdateWindow else {
+        guard license.hasValidUpdateEntitlement else {
             return false
+        }
+        if license.hasLifetimeUpdates {
+            return true
         }
         guard let remainingDays = license.remainingDays else {
             return false
