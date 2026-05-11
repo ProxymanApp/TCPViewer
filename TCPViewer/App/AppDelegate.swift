@@ -23,6 +23,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var licenseStatusObserver: NSObjectProtocol?
     private var isHandlingTermination = false
     private var isShowingRenewalRequiredAlert = false
+    private var isVerifyingLicenseAtLaunch = false
 
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
@@ -352,12 +353,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func verifyLicenseAtLaunch() {
+        isVerifyingLicenseAtLaunch = true
         TCPViewerLicenseService.shared.verifyAtLaunch { [weak self] status in
-            self?.handleLicenseVerificationStatus(status)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.isVerifyingLicenseAtLaunch = false
+                self.handleLicenseVerificationStatus(status)
+            }
         }
     }
 
     private func verifyLicenseIfNeededForForeground() {
+        guard !isVerifyingLicenseAtLaunch else {
+            return
+        }
+
         TCPViewerLicenseService.shared.verifyIfNeeded { [weak self] status in
             self?.handleLicenseVerificationStatus(status)
         }
@@ -395,7 +405,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
 private final class TCPViewerSparkleUpdaterDelegate: NSObject, SPUUpdaterDelegate {
     func feedParameters(for updater: SPUUpdater, sendingSystemProfile sendingProfile: Bool) -> [[String: String]] {
-        var parameters = [
+        [
             [
                 "key": "platform",
                 "value": "macos",
@@ -403,17 +413,5 @@ private final class TCPViewerSparkleUpdaterDelegate: NSObject, SPUUpdaterDelegat
                 "displayValue": "macOS",
             ],
         ]
-
-        if let signature = TCPViewerLicenseService.shared.currentLicense?.signature {
-            // Sparkle cannot add custom headers for appcast checks, so pass the receipt signature as a query parameter.
-            parameters.append([
-                "key": "signature",
-                "value": signature,
-                "displayKey": "License Receipt",
-                "displayValue": "Activated",
-            ])
-        }
-
-        return parameters
     }
 }
