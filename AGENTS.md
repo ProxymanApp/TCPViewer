@@ -2,6 +2,11 @@
 ### Requirement
 - Keep the code simple, testable, and don't create too many abstraction
 - Follow best coding practice
+- This repo is open source; treat every committed file, fixture, log, and config as public.
+- Never store or commit secrets, credentials, tokens, API keys, private certificates, signing identities, personal data, or machine-specific sensitive paths.
+- Keep secrets in local environment variables, ignored local config files, or the platform keychain; document required values with safe placeholders only.
+- Before committing, review changes for accidental secrets, sensitive packet captures, debug logs, or generated artifacts that could expose private data.
+- Follow OSS security hygiene: validate untrusted input, avoid unsafe defaults, keep dependencies minimal and justified, and prefer secure-by-default behavior.
 - Avoid duplication code
 - Core logic should be carefully tested by Unit Test or Integration Test
 - Don't write UI Tests
@@ -22,3 +27,10 @@
 - Run `xcodebuild test -project TCPViewer.xcodeproj -scheme TCPViewer -destination 'platform=macOS'` and relevant `PcapPlusPlusCore` tests when app/core behavior changes
 - Try adding 1 line and concise short comment to explain a group of logic if the func is big
 - Add 1 line concise comment to explain a func in the top of func
+
+### AI-written Pull Requests
+- AI-written or AI-assisted pull requests are welcome only when the contributor fully reviews, tests, and takes responsibility for the change.
+- Clearly disclose when a pull request was written or substantially assisted by AI.
+- Keep AI-generated changes small, focused, easy to review, and aligned with the existing architecture and coding style.
+- Do not submit broad rewrites, speculative refactors, or unrelated cleanup just because an AI suggested them.
+- The project author may freely reject any AI-written pull request, even if it is technically correct or reasonable to merge, to preserve the project's direction, taste, maintainability, and long-term goals.

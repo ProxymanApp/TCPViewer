@@ -21,6 +21,8 @@ final class TCPViewerLicenseService {
     private let deviceProvider: any TCPViewerLicenseDeviceProviding
     private let defaults: UserDefaults
     private let buildNumberProvider: () -> String
+    private let appVersionProvider: () -> String
+    private let osVersionProvider: () -> String
     private let workerQueue: DispatchQueue
     private let lock = NSLock()
 
@@ -32,6 +34,8 @@ final class TCPViewerLicenseService {
         deviceProvider: any TCPViewerLicenseDeviceProviding = TCPViewerLicenseDeviceIdentifier(),
         defaults: UserDefaults = .standard,
         buildNumberProvider: @escaping () -> String = { TCPViewerLicenseAppVersion.current.buildNumber },
+        appVersionProvider: @escaping () -> String = { TCPViewerLicenseAppVersion.current.appVersion },
+        osVersionProvider: @escaping () -> String = { TCPViewerLicenseAppVersion.current.osVersion },
         workerQueue: DispatchQueue = DispatchQueue(label: "com.proxyman.tcpviewer.LicenseService", qos: .utility)
     ) {
         self.storage = storage
@@ -39,6 +43,8 @@ final class TCPViewerLicenseService {
         self.deviceProvider = deviceProvider
         self.defaults = defaults
         self.buildNumberProvider = buildNumberProvider
+        self.appVersionProvider = appVersionProvider
+        self.osVersionProvider = osVersionProvider
         self.workerQueue = workerQueue
         self.storedStatus = Self.initialStatus(storage: storage, deviceProvider: deviceProvider)
     }
@@ -70,7 +76,9 @@ final class TCPViewerLicenseService {
             licenseKey: normalizedKey,
             deviceName: deviceProvider.deviceName(),
             deviceUUID: deviceUUID,
-            buildNumber: buildNumberProvider()
+            buildNumber: buildNumberProvider(),
+            appVersion: appVersionProvider(),
+            osVersion: osVersionProvider()
         ) { [weak self] result in
             guard let self else { return }
 
@@ -120,9 +128,17 @@ final class TCPViewerLicenseService {
             return
         }
 
-        networkClient.revokeLicense(license: license) { [weak self] _ in
-            self?.clearLicense()
-            completion(.success(()))
+        networkClient.revokeLicense(license: license) { [weak self] result in
+            guard let self else { return }
+
+            // Clear locally only after License Manager accepted or already lost this device.
+            switch result {
+            case .success, .failure(.invalidLicense):
+                clearLicense()
+                completion(.success(()))
+            case .failure(let error):
+                completion(.failure(error))
+            }
         }
     }
 
@@ -160,7 +176,9 @@ final class TCPViewerLicenseService {
             networkClient.verifyLicense(
                 license: license,
                 deviceUUID: license.deviceUUID,
-                buildNumber: buildNumberProvider()
+                buildNumber: buildNumberProvider(),
+                appVersion: appVersionProvider(),
+                osVersion: osVersionProvider()
             ) { [weak self] result in
                 guard let self else { return }
 
@@ -176,6 +194,7 @@ final class TCPViewerLicenseService {
                         completion?(.unauthorized(.error(error.localizedDescription)))
                     }
                 case .failure(.noInternetConnection):
+                    // Offline Macs keep their current receipt until the server can be reached.
                     completion?(status)
                 case .failure(let error):
                     removeStoredLicenseAndComplete(completion, error: error)
@@ -192,14 +211,18 @@ final class TCPViewerLicenseService {
         _ license: TCPViewerLicense,
         deviceProvider: any TCPViewerLicenseDeviceProviding
     ) -> Bool {
+        // Bind the encrypted receipt to this Mac so copied Application Support files cannot unlock PRO.
         guard deviceProvider.isSameDeviceUUID(license.deviceUUID) else {
             return false
         }
         guard license.signature.count >= 20 else {
             return false
         }
-        guard license.hasOneYearUpdateWindow else {
+        guard license.hasValidUpdateEntitlement else {
             return false
+        }
+        if license.hasLifetimeUpdates {
+            return true
         }
         guard let remainingDays = license.remainingDays else {
             return false

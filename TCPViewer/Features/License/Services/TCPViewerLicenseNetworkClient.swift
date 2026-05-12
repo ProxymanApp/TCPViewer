@@ -13,6 +13,8 @@ protocol TCPViewerLicenseNetworkClienting: AnyObject {
         deviceName: String,
         deviceUUID: String,
         buildNumber: String,
+        appVersion: String,
+        osVersion: String,
         completion: @escaping (Result<TCPViewerLicense, TCPViewerLicenseError>) -> Void
     )
 
@@ -20,6 +22,8 @@ protocol TCPViewerLicenseNetworkClienting: AnyObject {
         license: TCPViewerLicense,
         deviceUUID: String,
         buildNumber: String,
+        appVersion: String,
+        osVersion: String,
         completion: @escaping (Result<TCPViewerLicense, TCPViewerLicenseError>) -> Void
     )
 
@@ -72,6 +76,8 @@ final class TCPViewerLicenseNetworkClient: TCPViewerLicenseNetworkClienting {
         deviceName: String,
         deviceUUID: String,
         buildNumber: String,
+        appVersion: String,
+        osVersion: String,
         completion: @escaping (Result<TCPViewerLicense, TCPViewerLicenseError>) -> Void
     ) {
         let body: [String: Any] = [
@@ -80,6 +86,8 @@ final class TCPViewerLicenseNetworkClient: TCPViewerLicenseNetworkClienting {
             "licenseKey": licenseKey,
             "platform": "macos",
             "buildNumber": buildNumber,
+            "appVersion": appVersion,
+            "osVersion": osVersion,
         ]
         sendJSONRequest(
             path: "/api/devices/register",
@@ -93,6 +101,8 @@ final class TCPViewerLicenseNetworkClient: TCPViewerLicenseNetworkClienting {
         license: TCPViewerLicense,
         deviceUUID: String,
         buildNumber: String,
+        appVersion: String,
+        osVersion: String,
         completion: @escaping (Result<TCPViewerLicense, TCPViewerLicenseError>) -> Void
     ) {
         let body: [String: Any] = [
@@ -100,6 +110,8 @@ final class TCPViewerLicenseNetworkClient: TCPViewerLicenseNetworkClienting {
             "signature": license.signature,
             "platform": "macos",
             "deviceUuid": deviceUUID,
+            "appVersion": appVersion,
+            "osVersion": osVersion,
         ]
         sendJSONRequest(
             path: "/api/devices/verify",

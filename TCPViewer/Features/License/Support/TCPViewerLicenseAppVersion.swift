@@ -12,9 +12,11 @@ struct TCPViewerLicenseAppVersion {
 
     let appVersion: String
     let buildNumber: String
+    let osVersion: String
 
-    init(bundleInfo: [String: Any]) {
+    init(bundleInfo: [String: Any], osVersion: String = ProcessInfo.processInfo.operatingSystemVersionString) {
         self.appVersion = bundleInfo["CFBundleShortVersionString"] as? String ?? "Unknown"
         self.buildNumber = bundleInfo["CFBundleVersion"] as? String ?? "Unknown"
+        self.osVersion = osVersion
     }
 }

@@ -21,6 +21,8 @@ struct TCPViewerLicenseNetworkClientTests {
                 deviceName: "Ada's Mac",
                 deviceUUID: "device-1",
                 buildNumber: "123",
+                appVersion: "1.2.3",
+                osVersion: "macOS 15.6",
                 completion: $0
             )
         }
@@ -36,6 +38,8 @@ struct TCPViewerLicenseNetworkClientTests {
         #expect(body["deviceUuid"] as? String == "device-1")
         #expect(body["platform"] as? String == "macos")
         #expect(body["buildNumber"] as? String == "123")
+        #expect(body["appVersion"] as? String == "1.2.3")
+        #expect(body["osVersion"] as? String == "macOS 15.6")
     }
 
     @Test func verifyLicenseBuildsExpectedRequestPayload() throws {
@@ -48,6 +52,8 @@ struct TCPViewerLicenseNetworkClientTests {
                 license: makeLicense(),
                 deviceUUID: "device-1",
                 buildNumber: "456",
+                appVersion: "1.2.3",
+                osVersion: "macOS 15.6",
                 completion: $0
             )
         }
@@ -61,6 +67,8 @@ struct TCPViewerLicenseNetworkClientTests {
         #expect(body["deviceUuid"] as? String == "device-1")
         #expect(body["platform"] as? String == "macos")
         #expect(body["buildNumber"] as? String == "456")
+        #expect(body["appVersion"] as? String == "1.2.3")
+        #expect(body["osVersion"] as? String == "macOS 15.6")
     }
 
     @Test func revokeLicenseBuildsExpectedRequestPayload() throws {
@@ -94,6 +102,8 @@ struct TCPViewerLicenseNetworkClientTests {
                 deviceName: "Ada's Mac",
                 deviceUUID: "device-1",
                 buildNumber: "123",
+                appVersion: "1.2.3",
+                osVersion: "macOS 15.6",
                 completion: $0
             )
         }
@@ -109,6 +119,8 @@ struct TCPViewerLicenseNetworkClientTests {
                 license: makeLicense(),
                 deviceUUID: "device-1",
                 buildNumber: "123",
+                appVersion: "1.2.3",
+                osVersion: "macOS 15.6",
                 completion: $0
             )
         }
@@ -138,6 +150,8 @@ struct TCPViewerLicenseNetworkClientTests {
                     license: makeLicense(),
                     deviceUUID: "device-1",
                     buildNumber: "123",
+                    appVersion: "1.2.3",
+                    osVersion: "macOS 15.6",
                     completion: $0
                 )
             }
@@ -163,7 +177,8 @@ struct TCPViewerLicenseNetworkClientTests {
           "device_uuid": "device-1",
           "email": "ada@example.com",
           "purchaseAt": "2026-05-01T10:20:30.123Z",
-          "expiryAt": "2027-05-01T10:20:30.123Z"
+          "expiryAt": "2027-05-01T10:20:30.123Z",
+          "licenseType": "standard_license"
         }
         """.data(using: .utf8)!
     }
