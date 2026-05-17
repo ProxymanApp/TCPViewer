@@ -42,7 +42,7 @@ protocol TCPViewerToolbarDataSourceDelegate: AnyObject {
     func tcpviewerToolbarDataSourceDidRequestClearAllPackets(_ dataSource: TCPViewerToolbarDataSource)
     func tcpviewerToolbarDataSource(_ dataSource: TCPViewerToolbarDataSource, didRequestExport format: CaptureFileFormat)
     func tcpviewerToolbarDataSourceDidToggleInspector(_ dataSource: TCPViewerToolbarDataSource)
-    func tcpviewerToolbarDataSourceDidRequestInstallHelperTool(_ dataSource: TCPViewerToolbarDataSource)
+    func tcpviewerToolbarDataSourceDidRequestHelperToolScreen(_ dataSource: TCPViewerToolbarDataSource)
     func tcpviewerToolbarDataSourceDidRequestPaywall(_ dataSource: TCPViewerToolbarDataSource)
 }
 
@@ -209,12 +209,12 @@ final class TCPViewerToolbarDataSource: NSObject {
         inspectorButton.title = ""
         inspectorButton.toolTip = "Toggle Inspector"
 
-        statusView.onInstallHelperTool = { [weak self] in
+        statusView.onOpenHelperToolScreen = { [weak self] in
             guard let self else {
                 return
             }
 
-            delegate?.tcpviewerToolbarDataSourceDidRequestInstallHelperTool(self)
+            delegate?.tcpviewerToolbarDataSourceDidRequestHelperToolScreen(self)
         }
     }
 
@@ -521,6 +521,7 @@ private final class TCPViewerToolbarViewModel {
     private(set) var statusTint = NSColor.secondaryLabelColor
     private(set) var helpText = ""
     private(set) var helperError: TCPViewerToolbarHelperError?
+    private(set) var isShowingHelperError = false
     private(set) var showsTrialButton = false
 
     // Build toolbar-only presentation state from the root inspector snapshot.
@@ -539,10 +540,17 @@ private final class TCPViewerToolbarViewModel {
         canSaveAs = snapshot.base.documentState.canSaveAs
         canExport = snapshot.totalPacketCount > 0 && snapshot.base.loadState.progress.phase != .loading
         isInspectorVisible = snapshot.isInspectorVisible
-        statusTint = Self.tint(for: snapshot)
-        statusText = Self.statusText(for: snapshot)
-        emphasizedText = Self.emphasizedText(for: snapshot)
         helperError = Self.helperError(for: viewModel.networkHelperToolSnapshot)
+        isShowingHelperError = helperError != nil
+        if let helperError {
+            statusText = helperError.title
+            emphasizedText = nil
+            statusTint = .systemRed
+        } else {
+            statusText = Self.statusText(for: snapshot)
+            emphasizedText = Self.emphasizedText(for: snapshot)
+            statusTint = Self.tint(for: snapshot)
+        }
         showsTrialButton = !isLicenseAuthorized
         helpText = [
             snapshot.base.sessionState.statusMessage,
@@ -630,14 +638,25 @@ private final class TCPViewerToolbarViewModel {
     }
 
     private static func helperError(for snapshot: TCPViewerNetworkHelperToolSnapshot) -> TCPViewerToolbarHelperError? {
-        guard snapshot.status == .notInstalled else {
+        let title: String
+        switch snapshot.status {
+        case .notInstalled:
+            title = "Helper Tool Not Installed"
+        case .waitingForApproval:
+            title = "Helper Tool Needs Approval"
+        case .installedNeedsRelaunch:
+            title = "Helper Tool Needs Relaunch"
+        case .broken:
+            title = "Helper Tool Unavailable"
+        case .unsupported:
+            title = "Helper Tool Unsupported"
+        case .ready, .installing:
             return nil
         }
 
         return TCPViewerToolbarHelperError(
-            title: "Helper Tool Not Installed",
-            message: snapshot.message,
-            actionTitle: "Install Helper Tool"
+            title: title,
+            message: snapshot.message
         )
     }
 }
@@ -645,18 +664,16 @@ private final class TCPViewerToolbarViewModel {
 private struct TCPViewerToolbarHelperError {
     let title: String
     let message: String
-    let actionTitle: String
 }
 
 private final class TCPViewerToolbarStatusView: NSView {
-    var onInstallHelperTool: (() -> Void)?
+    var onOpenHelperToolScreen: (() -> Void)?
 
     private let dot = NSView()
     private let statusLabel = TCPViewerUI.label("", font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium), color: .secondaryLabelColor)
     private let emphasizedLabel = TCPViewerUI.label("", font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold))
     private let helperErrorButton = NSButton(title: "Error", target: nil, action: nil)
     private var helperError: TCPViewerToolbarHelperError?
-    private var helperErrorPopover: NSPopover?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -671,17 +688,17 @@ private final class TCPViewerToolbarStatusView: NSView {
     func render(viewModel: TCPViewerToolbarViewModel) {
         dot.layer?.backgroundColor = viewModel.statusTint.cgColor
         statusLabel.stringValue = viewModel.statusText
+        statusLabel.font = .systemFont(
+            ofSize: NSFont.smallSystemFontSize,
+            weight: viewModel.isShowingHelperError ? .semibold : .medium
+        )
+        statusLabel.textColor = viewModel.isShowingHelperError ? .systemRed : .secondaryLabelColor
         emphasizedLabel.stringValue = viewModel.emphasizedText ?? ""
-        emphasizedLabel.isHidden = viewModel.emphasizedText == nil
+        emphasizedLabel.isHidden = viewModel.isShowingHelperError || viewModel.emphasizedText == nil
         helperError = viewModel.helperError
         helperErrorButton.isHidden = viewModel.helperError == nil
-        helperErrorButton.toolTip = viewModel.helperError?.message
+        helperErrorButton.toolTip = viewModel.helperError.map { "\($0.title): \($0.message)" }
         toolTip = viewModel.helpText
-
-        if viewModel.helperError == nil {
-            helperErrorPopover?.close()
-            helperErrorPopover = nil
-        }
     }
 
     private func setupLayout() {
@@ -695,7 +712,10 @@ private final class TCPViewerToolbarStatusView: NSView {
         let stack = NSStackView(views: [dot, statusLabel, emphasizedLabel, helperErrorButton])
         stack.orientation = .horizontal
         stack.alignment = .centerY
-        stack.spacing = 7
+        stack.spacing = 6
+        stack.setCustomSpacing(10, after: dot)
+        stack.setCustomSpacing(4, after: statusLabel)
+        stack.setCustomSpacing(12, after: emphasizedLabel)
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
 
@@ -715,95 +735,30 @@ private final class TCPViewerToolbarStatusView: NSView {
         helperErrorButton.action = #selector(helperErrorButtonPressed(_:))
         helperErrorButton.bezelStyle = .rounded
         helperErrorButton.controlSize = .small
-        helperErrorButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
-        helperErrorButton.image = TCPViewerUI.image("exclamationmark.circle.fill")
+        let font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
+        helperErrorButton.font = font
+        helperErrorButton.attributedTitle = NSAttributedString(
+            string: "Error",
+            attributes: [
+                .font: font,
+                .foregroundColor: NSColor.systemRed,
+            ]
+        )
+        let errorImage = TCPViewerUI.image("exclamationmark.circle.fill")
+        errorImage?.isTemplate = true
+        helperErrorButton.image = errorImage
         helperErrorButton.imagePosition = .imageLeading
+        helperErrorButton.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
         helperErrorButton.contentTintColor = .systemRed
         helperErrorButton.isHidden = true
         helperErrorButton.setContentCompressionResistancePriority(.required, for: .horizontal)
     }
 
     @objc private func helperErrorButtonPressed(_ sender: NSButton) {
-        guard let helperError else {
+        guard helperError != nil else {
             return
         }
 
-        let popover = NSPopover()
-        popover.behavior = .transient
-        popover.contentViewController = makeHelperErrorPopoverController(helperError)
-        helperErrorPopover = popover
-        popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxY)
-    }
-
-    private func makeHelperErrorPopoverController(_ helperError: TCPViewerToolbarHelperError) -> NSViewController {
-        let controller = NSViewController()
-        let contentView = NSView()
-
-        let titleImageView = NSImageView(image: TCPViewerUI.image("exclamationmark.circle.fill") ?? NSImage())
-        titleImageView.contentTintColor = .systemRed
-        titleImageView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
-        titleImageView.translatesAutoresizingMaskIntoConstraints = false
-
-        let titleLabel = TCPViewerUI.label(helperError.title, font: .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold))
-        titleLabel.textColor = .systemRed
-
-        let titleStack = NSStackView(views: [titleImageView, titleLabel])
-        titleStack.orientation = .horizontal
-        titleStack.alignment = .centerY
-        titleStack.spacing = 6
-        titleStack.translatesAutoresizingMaskIntoConstraints = false
-
-        let messageLabel = TCPViewerUI.label(helperError.message, font: .systemFont(ofSize: NSFont.smallSystemFontSize), color: .secondaryLabelColor)
-        messageLabel.maximumNumberOfLines = 0
-        messageLabel.translatesAutoresizingMaskIntoConstraints = false
-
-        let installButton = NSButton(title: helperError.actionTitle, target: self, action: #selector(installHelperButtonPressed(_:)))
-        installButton.bezelStyle = .rounded
-        installButton.controlSize = .regular
-        installButton.image = TCPViewerUI.image("arrow.down.circle")
-        installButton.imagePosition = .imageLeading
-
-        let dismissButton = NSButton(title: "Dismiss", target: self, action: #selector(dismissHelperErrorPopover(_:)))
-        dismissButton.bezelStyle = .rounded
-        dismissButton.controlSize = .regular
-
-        let buttonStack = NSStackView(views: [installButton, dismissButton])
-        buttonStack.orientation = .horizontal
-        buttonStack.alignment = .centerY
-        buttonStack.spacing = 8
-        buttonStack.translatesAutoresizingMaskIntoConstraints = false
-
-        let stack = NSStackView(views: [titleStack, messageLabel, buttonStack])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 12
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
-        contentView.addSubview(stack)
-        controller.view = contentView
-
-        NSLayoutConstraint.activate([
-            contentView.widthAnchor.constraint(equalToConstant: 320),
-            titleImageView.widthAnchor.constraint(equalToConstant: 16),
-            titleImageView.heightAnchor.constraint(equalToConstant: 16),
-            messageLabel.widthAnchor.constraint(equalToConstant: 292),
-            stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 14),
-            stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -14),
-            stack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 14),
-            stack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -14),
-        ])
-
-        return controller
-    }
-
-    @objc private func installHelperButtonPressed(_ sender: NSButton) {
-        helperErrorPopover?.close()
-        helperErrorPopover = nil
-        onInstallHelperTool?()
-    }
-
-    @objc private func dismissHelperErrorPopover(_ sender: NSButton) {
-        helperErrorPopover?.close()
-        helperErrorPopover = nil
+        onOpenHelperToolScreen?()
     }
 }

@@ -11,55 +11,104 @@ struct TCPViewerNetworkHelperOnboardingSheet: View {
     let snapshot: TCPViewerNetworkHelperToolSnapshot
     let onInstall: () -> Void
     let onRepair: () -> Void
-    let onRetry: () -> Void
     let onOpenSystemSettings: () -> Void
     let onRelaunch: () -> Void
     let onContinueOffline: () -> Void
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 14) {
-                Image(systemName: "lock.shield")
-                    .font(.system(size: 30, weight: .semibold))
-                    .foregroundStyle(.blue)
-                    .frame(width: 40)
+    private static let helperBenefits = [
+        "Capture live traffic without running TCP Viewer as root.",
+        "Keep /dev/bpf* capture permissions repaired automatically.",
+        "Stay local: the helper never inspects, stores, or uploads traffic."
+    ]
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(TCPViewerNetworkHelperConstants.displayName)
-                        .font(.title3.weight(.semibold))
-                    Text(snapshot.title)
-                        .foregroundStyle(.secondary)
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+
+            Divider()
+                .opacity(0.45)
+
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Why install it?")
+                    .font(.headline)
+
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(Self.helperBenefits, id: \.self) { benefit in
+                        benefitRow(benefit)
+                    }
                 }
             }
+            .padding(.horizontal, 28)
+            .padding(.vertical, 22)
 
-            Text("TCP Viewer needs a small background helper so macOS allows non-root packet capture. The helper only adjusts local capture-device permissions for /dev/bpf* and does not inspect, store, or transmit network traffic.")
-                .fixedSize(horizontal: false, vertical: true)
+            Divider()
+                .opacity(0.45)
 
-            Text(snapshot.message)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            HStack {
+            HStack(spacing: 12) {
                 Button {
                     onContinueOffline()
                 } label: {
-                    Label("Continue Offline", systemImage: "doc")
+                    Text("Cancel")
                 }
-
-                Button {
-                    onRetry()
-                } label: {
-                    Label("Retry", systemImage: "arrow.clockwise")
-                }
+                .buttonStyle(.bordered)
+                .keyboardShortcut(.cancelAction)
 
                 Spacer()
 
                 primaryAction
             }
+            .padding(20)
+            .background(.thinMaterial)
         }
-        .padding(24)
-        .frame(width: 560)
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .strokeBorder(.white.opacity(0.18))
+        }
+        .shadow(color: .black.opacity(0.12), radius: 28, y: 16)
+        .padding(1)
+        .frame(width: 620)
+    }
+
+    private var header: some View {
+        HStack(alignment: .top, spacing: 18) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(.blue.opacity(0.12))
+
+                Image(systemName: "lock.shield.fill")
+                    .font(.system(size: 32, weight: .semibold))
+                    .foregroundStyle(.blue)
+            }
+            .frame(width: 64, height: 64)
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Install Helper Tool")
+                    .font(.system(size: 26, weight: .semibold))
+
+                Text("TCP Viewer uses a small privileged helper so macOS can grant packet-capture access securely.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(28)
+    }
+
+    private func benefitRow(_ text: String) -> some View {
+        Label {
+            Text(text)
+                .font(.callout)
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+        } icon: {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.green)
+        }
+        .labelStyle(.titleAndIcon)
     }
 
     @ViewBuilder
@@ -69,9 +118,10 @@ struct TCPViewerNetworkHelperOnboardingSheet: View {
             Button {
                 onInstall()
             } label: {
-                Label("Install Helper", systemImage: "arrow.down.circle")
+                Label("Install Helper Tool", systemImage: "arrow.down.circle")
             }
             .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.defaultAction)
         case .waitingForApproval:
             Button {
                 onOpenSystemSettings()
@@ -79,6 +129,7 @@ struct TCPViewerNetworkHelperOnboardingSheet: View {
                 Label("Open System Settings", systemImage: "gearshape")
             }
             .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.defaultAction)
         case .installedNeedsRelaunch:
             Button {
                 onRelaunch()
@@ -86,6 +137,7 @@ struct TCPViewerNetworkHelperOnboardingSheet: View {
                 Label("Relaunch TCP Viewer", systemImage: "arrow.triangle.2.circlepath")
             }
             .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.defaultAction)
         case .broken:
             Button {
                 onRepair()
@@ -93,6 +145,7 @@ struct TCPViewerNetworkHelperOnboardingSheet: View {
                 Label("Repair Helper", systemImage: "wrench.and.screwdriver")
             }
             .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.defaultAction)
         case .ready:
             Button {
                 onContinueOffline()
@@ -100,9 +153,15 @@ struct TCPViewerNetworkHelperOnboardingSheet: View {
                 Label("Done", systemImage: "checkmark")
             }
             .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.defaultAction)
         case .installing:
-            ProgressView()
-                .controlSize(.small)
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Installing")
+            }
+            .font(.callout)
+            .foregroundStyle(.secondary)
         }
     }
 }

@@ -21,6 +21,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private weak var checkForUpdatesMenuItem: NSMenuItem?
     private weak var licenseMenuItem: NSMenuItem?
     private var licenseStatusObserver: NSObjectProtocol?
+    private lazy var factoryResetService = TCPViewerFactoryResetService(helperToolManager: networkHelperToolManager)
     private var isHandlingTermination = false
     private var isShowingRenewalRequiredAlert = false
     private var isVerifyingLicenseAtLaunch = false
@@ -33,6 +34,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         wirePreferencesMenu()
         wireUpdatesMenu()
         wireFilterMenu()
+        wireHelpMenu()
         verifyLicenseAtLaunch()
         networkHelperToolManager.refreshStatusForLaunch()
     }
@@ -98,6 +100,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @IBAction func showPaywall(_ sender: Any?) {
         presentLicenseSheet(presentationMode: .paywall, sender: sender)
+    }
+
+    @IBAction func factoryReset(_ sender: Any?) {
+        presentFactoryResetConfirmation()
     }
 
     private func presentLicenseSheet(presentationMode: TCPViewerLicensePresentationMode, sender: Any?) {
@@ -314,6 +320,128 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if let submenu = item.submenu {
                 removeFindShortcutConflict(in: submenu)
             }
+        }
+    }
+
+    private func wireHelpMenu() {
+        guard let helpMenu = NSApp.mainMenu?.items.first(where: { $0.title == "Help" })?.submenu else {
+            return
+        }
+
+        let advancedItem = findOrCreateAdvancedMenuItem(in: helpMenu)
+        let advancedMenu = advancedItem.submenu ?? NSMenu(title: "Advanced")
+        advancedItem.submenu = advancedMenu
+
+        if let existingItem = advancedMenu.items.first(where: { $0.action == #selector(factoryReset(_:)) }) {
+            configureFactoryResetMenuItem(existingItem)
+            return
+        }
+
+        let item = NSMenuItem(title: "Factory Reset…", action: #selector(factoryReset(_:)), keyEquivalent: "")
+        configureFactoryResetMenuItem(item)
+        advancedMenu.addItem(item)
+    }
+
+    private func findOrCreateAdvancedMenuItem(in helpMenu: NSMenu) -> NSMenuItem {
+        if let existingItem = helpMenu.items.first(where: { $0.title == "Advanced" }) {
+            return existingItem
+        }
+
+        let item = NSMenuItem(title: "Advanced", action: nil, keyEquivalent: "")
+        item.submenu = NSMenu(title: "Advanced")
+
+        if !helpMenu.items.isEmpty, helpMenu.items.last?.isSeparatorItem == false {
+            helpMenu.addItem(NSMenuItem.separator())
+        }
+        helpMenu.addItem(item)
+        return item
+    }
+
+    private func configureFactoryResetMenuItem(_ item: NSMenuItem) {
+        item.title = "Factory Reset…"
+        item.target = self
+        item.action = #selector(factoryReset(_:))
+        item.keyEquivalent = ""
+        item.keyEquivalentModifierMask = []
+    }
+
+    private func presentFactoryResetConfirmation() {
+        let uninstallHelperCheckbox = NSButton(
+            checkboxWithTitle: "Also uninstall the Helper Tool",
+            target: nil,
+            action: nil
+        )
+        uninstallHelperCheckbox.state = .off
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Factory Reset TCP Viewer?"
+        alert.informativeText = "This will remove TCP Viewer app data, user defaults, saved windows, caches, and local state. This cannot be undone."
+        alert.accessoryView = uninstallHelperCheckbox
+        alert.addButton(withTitle: "Yes, Reset")
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons.first?.hasDestructiveAction = true
+
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            return
+        }
+
+        performFactoryReset(uninstallHelperTool: uninstallHelperCheckbox.state == .on)
+    }
+
+    private func performFactoryReset(uninstallHelperTool: Bool) {
+        disableAutosavedWindowStateForFactoryReset()
+        factoryResetService.reset(uninstallHelperTool: uninstallHelperTool) { [weak self] result in
+            self?.handleFactoryResetResult(result, uninstallHelperTool: uninstallHelperTool)
+        }
+    }
+
+    private func handleFactoryResetResult(
+        _ result: Result<TCPViewerFactoryResetResult, Error>,
+        uninstallHelperTool: Bool
+    ) {
+        switch result {
+        case .success(let resetResult):
+            disableAutosavedWindowStateForFactoryReset()
+            NSDocumentController.shared.clearRecentDocuments(nil)
+            showFactoryResetCompletionAlert(resetResult, uninstallHelperTool: uninstallHelperTool)
+            NSApp.terminate(nil)
+        case .failure(let error):
+            showFactoryResetFailureAlert(error)
+        }
+    }
+
+    private func showFactoryResetCompletionAlert(
+        _ result: TCPViewerFactoryResetResult,
+        uninstallHelperTool: Bool
+    ) {
+        let helperDidNotUninstall = uninstallHelperTool && result.helperToolSnapshot?.status != .notInstalled
+        let alert = NSAlert()
+        alert.alertStyle = helperDidNotUninstall ? .warning : .informational
+        alert.messageText = helperDidNotUninstall ? "Factory Reset Finished With a Helper Tool Warning" : "Factory Reset Complete"
+        alert.informativeText = helperDidNotUninstall
+            ? "TCP Viewer removed local data, but macOS still reports that the Helper Tool is not fully uninstalled. TCP Viewer will quit now so it can reopen with a clean state."
+            : "TCP Viewer removed local data and will quit now. Reopen it to start fresh."
+        alert.addButton(withTitle: "Quit")
+        alert.runModal()
+    }
+
+    private func showFactoryResetFailureAlert(_ error: Error) {
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = "Factory Reset Failed"
+        alert.informativeText = "TCP Viewer could not remove its local data: \(error.localizedDescription)"
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    private func disableAutosavedWindowStateForFactoryReset() {
+        for window in NSApp.windows {
+            window.isRestorable = false
+            window.disableSnapshotRestoration()
+            window.toolbar?.autosavesConfiguration = false
+            _ = window.setFrameAutosaveName("")
         }
     }
 

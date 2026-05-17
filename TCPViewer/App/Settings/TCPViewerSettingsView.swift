@@ -185,7 +185,6 @@ struct TCPViewerHelperToolSettingsView: View {
     let manager: any TCPViewerNetworkHelperToolManaging
 
     @State private var snapshot: TCPViewerNetworkHelperToolSnapshot
-    @State private var isShowingHelperError = false
 
     init(manager: any TCPViewerNetworkHelperToolManaging) {
         self.manager = manager
@@ -194,72 +193,104 @@ struct TCPViewerHelperToolSettingsView: View {
 
     var body: some View {
         CenteredSettingsPane {
-            HStack(alignment: .top, spacing: 14) {
-                Image(systemName: statusImageName)
-                    .font(.system(size: 34, weight: .semibold))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(statusTint)
-                    .frame(width: 42, height: 42)
+            VStack(alignment: .leading, spacing: 18) {
+                header
 
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack(spacing: 8) {
-                        Text(statusTitle)
-                            .font(.system(size: 17, weight: .semibold))
+                Divider()
+                    .opacity(0.5)
 
-                        if shouldShowHelperErrorButton {
-                            helperErrorButton
-                        }
-                    }
-
-                    Text(statusMessage)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.secondary)
-
-                    Text(lastCheckedText)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.tertiary)
+                VStack(alignment: .leading, spacing: 10) {
+                    benefitRow("Capture live traffic without running TCP Viewer as root.")
+                    benefitRow("Keep /dev/bpf* capture permissions repaired automatically.")
                 }
-                .fixedSize(horizontal: true, vertical: false)
+
+                actionRow
             }
-
-            HStack(spacing: 8) {
-                Button {
-                    refreshStatus()
-                } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
-                }
-                .disabled(snapshot.status == .installing)
-
-                Button {
-                    openHelperToolPath()
-                } label: {
-                    Label("Open Helper Path", systemImage: "folder")
-                }
-
-                if snapshot.status == .waitingForApproval {
-                    Button {
-                        manager.openSystemSettings()
-                    } label: {
-                        Label("Open System Settings", systemImage: "gearshape")
-                    }
-                }
-
-                if canUninstallHelper {
-                    Button {
-                        uninstallHelper()
-                    } label: {
-                        Label("Uninstall", systemImage: "trash")
-                    }
-                    .disabled(snapshot.status == .installing)
-                }
-
-                primaryAction
+            .padding(20)
+            .frame(width: 430, alignment: .leading)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(.primary.opacity(0.08))
             }
-
         }
         .onAppear {
             refreshStatus()
         }
+    }
+
+    private var header: some View {
+        HStack(alignment: .top, spacing: 14) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(statusTint.opacity(0.12))
+
+                Image(systemName: statusImageName)
+                    .font(.system(size: 28, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(statusTint)
+            }
+            .frame(width: 54, height: 54)
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text("Helper Tool")
+                        .font(.system(size: 18, weight: .semibold))
+
+                    statusBadge
+                }
+
+                Text(statusDetail)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var statusBadge: some View {
+        Label(statusBadgeTitle, systemImage: statusBadgeImageName)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(statusTint)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(statusTint.opacity(0.12), in: Capsule())
+    }
+
+    private func benefitRow(_ text: String) -> some View {
+        Label {
+            Text(text)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+        } icon: {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.green)
+        }
+        .labelStyle(.titleAndIcon)
+    }
+
+    private var actionRow: some View {
+        HStack(spacing: 8) {
+            primaryAction
+
+            Button {
+                openHelperToolPath()
+            } label: {
+                Label("Open Helper Path", systemImage: "folder")
+            }
+
+            if canUninstallHelper {
+                Button(role: .destructive) {
+                    uninstallHelper()
+                } label: {
+                    Label("Uninstall", systemImage: "trash")
+                }
+                .disabled(snapshot.status == .installing)
+            }
+        }
+        .controlSize(.regular)
     }
 
     @ViewBuilder
@@ -269,32 +300,44 @@ struct TCPViewerHelperToolSettingsView: View {
             Button {
                 installHelper()
             } label: {
-                Label("Install", systemImage: "arrow.down.circle")
+                Label("Install Helper Tool", systemImage: "arrow.down.circle")
             }
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.defaultAction)
         case .waitingForApproval:
             Button {
                 manager.openSystemSettings()
             } label: {
                 Label("Open System Settings", systemImage: "gearshape")
             }
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.defaultAction)
         case .installedNeedsRelaunch:
             Button {
                 relaunchTCPViewer()
             } label: {
                 Label("Relaunch TCP Viewer", systemImage: "arrow.triangle.2.circlepath")
             }
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.defaultAction)
         case .broken:
             Button {
                 snapshot = manager.repair { snapshot = $0 }
             } label: {
                 Label("Repair", systemImage: "wrench.and.screwdriver")
             }
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.defaultAction)
         case .ready:
-            Label("Ready", systemImage: "checkmark.circle.fill")
-                .foregroundStyle(.green)
+            EmptyView()
         case .installing:
-            ProgressView()
-                .controlSize(.small)
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Installing")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -307,73 +350,42 @@ struct TCPViewerHelperToolSettingsView: View {
         }
     }
 
-    private var shouldShowHelperErrorButton: Bool {
-        snapshot.status == .notInstalled
-    }
-
-    private var statusTitle: String {
+    private var statusBadgeTitle: String {
         switch snapshot.status {
         case .notInstalled:
-            TCPViewerNetworkHelperConstants.displayName
-        default:
-            snapshot.title
+            "Not Installed"
+        case .waitingForApproval:
+            "Needs Approval"
+        case .installedNeedsRelaunch:
+            "Needs Relaunch"
+        case .ready:
+            "Ready"
+        case .broken:
+            "Unavailable"
+        case .unsupported:
+            "Unsupported"
+        case .installing:
+            "Installing"
         }
     }
 
-    private var statusMessage: String {
+    private var statusDetail: String {
         switch snapshot.status {
         case .notInstalled:
-            // Keep the header compact; the detailed installation reason lives in the error popover.
-            "Not installed"
-        default:
-            snapshot.message
+            "Install the helper to let macOS grant TCP Viewer secure packet-capture access."
+        case .waitingForApproval:
+            "Approve TCP Viewer in System Settings to finish enabling live capture."
+        case .installedNeedsRelaunch:
+            "Relaunch TCP Viewer so macOS refreshes the helper permissions."
+        case .ready:
+            "The helper is installed and ready for live capture."
+        case .broken:
+            "Repair the helper so TCP Viewer can restore capture access."
+        case .unsupported:
+            "TCP Viewer cannot use the current helper state on this Mac."
+        case .installing:
+            "Registering the privileged helper with macOS."
         }
-    }
-
-    private var helperErrorButton: some View {
-        Button {
-            isShowingHelperError = true
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "exclamationmark.circle.fill")
-                    .foregroundStyle(.red)
-                Text("Error")
-            }
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .popover(isPresented: $isShowingHelperError, arrowEdge: .bottom) {
-            helperErrorPopover
-        }
-    }
-
-    private var helperErrorPopover: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("Helper Tool Not Installed", systemImage: "exclamationmark.circle.fill")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.red)
-
-            Text(snapshot.message)
-                .font(.system(size: 13))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            HStack(spacing: 8) {
-                Button {
-                    isShowingHelperError = false
-                    installHelper()
-                } label: {
-                    Label("Install Helper Tool", systemImage: "arrow.down.circle")
-                }
-                .keyboardShortcut(.defaultAction)
-
-                Button("Dismiss") {
-                    isShowingHelperError = false
-                }
-            }
-        }
-        .padding(14)
-        .frame(width: 320, alignment: .leading)
     }
 
     private var statusImageName: String {
@@ -389,6 +401,21 @@ struct TCPViewerHelperToolSettingsView: View {
         }
     }
 
+    private var statusBadgeImageName: String {
+        switch snapshot.status {
+        case .ready:
+            "checkmark.circle.fill"
+        case .installedNeedsRelaunch:
+            "arrow.triangle.2.circlepath"
+        case .waitingForApproval, .installing:
+            "clock.fill"
+        case .notInstalled:
+            "exclamationmark.circle.fill"
+        case .broken, .unsupported:
+            "xmark.circle.fill"
+        }
+    }
+
     private var statusTint: Color {
         switch snapshot.status {
         case .ready:
@@ -400,14 +427,6 @@ struct TCPViewerHelperToolSettingsView: View {
         case .broken, .unsupported:
             .red
         }
-    }
-
-    private var lastCheckedText: String {
-        guard let date = snapshot.lastCheckedAt else {
-            return "Status has not been checked yet."
-        }
-
-        return "Last checked \(Self.dateFormatter.string(from: date))"
     }
 
     private func refreshStatus() {
@@ -437,49 +456,52 @@ struct TCPViewerHelperToolSettingsView: View {
             NSApp.terminate(nil)
         }
     }
-
-    private static let dateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        return formatter
-    }()
 }
 
 struct TCPViewerMoreAppsSettingsView: View {
     var body: some View {
         CenteredSettingsPane {
             ProductRow(
-                systemImage: "desktopcomputer",
+                iconAssetName: "ProxymanAppIcon",
                 title: "Proxyman for macOS, Windows, Linux",
-                detail: "Inspect, debug, and rewrite HTTP traffic on desktop."
+                detail: "Inspect, filter, and modify HTTP traffic across desktop platforms.",
+                ctaTitle: "Download",
+                destinationURL: URL(string: "https://proxyman.com/download")
             )
             ProductRow(
-                systemImage: "iphone.and.arrow.forward",
+                iconAssetName: "ProxymanAppIcon",
                 title: "Proxyman iOS, Android",
-                detail: "Capture and inspect mobile traffic while you build and test."
+                detail: "Capture and inspect mobile HTTP traffic from devices and emulators.",
+                ctaTitle: "Get App",
+                destinationURL: URL(string: "https://proxyman.com/download")
             )
             ProductRow(
-                systemImage: "shield.lefthalf.filled",
+                iconAssetName: "TinyShieldAppIcon",
                 title: "TinyShield",
-                detail: "A focused network privacy companion for everyday protection."
+                detail: "See every connection. Block every threat.",
+                ctaTitle: "Visit",
+                destinationURL: URL(string: "https://tinyshield.proxyman.com")
             )
         }
     }
 }
 
 private struct ProductRow: View {
-    let systemImage: String
+    @Environment(\.openURL) private var openURL
+
+    let iconAssetName: String
     let title: String
     let detail: String
+    let ctaTitle: String
+    let destinationURL: URL?
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: systemImage)
-                .font(.system(size: 28, weight: .semibold))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(.tint)
-                .frame(width: 36, height: 36)
+        HStack(alignment: .center, spacing: 12) {
+            Image(iconAssetName)
+                .resizable()
+                .scaledToFit()
+                .frame(width: 42, height: 42)
+                .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
@@ -487,9 +509,22 @@ private struct ProductRow: View {
                 Text(detail)
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .frame(width: 380, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button(ctaTitle) {
+                guard let destinationURL else {
+                    return
+                }
+
+                openURL(destinationURL)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(destinationURL == nil)
         }
+        .frame(width: 430, alignment: .leading)
     }
 }
 
