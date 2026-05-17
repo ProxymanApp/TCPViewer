@@ -23,6 +23,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var licenseStatusObserver: NSObjectProtocol?
     private lazy var factoryResetService = TCPViewerFactoryResetService(helperToolManager: networkHelperToolManager)
     private var isHandlingTermination = false
+    private var skipsNextQuitConfirmation = false
     private var isShowingRenewalRequiredAlert = false
     private var isVerifyingLicenseAtLaunch = false
 
@@ -55,6 +56,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return .terminateLater
         }
 
+        guard shouldContinueAfterQuitConfirmation() else {
+            return .terminateCancel
+        }
+
+        return prepareForTermination(sender)
+    }
+
+    private func prepareForTermination(_ sender: NSApplication) -> NSApplication.TerminateReply {
         isHandlingTermination = true
         TCPViewerWorkspaceController.prepareAllForApplicationTermination { [weak self] shouldTerminate in
             self?.isHandlingTermination = false
@@ -62,6 +71,49 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         return .terminateLater
+    }
+
+    private func shouldContinueAfterQuitConfirmation() -> Bool {
+        guard !skipsNextQuitConfirmation else {
+            skipsNextQuitConfirmation = false
+            return true
+        }
+
+        guard appConfiguration.confirmsBeforeQuitting else {
+            return true
+        }
+
+        return presentQuitConfirmationAlert()
+    }
+
+    private func presentQuitConfirmationAlert() -> Bool {
+        let doNotAskAgainCheckbox = NSButton(
+            checkboxWithTitle: "Do not ask again",
+            target: nil,
+            action: nil
+        )
+        doNotAskAgainCheckbox.state = .off
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Quit TCP Viewer?"
+        alert.informativeText = "All captured data in the current session will be lost."
+        alert.accessoryView = doNotAskAgainCheckbox
+        alert.addButton(withTitle: "Yes")
+        alert.addButton(withTitle: "No")
+        alert.buttons[0].hasDestructiveAction = true
+        alert.buttons[0].keyEquivalent = "\r"
+        alert.buttons[1].keyEquivalent = "\u{1b}"
+
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            return false
+        }
+
+        if doNotAskAgainCheckbox.state == .on {
+            appConfiguration.confirmsBeforeQuitting = false
+        }
+        return true
     }
 
     @IBAction func showAbout(_ sender: Any?) {
@@ -406,6 +458,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             disableAutosavedWindowStateForFactoryReset()
             NSDocumentController.shared.clearRecentDocuments(nil)
             showFactoryResetCompletionAlert(resetResult, uninstallHelperTool: uninstallHelperTool)
+            skipsNextQuitConfirmation = true
             NSApp.terminate(nil)
         case .failure(let error):
             showFactoryResetFailureAlert(error)

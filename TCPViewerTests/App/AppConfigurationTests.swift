@@ -18,6 +18,7 @@ struct AppConfigurationTests {
         #expect(configuration.usesMonospacedPacketFont)
         #expect(configuration.packetFontSize == AppConfiguration.defaultPacketFontSize)
         #expect(configuration.appearanceTheme == .system)
+        #expect(configuration.confirmsBeforeQuitting)
     }
 
     @Test func persistsPrivacyAndAppearanceSettings() {
@@ -29,6 +30,7 @@ struct AppConfigurationTests {
         configuration.usesMonospacedPacketFont = false
         configuration.packetFontSize = 16
         configuration.appearanceTheme = .dark
+        configuration.confirmsBeforeQuitting = false
 
         let reloadedConfiguration = AppConfiguration(defaults: defaults)
         #expect(!reloadedConfiguration.sharesAnalytics)
@@ -36,6 +38,7 @@ struct AppConfigurationTests {
         #expect(!reloadedConfiguration.usesMonospacedPacketFont)
         #expect(reloadedConfiguration.packetFontSize == 16)
         #expect(reloadedConfiguration.appearanceTheme == .dark)
+        #expect(!reloadedConfiguration.confirmsBeforeQuitting)
     }
 
     @Test func clampsInvalidFontSizes() {
@@ -68,6 +71,7 @@ struct AppConfigurationTests {
         configuration.packetFontSize = 18
         configuration.usesMonospacedPacketFont = false
         configuration.appearanceTheme = .dark
+        configuration.confirmsBeforeQuitting = false
 
         configuration.resetAppearanceToDefaults()
 
@@ -76,6 +80,16 @@ struct AppConfigurationTests {
         #expect(configuration.packetFontSize == AppConfiguration.defaultPacketFontSize)
         #expect(configuration.usesMonospacedPacketFont)
         #expect(configuration.appearanceTheme == .system)
+        #expect(!configuration.confirmsBeforeQuitting)
+    }
+
+    @Test func resetToDefaultsRestoresQuitConfirmation() {
+        let configuration = AppConfiguration(defaults: Self.makeUserDefaults())
+        configuration.confirmsBeforeQuitting = false
+
+        configuration.resetToDefaults()
+
+        #expect(configuration.confirmsBeforeQuitting)
     }
 
     @Test func invalidThemeFallsBackToSystem() {
