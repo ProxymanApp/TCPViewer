@@ -36,6 +36,96 @@ private enum TCPViewerToolbarLayout {
     static let trialButtonWidth: CGFloat = 132
 }
 
+struct TCPViewerInterfaceMenuSection {
+    let title: String
+    let interfaces: [CaptureInterfaceSummary]
+}
+
+enum TCPViewerInterfaceMenuGrouper {
+    static func sections(for interfaces: [CaptureInterfaceSummary]) -> [TCPViewerInterfaceMenuSection] {
+        // Preserve inventory order for sections while merging matching families that appear apart.
+        var orderedGroups: [TCPViewerInterfaceMenuGroup] = []
+        var groupedInterfaces: [TCPViewerInterfaceMenuGroup: [CaptureInterfaceSummary]] = [:]
+
+        for interface in interfaces {
+            let group = TCPViewerInterfaceMenuGroup(interface: interface)
+            if groupedInterfaces[group] == nil {
+                orderedGroups.append(group)
+            }
+            groupedInterfaces[group, default: []].append(interface)
+        }
+
+        return orderedGroups.compactMap { group in
+            guard let interfaces = groupedInterfaces[group], !interfaces.isEmpty else {
+                return nil
+            }
+
+            return TCPViewerInterfaceMenuSection(title: group.title, interfaces: interfaces)
+        }
+    }
+}
+
+private enum TCPViewerInterfaceMenuGroup: Hashable {
+    case aggregate
+    case ethernet
+    case wifi
+    case thunderbolt
+    case loopback
+    case tunnels
+    case bridges
+    case other
+
+    init(interface: CaptureInterfaceSummary) {
+        let technicalName = interface.technicalName.trimmingCharacters(in: .whitespacesAndNewlines).localizedLowercase
+        let displayName = [interface.friendlyName, interface.displayName]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).localizedLowercase }
+            .joined(separator: " ")
+
+        if technicalName == "any" || technicalName.hasPrefix("pktap") || displayName.contains("all interfaces") {
+            self = .aggregate
+        } else if interface.isLoopback || technicalName.hasPrefix("lo") || displayName.contains("loopback") {
+            self = .loopback
+        } else if displayName.contains("wi-fi") || technicalName.hasPrefix("awdl") || technicalName.hasPrefix("llw") {
+            self = .wifi
+        } else if displayName.contains("thunderbolt") {
+            self = .thunderbolt
+        } else if technicalName.hasPrefix("utun") || technicalName.hasPrefix("ipsec") ||
+                    technicalName.hasPrefix("gif") || technicalName.hasPrefix("stf") ||
+                    displayName.contains("tunnel") {
+            self = .tunnels
+        } else if technicalName.hasPrefix("bridge") || displayName.contains("bridge") {
+            self = .bridges
+        } else if displayName.contains("ethernet") ||
+                    technicalName.hasPrefix("en") || technicalName.hasPrefix("ap") ||
+                    technicalName.hasPrefix("anpi") {
+            self = .ethernet
+        } else {
+            self = .other
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .aggregate:
+            "All Interfaces"
+        case .ethernet:
+            "Ethernet"
+        case .wifi:
+            "Wi-Fi"
+        case .thunderbolt:
+            "Thunderbolt"
+        case .loopback:
+            "Loopback"
+        case .tunnels:
+            "Tunnels"
+        case .bridges:
+            "Bridges"
+        case .other:
+            "Other Interfaces"
+        }
+    }
+}
+
 protocol TCPViewerToolbarDataSourceDelegate: AnyObject {
     func tcpviewerToolbarDataSource(_ dataSource: TCPViewerToolbarDataSource, didSelectInterface identifier: String)
     func tcpviewerToolbarDataSourceDidToggleCapture(_ dataSource: TCPViewerToolbarDataSource)
@@ -260,7 +350,7 @@ final class TCPViewerToolbarDataSource: NSObject {
             }
         }
 
-        viewModel.interfaces.forEach(addInterfaceItem)
+        addInterfaceSections(TCPViewerInterfaceMenuGrouper.sections(for: viewModel.interfaces))
         if !selectInterfaceItem(with: viewModel.selectedInterfaceID) {
             selectFirstInterfaceItem()
         }
@@ -268,8 +358,24 @@ final class TCPViewerToolbarDataSource: NSObject {
         updateInterfacePopupWidth()
     }
 
+    private func addInterfaceSections(_ sections: [TCPViewerInterfaceMenuSection]) {
+        guard sections.count > 1 else {
+            sections.first?.interfaces.forEach(addInterfaceItem)
+            return
+        }
+
+        for (index, section) in sections.enumerated() {
+            if index > 0 {
+                interfacePopup.menu?.addItem(.separator())
+            }
+
+            addInterfaceGroupHeader(section.title)
+            section.interfaces.forEach(addInterfaceItem)
+        }
+    }
+
     private func addInterfaceGroupHeader(_ title: String) {
-        // Add a disabled group label so recent interfaces read separately from the full inventory.
+        // Add a disabled group label so each dropdown section reads as a menu group.
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         item.attributedTitle = NSAttributedString(
             string: title,
@@ -287,7 +393,19 @@ final class TCPViewerToolbarDataSource: NSObject {
         let item = NSMenuItem(title: interface.friendlyName ?? interface.displayName, action: nil, keyEquivalent: "")
         item.representedObject = interface.id
         item.isEnabled = interface.isSelectable && !viewModel.isCaptureLocked
+        if viewModel.isActiveInterface(interface) {
+            item.image = activeInterfaceMenuIcon()
+            item.toolTip = "Active network interface"
+        }
         interfacePopup.menu?.addItem(item)
+    }
+
+    private func activeInterfaceMenuIcon() -> NSImage? {
+        // Mark the macOS primary route with a compact icon without changing interface names.
+        let configuration = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
+        let image = TCPViewerUI.image("location.fill")?.withSymbolConfiguration(configuration)?.copy() as? NSImage
+        image?.isTemplate = true
+        return image
     }
 
     @discardableResult
@@ -506,6 +624,7 @@ private final class TCPViewerToolbarViewModel {
     private(set) var interfaces: [CaptureInterfaceSummary] = []
     private(set) var selectedInterfaceID: String?
     private(set) var lastUsedInterfaceIDs: [String] = []
+    private(set) var activeInterfaceID: String?
     private(set) var isCaptureLocked = false
     private(set) var captureButtonTitle = "Start"
     private(set) var captureButtonImageName = "play.fill"
@@ -529,6 +648,7 @@ private final class TCPViewerToolbarViewModel {
         interfaces = snapshot.base.sessionState.interfaceInventory
         selectedInterfaceID = snapshot.base.sessionState.selectedInterfaceID
         lastUsedInterfaceIDs = snapshot.base.sessionState.lastUsedInterfaceIDs
+        activeInterfaceID = snapshot.base.sessionState.activeInterfaceID
         selectedInterfaceTitle = viewModel.selectedInterfaceTitle()
         isCaptureLocked = snapshot.isCaptureLocked
         captureButtonTitle = viewModel.captureButtonTitle()
@@ -558,6 +678,15 @@ private final class TCPViewerToolbarViewModel {
             "\(snapshot.droppedPacketCount) dropped",
             "\(snapshot.malformedPacketCount) malformed",
         ].joined(separator: " | ")
+    }
+
+    func isActiveInterface(_ interface: CaptureInterfaceSummary) -> Bool {
+        guard let activeInterfaceID else {
+            return false
+        }
+
+        return interface.id.caseInsensitiveCompare(activeInterfaceID) == .orderedSame ||
+            interface.technicalName.caseInsensitiveCompare(activeInterfaceID) == .orderedSame
     }
 
     private static func tint(for snapshot: NetworkInspectorSnapshot) -> NSColor {

@@ -8,6 +8,7 @@
 import AppKit
 import Foundation
 import PcapPlusPlusCore
+import SystemConfiguration
 import UniformTypeIdentifiers
 
 enum PacketIngestMutation: Sendable, Equatable {
@@ -368,6 +369,7 @@ struct CaptureSessionState: Sendable, Equatable {
     var interfaceInventory: [CaptureInterfaceSummary]
     var selectedInterfaceID: String?
     var lastUsedInterfaceIDs: [String]
+    var activeInterfaceID: String?
     var options: CaptureOptions
     var health: CaptureHealthSnapshot
     var capturedPacketCount: Int
@@ -379,6 +381,7 @@ struct CaptureSessionState: Sendable, Equatable {
         interfaceInventory: [],
         selectedInterfaceID: nil,
         lastUsedInterfaceIDs: [],
+        activeInterfaceID: nil,
         options: CaptureOptions.defaults(),
         health: .empty,
         capturedPacketCount: 0,
@@ -684,6 +687,39 @@ protocol TCPViewerWorkspaceControllerDelegate: AnyObject {
     func tcpViewerWorkspaceControllerDidChange(_ controller: TCPViewerWorkspaceController)
 }
 
+private enum CurrentNetworkInterfaceResolver {
+    private static let dynamicStoreKeys = [
+        "State:/Network/Global/IPv4",
+        "State:/Network/Global/IPv6",
+    ]
+
+    static func primaryInterfaceID() -> String? {
+        // Read macOS routing state so startup selection follows the active network service.
+        guard let store = SCDynamicStoreCreate(nil, "TCP Viewer" as CFString, nil, nil) else {
+            return nil
+        }
+
+        for key in dynamicStoreKeys {
+            if let interfaceID = primaryInterfaceID(in: store, key: key) {
+                return interfaceID
+            }
+        }
+
+        return nil
+    }
+
+    private static func primaryInterfaceID(in store: SCDynamicStore, key: String) -> String? {
+        // Return a trimmed BSD interface name such as en0 from the dynamic store.
+        guard let state = SCDynamicStoreCopyValue(store, key as CFString) as? [String: Any],
+              let rawInterfaceID = state["PrimaryInterface"] as? String else {
+            return nil
+        }
+
+        let interfaceID = rawInterfaceID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return interfaceID.isEmpty ? nil : interfaceID
+    }
+}
+
 #if DEBUG
 struct TCPViewerWorkspaceMemoryDebugSnapshot: Equatable {
     let ingestPacketCount: Int
@@ -712,6 +748,7 @@ final class TCPViewerWorkspaceController {
     private let backgroundCoordinator: TCPViewerBackgroundCoordinator
     private let preferences: TCPViewerPreferences
     private let interfaceHistoryStore: InterfaceSelectionHistoryStore
+    private let activeInterfaceIDProvider: () -> String?
 
     private var hasPerformedInitialLoad = false
     private var liveSession: (any LiveCaptureSessionProviding)?
@@ -729,12 +766,14 @@ final class TCPViewerWorkspaceController {
         backgroundCoordinator: TCPViewerBackgroundCoordinator? = nil,
         snapshot: TCPViewerWindowSnapshot? = nil,
         userDefaults: UserDefaults = .standard,
-        interfaceHistoryStore: InterfaceSelectionHistoryStore? = nil
+        interfaceHistoryStore: InterfaceSelectionHistoryStore? = nil,
+        activeInterfaceIDProvider: @escaping () -> String? = CurrentNetworkInterfaceResolver.primaryInterfaceID
     ) {
         self.services = services ?? .foundation
         self.backgroundCoordinator = backgroundCoordinator ?? TCPViewerBackgroundCoordinator()
         self.preferences = TCPViewerPreferences(defaults: userDefaults)
         self.interfaceHistoryStore = interfaceHistoryStore ?? InterfaceSelectionHistoryStore(defaults: userDefaults)
+        self.activeInterfaceIDProvider = activeInterfaceIDProvider
         var resolvedSnapshot = snapshot ?? .foundation
         resolvedSnapshot.filterState.captureFilterText = preferences.captureFilterText
         resolvedSnapshot.filterState.recentCaptureFilters = preferences.recentCaptureFilters
@@ -811,6 +850,7 @@ final class TCPViewerWorkspaceController {
                         self.snapshot.accessState = tcpviewerError.code == .capturePermissionDenied ? .blocked(.accessDenied) : .recovering
                         self.snapshot.sessionState.interfaceInventory = []
                         self.snapshot.sessionState.selectedInterfaceID = nil
+                        self.snapshot.sessionState.activeInterfaceID = nil
                         self.snapshot.sessionState.phase = .idle
                         self.snapshot.sessionState.lastError = tcpviewerError
                         self.snapshot.sessionState.statusMessage = tcpviewerError.message
@@ -1653,8 +1693,10 @@ final class TCPViewerWorkspaceController {
     }
 
     private func applyInterfaceInventory(_ interfaces: [CaptureInterfaceSummary], previousSelectionID: String?) {
-        // Prefer a valid current selection, then the latest interface that actually started capture.
+        // Prefer a valid current selection, then a proven capture interface, then the active route.
         snapshot.sessionState.interfaceInventory = interfaces
+        let activeInterfaceID = normalizedActiveInterfaceID()
+        snapshot.sessionState.activeInterfaceID = activeInterfaceID
         snapshot.sessionState.lastError = nil
 
         let selectableInterfaces = interfaces.filter(\.isSelectable)
@@ -1671,7 +1713,7 @@ final class TCPViewerWorkspaceController {
             snapshot.sessionState.options = options(for: nil)
             snapshot.sessionState.statusMessage = "The previously selected interface is no longer available. Choose another interface before starting capture."
         } else if snapshot.sessionState.selectedInterfaceID == nil,
-                  let preferredInterface = preferredInterface(from: selectableInterfaces) {
+                  let preferredInterface = preferredInterface(from: selectableInterfaces, activeInterfaceID: activeInterfaceID) {
             snapshot.sessionState.selectedInterfaceID = preferredInterface.id
             snapshot.sessionState.options = options(for: preferredInterface)
             snapshot.sessionState.statusMessage = "Discovered \(interfaces.count) interfaces. Selected \(displayName(for: preferredInterface))."
@@ -1697,9 +1739,8 @@ final class TCPViewerWorkspaceController {
         }
     }
 
-    private func preferredInterface(from selectableInterfaces: [CaptureInterfaceSummary]) -> CaptureInterfaceSummary? {
-        // Honor the most recent persisted capture-start interface even when its link
-        // is momentarily down, so the popup keeps reflecting the user's last choice.
+    private func preferredInterface(from selectableInterfaces: [CaptureInterfaceSummary], activeInterfaceID: String?) -> CaptureInterfaceSummary? {
+        // Honor the most recent capture-start interface before choosing the active route.
         let inventory = snapshot.sessionState.interfaceInventory
         for interfaceID in snapshot.sessionState.lastUsedInterfaceIDs {
             if let interface = inventory.first(where: { $0.id == interfaceID }) {
@@ -1707,7 +1748,33 @@ final class TCPViewerWorkspaceController {
             }
         }
 
+        if let activeInterface = activeInterface(from: selectableInterfaces, activeInterfaceID: activeInterfaceID) {
+            return activeInterface
+        }
+
         return selectableInterfaces.first
+    }
+
+    private func normalizedActiveInterfaceID() -> String? {
+        // Normalize the route interface once per refresh so selection and UI stay in sync.
+        guard let activeInterfaceID = activeInterfaceIDProvider()?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !activeInterfaceID.isEmpty else {
+            return nil
+        }
+
+        return activeInterfaceID
+    }
+
+    private func activeInterface(from selectableInterfaces: [CaptureInterfaceSummary], activeInterfaceID: String?) -> CaptureInterfaceSummary? {
+        // Match both capture ID and BSD name because native inventories currently use BSD names.
+        guard let activeInterfaceID else {
+            return nil
+        }
+
+        return selectableInterfaces.first {
+            $0.id.caseInsensitiveCompare(activeInterfaceID) == .orderedSame ||
+                $0.technicalName.caseInsensitiveCompare(activeInterfaceID) == .orderedSame
+        }
     }
 
     private func validatedOptions(_ options: CaptureOptions, for interface: CaptureInterfaceSummary?) -> CaptureOptions {
@@ -2344,6 +2411,7 @@ final class TCPViewerWorkspaceController {
         snapshot.accessState = .blocked(captureAccessBlocker(for: helperSnapshot.status))
         snapshot.sessionState.interfaceInventory = []
         snapshot.sessionState.selectedInterfaceID = nil
+        snapshot.sessionState.activeInterfaceID = nil
         snapshot.sessionState.phase = .idle
         snapshot.sessionState.lastError = TCPViewerCoreError(
             code: .capturePermissionDenied,

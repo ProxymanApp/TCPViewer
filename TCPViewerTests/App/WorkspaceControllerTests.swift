@@ -37,6 +37,77 @@ struct WindowControllerTests {
         await tearDown(controller)
     }
 
+    @Test func interfaceMenuSectionsGroupSimilarInterfaces() {
+        let interfaces = [
+            makeInterface(id: "pktap0", displayName: "All Interfaces"),
+            makeInterface(id: "ap1", displayName: "Ethernet"),
+            makeInterface(id: "en0", displayName: "Ethernet"),
+            makeInterface(id: "en2", displayName: "Thunderbolt 1"),
+            makeInterface(id: "en1", displayName: "Wi-Fi"),
+            makeInterface(id: "lo0", displayName: "Loopback", isLoopback: true),
+            makeInterface(id: "awdl0", displayName: "Apple Wireless Direct Link", availability: .unavailable, canCapture: false),
+            makeInterface(id: "anpi0", displayName: "Ethernet", availability: .unavailable, canCapture: false),
+            makeInterface(id: "gif0", displayName: "Generic Tunnel", availability: .unavailable, canCapture: false),
+            makeInterface(id: "utun0", displayName: "VPN Tunnel", availability: .unavailable, canCapture: false),
+        ]
+
+        let sections = TCPViewerInterfaceMenuGrouper.sections(for: interfaces)
+
+        #expect(sections.map(\.title) == ["All Interfaces", "Ethernet", "Thunderbolt", "Wi-Fi", "Loopback", "Tunnels"])
+        #expect(sections.first { $0.title == "Ethernet" }?.interfaces.map(\.id) == ["ap1", "en0", "anpi0"])
+        #expect(sections.first { $0.title == "Wi-Fi" }?.interfaces.map(\.id) == ["en1", "awdl0"])
+        #expect(sections.first { $0.title == "Tunnels" }?.interfaces.map(\.id) == ["gif0", "utun0"])
+    }
+
+    @Test func controllerInitialLoadSelectsActiveInterfaceBeforeFirstEligibleFallback() async {
+        let fakeCore = FakeTCPViewerCore(
+            interfaceInventories: [[
+                makeInterface(id: "en7", displayName: "USB Ethernet"),
+                makeInterface(id: "en0", displayName: "Wi-Fi"),
+            ]]
+        )
+        let controller = TCPViewerWorkspaceController(
+            services: TCPViewerServiceRegistry(core: fakeCore),
+            activeInterfaceIDProvider: { "en0" }
+        )
+
+        await controller.performInitialLoadIfNeeded()
+
+        #expect(controller.snapshot.accessState == .ready)
+        #expect(controller.snapshot.sessionState.selectedInterfaceID == "en0")
+        #expect(controller.snapshot.sessionState.activeInterfaceID == "en0")
+
+        await tearDown(controller)
+    }
+
+    @Test func initialLoadSelectsMostRecentStartedInterfaceBeforeActiveInterface() async {
+        let suiteName = "TCPViewerTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+        defaults.set(["en1"], forKey: InterfaceSelectionHistoryStore.storageKey)
+        let fakeCore = FakeTCPViewerCore(
+            interfaceInventories: [[
+                makeInterface(id: "en0", displayName: "Wi-Fi"),
+                makeInterface(id: "en1", displayName: "USB Ethernet"),
+            ]]
+        )
+        let controller = TCPViewerWorkspaceController(
+            services: TCPViewerServiceRegistry(core: fakeCore),
+            userDefaults: defaults,
+            activeInterfaceIDProvider: { "en0" }
+        )
+
+        await controller.performInitialLoadIfNeeded()
+
+        #expect(controller.snapshot.sessionState.selectedInterfaceID == "en1")
+        #expect(controller.snapshot.sessionState.lastUsedInterfaceIDs == ["en1"])
+        #expect(controller.snapshot.sessionState.activeInterfaceID == "en0")
+
+        await tearDown(controller)
+    }
+
     @Test func initialLoadSelectsMostRecentStartedInterfaceWhenAvailable() async {
         let suiteName = "TCPViewerTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -52,7 +123,8 @@ struct WindowControllerTests {
         )
         let controller = TCPViewerWorkspaceController(
             services: TCPViewerServiceRegistry(core: fakeCore),
-            userDefaults: defaults
+            userDefaults: defaults,
+            activeInterfaceIDProvider: { nil }
         )
 
         await controller.performInitialLoadIfNeeded()
