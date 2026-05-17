@@ -406,7 +406,7 @@ private struct ReadyNetworkHelperBPFChecker: TCPViewerNetworkHelperBPFChecking {
             expectedPermissionsReady: true,
             currentProcessHasCaptureGroup: true,
             currentProcessCanAccessBPF: true,
-            message: "TCP Viewer can access 2 packet-capture devices."
+            message: "TCP Viewer is ready to capture live traffic."
         )
     }
 }

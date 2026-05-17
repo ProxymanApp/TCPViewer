@@ -48,6 +48,7 @@ final class AppConfiguration: NSObject {
         static let packetFontSize = "TCPViewer.settings.appearance.packetFontSize"
         static let usesMonospacedPacketFont = "TCPViewer.settings.appearance.usesMonospacedPacketFont"
         static let appearanceTheme = "TCPViewer.settings.appearance.theme"
+        static let confirmsBeforeQuitting = "TCPViewer.settings.quit.confirmsBeforeQuitting"
     }
 
     private let defaults: UserDefaults
@@ -102,6 +103,11 @@ final class AppConfiguration: NSObject {
         set { persist(newValue.rawValue, forKey: Key.appearanceTheme) }
     }
 
+    var confirmsBeforeQuitting: Bool {
+        get { defaults.bool(forKey: Key.confirmsBeforeQuitting) }
+        set { persist(newValue, forKey: Key.confirmsBeforeQuitting) }
+    }
+
     // Apply the selected app appearance while keeping System mode delegated to macOS.
     func applyAppearance(to application: NSApplication = .shared) {
         let name = appearanceTheme.appearanceName
@@ -129,6 +135,7 @@ final class AppConfiguration: NSObject {
         defaults.removeObject(forKey: Key.packetFontSize)
         defaults.removeObject(forKey: Key.usesMonospacedPacketFont)
         defaults.removeObject(forKey: Key.appearanceTheme)
+        defaults.removeObject(forKey: Key.confirmsBeforeQuitting)
         interfaceSelectionHistory.clear()
         registerDefaults()
         notifyChange()
@@ -150,6 +157,7 @@ final class AppConfiguration: NSObject {
             Key.packetFontSize: Double(Self.defaultPacketFontSize),
             Key.usesMonospacedPacketFont: true,
             Key.appearanceTheme: AppAppearanceTheme.system.rawValue,
+            Key.confirmsBeforeQuitting: true,
         ])
     }
 

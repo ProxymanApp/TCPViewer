@@ -16,6 +16,7 @@ final class TCPViewerWindowController: NSWindowController {
     private let filterController = PacketQuickFilterViewController()
     private var helperSheetController: NSHostingController<TCPViewerNetworkHelperOnboardingSheet>?
     private var helperSheetWindow: NSWindow?
+    private var isHelperOnboardingManuallyPresented = false
     private var licenseStatusObserver: NSObjectProtocol?
 
     init(services: TCPViewerServiceRegistry, configuration: AppConfiguration, initialURL: URL? = nil) {
@@ -125,8 +126,20 @@ final class TCPViewerWindowController: NSWindowController {
         }
     }
 
-    private func presentHelperOnboarding(snapshot: TCPViewerNetworkHelperToolSnapshot) {
-        guard helperSheetController == nil, let window else {
+    private func presentHelperOnboarding(
+        snapshot: TCPViewerNetworkHelperToolSnapshot,
+        isManuallyPresented: Bool = false
+    ) {
+        if isManuallyPresented {
+            isHelperOnboardingManuallyPresented = true
+        }
+
+        if let helperSheetController {
+            helperSheetController.rootView = makeHelperOnboardingView(snapshot: snapshot)
+            return
+        }
+
+        guard let window else {
             return
         }
 
@@ -143,14 +156,23 @@ final class TCPViewerWindowController: NSWindowController {
             return
         }
 
-        if rootViewController.viewModel.shouldPresentNetworkHelperOnboarding {
+        if shouldKeepHelperOnboardingSheetVisible {
             helperSheetController.rootView = makeHelperOnboardingView(snapshot: rootViewController.viewModel.networkHelperToolSnapshot)
         } else {
             dismissHelperOnboarding()
         }
     }
 
+    private var shouldKeepHelperOnboardingSheetVisible: Bool {
+        if isHelperOnboardingManuallyPresented {
+            return rootViewController.viewModel.networkHelperToolSnapshot.status != .ready
+        }
+
+        return rootViewController.viewModel.shouldPresentNetworkHelperOnboarding
+    }
+
     private func dismissHelperOnboarding() {
+        isHelperOnboardingManuallyPresented = false
         guard helperSheetController != nil, let sheet = helperSheetWindow else {
             self.helperSheetController = nil
             helperSheetWindow = nil
@@ -167,7 +189,6 @@ final class TCPViewerWindowController: NSWindowController {
             snapshot: snapshot,
             onInstall: { [weak self] in self?.rootViewController.installNetworkHelperTool() },
             onRepair: { [weak self] in self?.rootViewController.repairNetworkHelperTool() },
-            onRetry: { [weak self] in self?.rootViewController.retryNetworkHelperToolStatus() },
             onOpenSystemSettings: { [weak self] in self?.rootViewController.openNetworkHelperSystemSettings() },
             onRelaunch: { [weak self] in self?.rootViewController.relaunchTCPViewer() },
             onContinueOffline: { [weak self] in
@@ -214,8 +235,11 @@ extension TCPViewerWindowController: TCPViewerToolbarDataSourceDelegate {
         rootViewController.toggleInspector()
     }
 
-    func tcpviewerToolbarDataSourceDidRequestInstallHelperTool(_ dataSource: TCPViewerToolbarDataSource) {
-        rootViewController.installNetworkHelperTool()
+    func tcpviewerToolbarDataSourceDidRequestHelperToolScreen(_ dataSource: TCPViewerToolbarDataSource) {
+        presentHelperOnboarding(
+            snapshot: rootViewController.viewModel.networkHelperToolSnapshot,
+            isManuallyPresented: true
+        )
     }
 
     func tcpviewerToolbarDataSourceDidRequestPaywall(_ dataSource: TCPViewerToolbarDataSource) {

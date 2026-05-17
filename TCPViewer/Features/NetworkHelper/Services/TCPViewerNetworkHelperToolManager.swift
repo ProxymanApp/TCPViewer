@@ -288,10 +288,10 @@ final class TCPViewerNetworkHelperToolManager: TCPViewerNetworkHelperToolManagin
         switch authorizationStatus {
         case .notRegistered:
             status = .notInstalled
-            message = "TCP Viewer Network Helper Tool has not been registered with macOS."
+            message = "Install the Helper Tool to enable live capture."
         case .notFound:
             status = .notInstalled
-            message = "TCP Viewer could not find the bundled helper payload in this app build."
+            message = "This app build is missing the Helper Tool needed for live capture."
         case .requiresApproval:
             status = .waitingForApproval
             message = "Approve TCP Viewer in System Settings > General > Login Items, then retry."
@@ -301,7 +301,7 @@ final class TCPViewerNetworkHelperToolManager: TCPViewerNetworkHelperToolManagin
                 message = bpfInspection.message
             } else if !bpfInspection.currentProcessHasCaptureGroup {
                 status = .installedNeedsRelaunch
-                message = "Relaunch TCP Viewer so macOS refreshes the app's capture-group membership."
+                message = "Relaunch TCP Viewer to finish enabling live capture."
             } else if !bpfInspection.currentProcessCanAccessBPF {
                 status = .broken
                 message = bpfInspection.message
@@ -311,7 +311,7 @@ final class TCPViewerNetworkHelperToolManager: TCPViewerNetworkHelperToolManagin
             }
         case .unknown(let rawValue):
             status = .unsupported
-            message = "macOS reported an unknown helper status: \(rawValue)."
+            message = "TCP Viewer could not understand the Helper Tool status from macOS: \(rawValue)."
         }
 
         return TCPViewerNetworkHelperToolSnapshot(
@@ -727,7 +727,7 @@ struct TCPViewerNetworkHelperBPFChecker: TCPViewerNetworkHelperBPFChecking {
                 expectedPermissionsReady: false,
                 currentProcessHasCaptureGroup: false,
                 currentProcessCanAccessBPF: false,
-                message: "TCP Viewer could not find the packet-capture access group."
+                message: "TCP Viewer needs the Helper Tool to finish setting up live capture."
             )
         }
 
@@ -740,7 +740,7 @@ struct TCPViewerNetworkHelperBPFChecker: TCPViewerNetworkHelperBPFChecking {
                 expectedPermissionsReady: false,
                 currentProcessHasCaptureGroup: currentProcessGroupIDs().contains(groupID),
                 currentProcessCanAccessBPF: false,
-                message: "TCP Viewer could not find any /dev/bpf* capture devices."
+                message: "TCP Viewer could not find the system resources needed for live capture."
             )
         }
 
@@ -759,8 +759,8 @@ struct TCPViewerNetworkHelperBPFChecker: TCPViewerNetworkHelperBPFChecking {
         let hasCaptureGroup = processGroupIDs.contains(groupID)
         let canAccessBPF = devicePaths.contains { access($0, R_OK | W_OK) == 0 }
         let message = devicesReady && hasCaptureGroup && canAccessBPF
-            ? "TCP Viewer can access \(devicePaths.count) packet-capture devices."
-            : "TCP Viewer found \(devicePaths.count) packet-capture devices, but access is not ready."
+            ? "TCP Viewer is ready to capture live traffic."
+            : "TCP Viewer needs Helper Tool access to capture live traffic."
 
         return TCPViewerNetworkHelperBPFInspection(
             groupExists: true,
