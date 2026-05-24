@@ -209,10 +209,6 @@ struct TCPViewerHelperToolSettingsView: View {
             .padding(20)
             .frame(width: 430, alignment: .leading)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .strokeBorder(.primary.opacity(0.08))
-            }
         }
         .onAppear {
             refreshStatus()

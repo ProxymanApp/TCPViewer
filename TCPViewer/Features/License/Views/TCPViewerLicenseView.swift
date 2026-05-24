@@ -66,39 +66,46 @@ struct TCPViewerLicenseView: View {
             .padding(.top, 16)
             .padding(.horizontal, 18)
 
-            ScrollView {
-                HStack(alignment: .top, spacing: 28) {
-                    VStack(alignment: .leading, spacing: 28) {
-                        header
-                        licenseState
-                        actionArea
-                        Spacer(minLength: 0)
-                    }
-                    .frame(minWidth: 280, maxWidth: 330, alignment: .topLeading)
-
-                    VStack(alignment: .leading, spacing: 16) {
-                        Text("Included with TCP Viewer")
-                            .font(.system(size: 24, weight: .semibold))
-
-                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
-                            ForEach(features) { feature in
-                                FeatureTile(feature: feature)
-                            }
-                        }
-
-                        featureChecklist
-                    }
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            GeometryReader { geometry in
+                ScrollView {
+                    content(minColumnHeight: max(0, geometry.size.height - 34))
                 }
-                .padding(.horizontal, 30)
-                .padding(.top, 4)
-                .padding(.bottom, 30)
             }
         }
         .frame(minWidth: 900, minHeight: 720)
         .background(.regularMaterial)
         .onAppear(perform: startObservingStatus)
         .onDisappear(perform: stopObservingStatus)
+    }
+
+    private func content(minColumnHeight: CGFloat) -> some View {
+        HStack(alignment: .top, spacing: 28) {
+            VStack(alignment: .leading, spacing: 28) {
+                header
+                licenseState
+                primaryActionArea
+                Spacer(minLength: 0)
+                licenseManagementArea
+            }
+            .frame(minWidth: 280, maxWidth: 330, minHeight: minColumnHeight, alignment: .topLeading)
+
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Included with TCP Viewer")
+                    .font(.system(size: 24, weight: .semibold))
+
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
+                    ForEach(features) { feature in
+                        FeatureTile(feature: feature)
+                    }
+                }
+
+                featureChecklist
+            }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .padding(.horizontal, 30)
+        .padding(.top, 4)
+        .padding(.bottom, 30)
     }
 
     private var header: some View {
@@ -143,7 +150,7 @@ struct TCPViewerLicenseView: View {
         }
     }
 
-    private var actionArea: some View {
+    private var primaryActionArea: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Button {
@@ -166,7 +173,18 @@ struct TCPViewerLicenseView: View {
                     .font(.system(size: 12))
                     .foregroundStyle(.tertiary)
                     .padding(.top, 2)
-            } else {
+            }
+
+            if isActivating {
+                operationProgressRow("Activating license...")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var licenseManagementArea: some View {
+        if !isPaywallMode {
+            VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
                     Button {
                         revokeLicense()
@@ -185,20 +203,23 @@ struct TCPViewerLicenseView: View {
                 Text("Find, transfer, or revoke devices from License Manager.")
                     .font(.system(size: 12))
                     .foregroundStyle(.tertiary)
-                    .padding(.top, 2)
-            }
 
-            if isActivating || isRevoking {
-                HStack(spacing: 7) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text(isActivating ? "Activating license..." : "Removing license...")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
+                if isRevoking {
+                    operationProgressRow("Removing license...")
                 }
-                .padding(.top, 4)
             }
         }
+    }
+
+    private func operationProgressRow(_ title: String) -> some View {
+        HStack(spacing: 7) {
+            ProgressView()
+                .controlSize(.small)
+            Text(title)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.top, 4)
     }
 
     private var isPaywallMode: Bool {
@@ -252,7 +273,7 @@ struct TCPViewerLicenseView: View {
         alert.informativeText = "Enter your TCP Viewer license key to activate this Mac."
         alert.alertStyle = .informational
 
-        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 340, height: 24))
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 390, height: 24))
         input.placeholderString = "TCPV-XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
         alert.accessoryView = input
         alert.addButton(withTitle: "Activate")
