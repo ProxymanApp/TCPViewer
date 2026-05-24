@@ -106,8 +106,13 @@ First-time release setup:
 ```bash
 npm install
 bundle install
-xcrun notarytool store-credentials "<profile-name>"
 ```
+
+Notarization and Sentry values are read from environment variables only. Set
+`TCPVIEWER_NOTARIZATION_USERNAME`, `TCPVIEWER_NOTARIZATION_ASC_PROVIDER`,
+`FASTLANE_APPLE_APPLICATION_SPECIFIC_PASSWORD`, `SENTRY_AUTH_TOKEN`,
+`SENTRY_ORG_SLUG`, and `SENTRY_PROJECT_SLUG` in local
+`.env` or the shell.
 
 Generate or transfer the Sparkle EdDSA key with Sparkle's `generate_keys` tool.
 Store the private key in `TCPVIEWER_SPARKLE_PRIVATE_ED_KEY` and the public key
@@ -131,11 +136,12 @@ Run the release flow:
 npm run release
 ```
 
-Choose `beta` to build, notarize, sign, upload to R2, and print a private beta
-DMG URL. Choose `production` to enter the next version; the script increments
-the build number, validates the release with the backend, uploads the signed
-DMG, generates the Sparkle appcast XML from `ReleaseNote.json`, and calls the
-backend release endpoint.
+Choose `beta` to run `bundle exec fastlane mac build_beta`, notarize, upload
+dSYMs to Sentry, sign the DMG, upload to R2, and print a private beta DMG URL.
+Choose `production` to enter the next version; the script increments the build
+number, runs `bundle exec fastlane mac build_production`, validates the release
+with the backend, uploads the signed DMG, generates the Sparkle appcast XML
+from `ReleaseNote.json`, and calls the backend release endpoint.
 
 Production artifacts are exported under:
 

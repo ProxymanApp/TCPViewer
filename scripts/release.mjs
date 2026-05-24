@@ -74,7 +74,7 @@ async function main() {
     await checkBackendReleaseEligibility(env, { version, buildNumber });
   }
 
-  await runFastlaneBuild({ env, version, buildNumber, outputDir });
+  await runFastlaneBuild({ env, releaseType, version, buildNumber, outputDir });
   const dmgPath = path.join(outputDir, "tcpviewer.dmg");
   const signature = await signDMG({ env, dmgPath, settings });
   await uploadDMGToR2({ env, objectKey, dmgPath });
@@ -199,13 +199,14 @@ async function createBackendRelease(env, { version, buildNumber, downloadURL, ap
   }
 }
 
-async function runFastlaneBuild({ env, version, buildNumber, outputDir }) {
+async function runFastlaneBuild({ env, releaseType, version, buildNumber, outputDir }) {
+  const lane = releaseType === "production" ? "build_production" : "build_beta";
   await mkdir(outputDir, { recursive: true });
   await runCommand("bundle", [
     "exec",
     "fastlane",
     "mac",
-    "build_release",
+    lane,
     `version:${version}`,
     `build_number:${buildNumber}`,
     `output_dir:${outputDir}`

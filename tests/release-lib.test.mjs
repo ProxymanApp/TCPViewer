@@ -116,6 +116,9 @@ test("validates release env names without leaking values", () => {
 
   assert.ok(missing.includes("TCPVIEWER_SCRIPT_SECRET"));
   assert.ok(missing.includes("TCPVIEWER_R2_SECRET_ACCESS_KEY"));
+  assert.ok(missing.includes("TCPVIEWER_NOTARIZATION_USERNAME"));
+  assert.ok(missing.includes("SENTRY_AUTH_TOKEN"));
+  assert.ok(!missing.includes("TCPVIEWER_NOTARY_KEYCHAIN_PROFILE"));
 });
 
 test("parses Sparkle signing output and updates Xcode versions", () => {

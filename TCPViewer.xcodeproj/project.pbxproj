@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		BA4D26BD2F9A2F770070BE17 /* PcapPlusPlusCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BA4D26B42F9A2F760070BE17 /* PcapPlusPlusCore.framework */; };
+		BA5E00012FA800000070BE17 /* Sentry in Frameworks */ = {isa = PBXBuildFile; productRef = BA5E00032FA800000070BE17 /* Sentry */; };
 		BAPM00012F9D00000070BE17 /* PcapPlusPlusCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BA4D26B42F9A2F760070BE17 /* PcapPlusPlusCore.framework */; };
 		BAPM00022F9D00000070BE17 /* HexFiend.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BA7A10022F9B00000070BE17 /* HexFiend.framework */; };
 		BAPM00032F9D00000070BE17 /* PcapPlusPlusCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = BA4D26B42F9A2F760070BE17 /* PcapPlusPlusCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -182,6 +183,7 @@
 				BAPM00012F9D00000070BE17 /* PcapPlusPlusCore.framework in Frameworks */,
 				BAPM00022F9D00000070BE17 /* HexFiend.framework in Frameworks */,
 				D0C6D1832B761CD2FBBD11A7 /* Sparkle in Frameworks */,
+				BA5E00012FA800000070BE17 /* Sentry in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -350,6 +352,7 @@
 			name = TCPViewer;
 			packageProductDependencies = (
 				24AFD2DE681080973988FA47 /* Sparkle */,
+				BA5E00032FA800000070BE17 /* Sentry */,
 			);
 			productName = TCPViewer;
 			productReference = BAAE975D2F9B815F00C52A7C /* TCP Viewer.app */;
@@ -437,6 +440,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				47F2E4C3668133A54F097208 /* XCRemoteSwiftPackageReference "Sparkle" */,
+				BA5E00022FA800000070BE17 /* XCRemoteSwiftPackageReference "sentry-cocoa" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = BA4D26862F9A2F490070BE17 /* Products */;
@@ -1073,7 +1077,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 15.6;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.proxyman.tcpviewer;
 				PRODUCT_MODULE_NAME = TCPViewer;
@@ -1119,7 +1123,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 15.6;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.proxyman.tcpviewer;
 				PRODUCT_MODULE_NAME = TCPViewer;
@@ -1317,6 +1321,14 @@
 				version = 2.9.1;
 			};
 		};
+		BA5E00022FA800000070BE17 /* XCRemoteSwiftPackageReference "sentry-cocoa" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/getsentry/sentry-cocoa.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 9.14.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -1324,6 +1336,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 47F2E4C3668133A54F097208 /* XCRemoteSwiftPackageReference "Sparkle" */;
 			productName = Sparkle;
+		};
+		BA5E00032FA800000070BE17 /* Sentry */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = BA5E00022FA800000070BE17 /* XCRemoteSwiftPackageReference "sentry-cocoa" */;
+			productName = Sentry;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

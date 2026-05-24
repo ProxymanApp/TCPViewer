@@ -21,6 +21,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private weak var checkForUpdatesMenuItem: NSMenuItem?
     private weak var licenseMenuItem: NSMenuItem?
     private var licenseStatusObserver: NSObjectProtocol?
+    private lazy var sentryService = TCPViewerSentryService(configuration: appConfiguration)
     private lazy var factoryResetService = TCPViewerFactoryResetService(helperToolManager: networkHelperToolManager)
     private var isHandlingTermination = false
     private var skipsNextQuitConfirmation = false
@@ -29,6 +30,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
+        sentryService.start()
         appConfiguration.applyAppearance()
         observeLicenseStatusChanges()
         wireAboutMenu()
