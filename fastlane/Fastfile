@@ -36,7 +36,13 @@ def prepare_output_dir!(output_dir)
   FileUtils.mkdir_p(output_dir)
 end
 
-def release_paths(output_dir)
+def release_paths(output_dir, dmg_name = DMG_NAME)
+  valid_dmg_name = dmg_name.end_with?(".dmg") &&
+    dmg_name != ".dmg" &&
+    !dmg_name.include?("/") &&
+    !dmg_name.include?("\\")
+  UI.user_error!("Invalid dmg_name") unless valid_dmg_name
+
   archive_path = File.join(output_dir, "TCPViewer.xcarchive")
   staging_dir = File.join(output_dir, "dmg-staging")
 
@@ -46,7 +52,7 @@ def release_paths(output_dir)
     exported_app_path: File.join(output_dir, APP_BUNDLE_NAME),
     archived_app_path: File.join(archive_path, "Products", "Applications", APP_BUNDLE_NAME),
     staged_app_path: File.join(staging_dir, APP_BUNDLE_NAME),
-    dmg_path: File.join(output_dir, DMG_NAME),
+    dmg_path: File.join(output_dir, dmg_name),
     dsym_zip_path: File.join(output_dir, "#{APP_NAME}.app.dSYM.zip"),
     dsym_path: File.join(archive_path, "dSYMs")
   }
@@ -150,7 +156,9 @@ def build_release_variant!(release_type, options)
   version = required_option!(options, :version)
   build_number = required_option!(options, :build_number)
   output_dir = File.expand_path(required_option!(options, :output_dir))
-  paths = release_paths(output_dir)
+  dmg_name = options[:dmg_name].to_s.strip
+  dmg_name = DMG_NAME if dmg_name.empty?
+  paths = release_paths(output_dir, dmg_name)
 
   UI.message("Building TCP Viewer #{release_type} #{version} (#{build_number})")
   prepare_output_dir!(output_dir)

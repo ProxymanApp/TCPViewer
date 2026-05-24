@@ -136,12 +136,16 @@ Run the release flow:
 npm run release
 ```
 
-Choose `beta` to run `bundle exec fastlane mac build_beta`, notarize, upload
-dSYMs to Sentry, sign the DMG, upload to R2, and print a private beta DMG URL.
+Choose `beta` to enter a custom DMG name suffix. After preflight checks, the
+script confirms a DMG named `tcpviewer_<version>_<custom_name>.dmg`, runs
+`bundle exec fastlane mac build_beta`, notarizes, uploads dSYMs to Sentry, signs
+the DMG, uploads it to R2 under `beta/<dmg name>`, and prints a private beta DMG
+URL.
 Choose `production` to enter the next version; the script increments the build
-number, runs `bundle exec fastlane mac build_production`, validates the release
-with the backend, uploads the signed DMG, generates the Sparkle appcast XML
-from `ReleaseNote.json`, and calls the backend release endpoint.
+number, preflights `ReleaseNote.json` and backend eligibility, asks for
+confirmation, runs `bundle exec fastlane mac build_production`, uploads the
+signed DMG, generates the Sparkle appcast XML from `ReleaseNote.json`, and calls
+the backend release endpoint.
 
 Production artifacts are exported under:
 

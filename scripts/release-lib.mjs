@@ -1,6 +1,10 @@
 export const macOSPlatform = "macos";
 export const productionBundleId = "com.proxyman.tcpviewer";
 export const minimumSystemVersion = "15.6";
+export const releaseDMGAppName = "tcpviewer";
+export const defaultDMGFileName = `${releaseDMGAppName}.dmg`;
+
+const fileNameSegmentPattern = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
 
 const commonRequiredEnv = [
   "TCPVIEWER_DEVELOPMENT_TEAM",
@@ -206,15 +210,26 @@ export function generateAppcastXML({
   ].join("\n");
 }
 
-export function makeR2ObjectKey({ releaseType, version, buildNumber, timestamp }) {
+export function makeBetaDMGFileName({ version, customName, appName = releaseDMGAppName }) {
+  const fileAppName = normalizeFileNameSegment(appName, "App name");
+  const fileVersion = normalizeFileNameSegment(version, "Version");
+  const fileCustomName = normalizeBetaDMGCustomName(customName);
+  return `${fileAppName}_${fileVersion}_${fileCustomName}.dmg`;
+}
+
+export function normalizeBetaDMGCustomName(value) {
+  const normalized = String(value ?? "").trim().replace(/\s+/g, "_");
+  return normalizeFileNameSegment(normalized, "Beta DMG custom name");
+}
+
+export function makeR2ObjectKey({ releaseType, version, buildNumber, timestamp, fileName = defaultDMGFileName }) {
+  const safeFileName = validateDMGFileName(fileName);
+
   if (releaseType === "beta") {
-    if (!timestamp) {
-      throw new Error("Beta releases require a timestamp.");
-    }
-    return `beta/${version}/${buildNumber}/${timestamp}/tcpviewer.dmg`;
+    return `beta/${safeFileName}`;
   }
 
-  return `production/${version}/${buildNumber}/tcpviewer.dmg`;
+  return `production/${version}/${buildNumber}/${safeFileName}`;
 }
 
 export function publicR2URL(baseURL, objectKey) {
@@ -254,6 +269,28 @@ function validateReleaseNote(release) {
       throw new Error(`Release ${release.version} must include a ${field} string array.`);
     }
   }
+}
+
+function normalizeFileNameSegment(value, label) {
+  const segment = String(value ?? "").trim();
+  if (!segment) {
+    throw new Error(`${label} is required.`);
+  }
+
+  if (!fileNameSegmentPattern.test(segment)) {
+    throw new Error(`${label} must use only letters, numbers, dots, underscores, or hyphens, and must start and end with a letter or number.`);
+  }
+
+  return segment;
+}
+
+function validateDMGFileName(fileName) {
+  const value = String(fileName ?? "").trim();
+  if (!value.endsWith(".dmg") || value.includes("/") || value.includes("\\") || value === ".dmg") {
+    throw new Error("DMG file name must be a plain .dmg file name.");
+  }
+
+  return value;
 }
 
 function stripOptionalQuotes(value) {

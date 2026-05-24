@@ -15,12 +15,14 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
-import readline from "node:readline/promises";
+import prompts from "prompts";
 import {
   backendCheckURL,
   backendCreateURL,
+  defaultDMGFileName,
   findReleaseNote,
   generateAppcastXML,
+  makeBetaDMGFileName,
   makeR2ObjectKey,
   mergeEnv,
   missingRequiredEnv,
@@ -48,6 +50,7 @@ async function main() {
 
   const { env, envFileExists } = await loadReleaseEnv();
   const settings = await readXcodeBuildSettings(env);
+  validateRequiredBuildSettings(settings);
   const currentVersion = settings.MARKETING_VERSION;
   const currentBuildNumber = settings.CURRENT_PROJECT_VERSION;
   const timestamp = makeTimestamp();
@@ -57,7 +60,19 @@ async function main() {
   const buildNumber = releaseType === "production"
     ? nextBuildNumber(currentBuildNumber)
     : currentBuildNumber;
-  const objectKey = makeR2ObjectKey({ releaseType, version, buildNumber, timestamp });
+  const dmgFileName = releaseType === "beta"
+    ? makeBetaDMGFileName({
+        version,
+        customName: args.betaName ?? await askBetaDMGCustomName(version)
+      })
+    : defaultDMGFileName;
+  const objectKey = makeR2ObjectKey({
+    releaseType,
+    version,
+    buildNumber,
+    timestamp,
+    fileName: dmgFileName
+  });
   const downloadURL = publicR2URL(env.TCPVIEWER_R2_PUBLIC_BASE_URL, objectKey);
   const outputDir = releaseOutputDir({ releaseType, version, buildNumber, timestamp });
 
@@ -65,17 +80,39 @@ async function main() {
   if (!envFileExists) {
     console.warn("No .env found; using shell environment values only.");
   }
-  await preflight({ env, releaseType, objectKey, settings });
 
   let releaseNote = null;
   if (releaseType === "production") {
     releaseNote = await loadReleaseNote(version);
-    await updateXcodeProjectVersion({ version, buildNumber });
+  }
+
+  await preflight({ env, releaseType, objectKey, settings });
+  if (releaseType === "production") {
     await checkBackendReleaseEligibility(env, { version, buildNumber });
   }
 
-  await runFastlaneBuild({ env, releaseType, version, buildNumber, outputDir });
-  const dmgPath = path.join(outputDir, "tcpviewer.dmg");
+  printReleaseSummary({
+    releaseType,
+    version,
+    buildNumber,
+    dmgFileName,
+    outputDir,
+    objectKey,
+    downloadURL,
+    envFileExists,
+    releaseNote
+  });
+  if (!await askReleaseConfirmation()) {
+    console.log("Release cancelled.");
+    return;
+  }
+
+  if (releaseType === "production") {
+    await updateXcodeProjectVersion({ version, buildNumber });
+  }
+
+  await runFastlaneBuild({ env, releaseType, version, buildNumber, outputDir, dmgFileName });
+  const dmgPath = path.join(outputDir, dmgFileName);
   const signature = await signDMG({ env, dmgPath, settings });
   await uploadDMGToR2({ env, objectKey, dmgPath });
 
@@ -199,7 +236,7 @@ async function createBackendRelease(env, { version, buildNumber, downloadURL, ap
   }
 }
 
-async function runFastlaneBuild({ env, releaseType, version, buildNumber, outputDir }) {
+async function runFastlaneBuild({ env, releaseType, version, buildNumber, outputDir, dmgFileName }) {
   const lane = releaseType === "production" ? "build_production" : "build_beta";
   await mkdir(outputDir, { recursive: true });
   await runCommand("bundle", [
@@ -209,7 +246,8 @@ async function runFastlaneBuild({ env, releaseType, version, buildNumber, output
     lane,
     `version:${version}`,
     `build_number:${buildNumber}`,
-    `output_dir:${outputDir}`
+    `output_dir:${outputDir}`,
+    `dmg_name:${dmgFileName}`
   ], { env });
 }
 
@@ -378,27 +416,102 @@ function runCommand(command, args, { env = {}, capture = false } = {}) {
 }
 
 async function askReleaseType() {
-  const answer = (await askText("Release type (beta/production): ")).trim().toLowerCase();
-  if (answer === "b" || answer === "beta") {
-    return "beta";
-  }
-  if (answer === "p" || answer === "production") {
-    return "production";
-  }
-
-  throw new Error("Please choose beta or production.");
-}
-
-async function askText(prompt) {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout
+  const response = await prompts({
+    type: "select",
+    name: "releaseType",
+    message: "Release type",
+    choices: [
+      { title: "Beta", value: "beta" },
+      { title: "Production", value: "production" }
+    ],
+    initial: 0
   });
 
-  try {
-    return await rl.question(prompt);
-  } finally {
-    rl.close();
+  return requirePromptValue(response.releaseType, "Release type");
+}
+
+async function askBetaDMGCustomName(version) {
+  const response = await prompts({
+    type: "text",
+    name: "customName",
+    message: `Beta DMG custom name (tcpviewer_${version}_{custom_name}.dmg)`,
+    validate: (value) => {
+      try {
+        makeBetaDMGFileName({ version, customName: value });
+        return true;
+      } catch (error) {
+        return error.message;
+      }
+    }
+  });
+
+  return requirePromptValue(response.customName, "Beta DMG custom name");
+}
+
+async function askText(message) {
+  const response = await prompts({
+    type: "text",
+    name: "value",
+    message,
+    validate: (value) => String(value ?? "").trim() ? true : "Value is required."
+  });
+
+  return String(requirePromptValue(response.value, message)).trim();
+}
+
+async function askReleaseConfirmation() {
+  const response = await prompts({
+    type: "confirm",
+    name: "confirmed",
+    message: "Start this release now?",
+    initial: false
+  });
+
+  if (typeof response.confirmed !== "boolean") {
+    throw new Error("Release cancelled.");
+  }
+  return response.confirmed;
+}
+
+function requirePromptValue(value, label) {
+  if (value === undefined) {
+    throw new Error(`${label} was cancelled.`);
+  }
+
+  return value;
+}
+
+function printReleaseSummary({
+  releaseType,
+  version,
+  buildNumber,
+  dmgFileName,
+  outputDir,
+  objectKey,
+  downloadURL,
+  envFileExists,
+  releaseNote
+}) {
+  console.log("");
+  console.log("Release summary:");
+  console.log(`- Type: ${releaseType}`);
+  console.log(`- Version: ${version}`);
+  console.log(`- Build: ${buildNumber}`);
+  console.log(`- DMG: ${dmgFileName}`);
+  console.log(`- Output directory: ${outputDir}`);
+  console.log(`- R2 object: ${objectKey}`);
+  console.log(`- Download URL: ${downloadURL}`);
+  console.log(`- Environment source: ${envFileExists ? ".env + shell environment" : "shell environment only"}`);
+  if (releaseNote) {
+    console.log(`- Release notes: ReleaseNote.json entry ${releaseNote.version}`);
+  }
+}
+
+function validateRequiredBuildSettings(settings) {
+  const requiredSettings = ["MARKETING_VERSION", "CURRENT_PROJECT_VERSION"];
+  const missing = requiredSettings.filter((name) => !String(settings[name] ?? "").trim());
+  if (missing.length) {
+    throw new Error(`Missing required Xcode build settings: ${missing.join(", ")}`);
   }
 }
 
@@ -409,6 +522,8 @@ function parseArgs(argv) {
       args.type = arg.slice("--type=".length).toLowerCase();
     } else if (arg.startsWith("--version=")) {
       args.version = arg.slice("--version=".length);
+    } else if (arg.startsWith("--beta-name=")) {
+      args.betaName = arg.slice("--beta-name=".length);
     }
   }
   return args;
