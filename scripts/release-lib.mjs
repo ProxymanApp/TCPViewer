@@ -1,8 +1,9 @@
-export const macOSPlatform = "macos";
-export const productionBundleId = "com.proxyman.tcpviewer";
+import { createHash, createHmac } from "node:crypto";
+
 export const minimumSystemVersion = "15.6";
 export const releaseDMGAppName = "tcpviewer";
 export const defaultDMGFileName = `${releaseDMGAppName}.dmg`;
+export const emptyPayloadSHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 const fileNameSegmentPattern = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
 
@@ -10,6 +11,7 @@ const commonRequiredEnv = [
   "TCPVIEWER_DEVELOPMENT_TEAM",
   "TCPVIEWER_BUILD_KEY",
   "TCPVIEWER_APPCAST_URL",
+  "TCPVIEWER_EXPECTED_BUNDLE_ID",
   "TCPVIEWER_SPARKLE_PUBLIC_ED_KEY",
   "TCPVIEWER_SPARKLE_PRIVATE_ED_KEY",
   "TCPVIEWER_DEVELOPER_ID_APPLICATION",
@@ -24,11 +26,6 @@ const commonRequiredEnv = [
   "TCPVIEWER_R2_SECRET_ACCESS_KEY",
   "TCPVIEWER_R2_BUCKET",
   "TCPVIEWER_R2_PUBLIC_BASE_URL"
-];
-
-const productionRequiredEnv = [
-  "TCPVIEWER_BACKEND_URL",
-  "TCPVIEWER_SCRIPT_SECRET"
 ];
 
 export function normalizeXcconfigValue(value) {
@@ -74,9 +71,11 @@ export function mergeEnv(fileEnv, processEnv) {
 }
 
 export function requiredEnvNames(releaseType) {
-  return releaseType === "production"
-    ? [...commonRequiredEnv, ...productionRequiredEnv]
-    : commonRequiredEnv;
+  if (!["beta", "production"].includes(releaseType)) {
+    throw new Error(`Unsupported release type: ${releaseType}`);
+  }
+
+  return commonRequiredEnv;
 }
 
 export function missingRequiredEnv(env, names) {
@@ -89,6 +88,23 @@ export function redactEnvValue(name, value) {
   }
 
   return String(value ?? "");
+}
+
+export function normalizeSparklePrivateKey(value) {
+  let key = String(value ?? "").trim();
+  // zsh can display a trailing "%" when copied output has no newline; keep it out of the key file.
+  key = key.replace(/%+$/g, "").trim();
+
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(key)) {
+    throw new Error("TCPVIEWER_SPARKLE_PRIVATE_ED_KEY must be a base64 EdDSA private key.");
+  }
+
+  const decoded = Buffer.from(key, "base64");
+  if (decoded.length !== 32 || decoded.toString("base64") !== key) {
+    throw new Error("TCPVIEWER_SPARKLE_PRIVATE_ED_KEY must decode to a 32-byte EdDSA private key.");
+  }
+
+  return key;
 }
 
 export function parseBuildSettings(text) {
@@ -181,10 +197,13 @@ export function generateAppcastXML({
   signature,
   releaseNote,
   pubDate = new Date(),
-  bundleId = productionBundleId,
+  bundleId,
   minimumOSVersion = minimumSystemVersion
 }) {
   validateReleaseNote(releaseNote);
+  if (!String(bundleId ?? "").trim()) {
+    throw new Error("Appcast bundleId is required.");
+  }
 
   const releaseNotesHTML = releaseNotesToHTML(releaseNote);
   return [
@@ -237,20 +256,72 @@ export function publicR2URL(baseURL, objectKey) {
   return `${normalizedBase}/${objectKey.split("/").map(encodeURIComponent).join("/")}`;
 }
 
-export function backendCheckURL(baseURL, { version, buildNumber, platform = macOSPlatform }) {
-  const url = new URL("/api/releases/check-can-script-release-new-build", normalizeBackendBaseURL(baseURL));
-  url.searchParams.set("platform", platform);
-  url.searchParams.set("build_number", buildNumber);
-  url.searchParams.set("build_version", version);
-  return url.toString();
+export function makeR2StorageObjectKey(publicBaseURL, objectKey) {
+  const publicPathPrefix = new URL(String(publicBaseURL)).pathname
+    .split("/")
+    .filter(Boolean)
+    .join("/");
+  return [publicPathPrefix, objectKey].filter(Boolean).join("/");
 }
 
-export function backendCreateURL(baseURL, { version, buildNumber, platform = macOSPlatform }) {
-  const url = new URL("/api/releases/create-new-release", normalizeBackendBaseURL(baseURL));
-  url.searchParams.set("platform", platform);
-  url.searchParams.set("build_number", buildNumber);
-  url.searchParams.set("build_version", version);
-  return url.toString();
+// Build the path-style R2 object URL used by Cloudflare's S3-compatible API.
+export function makeR2ObjectURL({ accountId, bucket, objectKey }) {
+  const encodedBucket = encodePathSegment(bucket);
+  const encodedKey = String(objectKey).split("/").map(encodePathSegment).join("/");
+  return new URL(`/${encodedBucket}/${encodedKey}`, `https://${accountId}.r2.cloudflarestorage.com`);
+}
+
+// Sign direct R2 requests with AWS Signature V4 without depending on AWS SDK.
+export function signR2Request({
+  method,
+  url,
+  accessKeyId,
+  secretAccessKey,
+  payloadHash,
+  headers = {},
+  now = new Date()
+}) {
+  const amzDate = toAmzDate(now);
+  const dateStamp = amzDate.slice(0, 8);
+  const requestHeaders = normalizeHeaders({
+    ...headers,
+    host: url.host,
+    "x-amz-content-sha256": payloadHash,
+    "x-amz-date": amzDate
+  });
+
+  const signedHeaderNames = Object.keys(requestHeaders)
+    .filter((name) => name === "host" || name.startsWith("x-amz-"))
+    .sort();
+  const canonicalHeaders = signedHeaderNames
+    .map((name) => `${name}:${requestHeaders[name]}\n`)
+    .join("");
+  const signedHeaders = signedHeaderNames.join(";");
+  const credentialScope = `${dateStamp}/auto/s3/aws4_request`;
+  const canonicalRequest = [
+    method.toUpperCase(),
+    url.pathname,
+    canonicalQueryString(url),
+    canonicalHeaders,
+    signedHeaders,
+    payloadHash
+  ].join("\n");
+  const stringToSign = [
+    "AWS4-HMAC-SHA256",
+    amzDate,
+    credentialScope,
+    sha256Hex(canonicalRequest)
+  ].join("\n");
+  const signingKey = hmac(`AWS4${secretAccessKey}`, dateStamp);
+  const regionKey = hmac(signingKey, "auto");
+  const serviceKey = hmac(regionKey, "s3");
+  const requestKey = hmac(serviceKey, "aws4_request");
+  const signature = hmacHex(requestKey, stringToSign);
+
+  return {
+    ...requestHeaders,
+    authorization: `AWS4-HMAC-SHA256 Credential=${accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`
+  };
 }
 
 export function updateProjectVersions(projectText, { version, buildNumber }) {
@@ -293,6 +364,46 @@ function validateDMGFileName(fileName) {
   return value;
 }
 
+function toAmzDate(date) {
+  return date.toISOString().replace(/[:-]|\.\d{3}/g, "");
+}
+
+function normalizeHeaders(headers) {
+  const normalized = {};
+  for (const [name, value] of Object.entries(headers)) {
+    normalized[name.toLowerCase()] = String(value).trim().replace(/\s+/g, " ");
+  }
+  return normalized;
+}
+
+function canonicalQueryString(url) {
+  return [...url.searchParams.entries()]
+    .sort(([leftName, leftValue], [rightName, rightValue]) => {
+      const nameSort = leftName.localeCompare(rightName);
+      return nameSort === 0 ? leftValue.localeCompare(rightValue) : nameSort;
+    })
+    .map(([name, value]) => `${encodePathSegment(name)}=${encodePathSegment(value)}`)
+    .join("&");
+}
+
+function encodePathSegment(value) {
+  return encodeURIComponent(String(value)).replace(/[!'()*]/g, (character) => {
+    return `%${character.charCodeAt(0).toString(16).toUpperCase()}`;
+  });
+}
+
+function sha256Hex(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function hmac(key, value) {
+  return createHmac("sha256", key).update(value).digest();
+}
+
+function hmacHex(key, value) {
+  return createHmac("sha256", key).update(value).digest("hex");
+}
+
 function stripOptionalQuotes(value) {
   if (
     (value.startsWith('"') && value.endsWith('"')) ||
@@ -302,11 +413,6 @@ function stripOptionalQuotes(value) {
   }
 
   return value;
-}
-
-function normalizeBackendBaseURL(baseURL) {
-  const normalized = normalizeXcconfigValue(baseURL);
-  return normalized.endsWith("/") ? normalized : `${normalized}/`;
 }
 
 function escapeHTML(value) {

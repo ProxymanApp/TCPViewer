@@ -92,14 +92,14 @@ xcodebuild test \
 ## Production Release
 
 TCP Viewer uses Sparkle 2 for macOS app updates. Release builds are packaged by
-the Node.js release script, built/notarized by fastlane, signed with Sparkle's
-EdDSA update key, uploaded to Cloudflare R2, and registered with the TCP Viewer
-backend.
+the Node.js release script, built by fastlane, packaged with `create-dmg`,
+notarized as a DMG, signed with Sparkle's EdDSA update key, uploaded to
+Cloudflare R2, and exported with a Sparkle appcast.
 
 Release secrets must stay out of Git. Keep them in local `.env`, shell env, or
 Keychain-backed tools. Because `.env` is also included by Xcode as an
 `.xcconfig`, URL values that contain `://` should use Xcode's escaped form,
-for example `https:/$()/api-tcpviewer.proxyman.com`.
+for example `https:/$()/updates.example.com/appcast.xml`.
 
 First-time release setup:
 
@@ -138,14 +138,16 @@ npm run release
 
 Choose `beta` to enter a custom DMG name suffix. After preflight checks, the
 script confirms a DMG named `tcpviewer_<version>_<custom_name>.dmg`, runs
-`bundle exec fastlane mac build_beta`, notarizes, uploads dSYMs to Sentry, signs
-the DMG, uploads it to R2 under `beta/<dmg name>`, and prints a private beta DMG
-URL.
+`bundle exec fastlane mac build_beta`, creates the DMG with `create-dmg`, signs
+and notarizes the DMG, verifies the final code-signing and notarization status,
+uploads dSYMs to Sentry, signs the DMG for Sparkle, uploads it to R2, and prints
+the beta DMG URL.
 Choose `production` to enter the next version; the script increments the build
-number, preflights `ReleaseNote.json` and backend eligibility, asks for
-confirmation, runs `bundle exec fastlane mac build_production`, uploads the
-signed DMG, generates the Sparkle appcast XML from `ReleaseNote.json`, and calls
-the backend release endpoint.
+number, preflights `ReleaseNote.json`, asks for confirmation, runs
+`bundle exec fastlane mac build_production`, performs the same final DMG
+verification before uploading to R2, and writes the Sparkle appcast XML from
+`ReleaseNote.json` into the production artifact folder. Any private website or
+service publishing step should live outside this open-source repository.
 
 Production artifacts are exported under:
 

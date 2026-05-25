@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { createReadStream } from "node:fs";
+import { createHash } from "node:crypto";
 import {
   access,
   chmod,
@@ -17,24 +18,26 @@ import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import prompts from "prompts";
 import {
-  backendCheckURL,
-  backendCreateURL,
   defaultDMGFileName,
+  emptyPayloadSHA256,
   findReleaseNote,
   generateAppcastXML,
   makeBetaDMGFileName,
+  makeR2ObjectURL,
   makeR2ObjectKey,
+  makeR2StorageObjectKey,
   mergeEnv,
   missingRequiredEnv,
   nextBuildNumber,
+  normalizeSparklePrivateKey,
   parseBuildSettings,
   parseEnvFile,
   parseReleaseNotes,
   parseSparkleSignatureOutput,
-  productionBundleId,
   publicR2URL,
   redactEnvValue,
   requiredEnvNames,
+  signR2Request,
   updateProjectVersions
 } from "./release-lib.mjs";
 
@@ -66,14 +69,15 @@ async function main() {
         customName: args.betaName ?? await askBetaDMGCustomName(version)
       })
     : defaultDMGFileName;
-  const objectKey = makeR2ObjectKey({
+  const releaseObjectKey = makeR2ObjectKey({
     releaseType,
     version,
     buildNumber,
     timestamp,
     fileName: dmgFileName
   });
-  const downloadURL = publicR2URL(env.TCPVIEWER_R2_PUBLIC_BASE_URL, objectKey);
+  const objectKey = makeR2StorageObjectKey(env.TCPVIEWER_R2_PUBLIC_BASE_URL, releaseObjectKey);
+  const downloadURL = publicR2URL(env.TCPVIEWER_R2_PUBLIC_BASE_URL, releaseObjectKey);
   const outputDir = releaseOutputDir({ releaseType, version, buildNumber, timestamp });
 
   console.log(`Preparing ${releaseType} release ${version} (${buildNumber})`);
@@ -87,9 +91,6 @@ async function main() {
   }
 
   await preflight({ env, releaseType, objectKey, settings });
-  if (releaseType === "production") {
-    await checkBackendReleaseEligibility(env, { version, buildNumber });
-  }
 
   printReleaseSummary({
     releaseType,
@@ -113,6 +114,7 @@ async function main() {
 
   await runFastlaneBuild({ env, releaseType, version, buildNumber, outputDir, dmgFileName });
   const dmgPath = path.join(outputDir, dmgFileName);
+  await verifyFinalDMG({ dmgPath });
   const signature = await signDMG({ env, dmgPath, settings });
   await uploadDMGToR2({ env, objectKey, dmgPath });
 
@@ -123,9 +125,9 @@ async function main() {
       downloadURL,
       signature,
       releaseNote,
-      bundleId: env.TCPVIEWER_EXPECTED_BUNDLE_ID || productionBundleId
+      bundleId: env.TCPVIEWER_EXPECTED_BUNDLE_ID
     });
-    await createBackendRelease(env, { version, buildNumber, downloadURL, appcastXML });
+    await writeAppcastXML({ outputDir, version, appcastXML });
   }
 
   console.log(`${releaseType === "production" ? "Production" : "BETA"} release is ready: ${downloadURL}`);
@@ -159,6 +161,7 @@ async function preflight({ env, releaseType, objectKey, settings }) {
 
   await requireTool("node", ["--version"]);
   await requireTool("npm", ["--version"]);
+  await ensureCreateDMGTool();
   await requireTool("bundle", ["exec", "fastlane", "--version"]);
   await requireTool("xcodebuild", ["-version"]);
   await requireTool("xcrun", ["notarytool", "--version"]);
@@ -168,7 +171,7 @@ async function preflight({ env, releaseType, objectKey, settings }) {
     throw new Error("TCPViewer Release build must enable hardened runtime.");
   }
 
-  const expectedBundleId = env.TCPVIEWER_EXPECTED_BUNDLE_ID || productionBundleId;
+  const expectedBundleId = env.TCPVIEWER_EXPECTED_BUNDLE_ID;
   if (settings.PRODUCT_BUNDLE_IDENTIFIER !== expectedBundleId) {
     throw new Error(`Unexpected bundle id ${settings.PRODUCT_BUNDLE_IDENTIFIER}; expected ${expectedBundleId}.`);
   }
@@ -204,38 +207,6 @@ async function loadReleaseNote(version) {
   return findReleaseNote(releaseNotes, version);
 }
 
-async function checkBackendReleaseEligibility(env, { version, buildNumber }) {
-  const response = await fetch(backendCheckURL(env.TCPVIEWER_BACKEND_URL, { version, buildNumber }), {
-    headers: {
-      "x-script-secret": env.TCPVIEWER_SCRIPT_SECRET
-    }
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Backend rejected release ${version} (${buildNumber}): ${body}`);
-  }
-}
-
-async function createBackendRelease(env, { version, buildNumber, downloadURL, appcastXML }) {
-  const response = await fetch(backendCreateURL(env.TCPVIEWER_BACKEND_URL, { version, buildNumber }), {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-script-secret": env.TCPVIEWER_SCRIPT_SECRET
-    },
-    body: JSON.stringify({
-      link: downloadURL,
-      note: appcastXML
-    })
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Backend failed to create release ${version} (${buildNumber}): ${body}`);
-  }
-}
-
 async function runFastlaneBuild({ env, releaseType, version, buildNumber, outputDir, dmgFileName }) {
   const lane = releaseType === "production" ? "build_production" : "build_beta";
   await mkdir(outputDir, { recursive: true });
@@ -251,13 +222,35 @@ async function runFastlaneBuild({ env, releaseType, version, buildNumber, output
   ], { env });
 }
 
+async function verifyFinalDMG({ dmgPath }) {
+  await runCommand("codesign", ["--verify", "--strict", dmgPath]);
+  await runCommand("xcrun", ["stapler", "validate", dmgPath]);
+  await runCommand("spctl", [
+    "-a",
+    "-vv",
+    "-t",
+    "open",
+    "--context",
+    "context:primary-signature",
+    dmgPath
+  ]);
+  console.log("Final DMG code signing and notarization checks passed.");
+}
+
+async function writeAppcastXML({ outputDir, version, appcastXML }) {
+  const appcastPath = path.join(outputDir, `appcast-${version}.xml`);
+  await writeFile(appcastPath, appcastXML, { mode: 0o600 });
+  console.log(`Appcast XML written to: ${appcastPath}`);
+}
+
 async function signDMG({ env, dmgPath, settings }) {
   const signUpdatePath = await findSparkleSignUpdate(env, settings);
   const keyDir = await mkdtemp(path.join(tmpdir(), "tcpviewer-sparkle-"));
   const keyPath = path.join(keyDir, "ed-key");
 
   try {
-    await writeFile(keyPath, `${env.TCPVIEWER_SPARKLE_PRIVATE_ED_KEY.trim()}\n`, { mode: 0o600 });
+    const privateKey = normalizeSparklePrivateKey(env.TCPVIEWER_SPARKLE_PRIVATE_ED_KEY);
+    await writeFile(keyPath, `${privateKey}\n`, { mode: 0o600 });
     await chmod(keyPath, 0o600);
 
     let result;
@@ -274,48 +267,72 @@ async function signDMG({ env, dmgPath, settings }) {
 }
 
 async function uploadDMGToR2({ env, objectKey, dmgPath }) {
-  const { S3Client, PutObjectCommand } = await import("@aws-sdk/client-s3");
-  const client = makeR2Client(S3Client, env);
   const fileStat = await stat(dmgPath);
+  // R2 validates the signed payload hash, so compute it before streaming the file.
+  const payloadHash = await sha256File(dmgPath);
+  const url = makeR2ObjectURL({
+    accountId: env.TCPVIEWER_R2_ACCOUNT_ID,
+    bucket: env.TCPVIEWER_R2_BUCKET,
+    objectKey
+  });
+  const signedHeaders = signR2Request({
+    method: "PUT",
+    url,
+    accessKeyId: env.TCPVIEWER_R2_ACCESS_KEY_ID,
+    secretAccessKey: env.TCPVIEWER_R2_SECRET_ACCESS_KEY,
+    payloadHash,
+    headers: {
+      "content-length": String(fileStat.size),
+      "content-type": "application/x-apple-diskimage"
+    }
+  });
 
-  await client.send(new PutObjectCommand({
-    Bucket: env.TCPVIEWER_R2_BUCKET,
-    Key: objectKey,
-    Body: createReadStream(dmgPath),
-    ContentLength: fileStat.size,
-    ContentType: "application/x-apple-diskimage"
-  }));
+  const response = await fetch(url, {
+    method: "PUT",
+    headers: signedHeaders,
+    body: createReadStream(dmgPath),
+    duplex: "half"
+  });
+
+  if (!response.ok) {
+    throw new Error(`R2 upload failed for ${objectKey}: ${response.status} ${await response.text()}`);
+  }
 }
 
 async function ensureR2ObjectDoesNotExist(env, objectKey) {
-  const { S3Client, HeadObjectCommand } = await import("@aws-sdk/client-s3");
-  const client = makeR2Client(S3Client, env);
+  const url = makeR2ObjectURL({
+    accountId: env.TCPVIEWER_R2_ACCOUNT_ID,
+    bucket: env.TCPVIEWER_R2_BUCKET,
+    objectKey
+  });
+  const response = await fetch(url, {
+    method: "HEAD",
+    headers: signR2Request({
+      method: "HEAD",
+      url,
+      accessKeyId: env.TCPVIEWER_R2_ACCESS_KEY_ID,
+      secretAccessKey: env.TCPVIEWER_R2_SECRET_ACCESS_KEY,
+      payloadHash: emptyPayloadSHA256
+    })
+  });
 
-  try {
-    await client.send(new HeadObjectCommand({
-      Bucket: env.TCPVIEWER_R2_BUCKET,
-      Key: objectKey
-    }));
-  } catch (error) {
-    const statusCode = error?.$metadata?.httpStatusCode;
-    if (statusCode === 404 || error?.name === "NotFound") {
-      return;
-    }
-    throw error;
+  if (response.status === 404) {
+    return;
+  }
+
+  if (!response.ok) {
+    throw new Error(`R2 lookup failed for ${objectKey}: ${response.status} ${await response.text()}`);
   }
 
   throw new Error(`R2 object already exists: ${objectKey}`);
 }
 
-function makeR2Client(S3Client, env) {
-  return new S3Client({
-    region: "auto",
-    endpoint: `https://${env.TCPVIEWER_R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
-    credentials: {
-      accessKeyId: env.TCPVIEWER_R2_ACCESS_KEY_ID,
-      secretAccessKey: env.TCPVIEWER_R2_SECRET_ACCESS_KEY
-    }
-  });
+async function sha256File(filePath) {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(filePath)) {
+    hash.update(chunk);
+  }
+  return hash.digest("hex");
 }
 
 async function findSparkleSignUpdate(env, settings) {
@@ -383,6 +400,32 @@ async function requireTool(command, args) {
   } catch (error) {
     throw new Error(`Required release tool failed: ${command} ${args.join(" ")}\n${error.message}`);
   }
+}
+
+async function ensureCreateDMGTool() {
+  const args = ["--no-install", "create-dmg", "--help"];
+  try {
+    await runCommand("npx", args, { capture: true });
+    return;
+  } catch (error) {
+    if (!isNativeModuleVersionMismatch(error)) {
+      throw new Error(`Required release tool failed: npx ${args.join(" ")}\n${error.message}`);
+    }
+  }
+
+  console.warn("create-dmg native modules were built with a different Node.js version. Rebuilding npm modules and retrying...");
+  await runCommand("npm", ["rebuild"]);
+
+  try {
+    await runCommand("npx", args, { capture: true });
+  } catch (error) {
+    throw new Error(`Required release tool failed after npm rebuild: npx ${args.join(" ")}\n${error.message}`);
+  }
+}
+
+function isNativeModuleVersionMismatch(error) {
+  const message = String(error?.message ?? "");
+  return message.includes("NODE_MODULE_VERSION") || message.includes("ERR_DLOPEN_FAILED");
 }
 
 function runCommand(command, args, { env = {}, capture = false } = {}) {
