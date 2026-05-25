@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  backendCheckURL,
-  backendCreateURL,
+  emptyPayloadSHA256,
   findReleaseNote,
   generateAppcastXML,
   makeBetaDMGFileName,
+  makeR2ObjectURL,
   makeR2ObjectKey,
+  makeR2StorageObjectKey,
   mergeEnv,
   missingRequiredEnv,
   normalizeBetaDMGCustomName,
+  normalizeSparklePrivateKey,
   nextBuildNumber,
   parseEnvFile,
   parseReleaseNotes,
@@ -18,6 +20,7 @@ import {
   redactEnvValue,
   releaseNotesToHTML,
   requiredEnvNames,
+  signR2Request,
   updateProjectVersions
 } from "../scripts/release-lib.mjs";
 
@@ -60,6 +63,7 @@ test("generates Sparkle appcast XML from structured notes", () => {
       improvements: [],
       bugs: []
     },
+    bundleId: "com.example.tcpviewer",
     pubDate: new Date("2026-05-10T12:00:00Z")
   });
 
@@ -88,6 +92,35 @@ test("builds R2 keys and public URLs", () => {
     publicR2URL("https://downloads.example.com/", "production/1.2.0/42/tcpviewer.dmg"),
     "https://downloads.example.com/production/1.2.0/42/tcpviewer.dmg"
   );
+  assert.equal(
+    publicR2URL("https://downloads.example.com/release", "beta/tcpviewer.dmg"),
+    "https://downloads.example.com/release/beta/tcpviewer.dmg"
+  );
+  assert.equal(
+    makeR2StorageObjectKey("https://downloads.example.com/release", "beta/tcpviewer.dmg"),
+    "release/beta/tcpviewer.dmg"
+  );
+});
+
+test("signs direct R2 requests without exposing the secret key", () => {
+  const url = makeR2ObjectURL({
+    accountId: "abc123",
+    bucket: "tcpviewer",
+    objectKey: "production/1.2.0/42/tcp viewer.dmg"
+  });
+  const headers = signR2Request({
+    method: "HEAD",
+    url,
+    accessKeyId: "test-access",
+    secretAccessKey: "example-private-value",
+    payloadHash: emptyPayloadSHA256,
+    now: new Date("2026-05-25T01:02:03.000Z")
+  });
+
+  assert.equal(url.href, "https://abc123.r2.cloudflarestorage.com/tcpviewer/production/1.2.0/42/tcp%20viewer.dmg");
+  assert.equal(headers["x-amz-date"], "20260525T010203Z");
+  assert.equal(headers.authorization, "AWS4-HMAC-SHA256 Credential=test-access/20260525/auto/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=31e10693839d229ca9c3be973d27cafafc0d0d29195b92a6197e9abea7623e00");
+  assert.ok(!headers.authorization.includes("example-private-value"));
 });
 
 test("builds beta DMG file names from a safe custom name", () => {
@@ -109,34 +142,32 @@ test("builds beta DMG file names from a safe custom name", () => {
   );
 });
 
-test("builds backend URLs for release script endpoints", () => {
-  assert.equal(
-    backendCheckURL("https://api.example.com", { version: "1.2.0", buildNumber: "42" }),
-    "https://api.example.com/api/releases/check-can-script-release-new-build?platform=macos&build_number=42&build_version=1.2.0"
-  );
-  assert.equal(
-    backendCreateURL("https://api.example.com", { version: "1.2.0", buildNumber: "42" }),
-    "https://api.example.com/api/releases/create-new-release?platform=macos&build_number=42&build_version=1.2.0"
-  );
-});
-
 test("parses xcconfig-style env files and redacts secrets", () => {
   const parsed = parseEnvFile([
-    "TCPVIEWER_BACKEND_URL=https:/$()/api.example.com",
-    "TCPVIEWER_SCRIPT_SECRET=secret",
+    "TCPVIEWER_APPCAST_URL=https:/$()/updates.example.com/appcast.xml",
+    "TCPVIEWER_R2_SECRET_ACCESS_KEY=placeholder-value",
     "// ignored comment"
   ].join("\n"));
 
-  assert.equal(parsed.TCPVIEWER_BACKEND_URL, "https://api.example.com");
-  assert.equal(redactEnvValue("TCPVIEWER_SCRIPT_SECRET", parsed.TCPVIEWER_SCRIPT_SECRET), "<redacted>");
-  assert.equal(redactEnvValue("TCPVIEWER_BACKEND_URL", parsed.TCPVIEWER_BACKEND_URL), "https://api.example.com");
+  assert.equal(parsed.TCPVIEWER_APPCAST_URL, "https://updates.example.com/appcast.xml");
+  assert.equal(redactEnvValue("TCPVIEWER_R2_SECRET_ACCESS_KEY", parsed.TCPVIEWER_R2_SECRET_ACCESS_KEY), "<redacted>");
+  assert.equal(redactEnvValue("TCPVIEWER_APPCAST_URL", parsed.TCPVIEWER_APPCAST_URL), "https://updates.example.com/appcast.xml");
+});
+
+test("normalizes Sparkle private keys without leaking copied prompt markers", () => {
+  const key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+  assert.equal(normalizeSparklePrivateKey(`${key}%`), key);
+  assert.throws(
+    () => normalizeSparklePrivateKey("not a valid key"),
+    /base64 EdDSA private key/
+  );
 });
 
 test("validates release env names without leaking values", () => {
   const env = mergeEnv({ TCPVIEWER_DEVELOPMENT_TEAM: "ABCDE12345" }, {});
   const missing = missingRequiredEnv(env, requiredEnvNames("production"));
 
-  assert.ok(missing.includes("TCPVIEWER_SCRIPT_SECRET"));
+  assert.ok(missing.includes("TCPVIEWER_EXPECTED_BUNDLE_ID"));
   assert.ok(missing.includes("TCPVIEWER_R2_SECRET_ACCESS_KEY"));
   assert.ok(missing.includes("TCPVIEWER_NOTARIZATION_USERNAME"));
   assert.ok(missing.includes("SENTRY_AUTH_TOKEN"));

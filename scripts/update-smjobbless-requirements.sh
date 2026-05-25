@@ -3,8 +3,26 @@
 # Generates Info.plist files with SMJobBless requirements that match the active signing mode.
 set -euo pipefail
 
-app_bundle_identifier="com.proxyman.tcpviewer"
-helper_bundle_identifier="com.proxyman.tcpviewer.helpertool"
+current_bundle_identifier="${PRODUCT_BUNDLE_IDENTIFIER:-}"
+
+if [[ -z "${current_bundle_identifier}" ]]; then
+    printf "%s\n" "error: Missing PRODUCT_BUNDLE_IDENTIFIER for SMJobBless requirements."
+    exit 1
+fi
+
+# Derive bundle IDs from Xcode settings so OSS scripts do not bake in private namespaces.
+app_bundle_identifier="${TCPVIEWER_APP_BUNDLE_IDENTIFIER:-}"
+helper_bundle_identifier="${TCPVIEWER_HELPER_BUNDLE_IDENTIFIER:-}"
+
+if [[ -z "${app_bundle_identifier}" || -z "${helper_bundle_identifier}" ]]; then
+    if [[ "${current_bundle_identifier}" == *.helpertool ]]; then
+        helper_bundle_identifier="${helper_bundle_identifier:-${current_bundle_identifier}}"
+        app_bundle_identifier="${app_bundle_identifier:-${current_bundle_identifier%.helpertool}}"
+    else
+        app_bundle_identifier="${app_bundle_identifier:-${current_bundle_identifier}}"
+        helper_bundle_identifier="${helper_bundle_identifier:-${current_bundle_identifier}.helpertool}"
+    fi
+fi
 
 oid_apple_developer_id_ca="1.2.840.113635.100.6.2.6"
 oid_apple_developer_id_application="1.2.840.113635.100.6.1.13"
@@ -121,7 +139,7 @@ case "${ACTION:-build}" in
         ;;
 esac
 
-case "${PRODUCT_BUNDLE_IDENTIFIER}" in
+case "${current_bundle_identifier}" in
     "${app_bundle_identifier}")
         update_smprivileged_executables "${generated_info_plist}" "${helper_requirement}"
         ;;
@@ -129,9 +147,9 @@ case "${PRODUCT_BUNDLE_IDENTIFIER}" in
         update_smauthorized_clients "${generated_info_plist}" "${app_requirement}"
         ;;
     *)
-        printf "%s\n" "error: Unsupported PRODUCT_BUNDLE_IDENTIFIER for SMJobBless requirements: ${PRODUCT_BUNDLE_IDENTIFIER}"
+        printf "%s\n" "error: Unsupported PRODUCT_BUNDLE_IDENTIFIER for SMJobBless requirements: ${current_bundle_identifier}"
         exit 1
         ;;
 esac
 
-printf "%s\n" "Updated SMJobBless requirements for ${PRODUCT_BUNDLE_IDENTIFIER}"
+printf "%s\n" "Updated SMJobBless requirements for ${current_bundle_identifier}"

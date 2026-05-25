@@ -11,6 +11,8 @@ APP_NAME = "TCP Viewer"
 APP_BUNDLE_NAME = "#{APP_NAME}.app"
 DMG_NAME = "tcpviewer.dmg"
 RELEASE_ROOT = File.expand_path(File.join(Dir.home, "Desktop", "tcpviewer-production"))
+REPO_ROOT = File.expand_path("..", __dir__)
+CREATE_DMG_BIN = File.join(REPO_ROOT, "node_modules", ".bin", "create-dmg")
 
 def required_env!(names)
   missing = names.select { |name| ENV[name].to_s.strip.empty? }
@@ -44,18 +46,25 @@ def release_paths(output_dir, dmg_name = DMG_NAME)
   UI.user_error!("Invalid dmg_name") unless valid_dmg_name
 
   archive_path = File.join(output_dir, "TCPViewer.xcarchive")
-  staging_dir = File.join(output_dir, "dmg-staging")
+  create_dmg_output_dir = File.join(output_dir, "create-dmg")
 
   {
     archive_path: archive_path,
-    staging_dir: staging_dir,
+    create_dmg_output_dir: create_dmg_output_dir,
     exported_app_path: File.join(output_dir, APP_BUNDLE_NAME),
     archived_app_path: File.join(archive_path, "Products", "Applications", APP_BUNDLE_NAME),
-    staged_app_path: File.join(staging_dir, APP_BUNDLE_NAME),
     dmg_path: File.join(output_dir, dmg_name),
     dsym_zip_path: File.join(output_dir, "#{APP_NAME}.app.dSYM.zip"),
     dsym_path: File.join(archive_path, "dSYMs")
   }
+end
+
+def create_dmg_binary!
+  unless File.executable?(CREATE_DMG_BIN)
+    UI.user_error!("create-dmg was not found at #{CREATE_DMG_BIN}. Run npm install before releasing.")
+  end
+
+  CREATE_DMG_BIN
 end
 
 def build_xcargs(version, build_number)
@@ -63,6 +72,7 @@ def build_xcargs(version, build_number)
     "MARKETING_VERSION" => version,
     "CURRENT_PROJECT_VERSION" => build_number,
     "DEVELOPMENT_TEAM" => ENV.fetch("TCPVIEWER_DEVELOPMENT_TEAM"),
+    "CODE_SIGN_STYLE" => "Manual",
     "CODE_SIGN_IDENTITY" => ENV.fetch("TCPVIEWER_DEVELOPER_ID_APPLICATION")
   }.map { |key, value| "#{key}=#{shell_escape(value)}" }.join(" ")
 end
@@ -77,11 +87,27 @@ def build_mac_app!(paths, version, build_number)
     archive_path: paths[:archive_path],
     export_method: "developer-id",
     export_team_id: ENV.fetch("TCPVIEWER_DEVELOPMENT_TEAM"),
-    codesigning_identity: ENV.fetch("TCPVIEWER_DEVELOPER_ID_APPLICATION"),
     include_symbols: true,
     skip_package_pkg: true,
     xcargs: build_xcargs(version, build_number)
   )
+end
+
+def developer_id_identity!
+  identity_filter = ENV.fetch("TCPVIEWER_DEVELOPER_ID_APPLICATION").strip
+  team_id = ENV.fetch("TCPVIEWER_DEVELOPMENT_TEAM").strip
+  output = sh("security find-identity -p codesigning -v", log: false)
+  matches = output.lines.select do |line|
+    line.include?("Developer ID Application") &&
+      line.include?(identity_filter) &&
+      line.include?("(#{team_id})") &&
+      line.match?(/\b[0-9A-F]{40}\b/)
+  end
+
+  UI.user_error!("Developer ID signing identity was not found for team #{team_id}.") if matches.empty?
+  UI.user_error!("Developer ID signing identity is ambiguous for team #{team_id}.") if matches.length > 1
+
+  matches.first[/\b[0-9A-F]{40}\b/]
 end
 
 def built_app_path!(paths)
@@ -91,19 +117,93 @@ def built_app_path!(paths)
   UI.user_error!("Built app was not found at #{paths[:exported_app_path]} or #{paths[:archived_app_path]}")
 end
 
-def create_dmg!(paths)
-  FileUtils.mkdir_p(paths[:staging_dir])
-  FileUtils.cp_r(built_app_path!(paths), paths[:staged_app_path])
+def sparkle_code_paths(app_path)
+  sparkle_root = File.join(app_path, "Contents", "Frameworks", "Sparkle.framework", "Versions", "B")
+  [
+    File.join(sparkle_root, "Autoupdate"),
+    File.join(sparkle_root, "XPCServices", "Downloader.xpc"),
+    File.join(sparkle_root, "XPCServices", "Installer.xpc"),
+    File.join(sparkle_root, "Updater.app"),
+    File.join(app_path, "Contents", "Frameworks", "Sparkle.framework")
+  ]
+end
+
+def codesign_for_notarization!(path, identity)
+  UI.user_error!("Code signing path was not found: #{path}") unless File.exist?(path)
 
   sh([
-    "hdiutil",
-    "create",
-    "-volname", APP_NAME,
-    "-srcfolder", paths[:staging_dir],
-    "-ov",
-    "-format", "UDZO",
-    paths[:dmg_path]
+    "codesign",
+    "--force",
+    "--sign", identity,
+    "--timestamp",
+    "--options", "runtime",
+    "--preserve-metadata=identifier,entitlements,flags",
+    path
   ].map { |part| shell_escape(part) }.join(" "))
+end
+
+def resign_exported_app_for_notarization!(app_path)
+  identity = developer_id_identity!
+  # Sparkle ships nested helpers that Xcode does not always re-sign during macOS app export.
+  sparkle_code_paths(app_path).each { |path| codesign_for_notarization!(path, identity) }
+  codesign_for_notarization!(app_path, identity)
+end
+
+def verify_developer_id_signature!(path, deep: false)
+  verify_flags = deep ? "--deep --strict" : "--strict"
+  sh("codesign --verify #{verify_flags} #{shell_escape(path)}")
+  signature_details = sh("codesign -dvvv #{shell_escape(path)} 2>&1", log: false)
+
+  unless signature_details.include?("Authority=Developer ID Application")
+    UI.user_error!("Code is not signed with a Developer ID Application certificate: #{path}")
+  end
+
+  unless signature_details.include?("Timestamp=")
+    UI.user_error!("Code signature does not include a secure timestamp: #{path}")
+  end
+end
+
+def verify_developer_id_app_signature!(app_path)
+  verify_developer_id_signature!(app_path, deep: true)
+  sparkle_code_paths(app_path).each { |path| verify_developer_id_signature!(path) }
+end
+
+def create_dmg!(paths)
+  FileUtils.rm_rf(paths[:create_dmg_output_dir])
+  FileUtils.mkdir_p(paths[:create_dmg_output_dir])
+
+  app_path = built_app_path!(paths)
+  sh([
+    create_dmg_binary!,
+    app_path,
+    paths[:create_dmg_output_dir],
+    "--overwrite",
+    "--no-version-in-filename",
+    "--dmg-title", APP_NAME,
+    "--no-code-sign"
+  ].map { |part| shell_escape(part) }.join(" "))
+
+  generated_dmg_path = File.join(paths[:create_dmg_output_dir], "#{APP_NAME}.dmg")
+  unless File.exist?(generated_dmg_path)
+    candidates = Dir[File.join(paths[:create_dmg_output_dir], "*.dmg")]
+    UI.user_error!("create-dmg did not produce a DMG in #{paths[:create_dmg_output_dir]}") unless candidates.length == 1
+    generated_dmg_path = candidates.first
+  end
+
+  FileUtils.rm_f(paths[:dmg_path])
+  FileUtils.mv(generated_dmg_path, paths[:dmg_path])
+  UI.message("Created DMG at #{paths[:dmg_path]}")
+end
+
+def sign_dmg!(dmg_path)
+  sh([
+    "codesign",
+    "--force",
+    "--sign", developer_id_identity!,
+    "--timestamp",
+    dmg_path
+  ].map { |part| shell_escape(part) }.join(" "))
+  sh("codesign --verify --strict #{shell_escape(dmg_path)}")
 end
 
 def notarize_package!(package_path)
@@ -118,12 +218,14 @@ def notarize_package!(package_path)
     use_notarytool: true,
     username: ENV.fetch("TCPVIEWER_NOTARIZATION_USERNAME"),
     asc_provider: ENV.fetch("TCPVIEWER_NOTARIZATION_ASC_PROVIDER"),
-    bundle_id: ENV.fetch("TCPVIEWER_EXPECTED_BUNDLE_ID", "com.proxyman.tcpviewer"),
+    bundle_id: ENV.fetch("TCPVIEWER_EXPECTED_BUNDLE_ID"),
     print_log: true
   )
 end
 
 def verify_dmg!(dmg_path)
+  sh("codesign --verify --strict #{shell_escape(dmg_path)}")
+  sh("xcrun stapler validate #{shell_escape(dmg_path)}")
   sh("spctl -a -vv -t open --context context:primary-signature #{shell_escape(dmg_path)}")
 end
 
@@ -163,7 +265,10 @@ def build_release_variant!(release_type, options)
   UI.message("Building TCP Viewer #{release_type} #{version} (#{build_number})")
   prepare_output_dir!(output_dir)
   build_mac_app!(paths, version, build_number)
+  resign_exported_app_for_notarization!(built_app_path!(paths))
+  verify_developer_id_app_signature!(built_app_path!(paths))
   create_dmg!(paths)
+  sign_dmg!(paths[:dmg_path])
   notarize_package!(paths[:dmg_path])
   verify_dmg!(paths[:dmg_path])
   upload_sentry_debug_files!(sentry_debug_files_path!(paths))
@@ -174,6 +279,7 @@ platform :mac do
   lane :preflight do
     required_env!([
       "TCPVIEWER_DEVELOPMENT_TEAM",
+      "TCPVIEWER_EXPECTED_BUNDLE_ID",
       "TCPVIEWER_DEVELOPER_ID_APPLICATION",
       "TCPVIEWER_NOTARIZATION_USERNAME",
       "TCPVIEWER_NOTARIZATION_ASC_PROVIDER",
@@ -185,7 +291,7 @@ platform :mac do
 
     sh("xcodebuild -project #{shell_escape(PROJECT_PATH)} -scheme #{shell_escape(SCHEME_NAME)} -configuration #{shell_escape(CONFIGURATION_NAME)} -showBuildSettings > /dev/null")
     sh("test -d Vendor/.install/wireshark/lib")
-    sh("security find-identity -p codesigning -v | grep #{shell_escape(ENV.fetch('TCPVIEWER_DEVELOPER_ID_APPLICATION'))}")
+    developer_id_identity!
     sh("xcrun notarytool --version > /dev/null")
   end
 
