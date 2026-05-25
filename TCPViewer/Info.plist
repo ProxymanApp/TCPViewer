@@ -6,7 +6,7 @@
 	<key>SMPrivilegedExecutables</key>
 	<dict>
 		<key>com.proxyman.tcpviewer.helpertool</key>
-		<string>identifier "com.proxyman.tcpviewer.helpertool" and anchor apple generic and certificate leaf[subject.OU] = "$(TCPVIEWER_DEVELOPMENT_TEAM)"</string>
+		<string>identifier "com.proxyman.tcpviewer.helpertool" and anchor apple generic and certificate leaf[subject.OU] = "$(DEVELOPMENT_TEAM)"</string>
 	</dict>
 	<key>SUFeedURL</key>
 	<string>$(TCPVIEWER_APPCAST_URL)</string>

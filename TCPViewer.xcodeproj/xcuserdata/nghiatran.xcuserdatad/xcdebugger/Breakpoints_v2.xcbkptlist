@@ -7,47 +7,17 @@
       <BreakpointProxy
          BreakpointExtensionID = "Xcode.Breakpoint.FileBreakpoint">
          <BreakpointContent
-            uuid = "FB414D17-0E59-44EA-8E05-B812729238BB"
+            uuid = "92EA8EF0-0255-4B31-A3DD-EA94D41157B1"
             shouldBeEnabled = "Yes"
             ignoreCount = "0"
             continueAfterRunningActions = "No"
-            filePath = "TCPViewer/App/TCPViewerSentryService.swift"
+            filePath = "TCPViewer/App/AppDelegate.swift"
             startingColumnNumber = "9223372036854775807"
             endingColumnNumber = "9223372036854775807"
-            startingLineNumber = "109"
-            endingLineNumber = "109"
-            landmarkName = "applyCrashReportPreference()"
+            startingLineNumber = "319"
+            endingLineNumber = "319"
+            landmarkName = "isSparkleConfigured()"
             landmarkType = "7">
-            <Locations>
-               <Location
-                  uuid = "FB414D17-0E59-44EA-8E05-B812729238BB - 1a689cce4b4bdeab"
-                  shouldBeEnabled = "Yes"
-                  ignoreCount = "0"
-                  continueAfterRunningActions = "No"
-                  symbolName = "TCPViewer.TCPViewerSentryService.applyCrashReportPreference() -&gt; ()"
-                  moduleName = "TCPViewer.debug.dylib"
-                  usesParentBreakpointCondition = "Yes"
-                  urlString = "file:///Users/nghiatran/Documents/work/TCPViewer/TCPViewer/App/TCPViewerSentryService.swift"
-                  startingColumnNumber = "9223372036854775807"
-                  endingColumnNumber = "9223372036854775807"
-                  startingLineNumber = "109"
-                  endingLineNumber = "109">
-               </Location>
-               <Location
-                  uuid = "FB414D17-0E59-44EA-8E05-B812729238BB - 87208a5f2fafe4cc"
-                  shouldBeEnabled = "Yes"
-                  ignoreCount = "0"
-                  continueAfterRunningActions = "No"
-                  symbolName = "closure #1 () -&gt; Swift.Bool in TCPViewer.TCPViewerSentryService.applyCrashReportPreference() -&gt; ()"
-                  moduleName = "TCPViewer.debug.dylib"
-                  usesParentBreakpointCondition = "Yes"
-                  urlString = "file:///Users/nghiatran/Documents/work/TCPViewer/TCPViewer/App/TCPViewerSentryService.swift"
-                  startingColumnNumber = "9223372036854775807"
-                  endingColumnNumber = "9223372036854775807"
-                  startingLineNumber = "109"
-                  endingLineNumber = "109">
-               </Location>
-            </Locations>
          </BreakpointContent>
       </BreakpointProxy>
    </Breakpoints>

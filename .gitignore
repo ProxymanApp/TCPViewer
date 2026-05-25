@@ -3,6 +3,7 @@ DerivedData/
 Vendor/.build/
 Vendor/.install/
 .env
+Config/TCPViewer.local.xcconfig
 node_modules/
 fastlane/README.md
 fastlane/report.xml

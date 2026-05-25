@@ -1,0 +1,8 @@
+// Copy to Config/TCPViewer.local.xcconfig for local Xcode app builds.
+// Do not commit real local values. URL values must escape :// as :/$()/.
+
+TCPVIEWER_DEVELOPMENT_TEAM =
+TCPVIEWER_BUILD_KEY =
+TCPVIEWER_APPCAST_URL =
+TCPVIEWER_SPARKLE_PUBLIC_ED_KEY =
+TCPVIEWER_SENTRY_DSN =

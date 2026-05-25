@@ -34,6 +34,25 @@ git submodule update --init --recursive
 
 This prepares the native capture and dissection libraries used by the default developer build.
 
+## Local Xcode Build Settings
+
+TCP Viewer keeps app build settings in Xcode configuration files. Create an
+ignored local config from the template before building in Xcode:
+
+```bash
+cp Config/TCPViewer.local.xcconfig.example Config/TCPViewer.local.xcconfig
+```
+
+Set `TCPVIEWER_DEVELOPMENT_TEAM`, `TCPVIEWER_BUILD_KEY`,
+`TCPVIEWER_APPCAST_URL`, `TCPVIEWER_SPARKLE_PUBLIC_ED_KEY`, and optionally
+`TCPVIEWER_SENTRY_DSN` in `Config/TCPViewer.local.xcconfig`. Because
+`.xcconfig` files treat `//` as comments, URL values that contain `://` must
+use Xcode's escaped form, for example
+`https:/$()/updates.example.com/appcast.xml`.
+
+The root `.env` file is still supported for release scripts, but it is not
+included by Xcode app builds.
+
 ## Wireshark Deep Packet Details
 
 TCP Viewer's Wireshark-style inspector is built from the vendored Wireshark source. Users should not need to install the Wireshark app separately; release builds should bundle the required libraries with TCP Viewer.
@@ -97,10 +116,9 @@ notarized as a DMG, signed with Sparkle's EdDSA update key, uploaded to
 Cloudflare R2, and exported with a Sparkle appcast.
 
 Release secrets must stay out of Git. Keep them in local `.env`, shell env, or
-Keychain-backed tools. Because `.env` is also included by Xcode as an
-`.xcconfig`, URL values that contain `://` should use Xcode's escaped form,
-for example `https:/$()/updates.example.com/appcast.xml` or
-`TCPVIEWER_SENTRY_DSN=https:/$()/public@example.ingest.sentry.io/1`.
+Keychain-backed tools. The release `.env` file is read by the Node.js and
+fastlane tooling only; local Xcode app builds read
+`Config/TCPViewer.local.xcconfig` instead.
 
 First-time release setup:
 
