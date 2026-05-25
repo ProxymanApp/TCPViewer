@@ -28,21 +28,23 @@ import {
   makeR2StorageObjectKey,
   mergeEnv,
   missingRequiredEnv,
-  nextBuildNumber,
+  normalizeReleaseBackendURL,
   normalizeSparklePrivateKey,
   parseBuildSettings,
   parseEnvFile,
   parseReleaseNotes,
   parseSparkleSignatureOutput,
   publicR2URL,
+  publishReleaseToBackendEnabled,
   redactEnvValue,
+  releaseBackendRequiredEnvNames,
   requiredEnvNames,
-  signR2Request,
-  updateProjectVersions
+  signR2Request
 } from "./release-lib.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
+const releaseBackendPlatform = "macos";
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
@@ -57,12 +59,8 @@ async function main() {
   const currentVersion = settings.MARKETING_VERSION;
   const currentBuildNumber = settings.CURRENT_PROJECT_VERSION;
   const timestamp = makeTimestamp();
-  const version = releaseType === "production"
-    ? args.version ?? await askText("Next production version: ")
-    : currentVersion;
-  const buildNumber = releaseType === "production"
-    ? nextBuildNumber(currentBuildNumber)
-    : currentBuildNumber;
+  const version = currentVersion;
+  const buildNumber = currentBuildNumber;
   const dmgFileName = releaseType === "beta"
     ? makeBetaDMGFileName({
         version,
@@ -79,6 +77,7 @@ async function main() {
   const objectKey = makeR2StorageObjectKey(env.TCPVIEWER_R2_PUBLIC_BASE_URL, releaseObjectKey);
   const downloadURL = publicR2URL(env.TCPVIEWER_R2_PUBLIC_BASE_URL, releaseObjectKey);
   const outputDir = releaseOutputDir({ releaseType, version, buildNumber, timestamp });
+  const releaseBackend = resolveReleaseBackend({ env, releaseType });
 
   console.log(`Preparing ${releaseType} release ${version} (${buildNumber})`);
   if (!envFileExists) {
@@ -90,7 +89,7 @@ async function main() {
     releaseNote = await loadReleaseNote(version);
   }
 
-  await preflight({ env, releaseType, objectKey, settings });
+  await preflight({ env, releaseType, objectKey, settings, releaseBackend, version, buildNumber });
 
   printReleaseSummary({
     releaseType,
@@ -101,15 +100,12 @@ async function main() {
     objectKey,
     downloadURL,
     envFileExists,
-    releaseNote
+    releaseNote,
+    releaseBackend
   });
   if (!await askReleaseConfirmation()) {
     console.log("Release cancelled.");
     return;
-  }
-
-  if (releaseType === "production") {
-    await updateXcodeProjectVersion({ version, buildNumber });
   }
 
   await runFastlaneBuild({ env, releaseType, version, buildNumber, outputDir, dmgFileName });
@@ -128,6 +124,15 @@ async function main() {
       bundleId: env.TCPVIEWER_EXPECTED_BUNDLE_ID
     });
     await writeAppcastXML({ outputDir, version, appcastXML });
+    if (releaseBackend) {
+      await createBackendRelease({
+        releaseBackend,
+        version,
+        buildNumber,
+        downloadURL,
+        appcastXML
+      });
+    }
   }
 
   console.log(`${releaseType === "production" ? "Production" : "BETA"} release is ready: ${downloadURL}`);
@@ -152,7 +157,7 @@ async function loadReleaseEnv() {
   };
 }
 
-async function preflight({ env, releaseType, objectKey, settings }) {
+async function preflight({ env, releaseType, objectKey, settings, releaseBackend, version, buildNumber }) {
   // Keep preflight strict because it runs before long signing and notarization work.
   const missing = missingRequiredEnv(env, requiredEnvNames(releaseType));
   if (missing.length) {
@@ -179,6 +184,9 @@ async function preflight({ env, releaseType, objectKey, settings }) {
   await verifyDeveloperID(env.TCPVIEWER_DEVELOPER_ID_APPLICATION);
   await findSparkleSignUpdate(env, settings);
   await ensureR2ObjectDoesNotExist(env, objectKey);
+  if (releaseBackend) {
+    await ensureBackendCanCreateRelease({ releaseBackend, version, buildNumber });
+  }
   console.log("Pre-flight check passed.");
 }
 
@@ -191,15 +199,6 @@ async function readXcodeBuildSettings(env) {
   ], { env, capture: true });
 
   return parseBuildSettings(result.stdout);
-}
-
-async function updateXcodeProjectVersion({ version, buildNumber }) {
-  const projectPath = path.join(repoRoot, "TCPViewer.xcodeproj/project.pbxproj");
-  const current = await readFile(projectPath, "utf8");
-  const updated = updateProjectVersions(current, { version, buildNumber });
-  if (updated !== current) {
-    await writeFile(projectPath, updated);
-  }
 }
 
 async function loadReleaseNote(version) {
@@ -297,6 +296,113 @@ async function uploadDMGToR2({ env, objectKey, dmgPath }) {
   if (!response.ok) {
     throw new Error(`R2 upload failed for ${objectKey}: ${response.status} ${await response.text()}`);
   }
+}
+
+function resolveReleaseBackend({ env, releaseType }) {
+  if (!publishReleaseToBackendEnabled(env)) {
+    return null;
+  }
+
+  if (releaseType !== "production") {
+    console.warn("TCPVIEWER_PUBLISH_RELEASE_TO_BACKEND is set, but backend publishing only runs for production releases.");
+    return null;
+  }
+
+  const missing = missingRequiredEnv(env, releaseBackendRequiredEnvNames);
+  if (missing.length) {
+    throw new Error(`Missing required backend release env values: ${missing.join(", ")}`);
+  }
+
+  return {
+    baseURL: normalizeReleaseBackendURL(env.TCPVIEWER_RELEASE_BACKEND_URL),
+    scriptSecret: env.TCPVIEWER_RELEASE_BACKEND_SCRIPT_SECRET
+  };
+}
+
+async function ensureBackendCanCreateRelease({ releaseBackend, version, buildNumber }) {
+  const url = makeReleaseBackendEndpointURL({
+    releaseBackend,
+    pathName: "api/releases/check-can-script-release-new-build",
+    query: {
+      platform: releaseBackendPlatform,
+      build_number: buildNumber,
+      build_version: version
+    }
+  });
+
+  const response = await fetch(url, {
+    method: "GET",
+    headers: backendReleaseHeaders(releaseBackend)
+  });
+  const payload = await readBackendReleaseResponse(response);
+
+  if (!response.ok || payload?.can_release !== true) {
+    throw new Error(`Backend release check failed: ${response.status} ${backendReleaseErrorMessage(payload)}`);
+  }
+
+  console.log("Backend release check passed.");
+}
+
+async function createBackendRelease({ releaseBackend, version, buildNumber, downloadURL, appcastXML }) {
+  const url = makeReleaseBackendEndpointURL({
+    releaseBackend,
+    pathName: "api/releases/create-new-release",
+    query: {
+      platform: releaseBackendPlatform,
+      build_number: buildNumber,
+      build_version: version
+    }
+  });
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      ...backendReleaseHeaders(releaseBackend),
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({
+      link: downloadURL,
+      note: appcastXML
+    })
+  });
+  const payload = await readBackendReleaseResponse(response);
+
+  if (!response.ok) {
+    throw new Error(`Backend release creation failed: ${response.status} ${backendReleaseErrorMessage(payload)}`);
+  }
+
+  console.log(`Backend release created for ${version} (${buildNumber}).`);
+}
+
+function makeReleaseBackendEndpointURL({ releaseBackend, pathName, query }) {
+  const url = new URL(pathName, `${releaseBackend.baseURL}/`);
+  for (const [name, value] of Object.entries(query)) {
+    url.searchParams.set(name, value);
+  }
+  return url;
+}
+
+function backendReleaseHeaders(releaseBackend) {
+  return {
+    "x-script-secret": releaseBackend.scriptSecret
+  };
+}
+
+async function readBackendReleaseResponse(response) {
+  const text = await response.text();
+  if (!text.trim()) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { message: text };
+  }
+}
+
+function backendReleaseErrorMessage(payload) {
+  return String(payload?.message ?? payload?.error ?? "Unexpected backend response.");
 }
 
 async function ensureR2ObjectDoesNotExist(env, objectKey) {
@@ -491,17 +597,6 @@ async function askBetaDMGCustomName(version) {
   return requirePromptValue(response.customName, "Beta DMG custom name");
 }
 
-async function askText(message) {
-  const response = await prompts({
-    type: "text",
-    name: "value",
-    message,
-    validate: (value) => String(value ?? "").trim() ? true : "Value is required."
-  });
-
-  return String(requirePromptValue(response.value, message)).trim();
-}
-
 async function askReleaseConfirmation() {
   const response = await prompts({
     type: "confirm",
@@ -533,17 +628,19 @@ function printReleaseSummary({
   objectKey,
   downloadURL,
   envFileExists,
-  releaseNote
+  releaseNote,
+  releaseBackend
 }) {
   console.log("");
   console.log("Release summary:");
   console.log(`- Type: ${releaseType}`);
-  console.log(`- Version: ${version}`);
-  console.log(`- Build: ${buildNumber}`);
+  console.log(`- App version: ${version}`);
+  console.log(`- Build number: ${buildNumber}`);
   console.log(`- DMG: ${dmgFileName}`);
   console.log(`- Output directory: ${outputDir}`);
   console.log(`- R2 object: ${objectKey}`);
   console.log(`- Download URL: ${downloadURL}`);
+  console.log(`- Backend publishing: ${releaseBackend ? `enabled (${releaseBackend.baseURL})` : "disabled"}`);
   console.log(`- Environment source: ${envFileExists ? ".env + shell environment" : "shell environment only"}`);
   if (releaseNote) {
     console.log(`- Release notes: ReleaseNote.json entry ${releaseNote.version}`);
@@ -563,8 +660,6 @@ function parseArgs(argv) {
   for (const arg of argv) {
     if (arg.startsWith("--type=")) {
       args.type = arg.slice("--type=".length).toLowerCase();
-    } else if (arg.startsWith("--version=")) {
-      args.version = arg.slice("--version=".length);
     } else if (arg.startsWith("--beta-name=")) {
       args.betaName = arg.slice("--beta-name=".length);
     }

@@ -142,12 +142,29 @@ script confirms a DMG named `tcpviewer_<version>_<custom_name>.dmg`, runs
 and notarizes the DMG, verifies the final code-signing and notarization status,
 uploads dSYMs to Sentry, signs the DMG for Sparkle, uploads it to R2, and prints
 the beta DMG URL.
-Choose `production` to enter the next version; the script increments the build
-number, preflights `ReleaseNote.json`, asks for confirmation, runs
+Choose `production` to release the app version and build number currently set in
+the Xcode project. The script preflights `ReleaseNote.json`, shows the parsed app
+version and build number in the confirmation summary, runs
 `bundle exec fastlane mac build_production`, performs the same final DMG
 verification before uploading to R2, and writes the Sparkle appcast XML from
-`ReleaseNote.json` into the production artifact folder. Any private website or
-service publishing step should live outside this open-source repository.
+`ReleaseNote.json` into the production artifact folder.
+
+To also create the production release record through the TCP Viewer backend,
+enable the optional backend publisher in local `.env`:
+
+```bash
+TCPVIEWER_PUBLISH_RELEASE_TO_BACKEND=1
+TCPVIEWER_RELEASE_BACKEND_URL=http:/$()/localhost:3000
+TCPVIEWER_RELEASE_BACKEND_SCRIPT_SECRET=<same value as backend SCRIPT_SECRET>
+```
+
+When enabled, production releases publish to the backend URL you configure. Use
+`http:/$()/localhost:3000` to verify the production release script against your
+local backend, or set the production API URL when you want to publish there.
+The script preflights the backend with
+`/api/releases/check-can-script-release-new-build` and, after the DMG upload and
+appcast generation succeed, calls `/api/releases/create-new-release`. Leave the
+flag disabled to skip backend publishing.
 
 Production artifacts are exported under:
 
