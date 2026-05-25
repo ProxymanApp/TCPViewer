@@ -16,6 +16,8 @@
 	<string>$(TCPVIEWER_BUILD_KEY)</string>
 	<key>TCPViewerSentryDSN</key>
 	<string>$(TCPVIEWER_SENTRY_DSN)</string>
+	<key>TCPViewerUsesLocalLicenseServer</key>
+	<string>$(TCPVIEWER_USES_LOCAL_LICENSE_SERVER)</string>
 	<!-- Allow only local/debug license API endpoints to use HTTP; production stays HTTPS. -->
 	<key>NSAppTransportSecurity</key>
 	<dict>

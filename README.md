@@ -45,7 +45,9 @@ cp Config/TCPViewer.local.xcconfig.example Config/TCPViewer.local.xcconfig
 
 Set `TCPVIEWER_DEVELOPMENT_TEAM`, `TCPVIEWER_BUILD_KEY`,
 `TCPVIEWER_APPCAST_URL`, `TCPVIEWER_SPARKLE_PUBLIC_ED_KEY`, and optionally
-`TCPVIEWER_SENTRY_DSN` in `Config/TCPViewer.local.xcconfig`. Because
+`TCPVIEWER_SENTRY_DSN` in `Config/TCPViewer.local.xcconfig`. Set
+`TCPVIEWER_USES_LOCAL_LICENSE_SERVER` to `true` only when local license API
+traffic should use the debug server. Because
 `.xcconfig` files treat `//` as comments, URL values that contain `://` must
 use Xcode's escaped form, for example
 `https:/$()/updates.example.com/appcast.xml`.
