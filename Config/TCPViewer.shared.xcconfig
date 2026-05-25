@@ -1,4 +1,7 @@
-// Load local-only build values from .env. The real .env file is ignored by Git.
-#include? "../.env"
+// Shared defaults are safe for committed builds and can be overridden locally.
+TCPVIEWER_USES_LOCAL_LICENSE_SERVER = false
+
+// Load local-only app build values from an ignored Xcode config file.
+#include? "TCPViewer.local.xcconfig"
 
 DEVELOPMENT_TEAM = $(TCPVIEWER_DEVELOPMENT_TEAM)

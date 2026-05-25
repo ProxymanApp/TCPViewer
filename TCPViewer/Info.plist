@@ -6,7 +6,7 @@
 	<key>SMPrivilegedExecutables</key>
 	<dict>
 		<key>com.proxyman.tcpviewer.helpertool</key>
-		<string>identifier "com.proxyman.tcpviewer.helpertool" and anchor apple generic and certificate leaf[subject.OU] = "$(TCPVIEWER_DEVELOPMENT_TEAM)"</string>
+		<string>identifier "com.proxyman.tcpviewer.helpertool" and anchor apple generic and certificate leaf[subject.OU] = "$(DEVELOPMENT_TEAM)"</string>
 	</dict>
 	<key>SUFeedURL</key>
 	<string>$(TCPVIEWER_APPCAST_URL)</string>
@@ -16,6 +16,8 @@
 	<string>$(TCPVIEWER_BUILD_KEY)</string>
 	<key>TCPViewerSentryDSN</key>
 	<string>$(TCPVIEWER_SENTRY_DSN)</string>
+	<key>TCPViewerUsesLocalLicenseServer</key>
+	<string>$(TCPVIEWER_USES_LOCAL_LICENSE_SERVER)</string>
 	<!-- Allow only local/debug license API endpoints to use HTTP; production stays HTTPS. -->
 	<key>NSAppTransportSecurity</key>
 	<dict>

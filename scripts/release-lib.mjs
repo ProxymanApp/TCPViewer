@@ -28,6 +28,11 @@ const commonRequiredEnv = [
   "TCPVIEWER_R2_PUBLIC_BASE_URL"
 ];
 
+export const releaseBackendRequiredEnvNames = [
+  "TCPVIEWER_RELEASE_BACKEND_URL",
+  "TCPVIEWER_RELEASE_BACKEND_SCRIPT_SECRET"
+];
+
 export function normalizeXcconfigValue(value) {
   if (typeof value !== "string") {
     return value;
@@ -82,6 +87,39 @@ export function missingRequiredEnv(env, names) {
   return names.filter((name) => !String(env[name] ?? "").trim());
 }
 
+export function publishReleaseToBackendEnabled(env) {
+  const value = String(env.TCPVIEWER_PUBLISH_RELEASE_TO_BACKEND ?? "").trim().toLowerCase();
+  if (!value || ["0", "false", "no", "off"].includes(value)) {
+    return false;
+  }
+
+  if (["1", "true", "yes", "on"].includes(value)) {
+    return true;
+  }
+
+  throw new Error("TCPVIEWER_PUBLISH_RELEASE_TO_BACKEND must be one of: 1, true, yes, on, 0, false, no, off.");
+}
+
+export function normalizeReleaseBackendURL(value) {
+  const rawURL = String(value ?? "").trim();
+  if (!rawURL) {
+    throw new Error("TCPVIEWER_RELEASE_BACKEND_URL is required when backend release publishing is enabled.");
+  }
+
+  let url;
+  try {
+    url = new URL(rawURL);
+  } catch {
+    throw new Error("TCPVIEWER_RELEASE_BACKEND_URL must be a valid HTTP or HTTPS URL.");
+  }
+
+  if (!["http:", "https:"].includes(url.protocol)) {
+    throw new Error("TCPVIEWER_RELEASE_BACKEND_URL must use http or https.");
+  }
+
+  return url.href.replace(/\/+$/, "");
+}
+
 export function redactEnvValue(name, value) {
   if (/SECRET|PRIVATE|PASSWORD|TOKEN|KEY/i.test(name)) {
     return "<redacted>";
@@ -117,15 +155,6 @@ export function parseBuildSettings(text) {
   }
 
   return settings;
-}
-
-export function nextBuildNumber(currentBuildNumber) {
-  const parsed = Number.parseInt(String(currentBuildNumber), 10);
-  if (!Number.isSafeInteger(parsed) || parsed < 0 || String(parsed) !== String(currentBuildNumber).trim()) {
-    throw new Error(`Build number must be a non-negative integer: ${currentBuildNumber}`);
-  }
-
-  return String(parsed + 1);
 }
 
 export function parseReleaseNotes(content) {
@@ -322,12 +351,6 @@ export function signR2Request({
     ...requestHeaders,
     authorization: `AWS4-HMAC-SHA256 Credential=${accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`
   };
-}
-
-export function updateProjectVersions(projectText, { version, buildNumber }) {
-  return projectText
-    .replace(/MARKETING_VERSION = [^;]+;/g, `MARKETING_VERSION = ${version};`)
-    .replace(/CURRENT_PROJECT_VERSION = [^;]+;/g, `CURRENT_PROJECT_VERSION = ${buildNumber};`);
 }
 
 function validateReleaseNote(release) {

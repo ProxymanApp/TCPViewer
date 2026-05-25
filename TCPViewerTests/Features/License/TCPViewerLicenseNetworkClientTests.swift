@@ -31,9 +31,12 @@ struct TCPViewerLicenseNetworkClientTests {
         #expect(request.url?.absoluteString == "https://api-tcpviewer.proxyman.com/api/devices/register")
     }
 
-    @Test func localServerToggleRoutesEveryLicenseRequestToLocalhost() throws {
+    @Test func localServerEnvRoutesEveryLicenseRequestToLocalServer() throws {
         let transport = StubLicenseTransport()
-        let client = TCPViewerLicenseNetworkClient(usesLocalServer: true, transport: transport)
+        let client = TCPViewerLicenseNetworkClient(
+            bundleInfo: ["TCPViewerUsesLocalLicenseServer": "true"],
+            transport: transport
+        )
 
         transport.nextResult = .success((makeLicenseData(), makeResponse(statusCode: 200)))
         _ = waitForLicenseResult {
@@ -66,9 +69,9 @@ struct TCPViewerLicenseNetworkClientTests {
         }
 
         #expect(transport.requests.map { $0.url?.absoluteString } == [
-            "http://localhost:3000/api/devices/register",
-            "http://localhost:3000/api/devices/verify",
-            "http://localhost:3000/api/devices/revoke",
+            "http://proxyman.debug:3000/api/devices/register",
+            "http://proxyman.debug:3000/api/devices/verify",
+            "http://proxyman.debug:3000/api/devices/revoke",
         ])
     }
 

@@ -16,15 +16,33 @@ enum TCPViewerSentryConfiguration {
         resolvedValue(bundle.object(forInfoDictionaryKey: dsnInfoKey) as? String)
     }
 
-    // Reject empty values and unresolved Xcode placeholders.
+    // Reject empty values, unresolved Xcode placeholders, and malformed URLs.
     static func resolvedValue(_ value: String?) -> String? {
-        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !value.isEmpty,
-              !value.contains("$(") else {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines) else {
             return nil
         }
 
-        return value
+        let normalizedValue = value.replacingOccurrences(of: ":/$()/", with: "://")
+        guard !normalizedValue.isEmpty,
+              !normalizedValue.contains("$("),
+              isValidDSN(normalizedValue) else {
+            return nil
+        }
+
+        return normalizedValue
+    }
+
+    // Ensure a DSN still has its URL authority after xcconfig parsing.
+    private static func isValidDSN(_ value: String) -> Bool {
+        guard let url = URLComponents(string: value),
+              let scheme = url.scheme?.lowercased(),
+              ["http", "https"].contains(scheme),
+              let host = url.host,
+              !host.isEmpty else {
+            return false
+        }
+
+        return true
     }
 }
 

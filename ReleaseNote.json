@@ -1,9 +1,28 @@
 {
   "releases": [
     {
-      "version": "1.1.0",
-      "features": [],
-      "improvements": [],
+      "version": "1.0",
+      "features": [
+        "Initial TCP Viewer release for opening, inspecting, and exporting packet captures on macOS.",
+        "Wireshark-powered packet detail inspection bundled directly in the app.",
+        "Live capture support with packet list, source list, and inspector workflows."
+      ],
+      "improvements": [
+        "Packaged as a signed and notarized macOS app with Sparkle update metadata."
+      ],
+      "bugs": []
+    },
+    {
+      "version": "1.0.1",
+      "features": [
+        "New BUILD",
+        "Initial TCP Viewer release for opening, inspecting, and exporting packet captures on macOS.",
+        "Wireshark-powered packet detail inspection bundled directly in the app.",
+        "Live capture support with packet list, source list, and inspector workflows."
+      ],
+      "improvements": [
+        "Packaged as a signed and notarized macOS app with Sparkle update metadata."
+      ],
       "bugs": []
     }
   ]

@@ -11,17 +11,18 @@ import {
   mergeEnv,
   missingRequiredEnv,
   normalizeBetaDMGCustomName,
+  normalizeReleaseBackendURL,
   normalizeSparklePrivateKey,
-  nextBuildNumber,
   parseEnvFile,
   parseReleaseNotes,
   parseSparkleSignatureOutput,
   publicR2URL,
+  publishReleaseToBackendEnabled,
   redactEnvValue,
+  releaseBackendRequiredEnvNames,
   releaseNotesToHTML,
   requiredEnvNames,
-  signR2Request,
-  updateProjectVersions
+  signR2Request
 } from "../scripts/release-lib.mjs";
 
 test("parses and validates release notes", () => {
@@ -41,11 +42,6 @@ test("parses and validates release notes", () => {
     () => parseReleaseNotes(JSON.stringify({ releases: [{ version: "1.0" }] })),
     /features string array/
   );
-});
-
-test("increments integer build numbers only", () => {
-  assert.equal(nextBuildNumber("41"), "42");
-  assert.throws(() => nextBuildNumber("41.2"), /non-negative integer/);
 });
 
 test("generates Sparkle appcast XML from structured notes", () => {
@@ -174,17 +170,30 @@ test("validates release env names without leaking values", () => {
   assert.ok(!missing.includes("TCPVIEWER_NOTARY_KEYCHAIN_PROFILE"));
 });
 
-test("parses Sparkle signing output and updates Xcode versions", () => {
+test("validates optional release backend publishing env", () => {
+  assert.equal(publishReleaseToBackendEnabled({}), false);
+  assert.equal(publishReleaseToBackendEnabled({ TCPVIEWER_PUBLISH_RELEASE_TO_BACKEND: "yes" }), true);
+  assert.equal(publishReleaseToBackendEnabled({ TCPVIEWER_PUBLISH_RELEASE_TO_BACKEND: "off" }), false);
+  assert.throws(
+    () => publishReleaseToBackendEnabled({ TCPVIEWER_PUBLISH_RELEASE_TO_BACKEND: "maybe" }),
+    /TCPVIEWER_PUBLISH_RELEASE_TO_BACKEND/
+  );
+
+  assert.equal(normalizeReleaseBackendURL("http://localhost:3000/"), "http://localhost:3000");
+  assert.equal(normalizeReleaseBackendURL("https://api.example.com/releases"), "https://api.example.com/releases");
+  assert.throws(() => normalizeReleaseBackendURL("file:///tmp/releases"), /http or https/);
+
+  const missing = missingRequiredEnv(
+    { TCPVIEWER_RELEASE_BACKEND_URL: "http://localhost:3000" },
+    releaseBackendRequiredEnvNames
+  );
+  assert.deepEqual(missing, ["TCPVIEWER_RELEASE_BACKEND_SCRIPT_SECRET"]);
+});
+
+test("parses Sparkle signing output", () => {
   assert.deepEqual(
     parseSparkleSignatureOutput('sparkle:edSignature="sig" length="99"'),
     { edSignature: "sig", length: "99" }
-  );
-  assert.equal(
-    updateProjectVersions("MARKETING_VERSION = 1.0;\nCURRENT_PROJECT_VERSION = 1;", {
-      version: "1.2.0",
-      buildNumber: "42"
-    }),
-    "MARKETING_VERSION = 1.2.0;\nCURRENT_PROJECT_VERSION = 42;"
   );
 });
 

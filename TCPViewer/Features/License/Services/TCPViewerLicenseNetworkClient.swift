@@ -59,26 +59,24 @@ final class TCPViewerLicenseURLSessionTransport: TCPViewerLicenseNetworkTranspor
 }
 
 final class TCPViewerLicenseNetworkClient: TCPViewerLicenseNetworkClienting {
-    // Defaults to production; flip this before creating the client to use the local license server.
-    static var usesLocalServer = true
-
     private enum ServerEndpoint {
+        static let localServerInfoKey = "TCPViewerUsesLocalLicenseServer"
         static let productionBaseURL = URL(string: "https://api-tcpviewer.proxyman.com")!
         static let localBaseURL = URL(string: "http://proxyman.debug:3000")!
     }
 
     private let baseURLOverride: URL?
-    private let usesLocalServer: Bool
+    private let bundleInfo: [String: Any]
     private let transport: any TCPViewerLicenseNetworkTransport
     private let decoder = JSONDecoder()
 
     init(
         baseURL: URL? = nil,
-        usesLocalServer: Bool = TCPViewerLicenseNetworkClient.usesLocalServer,
+        bundleInfo: [String: Any] = Bundle.main.infoDictionary ?? [:],
         transport: any TCPViewerLicenseNetworkTransport = TCPViewerLicenseURLSessionTransport()
     ) {
         self.baseURLOverride = baseURL
-        self.usesLocalServer = usesLocalServer
+        self.bundleInfo = bundleInfo
         self.transport = transport
     }
 
@@ -200,7 +198,7 @@ final class TCPViewerLicenseNetworkClient: TCPViewerLicenseNetworkClienting {
 
     private func makeJSONRequest(path: String, method: String, body: [String: Any]) throws -> URLRequest {
         let relativePath = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let baseURL = baseURLOverride ?? Self.baseURL(usesLocalServer: usesLocalServer)
+        let baseURL = baseURLOverride ?? Self.baseURL(bundleInfo: bundleInfo)
         guard let url = URL(string: relativePath, relativeTo: baseURL)?.absoluteURL else {
             throw TCPViewerLicenseError.error("Invalid license server URL.")
         }
@@ -211,9 +209,31 @@ final class TCPViewerLicenseNetworkClient: TCPViewerLicenseNetworkClienting {
         return request
     }
 
-    // Return the shared server root so every license request honors the same mode.
-    private static func baseURL(usesLocalServer: Bool) -> URL {
-        usesLocalServer ? ServerEndpoint.localBaseURL : ServerEndpoint.productionBaseURL
+    // Resolve the shared server root so every license request honors the same build setting.
+    private static func baseURL(bundleInfo: [String: Any]) -> URL {
+        guard isEnabled(bundleInfo[ServerEndpoint.localServerInfoKey]) else {
+            return ServerEndpoint.productionBaseURL
+        }
+
+        return ServerEndpoint.localBaseURL
+    }
+
+    // Accept plist/build-setting values regardless of whether Xcode emits string, number, or bool.
+    private static func isEnabled(_ value: Any?) -> Bool {
+        if let value = value as? Bool {
+            return value
+        }
+
+        if let value = value as? NSNumber {
+            return value.boolValue
+        }
+
+        guard let value = value as? String else {
+            return false
+        }
+
+        let normalizedValue = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return ["1", "true", "yes", "on"].contains(normalizedValue)
     }
 
     private static func mapNetworkError(_ error: Error) -> TCPViewerLicenseError {

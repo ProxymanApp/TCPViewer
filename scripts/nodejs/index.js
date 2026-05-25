@@ -16,8 +16,6 @@ function parseArgs(argv) {
   for (const arg of argv) {
     if (arg.startsWith("--type=")) {
       args.type = arg.slice("--type=".length).trim().toLowerCase();
-    } else if (arg.startsWith("--version=")) {
-      args.version = arg.slice("--version=".length).trim();
     } else if (arg.startsWith("--beta-name=")) {
       args.betaName = arg.slice("--beta-name=".length).trim();
     }
@@ -97,9 +95,6 @@ async function resolveReleaseType(type) {
 
 function buildReleaseArgs(type, args) {
   const releaseArgs = [releaseScriptPath, `--type=${type}`];
-  if (args.version) {
-    releaseArgs.push(`--version=${args.version}`);
-  }
   if (args.betaName) {
     releaseArgs.push(`--beta-name=${args.betaName}`);
   }

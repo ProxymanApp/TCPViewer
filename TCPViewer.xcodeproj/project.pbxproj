@@ -106,7 +106,6 @@
 		BACE00042F9C00000070BE17 /* NetworkHelperLaunchDaemons/com.proxyman.tcpviewer.helpertool.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = NetworkHelperLaunchDaemons/com.proxyman.tcpviewer.helpertool.plist; sourceTree = "<group>"; };
 		BACE00062F9C00000070BE17 /* TCPViewerHelperTool/TCPViewerNetworkHelperCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TCPViewerHelperTool/TCPViewerNetworkHelperCore.swift; sourceTree = "<group>"; };
 		BAE100012FA300000070BE17 /* TCPViewer.shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = TCPViewer.shared.xcconfig; sourceTree = "<group>"; };
-		BAE100022FA300000070BE17 /* .env.example */ = {isa = PBXFileReference; lastKnownFileType = text; path = .env.example; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -209,7 +208,6 @@
 		BA4D267C2F9A2F490070BE17 = {
 			isa = PBXGroup;
 			children = (
-				BAE100022FA300000070BE17 /* .env.example */,
 				BAE100032FA300000070BE17 /* Config */,
 				BA4D2DD82F9B3EF50070BE17 /* PcapPlusPlusCore.xctestplan */,
 				BAAE975E2F9B815F00C52A7C /* TCPViewer */,
@@ -1055,7 +1053,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = "$(TCPVIEWER_DEVELOPMENT_TEAM)";
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -1078,7 +1076,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.proxyman.tcpviewer;
 				PRODUCT_MODULE_NAME = TCPViewer;
 				PRODUCT_NAME = "TCP Viewer";
@@ -1101,7 +1099,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = "$(TCPVIEWER_DEVELOPMENT_TEAM)";
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -1124,7 +1122,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.proxyman.tcpviewer;
 				PRODUCT_MODULE_NAME = TCPViewer;
 				PRODUCT_NAME = "TCP Viewer";
