@@ -16,10 +16,21 @@ struct TCPViewerSentryConfigurationTests {
         #expect(dsn == "https://public@example.ingest.sentry.io/1")
     }
 
+    @Test func resolvesXcconfigEscapedDSN() {
+        let dsn = TCPViewerSentryConfiguration.resolvedValue("https:/$()/public@example.ingest.sentry.io/1")
+
+        #expect(dsn == "https://public@example.ingest.sentry.io/1")
+    }
+
     @Test func rejectsMissingAndPlaceholderDSN() {
         #expect(TCPViewerSentryConfiguration.resolvedValue(nil) == nil)
         #expect(TCPViewerSentryConfiguration.resolvedValue("  ") == nil)
         #expect(TCPViewerSentryConfiguration.resolvedValue("$(TCPVIEWER_SENTRY_DSN)") == nil)
+    }
+
+    @Test func rejectsTruncatedDSNFromUnescapedXcconfigURL() {
+        #expect(TCPViewerSentryConfiguration.resolvedValue("http:") == nil)
+        #expect(TCPViewerSentryConfiguration.resolvedValue("https:") == nil)
     }
 
     @Test func serviceStartsOnlyWhenCrashReportsAreEnabled() {

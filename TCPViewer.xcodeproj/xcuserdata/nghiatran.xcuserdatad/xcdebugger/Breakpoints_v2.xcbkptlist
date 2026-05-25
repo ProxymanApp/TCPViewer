@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Bucket
+   uuid = "BF2FD7FC-36F7-4CF2-903E-9691BB4CCA95"
+   type = "1"
+   version = "2.0">
+   <Breakpoints>
+      <BreakpointProxy
+         BreakpointExtensionID = "Xcode.Breakpoint.FileBreakpoint">
+         <BreakpointContent
+            uuid = "FB414D17-0E59-44EA-8E05-B812729238BB"
+            shouldBeEnabled = "Yes"
+            ignoreCount = "0"
+            continueAfterRunningActions = "No"
+            filePath = "TCPViewer/App/TCPViewerSentryService.swift"
+            startingColumnNumber = "9223372036854775807"
+            endingColumnNumber = "9223372036854775807"
+            startingLineNumber = "109"
+            endingLineNumber = "109"
+            landmarkName = "applyCrashReportPreference()"
+            landmarkType = "7">
+            <Locations>
+               <Location
+                  uuid = "FB414D17-0E59-44EA-8E05-B812729238BB - 1a689cce4b4bdeab"
+                  shouldBeEnabled = "Yes"
+                  ignoreCount = "0"
+                  continueAfterRunningActions = "No"
+                  symbolName = "TCPViewer.TCPViewerSentryService.applyCrashReportPreference() -&gt; ()"
+                  moduleName = "TCPViewer.debug.dylib"
+                  usesParentBreakpointCondition = "Yes"
+                  urlString = "file:///Users/nghiatran/Documents/work/TCPViewer/TCPViewer/App/TCPViewerSentryService.swift"
+                  startingColumnNumber = "9223372036854775807"
+                  endingColumnNumber = "9223372036854775807"
+                  startingLineNumber = "109"
+                  endingLineNumber = "109">
+               </Location>
+               <Location
+                  uuid = "FB414D17-0E59-44EA-8E05-B812729238BB - 87208a5f2fafe4cc"
+                  shouldBeEnabled = "Yes"
+                  ignoreCount = "0"
+                  continueAfterRunningActions = "No"
+                  symbolName = "closure #1 () -&gt; Swift.Bool in TCPViewer.TCPViewerSentryService.applyCrashReportPreference() -&gt; ()"
+                  moduleName = "TCPViewer.debug.dylib"
+                  usesParentBreakpointCondition = "Yes"
+                  urlString = "file:///Users/nghiatran/Documents/work/TCPViewer/TCPViewer/App/TCPViewerSentryService.swift"
+                  startingColumnNumber = "9223372036854775807"
+                  endingColumnNumber = "9223372036854775807"
+                  startingLineNumber = "109"
+                  endingLineNumber = "109">
+               </Location>
+            </Locations>
+         </BreakpointContent>
+      </BreakpointProxy>
+   </Breakpoints>
+</Bucket>

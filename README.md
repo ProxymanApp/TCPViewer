@@ -99,7 +99,8 @@ Cloudflare R2, and exported with a Sparkle appcast.
 Release secrets must stay out of Git. Keep them in local `.env`, shell env, or
 Keychain-backed tools. Because `.env` is also included by Xcode as an
 `.xcconfig`, URL values that contain `://` should use Xcode's escaped form,
-for example `https:/$()/updates.example.com/appcast.xml`.
+for example `https:/$()/updates.example.com/appcast.xml` or
+`TCPVIEWER_SENTRY_DSN=https:/$()/public@example.ingest.sentry.io/1`.
 
 First-time release setup:
 
