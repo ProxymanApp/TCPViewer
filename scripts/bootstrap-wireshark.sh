@@ -16,12 +16,31 @@ ARCHITECTURES="${ARCHS:-${NATIVE_ARCH_ACTUAL:-${CURRENT_ARCH:-arm64}}}"
 CMAKE_ARCHITECTURES="$(printf '%s' "$ARCHITECTURES" | tr ' ' ';')"
 BUILD_DIR="$BUILD_ROOT/wireshark-${CONFIGURATION_NAME}-$(printf '%s' "$ARCHITECTURES" | tr ' ' '_')"
 STAMP_FILE="$INSTALL_ROOT/.tcpviewer-build-stamp"
-CURRENT_STAMP_CONTENT="tag=$PINNED_TAG;commit=$PINNED_COMMIT;config=$CONFIGURATION_NAME;archs=$CMAKE_ARCHITECTURES;deployment=$DEPLOYMENT_TARGET"
+
+resolve_sdkroot() {
+  if [ -n "${SDKROOT:-}" ] && [ -e "$SDKROOT" ]; then
+    printf '%s' "$SDKROOT"
+    return
+  fi
+
+  if command -v xcrun >/dev/null 2>&1; then
+    xcrun --sdk macosx --show-sdk-path 2>/dev/null || true
+  fi
+}
+
+SDKROOT_PATH="$(resolve_sdkroot)"
+CURRENT_STAMP_CONTENT="tag=$PINNED_TAG;commit=$PINNED_COMMIT;config=$CONFIGURATION_NAME;archs=$CMAKE_ARCHITECTURES;deployment=$DEPLOYMENT_TARGET;sdk=$SDKROOT_PATH"
 
 cache_value() {
   KEY="$1"
   CACHE_FILE="$2"
   awk -F= -v key="$KEY:INTERNAL" '$1 == key { print $2; exit }' "$CACHE_FILE"
+}
+
+cache_entry_value() {
+  KEY="$1"
+  CACHE_FILE="$2"
+  awk -F= -v key="$KEY" 'index($1, key ":") == 1 { print $2; exit }' "$CACHE_FILE"
 }
 
 reset_mismatched_cmake_cache() {
@@ -37,6 +56,15 @@ reset_mismatched_cmake_cache() {
   # CMake caches are tied to absolute paths, so copied build folders must be recreated.
   if [ "$CACHE_SOURCE_DIR" != "$SOURCE_DIR" ] || [ "$CACHE_BUILD_DIR" != "$BUILD_DIR" ]; then
     echo "warning: removing stale Wireshark CMake cache for a different checkout." >&2
+    rm -rf "$BUILD_DIR"
+    return
+  fi
+
+  CACHE_SDKROOT="$(cache_entry_value CMAKE_OSX_SYSROOT "$CACHE_FILE")"
+
+  # Xcode SDK paths can change after an update, and CMake keeps old .tbd paths in its cache.
+  if [ -n "$CACHE_SDKROOT" ] && { [ ! -e "$CACHE_SDKROOT" ] || { [ -n "$SDKROOT_PATH" ] && [ "$CACHE_SDKROOT" != "$SDKROOT_PATH" ]; }; }; then
+    echo "warning: removing stale Wireshark CMake cache for a different macOS SDK." >&2
     rm -rf "$BUILD_DIR"
   fi
 }
@@ -149,6 +177,7 @@ mkdir -p "$INSTALL_ROOT"
   -DCMAKE_INSTALL_PREFIX="$INSTALL_ROOT" \
   -DCMAKE_OSX_ARCHITECTURES="$CMAKE_ARCHITECTURES" \
   -DCMAKE_OSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" \
+  -DCMAKE_OSX_SYSROOT="$SDKROOT_PATH" \
   -DENABLE_APPLICATION_BUNDLE=OFF \
   -DENABLE_QT6=OFF \
   -DENABLE_QT5=OFF \

@@ -10,6 +10,68 @@ import Testing
 @testable import TCPViewer
 
 struct TCPViewerLicenseNetworkClientTests {
+    @Test func defaultClientUsesProductionEndpoint() throws {
+        let transport = StubLicenseTransport()
+        transport.nextResult = .success((makeLicenseData(), makeResponse(statusCode: 200)))
+        let client = TCPViewerLicenseNetworkClient(transport: transport)
+
+        _ = waitForLicenseResult {
+            client.registerLicense(
+                licenseKey: "TCPV-KEY",
+                deviceName: "Ada's Mac",
+                deviceUUID: "device-1",
+                buildNumber: "123",
+                appVersion: "1.2.3",
+                osVersion: "macOS 15.6",
+                completion: $0
+            )
+        }
+
+        let request = try #require(transport.requests.first)
+        #expect(request.url?.absoluteString == "https://api-tcpviewer.proxyman.com/api/devices/register")
+    }
+
+    @Test func localServerToggleRoutesEveryLicenseRequestToLocalhost() throws {
+        let transport = StubLicenseTransport()
+        let client = TCPViewerLicenseNetworkClient(usesLocalServer: true, transport: transport)
+
+        transport.nextResult = .success((makeLicenseData(), makeResponse(statusCode: 200)))
+        _ = waitForLicenseResult {
+            client.registerLicense(
+                licenseKey: "TCPV-KEY",
+                deviceName: "Ada's Mac",
+                deviceUUID: "device-1",
+                buildNumber: "123",
+                appVersion: "1.2.3",
+                osVersion: "macOS 15.6",
+                completion: $0
+            )
+        }
+
+        transport.nextResult = .success((makeLicenseData(), makeResponse(statusCode: 200)))
+        _ = waitForLicenseResult {
+            client.verifyLicense(
+                license: makeLicense(),
+                deviceUUID: "device-1",
+                buildNumber: "456",
+                appVersion: "1.2.3",
+                osVersion: "macOS 15.6",
+                completion: $0
+            )
+        }
+
+        transport.nextResult = .success((Data("{}".utf8), makeResponse(statusCode: 200)))
+        _ = waitForVoidResult {
+            client.revokeLicense(license: makeLicense(), completion: $0)
+        }
+
+        #expect(transport.requests.map { $0.url?.absoluteString } == [
+            "http://localhost:3000/api/devices/register",
+            "http://localhost:3000/api/devices/verify",
+            "http://localhost:3000/api/devices/revoke",
+        ])
+    }
+
     @Test func registerLicenseBuildsExpectedRequestPayload() throws {
         let transport = StubLicenseTransport()
         transport.nextResult = .success((makeLicenseData(), makeResponse(statusCode: 200)))

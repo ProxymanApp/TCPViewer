@@ -14,6 +14,25 @@
 	<string>$(TCPVIEWER_SPARKLE_PUBLIC_ED_KEY)</string>
 	<key>TCPViewerBuildKey</key>
 	<string>$(TCPVIEWER_BUILD_KEY)</string>
+	<key>TCPViewerSentryDSN</key>
+	<string>$(TCPVIEWER_SENTRY_DSN)</string>
+	<!-- Allow only local/debug license API endpoints to use HTTP; production stays HTTPS. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSExceptionDomains</key>
+		<dict>
+			<key>localhost</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+			</dict>
+			<key>proxyman.debug</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+			</dict>
+		</dict>
+	</dict>
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>

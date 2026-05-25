@@ -59,15 +59,26 @@ final class TCPViewerLicenseURLSessionTransport: TCPViewerLicenseNetworkTranspor
 }
 
 final class TCPViewerLicenseNetworkClient: TCPViewerLicenseNetworkClienting {
-    private let baseURL: URL
+    // Defaults to production; flip this before creating the client to use the local license server.
+    static var usesLocalServer = true
+
+    private enum ServerEndpoint {
+        static let productionBaseURL = URL(string: "https://api-tcpviewer.proxyman.com")!
+        static let localBaseURL = URL(string: "http://proxyman.debug:3000")!
+    }
+
+    private let baseURLOverride: URL?
+    private let usesLocalServer: Bool
     private let transport: any TCPViewerLicenseNetworkTransport
     private let decoder = JSONDecoder()
 
     init(
-        baseURL: URL = URL(string: "https://api-tcpviewer.proxyman.com")!,
+        baseURL: URL? = nil,
+        usesLocalServer: Bool = TCPViewerLicenseNetworkClient.usesLocalServer,
         transport: any TCPViewerLicenseNetworkTransport = TCPViewerLicenseURLSessionTransport()
     ) {
-        self.baseURL = baseURL
+        self.baseURLOverride = baseURL
+        self.usesLocalServer = usesLocalServer
         self.transport = transport
     }
 
@@ -189,6 +200,7 @@ final class TCPViewerLicenseNetworkClient: TCPViewerLicenseNetworkClienting {
 
     private func makeJSONRequest(path: String, method: String, body: [String: Any]) throws -> URLRequest {
         let relativePath = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let baseURL = baseURLOverride ?? Self.baseURL(usesLocalServer: usesLocalServer)
         guard let url = URL(string: relativePath, relativeTo: baseURL)?.absoluteURL else {
             throw TCPViewerLicenseError.error("Invalid license server URL.")
         }
@@ -197,6 +209,11 @@ final class TCPViewerLicenseNetworkClient: TCPViewerLicenseNetworkClienting {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
         return request
+    }
+
+    // Return the shared server root so every license request honors the same mode.
+    private static func baseURL(usesLocalServer: Bool) -> URL {
+        usesLocalServer ? ServerEndpoint.localBaseURL : ServerEndpoint.productionBaseURL
     }
 
     private static func mapNetworkError(_ error: Error) -> TCPViewerLicenseError {

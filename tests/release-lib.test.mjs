@@ -5,9 +5,11 @@ import {
   backendCreateURL,
   findReleaseNote,
   generateAppcastXML,
+  makeBetaDMGFileName,
   makeR2ObjectKey,
   mergeEnv,
   missingRequiredEnv,
+  normalizeBetaDMGCustomName,
   nextBuildNumber,
   parseEnvFile,
   parseReleaseNotes,
@@ -73,9 +75,10 @@ test("builds R2 keys and public URLs", () => {
       releaseType: "beta",
       version: "1.2.0",
       buildNumber: "42",
-      timestamp: "20260510T120000Z"
+      timestamp: "20260510T120000Z",
+      fileName: "tcpviewer_1.2.0_qa.dmg"
     }),
-    "beta/1.2.0/42/20260510T120000Z/tcpviewer.dmg"
+    "beta/tcpviewer_1.2.0_qa.dmg"
   );
   assert.equal(
     makeR2ObjectKey({ releaseType: "production", version: "1.2.0", buildNumber: "42" }),
@@ -84,6 +87,25 @@ test("builds R2 keys and public URLs", () => {
   assert.equal(
     publicR2URL("https://downloads.example.com/", "production/1.2.0/42/tcpviewer.dmg"),
     "https://downloads.example.com/production/1.2.0/42/tcpviewer.dmg"
+  );
+});
+
+test("builds beta DMG file names from a safe custom name", () => {
+  assert.equal(
+    makeBetaDMGFileName({ version: "1.2.0", customName: "QA build" }),
+    "tcpviewer_1.2.0_QA_build.dmg"
+  );
+  assert.equal(normalizeBetaDMGCustomName(" rc_1 "), "rc_1");
+  assert.throws(() => makeBetaDMGFileName({ version: "1.2.0", customName: "../secret" }), /custom name/i);
+  assert.throws(
+    () => makeR2ObjectKey({
+      releaseType: "beta",
+      version: "1.2.0",
+      buildNumber: "42",
+      timestamp: "20260510T120000Z",
+      fileName: "../tcpviewer.dmg"
+    }),
+    /plain \.dmg file name/
   );
 });
 
@@ -116,6 +138,9 @@ test("validates release env names without leaking values", () => {
 
   assert.ok(missing.includes("TCPVIEWER_SCRIPT_SECRET"));
   assert.ok(missing.includes("TCPVIEWER_R2_SECRET_ACCESS_KEY"));
+  assert.ok(missing.includes("TCPVIEWER_NOTARIZATION_USERNAME"));
+  assert.ok(missing.includes("SENTRY_AUTH_TOKEN"));
+  assert.ok(!missing.includes("TCPVIEWER_NOTARY_KEYCHAIN_PROFILE"));
 });
 
 test("parses Sparkle signing output and updates Xcode versions", () => {
