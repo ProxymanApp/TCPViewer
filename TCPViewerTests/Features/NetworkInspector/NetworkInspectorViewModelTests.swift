@@ -64,6 +64,99 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.visiblePacketCount == 0)
     }
 
+    @Test func restartingLiveCaptureClearsPreviousPacketsAndInspection() async {
+        let packet = makePacket(packetNumber: 1, source: .live, transportHint: .tcp)
+        let liveSession = InspectorFakeLiveSession()
+        liveSession.inspections[packet.id] = makeInspection(for: packet)
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                liveSession: liveSession
+            )),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.performInitialLoadIfNeeded()
+        await viewModel.toggleLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        liveSession.send(.packetBatch([packet], disposition: .append))
+
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == 1
+        }
+        viewModel.selectPacket(packet.id)
+        await waitUntil {
+            viewModel.snapshot.base.inspectionState.inspection?.packetID == packet.id
+        }
+
+        viewModel.stopLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .stopped, message: "Live capture stopped."))
+        await waitUntil {
+            viewModel.snapshot.base.sessionState.phase == .stopped
+        }
+
+        await viewModel.toggleLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        await waitUntil {
+            viewModel.snapshot.base.sessionState.phase == .running &&
+                liveSession.startCount == 2
+        }
+
+        #expect(liveSession.stopCount == 1)
+        #expect(viewModel.snapshot.totalPacketCount == 0)
+        #expect(viewModel.snapshot.packetRows.isEmpty)
+        #expect(viewModel.snapshot.selectedPacket == nil)
+        #expect(viewModel.snapshot.selectedPacketRowIndex == nil)
+        #expect(viewModel.snapshot.base.selectedPacketID == nil)
+        #expect(viewModel.snapshot.base.inspectionState.inspection == nil)
+    }
+
+    @Test func restartingLiveCaptureIgnoresPacketsFromStoppedSession() async {
+        let oldPacket = makePacket(packetNumber: 1, source: .live, transportHint: .tcp)
+        let stalePacket = makePacket(packetNumber: 2, source: .live, transportHint: .udp)
+        let freshPacket = makePacket(packetNumber: 3, source: .live, transportHint: .dns)
+        let firstSession = InspectorFakeLiveSession()
+        let secondSession = InspectorFakeLiveSession()
+        let core = InspectorFakeCore(
+            interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+            liveSessions: [firstSession, secondSession]
+        )
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: core),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.performInitialLoadIfNeeded()
+        await viewModel.toggleLiveCapture()
+        firstSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        firstSession.send(.packetBatch([oldPacket], disposition: .append))
+        await waitUntil {
+            viewModel.snapshot.packetRows.map(\.id) == [oldPacket.id]
+        }
+
+        viewModel.stopLiveCapture()
+        firstSession.send(.liveStateChanged(phase: .stopped, message: "Live capture stopped."))
+        await waitUntil {
+            viewModel.snapshot.base.sessionState.phase == .stopped
+        }
+
+        await viewModel.toggleLiveCapture()
+        secondSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        await waitUntil {
+            viewModel.snapshot.base.sessionState.phase == .running &&
+                core.makeLiveCaptureSessionCallCount == 2
+        }
+        firstSession.send(.packetBatch([stalePacket], disposition: .append))
+        #expect(viewModel.snapshot.packetRows.isEmpty)
+
+        secondSession.send(.packetBatch([freshPacket], disposition: .append))
+        await waitUntil {
+            viewModel.snapshot.packetRows.map(\.id) == [freshPacket.id]
+        }
+
+        #expect(viewModel.snapshot.packetRows.map(\.id).contains(stalePacket.id) == false)
+    }
+
     @Test func offlineOpenSaveAndSaveAsFlowThroughCoreDocument() async {
         let openURL = URL(fileURLWithPath: "/tmp/inspector-fixture.pcapng")
         let saveURL = URL(fileURLWithPath: "/tmp/inspector-export.pcap")
@@ -108,7 +201,8 @@ struct NetworkInspectorViewModelTests {
                 status: .notInstalled,
                 authorizationStatus: .notRegistered,
                 lastCheckedAt: nil,
-                message: "TCP Viewer Network Helper Tool is not installed."
+                message: "TCP Viewer Network Helper Tool is not installed.",
+                installedHelperToolVersion: nil
             )
         )
         let viewModel = NetworkInspectorViewModel(
@@ -623,7 +717,7 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.base.navigationState.visiblePacketIDs.count == 100_000)
         #expect(viewModel.snapshot.sourceListSnapshot.item(for: .domain(.ipAddresses))?.count == 100_000)
 
-        await viewModel.stopLiveCapture()
+        viewModel.stopLiveCapture()
         liveSession.send(.liveStateChanged(phase: .stopped, message: "Live capture stopped."))
         await waitUntil(timeoutNanoseconds: 5_000_000_000) {
             viewModel.snapshot.base.sessionState.phase == .stopped
@@ -2266,8 +2360,9 @@ private final class PacketFilterBuildGate: @unchecked Sendable {
 
 private final class InspectorFakeCore: TCPViewerCoreProviding, @unchecked Sendable {
     private let interfaces: [CaptureInterfaceSummary]
-    private let liveSession: InspectorFakeLiveSession
+    private let liveSessions: [InspectorFakeLiveSession]
     private let document: InspectorFakeDocument
+    private(set) var makeLiveCaptureSessionCallCount = 0
 
     init(
         interfaces: [CaptureInterfaceSummary],
@@ -2275,7 +2370,17 @@ private final class InspectorFakeCore: TCPViewerCoreProviding, @unchecked Sendab
         document: InspectorFakeDocument = InspectorFakeDocument(url: URL(fileURLWithPath: "/tmp/empty.pcapng"), packets: [])
     ) {
         self.interfaces = interfaces
-        self.liveSession = liveSession
+        self.liveSessions = [liveSession]
+        self.document = document
+    }
+
+    init(
+        interfaces: [CaptureInterfaceSummary],
+        liveSessions: [InspectorFakeLiveSession],
+        document: InspectorFakeDocument = InspectorFakeDocument(url: URL(fileURLWithPath: "/tmp/empty.pcapng"), packets: [])
+    ) {
+        self.interfaces = interfaces
+        self.liveSessions = liveSessions.isEmpty ? [InspectorFakeLiveSession()] : liveSessions
         self.document = document
     }
 
@@ -2300,7 +2405,9 @@ private final class InspectorFakeCore: TCPViewerCoreProviding, @unchecked Sendab
         options: CaptureOptions,
         completion: @escaping TCPViewerCompletion<any LiveCaptureSessionProviding>
     ) {
-        completion(.success(liveSession))
+        let index = min(makeLiveCaptureSessionCallCount, liveSessions.count - 1)
+        makeLiveCaptureSessionCallCount += 1
+        completion(.success(liveSessions[index]))
     }
 
     func supportedOfflineFormats() -> [CaptureFileFormat] {

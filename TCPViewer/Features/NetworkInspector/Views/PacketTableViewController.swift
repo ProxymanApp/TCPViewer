@@ -103,6 +103,8 @@ fileprivate final class PacketTableView: NSTableView {
 }
 
 final class PacketTableViewModel {
+    private static let rowStoreReleaseQueue = DispatchQueue(label: "com.proxyman.TCPViewer.packet-table-row-store-release")
+
     // Holds the class reference, NOT a copy of the rows array. Copying the array would re-share
     // its buffer with the cache and re-introduce the per-batch CoW we're trying to avoid.
     private(set) var rowStore: PacketTableRowStore = .empty
@@ -116,6 +118,7 @@ final class PacketTableViewModel {
 
     // Store the latest render state so the controller can apply incremental table updates.
     func render(snapshot: NetworkInspectorSnapshot) -> PacketTableUpdatePlan {
+        let previousRowStore = rowStore
         let updatePlan = PacketTableUpdatePlanner.plan(
             previousGeneration: contentGeneration,
             currentGeneration: snapshot.packetTableGeneration,
@@ -125,7 +128,20 @@ final class PacketTableViewModel {
         contentGeneration = snapshot.packetTableGeneration
         selectedPacketID = snapshot.selectedPacketID
         selectedRowIndex = snapshot.selectedPacketRowIndex
+        releasePreviousRowStoreOffMainIfNeeded(previousRowStore, replacingWith: rowStore)
         return updatePlan
+    }
+
+    private func releasePreviousRowStoreOffMainIfNeeded(_ previousRowStore: PacketTableRowStore, replacingWith currentRowStore: PacketTableRowStore) {
+        guard previousRowStore !== currentRowStore,
+              previousRowStore !== PacketTableRowStore.empty else {
+            return
+        }
+
+        // Large live row buffers can be torn down when a new capture starts; keep that out of AppKit render.
+        Self.rowStoreReleaseQueue.async {
+            _ = previousRowStore.rows.count
+        }
     }
 }
 
@@ -681,7 +697,11 @@ extension PacketTableViewController: NSTableViewDataSource, NSTableViewDelegate 
         if let cell = cell as? PacketProtocolCell {
             cell.configure(protocolText: packetRow.protocolText, severity: packetRow.severity, configuration: configuration)
         } else if let cell = cell as? PacketClientCell {
-            cell.configure(client: packetRow.client, configuration: configuration)
+            cell.configure(
+                displayName: packetRow.clientText,
+                iconFilePath: packetRow.clientIconFilePath,
+                configuration: configuration
+            )
         } else if let cell = cell as? PacketTextCell {
             cell.configure(style: textStyle(for: column, in: packetRow), configuration: configuration)
         }

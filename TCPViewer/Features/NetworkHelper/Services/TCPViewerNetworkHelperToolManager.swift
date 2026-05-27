@@ -29,12 +29,14 @@ struct TCPViewerNetworkHelperToolSnapshot: Sendable, Equatable {
     let authorizationStatus: TCPViewerNetworkHelperAuthorizationStatus
     let lastCheckedAt: Date?
     let message: String
+    let installedHelperToolVersion: String?
 
     static let notInstalled = TCPViewerNetworkHelperToolSnapshot(
         status: .notInstalled,
         authorizationStatus: .notRegistered,
         lastCheckedAt: nil,
-        message: "TCP Viewer Network Helper Tool is not installed."
+        message: "TCP Viewer Network Helper Tool is not installed.",
+        installedHelperToolVersion: nil
     )
 
     var title: String {
@@ -76,6 +78,7 @@ struct TCPViewerNetworkHelperBPFInspection: Sendable, Equatable {
 
 protocol TCPViewerNetworkHelperServiceControlling {
     var status: TCPViewerNetworkHelperAuthorizationStatus { get }
+    var installedHelperToolVersion: String? { get }
     func register() throws
     func unregister() throws
     func openSystemSettings()
@@ -204,7 +207,8 @@ final class TCPViewerNetworkHelperToolManager: TCPViewerNetworkHelperToolManagin
             status: .installing,
             authorizationStatus: serviceController.status,
             lastCheckedAt: Date(),
-            message: "Registering TCP Viewer Network Helper Tool with macOS."
+            message: "Registering TCP Viewer Network Helper Tool with macOS.",
+            installedHelperToolVersion: serviceController.installedHelperToolVersion
         )
         snapshot = installingSnapshot
         workerQueue.async {
@@ -228,7 +232,8 @@ final class TCPViewerNetworkHelperToolManager: TCPViewerNetworkHelperToolManagin
                     status: .broken,
                     authorizationStatus: refreshedSnapshot.authorizationStatus,
                     lastCheckedAt: Date(),
-                    message: "TCP Viewer could not register the helper: \(error.localizedDescription)"
+                    message: "TCP Viewer could not register the helper: \(error.localizedDescription)",
+                    installedHelperToolVersion: refreshedSnapshot.installedHelperToolVersion
                 )
                 self.logger.log(operation, snapshot: failedSnapshot)
                 self.publish(failedSnapshot, completion: completion)
@@ -262,7 +267,8 @@ final class TCPViewerNetworkHelperToolManager: TCPViewerNetworkHelperToolManagin
                     status: .broken,
                     authorizationStatus: refreshedSnapshot.authorizationStatus,
                     lastCheckedAt: Date(),
-                    message: "TCP Viewer could not uninstall the helper: \(unregisterError.localizedDescription)"
+                    message: "TCP Viewer could not uninstall the helper: \(unregisterError.localizedDescription)",
+                    installedHelperToolVersion: refreshedSnapshot.installedHelperToolVersion
                 )
                 self.logger.log(.remove, snapshot: failedSnapshot)
                 self.publish(failedSnapshot, completion: completion)
@@ -318,7 +324,8 @@ final class TCPViewerNetworkHelperToolManager: TCPViewerNetworkHelperToolManagin
             status: status,
             authorizationStatus: authorizationStatus,
             lastCheckedAt: Date(),
-            message: message
+            message: message,
+            installedHelperToolVersion: serviceController.installedHelperToolVersion
         )
     }
 
@@ -344,7 +351,8 @@ final class ReadyTCPViewerNetworkHelperToolManager: TCPViewerNetworkHelperToolMa
         status: .ready,
         authorizationStatus: .enabled,
         lastCheckedAt: nil,
-        message: "TCP Viewer Network Helper Tool is ready."
+        message: "TCP Viewer Network Helper Tool is ready.",
+        installedHelperToolVersion: nil
     )
 
     func refreshStatus(completion: @escaping (TCPViewerNetworkHelperToolSnapshot) -> Void = { _ in }) -> TCPViewerNetworkHelperToolSnapshot {
@@ -426,6 +434,14 @@ struct TCPViewerNetworkHelperSMJobBlessController: TCPViewerNetworkHelperService
         return bundledPayloadExists() ? .notRegistered : .notFound
     }
 
+    var installedHelperToolVersion: String? {
+        guard fileManager.fileExists(atPath: installedHelperToolURL.path) else {
+            return nil
+        }
+
+        return helperToolVersion(at: installedHelperToolURL)
+    }
+
     func register() throws {
         try validateBundledPayload()
         let authorization = try authorizationProvider.makeAuthorization(for: [.named(kSMRightBlessPrivilegedHelper)])
@@ -494,6 +510,71 @@ struct TCPViewerNetworkHelperSMJobBlessController: TCPViewerNetworkHelperService
         guard fileManager.fileExists(atPath: bundledLaunchDaemonPlistURL.path) else {
             throw TCPViewerNetworkHelperSMJobBlessError.missingLaunchDaemonPlist(bundledLaunchDaemonPlistURL)
         }
+    }
+
+    private func helperToolVersion(at url: URL) -> String? {
+        // Prefer signed helper metadata, then fall back to plist fixtures used by unit tests.
+        guard let info = embeddedInfoDictionary(at: url) ?? plistInfoDictionary(at: url) else {
+            return nil
+        }
+
+        let shortVersion = trimmedInfoValue(info["CFBundleShortVersionString"])
+        let buildVersion = trimmedInfoValue(info["CFBundleVersion"])
+        switch (shortVersion, buildVersion) {
+        case (let short?, let build?):
+            return "\(short) (\(build))"
+        case (let short?, nil):
+            return short
+        case (nil, let build?):
+            return "build \(build)"
+        case (nil, nil):
+            return nil
+        }
+    }
+
+    private func embeddedInfoDictionary(at url: URL) -> [String: Any]? {
+        var staticCode: SecStaticCode?
+        let createStatus = SecStaticCodeCreateWithPath(url as CFURL, SecCSFlags(), &staticCode)
+        guard createStatus == errSecSuccess, let staticCode else {
+            return nil
+        }
+
+        var signingInfo: CFDictionary?
+        let copyStatus = SecCodeCopySigningInformation(
+            staticCode,
+            SecCSFlags(rawValue: kSecCSSigningInformation),
+            &signingInfo
+        )
+        guard copyStatus == errSecSuccess,
+              let info = signingInfo as? [String: Any],
+              let plist = info[kSecCodeInfoPList as String] as? [String: Any] else {
+            return nil
+        }
+
+        return plist
+    }
+
+    private func plistInfoDictionary(at url: URL) -> [String: Any]? {
+        var format = PropertyListSerialization.PropertyListFormat.xml
+        guard let data = try? Data(contentsOf: url),
+              let plist = try? PropertyListSerialization.propertyList(
+                from: data,
+                options: [],
+                format: &format
+              ) as? [String: Any] else {
+            return nil
+        }
+
+        return plist
+    }
+
+    private func trimmedInfoValue(_ value: Any?) -> String? {
+        guard let string = value as? String else {
+            return nil
+        }
+
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
 }

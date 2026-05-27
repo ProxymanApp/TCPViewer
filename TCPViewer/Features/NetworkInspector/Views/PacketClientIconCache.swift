@@ -13,7 +13,11 @@ final class PacketClientIconCache {
 
     // Return one shared icon instance per app path so repeated packet rows stay cheap.
     func image(for client: PacketClient?) -> NSImage? {
-        guard let path = PacketClientIconPathResolver.iconFilePath(for: client) else {
+        image(forPath: PacketClientIconPathResolver.iconFilePath(for: client))
+    }
+
+    func image(forPath path: String?) -> NSImage? {
+        guard let path else {
             return nil
         }
 

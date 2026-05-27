@@ -6,7 +6,6 @@
 //
 
 import AppKit
-import PcapPlusPlusCore
 
 final class PacketTextCell: NSTextFieldCell {
     enum Style {
@@ -202,7 +201,7 @@ final class PacketClientCell: NSTextFieldCell {
     private static let horizontalPadding: CGFloat = 6
     private static let iconSize: CGFloat = 16
     private static let iconTextSpacing: CGFloat = 4
-    private var client: PacketClient?
+    private var iconFilePath: String?
 
     override init(textCell string: String) {
         super.init(textCell: string)
@@ -224,9 +223,9 @@ final class PacketClientCell: NSTextFieldCell {
     }
 
     // Configure the reused cell with the current row's client metadata.
-    func configure(client: PacketClient?, configuration: AppConfiguration) {
-        self.client = client
-        stringValue = client?.displayName ?? "-"
+    func configure(displayName: String, iconFilePath: String?, configuration: AppConfiguration) {
+        self.iconFilePath = iconFilePath
+        stringValue = displayName
         font = configuration.packetFont(weight: .regular)
         textColor = .secondaryLabelColor
     }
@@ -248,7 +247,7 @@ final class PacketClientCell: NSTextFieldCell {
     }
 
     override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
-        guard let icon = Self.iconCache.image(for: client) else {
+        guard let icon = Self.iconCache.image(forPath: iconFilePath) else {
             let textFrame = cellFrame.insetBy(dx: Self.horizontalPadding, dy: 0)
             super.drawInterior(withFrame: textFrame, in: controlView)
             return

@@ -151,7 +151,11 @@ final class PacketInspectorTreeViewModel {
 
     @discardableResult
     func render(snapshot: NetworkInspectorSnapshot, filterText: String = "") -> PacketInspectorTreeRenderChange {
-        let inspectionState = snapshot.base.inspectionState
+        render(inspectionState: snapshot.base.inspectionState, filterText: filterText)
+    }
+
+    @discardableResult
+    func render(inspectionState: PacketInspectionState, filterText: String = "") -> PacketInspectorTreeRenderChange {
         let contentState = nextContentState(from: inspectionState)
         let contentChanged = contentState.map { $0 != renderedContentState } ?? false
         let nextFilterText = normalizedFilterText(filterText)
@@ -584,7 +588,7 @@ final class PacketInspectorViewController: NSViewController {
     private let detailColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("detail"))
     private var emptyStateView: NSView?
     private var emptyStateMessage: String?
-    private var latestSnapshot: NetworkInspectorSnapshot?
+    private var latestInspectionState: PacketInspectionState?
     private var isApplyingSelection = false
     private var isApplyingExpansionState = false
 
@@ -610,17 +614,18 @@ final class PacketInspectorViewController: NSViewController {
 
     // Render the current packet inspection tree as a single Wireshark-style outline.
     func render(snapshot: NetworkInspectorSnapshot) {
-        latestSnapshot = snapshot
-        let renderChange = viewModel.render(snapshot: snapshot, filterText: filterSearchField.stringValue)
-        hexViewController.render(snapshot: snapshot)
-        updateContentVisibility(for: snapshot.base.inspectionState)
+        let inspectionState = snapshot.base.inspectionState
+        latestInspectionState = inspectionState
+        let renderChange = viewModel.render(inspectionState: inspectionState, filterText: filterSearchField.stringValue)
+        hexViewController.render(inspectionState: inspectionState)
+        updateContentVisibility(for: inspectionState)
 
-        applyTreeRenderChange(renderChange, snapshot: snapshot)
+        applyTreeRenderChange(renderChange, inspectionState: inspectionState)
     }
 
     private func applyTreeRenderChange(
         _ renderChange: PacketInspectorTreeRenderChange,
-        snapshot: NetworkInspectorSnapshot
+        inspectionState: PacketInspectionState
     ) {
         switch renderChange {
         case .none:
@@ -632,8 +637,7 @@ final class PacketInspectorViewController: NSViewController {
             break
         }
 
-        if let inspection = snapshot.base.inspectionState.inspection,
-           snapshot.base.inspectionState.selectedPacketID == inspection.packetID {
+        if let inspection = inspectionState.currentInspection {
             print("[TCPViewer] \(NetworkInspectorDebugLog.timestamp()) ✅ Inspector View rendering data: packet=#\(inspection.packetNumber), rootNodes=\(viewModel.rootItems.count)")
         }
         let preservedScrollOrigin = outlineScrollOrigin()
@@ -743,17 +747,17 @@ final class PacketInspectorViewController: NSViewController {
         filterSearchField.currentEditor()?.selectAll(nil)
     }
 
-    private func applyFilterText(to snapshot: NetworkInspectorSnapshot) {
-        let renderChange = viewModel.render(snapshot: snapshot, filterText: filterSearchField.stringValue)
-        applyTreeRenderChange(renderChange, snapshot: snapshot)
+    private func applyFilterText(to inspectionState: PacketInspectionState) {
+        let renderChange = viewModel.render(inspectionState: inspectionState, filterText: filterSearchField.stringValue)
+        applyTreeRenderChange(renderChange, inspectionState: inspectionState)
     }
 
     @objc private func filterSearchFieldDidChange(_ sender: NSSearchField) {
-        guard let snapshot = latestSnapshot else {
+        guard let inspectionState = latestInspectionState else {
             return
         }
 
-        applyFilterText(to: snapshot)
+        applyFilterText(to: inspectionState)
     }
 
     // Build the centered no-selection placeholder only when the message changes.
@@ -1109,11 +1113,11 @@ extension PacketInspectorViewController: PacketInspectorOutlineViewActionHandlin
 extension PacketInspectorViewController: NSSearchFieldDelegate {
     func controlTextDidChange(_ obj: Notification) {
         guard obj.object as? NSSearchField === filterSearchField,
-              let snapshot = latestSnapshot else {
+              let inspectionState = latestInspectionState else {
             return
         }
 
-        applyFilterText(to: snapshot)
+        applyFilterText(to: inspectionState)
     }
 }
 

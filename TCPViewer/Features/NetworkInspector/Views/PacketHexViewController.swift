@@ -73,9 +73,13 @@ final class PacketHexViewController: NSViewController {
         setupHexTextView()
     }
 
-    // Render packet bytes and keep the HexFiend selection aligned with inspector tree selection.
+    // Forward snapshot callers to the narrow inspection-state renderer.
     func render(snapshot: NetworkInspectorSnapshot) {
-        let inspectionState = snapshot.base.inspectionState
+        render(inspectionState: snapshot.base.inspectionState)
+    }
+
+    // Render packet bytes and keep the HexFiend selection aligned with inspector tree selection.
+    func render(inspectionState: PacketInspectionState) {
         let inspection = currentInspection(in: inspectionState)
         if shouldKeepRenderedBytes(whileLoading: inspectionState, currentInspection: inspection) {
             updateRenderedHighlight(nil)

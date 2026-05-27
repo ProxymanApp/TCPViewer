@@ -137,10 +137,11 @@ struct PacketTag: Identifiable, Sendable, Hashable {
 
 struct PacketTableRow: Identifiable, Sendable, Hashable {
     let id: PacketSummary.ID
-    let client: PacketClient?
     let sourceAddress: String?
     let destinationAddress: String?
     let sniDomainName: String?
+    let clientIconFilePath: String?
+    let hasClient: Bool
     let timestamp: Date
     let streamID: UInt32?
     let numberText: String
@@ -181,10 +182,11 @@ struct PacketTableRow: Identifiable, Sendable, Hashable {
         previousVisibleStreamPacketTimestamp: Date?
     ) {
         self.id = packet.id
-        self.client = packet.client
         self.sourceAddress = packet.endpoints.source.address
         self.destinationAddress = packet.endpoints.destination.address
         self.sniDomainName = packet.sniDomainName
+        self.clientIconFilePath = PacketClientIconPathResolver.iconFilePath(for: packet.client)
+        self.hasClient = packet.client != nil
         self.timestamp = packet.timestamp
         self.streamID = packet.streamID
         self.numberText = "\(packet.packetNumber)"
@@ -227,7 +229,7 @@ struct PacketTableRow: Identifiable, Sendable, Hashable {
     }
 
     var canPinClient: Bool {
-        client != nil
+        hasClient
     }
 
     func ipAddress(for clickedColumn: PacketTableColumnRole) -> String? {
