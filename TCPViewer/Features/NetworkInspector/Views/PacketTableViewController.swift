@@ -49,6 +49,35 @@ enum PacketTableSelectionSyncPlanner {
     }
 }
 
+enum PacketTableClickSelectionCollapsePlanner {
+    static func shouldPrepareCollapse(
+        clickedRow: Int,
+        selectedRowIndexes: IndexSet,
+        modifierFlags: NSEvent.ModifierFlags,
+        clickCount: Int
+    ) -> Bool {
+        let collapseModifiers: NSEvent.ModifierFlags = [.shift, .command, .control, .option]
+        return clickCount == 1 &&
+            clickedRow >= 0 &&
+            modifierFlags.intersection(collapseModifiers).isEmpty &&
+            selectedRowIndexes.count > 1 &&
+            selectedRowIndexes.contains(clickedRow)
+    }
+
+    static func shouldApplyCollapse(
+        clickedRow: Int,
+        rowCount: Int,
+        selectedRowIndexes: IndexSet,
+        didDrag: Bool
+    ) -> Bool {
+        clickedRow >= 0 &&
+            clickedRow < rowCount &&
+            !didDrag &&
+            selectedRowIndexes.count > 1 &&
+            selectedRowIndexes.contains(clickedRow)
+    }
+}
+
 fileprivate protocol PacketTableKeyboardActionHandling: AnyObject {
     func packetTableViewDidRequestCopyRowsFromKeyboard(_ tableView: PacketTableView)
     func packetTableViewDidRequestDeleteFromKeyboard(_ tableView: PacketTableView)
@@ -80,23 +109,49 @@ fileprivate final class PacketTableView: NSTableView {
         super.keyDown(with: event)
     }
 
-    // NSTableView's default treats an unmodified click on an already-selected
-    // row inside a multi-selection as a potential drag — the selection is not
-    // collapsed. Match Finder's behavior by collapsing it ourselves.
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        let row = self.row(at: point)
+        let clickedRow = row(at: point)
         let modifierFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        let collapsingModifiers: NSEvent.ModifierFlags = [.shift, .command, .control, .option]
-
-        if row >= 0,
-           modifierFlags.intersection(collapsingModifiers).isEmpty,
-           selectedRowIndexes.count > 1,
-           selectedRowIndexes.contains(row) {
-            selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-        }
+        let shouldCollapseSelection = PacketTableClickSelectionCollapsePlanner.shouldPrepareCollapse(
+            clickedRow: clickedRow,
+            selectedRowIndexes: selectedRowIndexes,
+            modifierFlags: modifierFlags,
+            clickCount: event.clickCount
+        )
+        let mouseDownLocation = event.locationInWindow
 
         super.mouseDown(with: event)
+
+        // Collapse after AppKit's tracking loop so selection notifications cannot reload the table mid-mouseDown.
+        collapseSelectionAfterMouseTracking(
+            clickedRow: clickedRow,
+            shouldCollapseSelection: shouldCollapseSelection,
+            mouseDownLocation: mouseDownLocation
+        )
+    }
+
+    private func collapseSelectionAfterMouseTracking(
+        clickedRow: Int,
+        shouldCollapseSelection: Bool,
+        mouseDownLocation: NSPoint
+    ) {
+        guard shouldCollapseSelection else {
+            return
+        }
+
+        let mouseUpLocation = NSApp.currentEvent?.type == .leftMouseUp ? NSApp.currentEvent?.locationInWindow : nil
+        let didDrag = mouseUpLocation.map { hypot($0.x - mouseDownLocation.x, $0.y - mouseDownLocation.y) > 3 } ?? false
+        guard PacketTableClickSelectionCollapsePlanner.shouldApplyCollapse(
+            clickedRow: clickedRow,
+            rowCount: numberOfRows,
+            selectedRowIndexes: selectedRowIndexes,
+            didDrag: didDrag
+        ) else {
+            return
+        }
+
+        selectRowIndexes(IndexSet(integer: clickedRow), byExtendingSelection: false)
     }
 }
 

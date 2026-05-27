@@ -148,6 +148,64 @@ struct PacketTableMenuLogicTests {
         ) == .deselect)
     }
 
+    @Test func clickSelectionCollapsePreparesOnlyForPlainSingleClickInsideMultiSelection() {
+        let selectedRows = IndexSet([1, 3])
+
+        #expect(PacketTableClickSelectionCollapsePlanner.shouldPrepareCollapse(
+            clickedRow: 3,
+            selectedRowIndexes: selectedRows,
+            modifierFlags: [],
+            clickCount: 1
+        ))
+        #expect(!PacketTableClickSelectionCollapsePlanner.shouldPrepareCollapse(
+            clickedRow: 3,
+            selectedRowIndexes: selectedRows,
+            modifierFlags: .command,
+            clickCount: 1
+        ))
+        #expect(!PacketTableClickSelectionCollapsePlanner.shouldPrepareCollapse(
+            clickedRow: 3,
+            selectedRowIndexes: selectedRows,
+            modifierFlags: [],
+            clickCount: 2
+        ))
+        #expect(!PacketTableClickSelectionCollapsePlanner.shouldPrepareCollapse(
+            clickedRow: 2,
+            selectedRowIndexes: selectedRows,
+            modifierFlags: [],
+            clickCount: 1
+        ))
+    }
+
+    @Test func clickSelectionCollapseAppliesOnlyAfterNonDragTrackingWithValidRow() {
+        let selectedRows = IndexSet([1, 3])
+
+        #expect(PacketTableClickSelectionCollapsePlanner.shouldApplyCollapse(
+            clickedRow: 3,
+            rowCount: 4,
+            selectedRowIndexes: selectedRows,
+            didDrag: false
+        ))
+        #expect(!PacketTableClickSelectionCollapsePlanner.shouldApplyCollapse(
+            clickedRow: 3,
+            rowCount: 4,
+            selectedRowIndexes: selectedRows,
+            didDrag: true
+        ))
+        #expect(!PacketTableClickSelectionCollapsePlanner.shouldApplyCollapse(
+            clickedRow: 4,
+            rowCount: 4,
+            selectedRowIndexes: selectedRows,
+            didDrag: false
+        ))
+        #expect(!PacketTableClickSelectionCollapsePlanner.shouldApplyCollapse(
+            clickedRow: 3,
+            rowCount: 4,
+            selectedRowIndexes: IndexSet(integer: 3),
+            didDrag: false
+        ))
+    }
+
     @Test func menuStateProviderIgnoresStaleSelectedIndexes() {
         let packets = [
             makePacket(packetNumber: 1),

@@ -24,6 +24,7 @@
 #include <epan/column-utils.h>
 #include <epan/epan.h>
 #include <epan/epan_dissect.h>
+#include <epan/exceptions.h>
 #include <epan/frame_data_sequence.h>
 #include <epan/packet.h>
 #include <epan/prefs.h>
@@ -775,7 +776,24 @@ struct WiresharkDissectionSession::Impl {
             referenceFrame = frame;
             provider->ref = &referenceFrame;
         }
-        epan_dissect_run(firstPassDissect.get(), WTAP_FILE_TYPE_SUBTYPE_UNKNOWN, record.get(), &frame, nullptr);
+        volatile bool firstPassFailed = false;
+        std::string firstPassFailureMessage;
+        TRY {
+            epan_dissect_run(firstPassDissect.get(), WTAP_FILE_TYPE_SUBTYPE_UNKNOWN, record.get(), &frame, nullptr);
+        }
+        CATCH_ALL {
+            firstPassFailed = true;
+            const char* message = exc != nullptr ? except_message(exc) : nullptr;
+            firstPassFailureMessage = message != nullptr ? message : "Wireshark dissector raised an unhandled error during first-pass dissection.";
+        }
+        ENDTRY;
+
+        if (firstPassFailed) {
+            unavailableReason = firstPassFailureMessage;
+            epan_dissect_reset(firstPassDissect.get());
+            return false;
+        }
+
         frame_data_set_after_dissect(&frame, &cumulativeBytes);
 
         provider->prev_cap = provider->prev_dis = frame_data_sequence_add(provider->frames, &frame);
@@ -979,11 +997,46 @@ struct WiresharkDissectionSession::Impl {
             provider->ref = &referenceFrame;
         }
         wtap_block_t block = record.get()->block != nullptr ? wtap_block_ref(record.get()->block) : nullptr;
-        if (buildTree) {
-            epan_dissect_run_with_taps(dissect.get(), WTAP_FILE_TYPE_SUBTYPE_UNKNOWN, record.get(), frame, columnInfo.get());
-        } else {
-            epan_dissect_run(dissect.get(), WTAP_FILE_TYPE_SUBTYPE_UNKNOWN, record.get(), frame, columnInfo.get());
+        // libwireshark dissectors throw DissectorError (e.g. "Unregistered hf!") via setjmp/longjmp.
+        // Without a catcher the unhandled exception aborts the process, so we contain it here and
+        // surface the message so the developer console can show which protocol broke. The TRY block
+        // only spans the C call so the longjmp can't skip past any C++ RAII destructors
+        // (dissect/record/columnInfo are all in the outer scope).
+        volatile bool dissectionFailed = false;
+        std::string dissectionFailureMessage;
+        TRY {
+            if (buildTree) {
+                epan_dissect_run_with_taps(dissect.get(), WTAP_FILE_TYPE_SUBTYPE_UNKNOWN, record.get(), frame, columnInfo.get());
+            } else {
+                epan_dissect_run(dissect.get(), WTAP_FILE_TYPE_SUBTYPE_UNKNOWN, record.get(), frame, columnInfo.get());
+            }
         }
+        CATCH_ALL {
+            dissectionFailed = true;
+            const char* message = exc != nullptr ? except_message(exc) : nullptr;
+            dissectionFailureMessage = message != nullptr ? message : "Wireshark dissector raised an unhandled error for this packet.";
+        }
+        ENDTRY;
+
+        if (dissectionFailed) {
+            record.get()->block = block;
+            result.dissectorBugDetected = true;
+            // Append the protocol that was being dissected when the exception fired so the developer
+            // log identifies which vendored dissector needs the upstream fix.
+            const char* currentProto = (dissect != nullptr && dissect->pi.current_proto != nullptr)
+                ? dissect->pi.current_proto
+                : nullptr;
+            if (currentProto != nullptr && *currentProto != '\0') {
+                dissectionFailureMessage += " [protocol=";
+                dissectionFailureMessage += currentProto;
+                dissectionFailureMessage += "]";
+            }
+            result.fallbackReason = dissectionFailureMessage;
+            // Intentionally skip pushing MakeUnavailableDetail here — the bridge layer routes the
+            // message to print() instead of surfacing a "Wireshark Dissector Unavailable" node.
+            return result;
+        }
+
         uint32_t secondPassCumulativeBytes = frame->cum_bytes >= frame->pkt_len ? frame->cum_bytes - frame->pkt_len : 0;
         frame_data_set_after_dissect(frame, &secondPassCumulativeBytes);
 
