@@ -172,8 +172,7 @@ private enum PacketTableContentBuilder {
         let store = PacketTableRowStore()
         let sourcePackets = packets(from: input)
 
-        store.rows.reserveCapacity(sourcePackets.count)
-        store.visiblePacketRowIndexByID.reserveCapacity(sourcePackets.count)
+        store.reserveCapacity(rowCount: sourcePackets.count, visibleIndexCount: sourcePackets.count)
 
         var malformedPacketCount = 0
         var rowTimingState = PacketTableRowTimingState()
@@ -194,9 +193,7 @@ private enum PacketTableContentBuilder {
                 continue
             }
 
-            let rowIndex = store.rows.count
-            store.rows.append(rowTimingState.row(for: packet))
-            store.visiblePacketRowIndexByID[packet.id] = rowIndex
+            store.append(rowTimingState.row(for: packet))
         }
 
         return PacketTableBuildOutput(
@@ -292,8 +289,8 @@ private struct PacketTableContentCache {
     #if DEBUG
     var debugMemorySnapshot: PacketTableContentCacheDebugSnapshot {
         PacketTableContentCacheDebugSnapshot(
-            rowCount: cachedContent.rows.count,
-            visiblePacketIndexCount: cachedContent.visiblePacketRowIndexByID.count
+            rowCount: cachedContent.rowCount,
+            visiblePacketIndexCount: cachedContent.visiblePacketIndexCount
         )
     }
     #endif
@@ -448,7 +445,7 @@ private struct PacketTableContentCache {
 
     private mutating func storeRebuildOutput(_ output: PacketTableBuildOutput, input: PacketTableBuildInput) -> PacketTableContent {
         generation &+= 1
-        let updatePlan: PacketTableUpdatePlan = output.store.rows.isEmpty ? .none : .reload
+        let updatePlan: PacketTableUpdatePlan = output.store.isEmpty ? .none : .reload
         let content = PacketTableContent(
             displayFilter: output.displayFilter,
             displayFilterChips: output.displayFilter.chips,
@@ -502,16 +499,16 @@ private struct PacketTableContentCache {
             )
         }
 
-        // Mutate the store in place. The store class is the only owner of its rows array, so
-        // append doesn't trigger Swift's Array CoW even though many `PacketTableContent` values
-        // (and the published snapshot) reference the same store.
+        // Mutate the store through its lock so AppKit never observes array storage mid-append.
         let store = cachedContent.store
         var malformedPacketCount = cachedContent.malformedPacketCount
         var rowTimingState = cachedRowTimingState
-        let appendStartIndex = store.rows.count
+        let appendStartIndex = store.rowCount
 
-        store.rows.reserveCapacity(store.rows.count + newPackets.count)
-        store.visiblePacketRowIndexByID.reserveCapacity(store.visiblePacketRowIndexByID.count + newPackets.count)
+        store.reserveCapacity(
+            rowCount: store.rowCount + newPackets.count,
+            visibleIndexCount: store.visiblePacketIndexCount + newPackets.count
+        )
         let structuredFilterContext = structuredFilterService.evaluationContext(for: structuredFilterGroup)
 
         for packet in newPackets {
@@ -526,18 +523,16 @@ private struct PacketTableContentCache {
                 continue
             }
 
-            let rowIndex = store.rows.count
-            store.rows.append(rowTimingState.row(for: packet))
-            store.visiblePacketRowIndexByID[packet.id] = rowIndex
+            store.append(rowTimingState.row(for: packet))
         }
 
-        let didAppendVisibleRows = store.rows.count > appendStartIndex
+        let didAppendVisibleRows = store.rowCount > appendStartIndex
         if didAppendVisibleRows {
             generation &+= 1
         }
         let updatePlan: PacketTableUpdatePlan = forceReload
             ? .reload
-            : (didAppendVisibleRows ? .append(appendStartIndex..<store.rows.count) : .none)
+            : (didAppendVisibleRows ? .append(appendStartIndex..<store.rowCount) : .none)
 
         let content = PacketTableContent(
             displayFilter: displayFilter,
@@ -747,14 +742,16 @@ private struct PacketTableContentCache {
                 (displayFilter.isEmpty || displayFilter.matches(packet)) &&
                 quickFilterService.matches(packet, selection: quickFilterSelection) &&
                 structuredFilterService.matches(packet, context: structuredFilterContext)
-            let wasVisible = store.visiblePacketRowIndexByID[packetID] != nil
+            let wasVisible = store.hasVisibleRow(for: packetID)
             guard wasVisible == isVisibleNow else {
                 return nil  // visibility flipped — caller falls back to rebuild
             }
-            guard isVisibleNow, let rowIndex = store.visiblePacketRowIndexByID[packetID] else {
+            guard isVisibleNow, let rowIndex = store.visibleRowIndex(for: packetID) else {
                 continue
             }
-            store.rows[rowIndex] = rowTimingState.row(for: packet)
+            guard store.updateRow(at: rowIndex, with: rowTimingState.row(for: packet)) else {
+                return nil
+            }
             reloadIndexes.insert(rowIndex)
         }
 
@@ -1195,7 +1192,7 @@ final class NetworkInspectorViewModel {
     }
 
     func clearTablePackets() {
-        let identifiers = snapshot.packetRows.map(\.id)
+        let identifiers = snapshot.packetTableRowStore.rowIDs()
         deletePackets(identifiers)
     }
 
@@ -1739,7 +1736,7 @@ final class NetworkInspectorViewModel {
         if clearsSelectedPacket {
             applyPacketSelectionDuringRebuild(nil)
         } else if selectsFirstVisiblePacketForQuickFilter, !isPacketTableFiltering {
-            let firstVisiblePacketID = quickFilterService.selection.isActive ? packetTableContent.rows.first?.id : nil
+            let firstVisiblePacketID = quickFilterService.selection.isActive ? packetTableContent.firstRowID : nil
             applyPacketSelectionDuringRebuild(firstVisiblePacketID)
             if firstVisiblePacketID != nil {
                 inspectorTab = .summary

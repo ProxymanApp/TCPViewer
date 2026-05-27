@@ -53,7 +53,7 @@ final class PacketWorkspaceViewModel {
         countText = "\(snapshot.visiblePacketCount) visible"
         totalText = snapshot.visiblePacketCount == snapshot.totalPacketCount ? nil : "of \(snapshot.totalPacketCount)"
         chips = snapshot.displayFilterChips
-        isEmpty = snapshot.packetRows.isEmpty
+        isEmpty = snapshot.visiblePacketCount == 0
         showsResetFiltersButton = isEmpty && snapshot.isQuickFilterActive
         quickFilterLabels = showsResetFiltersButton ? snapshot.quickFilterSelection.activeLabels : []
 

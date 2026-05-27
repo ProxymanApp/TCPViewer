@@ -87,12 +87,30 @@ enum PacketTableMenuLogic {
         clickedRowIndex: Int?,
         clickedColumnIdentifier: String?
     ) -> PacketTableMenuState {
-        let targetIndexes = targetRowIndexes(
+        state(
             rowCount: rows.count,
+            rowProvider: { rowIndex in
+                rows.indices.contains(rowIndex) ? rows[rowIndex] : nil
+            },
+            selectedRowIndexes: selectedRowIndexes,
+            clickedRowIndex: clickedRowIndex,
+            clickedColumnIdentifier: clickedColumnIdentifier
+        )
+    }
+
+    static func state(
+        rowCount: Int,
+        rowProvider: (Int) -> PacketTableRow?,
+        selectedRowIndexes: IndexSet,
+        clickedRowIndex: Int?,
+        clickedColumnIdentifier: String?
+    ) -> PacketTableMenuState {
+        let targetIndexes = targetRowIndexes(
+            rowCount: rowCount,
             selectedRowIndexes: selectedRowIndexes,
             clickedRowIndex: clickedRowIndex
         )
-        let targetRows = targetIndexes.compactMap { rows.indices.contains($0) ? rows[$0] : nil }
+        let targetRows = targetIndexes.compactMap(rowProvider)
         let clickedColumn = PacketTableColumnRole(columnIdentifier: clickedColumnIdentifier)
         let singleRow = targetRows.count == 1 ? targetRows[0] : nil
 
