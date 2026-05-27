@@ -82,24 +82,6 @@ fileprivate final class PacketTableView: NSTableView {
         super.keyDown(with: event)
     }
 
-    // NSTableView's default treats an unmodified click on an already-selected
-    // row inside a multi-selection as a potential drag — the selection is not
-    // collapsed. Match Finder's behavior by collapsing it ourselves.
-    override func mouseDown(with event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
-        let row = self.row(at: point)
-        let modifierFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        let collapsingModifiers: NSEvent.ModifierFlags = [.shift, .command, .control, .option]
-
-        if row >= 0,
-           modifierFlags.intersection(collapsingModifiers).isEmpty,
-           selectedRowIndexes.count > 1,
-           selectedRowIndexes.contains(row) {
-            selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-        }
-
-        super.mouseDown(with: event)
-    }
 }
 
 final class PacketTableViewModel {

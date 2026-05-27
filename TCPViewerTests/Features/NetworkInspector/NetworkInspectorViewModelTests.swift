@@ -2320,21 +2320,20 @@ struct NetworkInspectorViewModelTests {
 }
 
 private final class PacketFilterBuildGate: @unchecked Sendable {
-    private let lock = NSLock()
-    private var didStart = false
-    private var isReleased = false
+    private struct State {
+        var didStart = false
+        var isReleased = false
+    }
+
+    private let state = Protected(State())
 
     func markStartedAndWaitUntilReleased() {
-        lock.lock()
-        didStart = true
-        lock.unlock()
+        state.write { state in
+            state.didStart = true
+        }
 
         while true {
-            lock.lock()
-            let released = isReleased
-            lock.unlock()
-
-            if released {
+            if state.read(\.isReleased) {
                 return
             }
 
@@ -2343,18 +2342,13 @@ private final class PacketFilterBuildGate: @unchecked Sendable {
     }
 
     func release() {
-        lock.lock()
-        isReleased = true
-        lock.unlock()
+        state.write { state in
+            state.isReleased = true
+        }
     }
 
     var hasStarted: Bool {
-        lock.lock()
-        defer {
-            lock.unlock()
-        }
-
-        return didStart
+        state.read(\.didStart)
     }
 }
 

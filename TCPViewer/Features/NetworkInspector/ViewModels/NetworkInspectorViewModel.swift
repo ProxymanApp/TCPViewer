@@ -106,22 +106,14 @@ enum NetworkInspectorDebugLog {
 }
 
 private final class PacketTableFilterCancellationToken: @unchecked Sendable {
-    private let lock = NSLock()
-    private var cancelled = false
+    @Protected private var cancelled = false
 
     func cancel() {
-        lock.lock()
         cancelled = true
-        lock.unlock()
     }
 
     func isCancelled() -> Bool {
-        lock.lock()
-        defer {
-            lock.unlock()
-        }
-
-        return cancelled
+        cancelled
     }
 }
 

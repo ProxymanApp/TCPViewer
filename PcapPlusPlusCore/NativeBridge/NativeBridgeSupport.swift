@@ -10,36 +10,28 @@ import SystemConfiguration
 @_implementationOnly import TCPViewerNativeBridge
 
 final class EventCallbackBox<Element>: @unchecked Sendable {
-    private let lock = NSLock()
-    private var eventHandler: ((Result<Element, Error>) -> Void)?
+    @Protected private var eventHandler: ((Result<Element, Error>) -> Void)?
 
     var handler: ((Result<Element, Error>) -> Void)? {
         get {
-            lock.lock()
-            let handler = eventHandler
-            lock.unlock()
-            return handler
+            eventHandler
         }
         set {
-            lock.lock()
             eventHandler = newValue
-            lock.unlock()
         }
     }
 
     func yield(_ element: Element) {
-        lock.lock()
         let handler = eventHandler
-        lock.unlock()
-
         handler?(.success(element))
     }
 
     func finish(throwing error: Error? = nil) {
-        lock.lock()
-        let handler = eventHandler
-        eventHandler = nil
-        lock.unlock()
+        let handler = $eventHandler.write { eventHandler in
+            let handler = eventHandler
+            eventHandler = nil
+            return handler
+        }
 
         if let error {
             handler?(.failure(error))

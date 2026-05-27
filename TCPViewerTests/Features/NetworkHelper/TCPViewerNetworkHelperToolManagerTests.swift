@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import PcapPlusPlusCore
 import Security
 import Testing
 @testable import TCPViewer
@@ -365,30 +366,38 @@ private struct BlessFixture {
 }
 
 private final class LockedLogSink {
-    private let lock = NSLock()
-    private var storedMessages: [String] = []
+    private let storedMessages = Protected<[String]>([])
 
     var messages: [String] {
-        lock.lock()
-        defer { lock.unlock() }
-        return storedMessages
+        storedMessages.wrappedValue
     }
 
     func append(_ message: String) {
-        lock.lock()
-        storedMessages.append(message)
-        lock.unlock()
+        storedMessages.write { messages in
+            messages.append(message)
+        }
     }
 }
 
 private final class FakeNetworkHelperServiceController: TCPViewerNetworkHelperServiceControlling {
-    private let lock = NSLock()
-    private var storedStatus: TCPViewerNetworkHelperAuthorizationStatus
+    private struct State {
+        var status: TCPViewerNetworkHelperAuthorizationStatus
+        var registerCallCount = 0
+        var unregisterCallCount = 0
+    }
+
+    private let state: Protected<State>
     private let registerError: Error?
     private let unregisterError: Error?
     private let storedInstalledHelperToolVersion: String?
-    private(set) var registerCallCount = 0
-    private(set) var unregisterCallCount = 0
+
+    var registerCallCount: Int {
+        state.read(\.registerCallCount)
+    }
+
+    var unregisterCallCount: Int {
+        state.read(\.unregisterCallCount)
+    }
 
     init(
         status: TCPViewerNetworkHelperAuthorizationStatus,
@@ -396,42 +405,48 @@ private final class FakeNetworkHelperServiceController: TCPViewerNetworkHelperSe
         unregisterError: Error? = nil,
         installedHelperToolVersion: String? = nil
     ) {
-        self.storedStatus = status
+        self.state = Protected(State(status: status))
         self.registerError = registerError
         self.unregisterError = unregisterError
         self.storedInstalledHelperToolVersion = installedHelperToolVersion
     }
 
     var status: TCPViewerNetworkHelperAuthorizationStatus {
-        lock.lock()
-        defer { lock.unlock() }
-        return storedStatus
+        state.read(\.status)
     }
 
     var installedHelperToolVersion: String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return storedStatus == .enabled ? storedInstalledHelperToolVersion : nil
+        state.read { state in
+            state.status == .enabled ? storedInstalledHelperToolVersion : nil
+        }
     }
 
     func register() throws {
-        lock.lock()
-        defer { lock.unlock() }
-        registerCallCount += 1
-        if let registerError {
-            throw registerError
+        let error = state.write { state -> Error? in
+            state.registerCallCount += 1
+            if let registerError {
+                return registerError
+            }
+            state.status = .enabled
+            return nil
         }
-        storedStatus = .enabled
+        if let error {
+            throw error
+        }
     }
 
     func unregister() throws {
-        lock.lock()
-        defer { lock.unlock() }
-        unregisterCallCount += 1
-        if let unregisterError {
-            throw unregisterError
+        let error = state.write { state -> Error? in
+            state.unregisterCallCount += 1
+            if let unregisterError {
+                return unregisterError
+            }
+            state.status = .notRegistered
+            return nil
         }
-        storedStatus = .notRegistered
+        if let error {
+            throw error
+        }
     }
 
     func openSystemSettings() {}

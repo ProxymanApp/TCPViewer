@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import PcapPlusPlusCore
 
 final class TCPViewerLicenseService {
     static let shared = TCPViewerLicenseService()
@@ -24,9 +25,7 @@ final class TCPViewerLicenseService {
     private let appVersionProvider: () -> String
     private let osVersionProvider: () -> String
     private let workerQueue: DispatchQueue
-    private let lock = NSLock()
-
-    private var storedStatus: TCPViewerLicenseStatus
+    private let storedStatus: Protected<TCPViewerLicenseStatus>
 
     init(
         storage: any TCPViewerLicenseStoring = TCPViewerLicenseStorage(),
@@ -46,11 +45,11 @@ final class TCPViewerLicenseService {
         self.appVersionProvider = appVersionProvider
         self.osVersionProvider = osVersionProvider
         self.workerQueue = workerQueue
-        self.storedStatus = Self.initialStatus(storage: storage, deviceProvider: deviceProvider)
+        self.storedStatus = Protected(Self.initialStatus(storage: storage, deviceProvider: deviceProvider))
     }
 
     var status: TCPViewerLicenseStatus {
-        lock.withLock { storedStatus }
+        storedStatus.wrappedValue
     }
 
     var isLicenseAuthorized: Bool {
@@ -244,9 +243,7 @@ final class TCPViewerLicenseService {
     }
 
     private func setStatus(_ status: TCPViewerLicenseStatus) {
-        lock.withLock {
-            storedStatus = status
-        }
+        storedStatus.wrappedValue = status
         TCPViewerLicenseService.postStatusDidChange(status)
     }
 
@@ -276,13 +273,5 @@ final class TCPViewerLicenseService {
         } else {
             DispatchQueue.main.async(execute: block)
         }
-    }
-}
-
-private extension NSLock {
-    func withLock<Value>(_ closure: () throws -> Value) rethrows -> Value {
-        lock()
-        defer { unlock() }
-        return try closure()
     }
 }
