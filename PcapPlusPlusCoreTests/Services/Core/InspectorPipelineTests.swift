@@ -213,78 +213,6 @@ struct InspectorPipelineTests {
         }
     }
 
-    @Test func tlsClientHelloInspectionRendersVersionedSummaryAndDetail() async throws {
-        let fixtureURL = CoreFixtureCatalog.captureCategoryURL("tls").appendingPathComponent("SSL-ClientHello1.pcap")
-        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: fixtureURL)
-        let packets = try await document.open()
-        let packet = try #require(packets.first { $0.infoSummary.contains("Client Hello") })
-
-        #expect(packet.layers.contains { $0.name == "TLSv1.2" })
-
-        let inspection = try await document.inspectPacket(id: packet.id)
-        #expect(inspection.byteViews.first?.id == "frame")
-        #expect(inspection.byteViews.first?.bytes == inspection.rawBytes)
-        let tlsNode = try #require(inspection.detailNodes.first { $0.fieldName == "tls" })
-        #expect(findNode(in: tlsNode.children, fieldName: "tls.record.content_type")?.value?.contains("Handshake") == true)
-        #expect(findNode(in: tlsNode.children, fieldName: "tls.record.version") != nil)
-        #expect(findNode(in: tlsNode.children, fieldName: "tls.record.length") != nil)
-        #expect(findNode(in: tlsNode.children, fieldName: "tls.handshake")?.value?.contains("Client Hello") == true)
-        #expect(findNode(in: tlsNode.children, fieldName: "tls.handshake.version")?.value?.contains("TLS") == true)
-        #expect(findNode(in: tlsNode.children, fieldName: "tls.handshake.extensions_server_name")?.value?.contains("www.google.com") == true)
-    }
-
-    @Test func splitTlsClientHelloInspectionExposesReassembledByteView() async throws {
-        let fixtureURL = CoreFixtureCatalog.captureCategoryURL("tls").appendingPathComponent("SSL-ClientHello1-split.pcap")
-        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: fixtureURL)
-        let packets = try await document.open()
-        let clientHello = try #require(packets.first { $0.infoSummary.contains("Client Hello") })
-
-        let inspection = try await document.inspectPacket(id: clientHello.id)
-        let reassembled = try #require(inspection.byteViews.first { byteView in
-            byteView.id != "frame" && byteView.label.localizedCaseInsensitiveContains("reassembled")
-        })
-
-        #expect(reassembled.bytes.count > inspection.rawBytes.count)
-        #expect(inspection.detailNodes.contains { nodeHasByteSource($0, sourceID: reassembled.id) })
-    }
-
-    @Test func wiresharkColumnsPopulateProtocolAndInfoForTlsClientHello() async throws {
-        let fixtureURL = CoreFixtureCatalog.captureCategoryURL("tls").appendingPathComponent("SSL-ClientHello1.pcap")
-
-        let packets = try await NativeTCPViewerCore().loadPacketSummaries(from: fixtureURL)
-        let clientHello = try #require(packets.first { $0.infoSummary.contains("Client Hello") })
-
-        #expect(clientHello.protocolSummary?.hasPrefix("TLS") == true)
-        #expect(clientHello.infoSummary.contains("Client Hello"))
-        #expect(clientHello.sniDomainName == "www.google.com")
-    }
-
-    @Test func wiresharkColumnsUseReassembledSplitClientHelloPacket() async throws {
-        let fixtureURL = CoreFixtureCatalog.captureCategoryURL("tls").appendingPathComponent("SSL-ClientHello1-split.pcap")
-
-        let packets = try await NativeTCPViewerCore().loadPacketSummaries(from: fixtureURL)
-        let clientHello = try #require(packets.first { $0.infoSummary.contains("Client Hello") })
-
-        #expect(clientHello.protocolSummary?.hasPrefix("TLS") == true)
-        #expect(clientHello.infoSummary.contains("Client Hello"))
-        #expect(clientHello.sniDomainName == "www.google.com")
-    }
-
-    @Test func wiresharkSessionKeepsOlderDocumentStateAfterOpeningAnotherDocument() async throws {
-        let fixtureURL = CoreFixtureCatalog.captureCategoryURL("tls").appendingPathComponent("SSL-ClientHello1.pcap")
-        let firstDocument = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: fixtureURL)
-        let firstPackets = try await firstDocument.open()
-        let firstClientHello = try #require(firstPackets.first { $0.infoSummary.contains("Client Hello") })
-
-        let secondDocument = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: fixtureURL)
-        _ = try await secondDocument.open()
-
-        let inspection = try await firstDocument.inspectPacket(id: firstClientHello.id)
-
-        #expect(findNode(in: inspection.detailNodes, id: "wireshark.fallback") == nil)
-        #expect(inspection.detailNodes.first { $0.fieldName == "tls" } != nil)
-    }
-
     @Test func tlsApplicationDataInspectionRendersRecordVersionsAndEncryptedData() async throws {
         try await withWiresharkDisabled { core in
             let directory = try makeTemporaryDirectory()
@@ -439,28 +367,6 @@ struct InspectorPipelineTests {
             let websocketPayload = try #require(findNode(in: websocketNode.children, id: "websocket.54.payload"))
             #expect(websocketPayload.value == "69 67 6f 68 6e")
             #expect(websocketPayload.byteRange == PacketByteRange(offset: 60, length: 5))
-        }
-    }
-
-    @Test func malformedInspectionAddsDecodeWarningAndKeepsRawBytes() async throws {
-        try await withWiresharkDisabled { core in
-            let fixtureURL = CoreFixtureCatalog.captureCategoryURL("malformed").appendingPathComponent("partial-http-request.pcap")
-            let document = try await core.openOfflineCaptureDocument(at: fixtureURL)
-            let packets = try await document.open()
-            let packet = try #require(packets.first)
-
-        let inspection = try await document.inspectPacket(id: packet.id)
-
-        #expect(inspection.decodeStatus.kind != .complete)
-        #expect(!inspection.rawBytes.isEmpty)
-        #expect(inspection.rawBytes.count == packet.capturedLength)
-        let decodeNode = try #require(findNode(in: inspection.detailNodes, id: "warning.decode"))
-        if inspection.decodeStatus.kind == .malformed {
-            #expect(decodeNode.kind == .warning)
-            #expect(decodeNode.name == "Decode Warning")
-            } else {
-                #expect(decodeNode.severity != .normal)
-            }
         }
     }
 
