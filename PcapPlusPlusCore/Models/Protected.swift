@@ -35,17 +35,17 @@ public extension Lock {
     /// - Parameter closure: The closure to run.
     ///
     /// - Returns:           The value the closure generated.
-    func around<T>(_ closure: () -> T) -> T {
+    func around<T>(_ closure: () throws -> T) rethrows -> T {
         lock(); defer { unlock() }
-        return closure()
+        return try closure()
     }
 
     /// Execute a closure while acquiring the lock.
     ///
     /// - Parameter closure: The closure to run.
-    func around(_ closure: () -> Void) {
+    func around(_ closure: () throws -> Void) rethrows {
         lock(); defer { unlock() }
-        closure()
+        try closure()
     }
 }
 
@@ -118,7 +118,7 @@ public final class Protected<T> {
     #endif
     private var value: T
 
-    init(_ value: T) {
+    public init(_ value: T) {
         self.value = value
     }
 
@@ -139,8 +139,15 @@ public final class Protected<T> {
     /// - Parameter closure: The closure to execute.
     ///
     /// - Returns:           The return value of the closure passed.
-    public func read<U>(_ closure: (T) -> U) -> U {
-        lock.around { closure(self.value) }
+    public func read<U>(_ closure: (T) throws -> U) rethrows -> U {
+        try lock.around { try closure(self.value) }
+    }
+
+    /// Synchronously read a property from the contained value.
+    public func read<Property>(_ keyPath: KeyPath<T, Property>) -> Property {
+        read { value in
+            value[keyPath: keyPath]
+        }
     }
 
     /// Synchronously modify the protected value.
@@ -149,8 +156,8 @@ public final class Protected<T> {
     ///
     /// - Returns:           The modified value.
     @discardableResult
-    public func write<U>(_ closure: (inout T) -> U) -> U {
-        lock.around { closure(&self.value) }
+    public func write<U>(_ closure: (inout T) throws -> U) rethrows -> U {
+        try lock.around { try closure(&self.value) }
     }
 
     public subscript<Property>(dynamicMember keyPath: WritableKeyPath<T, Property>) -> Property {

@@ -106,22 +106,14 @@ enum NetworkInspectorDebugLog {
 }
 
 private final class PacketTableFilterCancellationToken: @unchecked Sendable {
-    private let lock = NSLock()
-    private var cancelled = false
+    @Protected private var cancelled = false
 
     func cancel() {
-        lock.lock()
         cancelled = true
-        lock.unlock()
     }
 
     func isCancelled() -> Bool {
-        lock.lock()
-        defer {
-            lock.unlock()
-        }
-
-        return cancelled
+        cancelled
     }
 }
 
@@ -172,7 +164,9 @@ private enum PacketTableContentBuilder {
         let store = PacketTableRowStore()
         let sourcePackets = packets(from: input)
 
-        store.reserveCapacity(rowCount: sourcePackets.count, visibleIndexCount: sourcePackets.count)
+        store.rows.reserveCapacity(sourcePackets.count)
+        store.rowIDs.reserveCapacity(sourcePackets.count)
+        store.visiblePacketRowIndexByID.reserveCapacity(sourcePackets.count)
 
         var malformedPacketCount = 0
         var rowTimingState = PacketTableRowTimingState()
@@ -193,7 +187,10 @@ private enum PacketTableContentBuilder {
                 continue
             }
 
-            store.append(rowTimingState.row(for: packet))
+            let rowIndex = store.rows.count
+            store.rows.append(rowTimingState.row(for: packet))
+            store.rowIDs.append(packet.id)
+            store.visiblePacketRowIndexByID[packet.id] = rowIndex
         }
 
         return PacketTableBuildOutput(
@@ -289,8 +286,8 @@ private struct PacketTableContentCache {
     #if DEBUG
     var debugMemorySnapshot: PacketTableContentCacheDebugSnapshot {
         PacketTableContentCacheDebugSnapshot(
-            rowCount: cachedContent.rowCount,
-            visiblePacketIndexCount: cachedContent.visiblePacketIndexCount
+            rowCount: cachedContent.rows.count,
+            visiblePacketIndexCount: cachedContent.visiblePacketRowIndexByID.count
         )
     }
     #endif
@@ -445,7 +442,7 @@ private struct PacketTableContentCache {
 
     private mutating func storeRebuildOutput(_ output: PacketTableBuildOutput, input: PacketTableBuildInput) -> PacketTableContent {
         generation &+= 1
-        let updatePlan: PacketTableUpdatePlan = output.store.isEmpty ? .none : .reload
+        let updatePlan: PacketTableUpdatePlan = output.store.rows.isEmpty ? .none : .reload
         let content = PacketTableContent(
             displayFilter: output.displayFilter,
             displayFilterChips: output.displayFilter.chips,
@@ -499,16 +496,17 @@ private struct PacketTableContentCache {
             )
         }
 
-        // Mutate the store through its lock so AppKit never observes array storage mid-append.
+        // Mutate the store in place. The store class is the only owner of its rows array, so
+        // append doesn't trigger Swift's Array CoW even though many `PacketTableContent` values
+        // (and the published snapshot) reference the same store.
         let store = cachedContent.store
         var malformedPacketCount = cachedContent.malformedPacketCount
         var rowTimingState = cachedRowTimingState
-        let appendStartIndex = store.rowCount
+        let appendStartIndex = store.rows.count
 
-        store.reserveCapacity(
-            rowCount: store.rowCount + newPackets.count,
-            visibleIndexCount: store.visiblePacketIndexCount + newPackets.count
-        )
+        store.rows.reserveCapacity(store.rows.count + newPackets.count)
+        store.rowIDs.reserveCapacity(store.rowIDs.count + newPackets.count)
+        store.visiblePacketRowIndexByID.reserveCapacity(store.visiblePacketRowIndexByID.count + newPackets.count)
         let structuredFilterContext = structuredFilterService.evaluationContext(for: structuredFilterGroup)
 
         for packet in newPackets {
@@ -523,16 +521,19 @@ private struct PacketTableContentCache {
                 continue
             }
 
-            store.append(rowTimingState.row(for: packet))
+            let rowIndex = store.rows.count
+            store.rows.append(rowTimingState.row(for: packet))
+            store.rowIDs.append(packet.id)
+            store.visiblePacketRowIndexByID[packet.id] = rowIndex
         }
 
-        let didAppendVisibleRows = store.rowCount > appendStartIndex
+        let didAppendVisibleRows = store.rows.count > appendStartIndex
         if didAppendVisibleRows {
             generation &+= 1
         }
         let updatePlan: PacketTableUpdatePlan = forceReload
             ? .reload
-            : (didAppendVisibleRows ? .append(appendStartIndex..<store.rowCount) : .none)
+            : (didAppendVisibleRows ? .append(appendStartIndex..<store.rows.count) : .none)
 
         let content = PacketTableContent(
             displayFilter: displayFilter,
@@ -742,16 +743,14 @@ private struct PacketTableContentCache {
                 (displayFilter.isEmpty || displayFilter.matches(packet)) &&
                 quickFilterService.matches(packet, selection: quickFilterSelection) &&
                 structuredFilterService.matches(packet, context: structuredFilterContext)
-            let wasVisible = store.hasVisibleRow(for: packetID)
+            let wasVisible = store.visiblePacketRowIndexByID[packetID] != nil
             guard wasVisible == isVisibleNow else {
                 return nil  // visibility flipped — caller falls back to rebuild
             }
-            guard isVisibleNow, let rowIndex = store.visibleRowIndex(for: packetID) else {
+            guard isVisibleNow, let rowIndex = store.visiblePacketRowIndexByID[packetID] else {
                 continue
             }
-            guard store.updateRow(at: rowIndex, with: rowTimingState.row(for: packet)) else {
-                return nil
-            }
+            store.rows[rowIndex] = rowTimingState.row(for: packet)
             reloadIndexes.insert(rowIndex)
         }
 
@@ -1192,7 +1191,7 @@ final class NetworkInspectorViewModel {
     }
 
     func clearTablePackets() {
-        let identifiers = snapshot.packetTableRowStore.rowIDs()
+        let identifiers = snapshot.packetRows.map(\.id)
         deletePackets(identifiers)
     }
 
@@ -1736,7 +1735,7 @@ final class NetworkInspectorViewModel {
         if clearsSelectedPacket {
             applyPacketSelectionDuringRebuild(nil)
         } else if selectsFirstVisiblePacketForQuickFilter, !isPacketTableFiltering {
-            let firstVisiblePacketID = quickFilterService.selection.isActive ? packetTableContent.firstRowID : nil
+            let firstVisiblePacketID = quickFilterService.selection.isActive ? packetTableContent.rows.first?.id : nil
             applyPacketSelectionDuringRebuild(firstVisiblePacketID)
             if firstVisiblePacketID != nil {
                 inspectorTab = .summary

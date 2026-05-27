@@ -7,6 +7,7 @@
 
 import CryptoKit
 import Foundation
+import PcapPlusPlusCore
 
 protocol TCPViewerLicenseStoring {
     func readLicense() -> TCPViewerLicense?
@@ -20,7 +21,7 @@ final class TCPViewerLicenseStorage: TCPViewerLicenseStoring {
     private let fileURL: URL
     private let fileManager: FileManager
     private let cipher: TCPViewerLicenseCipher
-    private let lock = NSLock()
+    private let fileAccess = Protected(())
 
     init(
         fileURL: URL = TCPViewerUserDataDirectory.shared.settingsFileURL(named: TCPViewerLicenseStorage.defaultFileName),
@@ -33,7 +34,7 @@ final class TCPViewerLicenseStorage: TCPViewerLicenseStoring {
     }
 
     func readLicense() -> TCPViewerLicense? {
-        lock.withLock {
+        fileAccess.read { _ in
             guard let encryptedData = try? Data(contentsOf: fileURL) else {
                 return nil
             }
@@ -48,7 +49,7 @@ final class TCPViewerLicenseStorage: TCPViewerLicenseStoring {
     }
 
     func writeLicense(_ license: TCPViewerLicense) throws {
-        try lock.withLock {
+        try fileAccess.write { _ in
             try fileManager.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             let data = try JSONEncoder().encode(license)
             let encryptedData = try cipher.encrypt(data)
@@ -57,7 +58,7 @@ final class TCPViewerLicenseStorage: TCPViewerLicenseStoring {
     }
 
     func removeLicense() {
-        lock.withLock {
+        fileAccess.write { _ in
             try? fileManager.removeItem(at: fileURL)
         }
     }
@@ -100,13 +101,5 @@ struct TCPViewerLicenseCipher {
         }
 
         return "TCPViewerLicenseStorageKey.v1.Proxyman"
-    }
-}
-
-private extension NSLock {
-    func withLock<Value>(_ closure: () throws -> Value) rethrows -> Value {
-        lock()
-        defer { unlock() }
-        return try closure()
     }
 }

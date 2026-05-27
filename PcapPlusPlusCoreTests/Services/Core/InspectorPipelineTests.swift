@@ -592,6 +592,66 @@ struct InspectorPipelineTests {
         harness.cleanup()
     }
 
+    @Test func livePacketReanalysisSummariesRemainValidAfterNativeStoreCleanup() throws {
+        let harness = NativeLivePacketDiskStoreTestHarness()
+        defer { harness.cleanup() }
+
+        let packet = makeIPv4UDPPayloadPacket()
+        let timestamp = Date(timeIntervalSince1970: 1_700_300_000)
+        for packetNumber in 1...3 {
+            try harness.appendPacket(
+                identifier: UInt64(packetNumber),
+                rawBytes: packet,
+                timestamp: timestamp.addingTimeInterval(TimeInterval(packetNumber))
+            )
+        }
+
+        let summaries = try harness.reanalyzePacketSummaries()
+        let backingFilePath = harness.snapshot.backingFilePath
+
+        harness.cleanup()
+
+        #expect(!FileManager.default.fileExists(atPath: backingFilePath))
+
+        // Force value copies after native descriptors and their packet store are gone.
+        let copiedSummaries = summaries.map { $0 }
+        let summarySet = Set(copiedSummaries)
+
+        #expect(copiedSummaries.map(\.id) == [1, 2, 3])
+        #expect(summarySet.count == 3)
+        #expect(copiedSummaries.allSatisfy { $0.source == .live })
+        #expect(copiedSummaries.allSatisfy { $0.endpoints.source.address == "192.168.0.1" })
+        #expect(copiedSummaries.allSatisfy { $0.endpoints.destination.address == "192.168.0.2" })
+        #expect(copiedSummaries.allSatisfy { $0.layers.map(\.name).contains("UDP") })
+        #expect(copiedSummaries.allSatisfy { !$0.infoSummary.isEmpty })
+    }
+
+    @Test func livePacketReanalysisUpdatesReturnStableTextAfterStoreReads() throws {
+        let harness = NativeLivePacketDiskStoreTestHarness()
+        defer { harness.cleanup() }
+
+        let timestamp = Date(timeIntervalSince1970: 1_700_400_000)
+        let firstPacket = makeIPv4UDPPayloadPacket()
+        var secondPacket = makePaddedPacket(base: makeIPv4UDPPayloadPacket(), byteCount: 94)
+        secondPacket[secondPacket.count - 1] = 0x44
+
+        try harness.appendPacket(identifier: 1, rawBytes: firstPacket, timestamp: timestamp)
+        try harness.appendPacket(identifier: 2, rawBytes: secondPacket, timestamp: timestamp.addingTimeInterval(1))
+
+        let firstInspection = try harness.inspectPacket(identifier: 1)
+        #expect(firstInspection.rawBytes == firstPacket)
+
+        let updates = try harness.reanalyzePacketSummaryUpdates(upTo: 2)
+        let copiedUpdates = updates.map { $0 }
+
+        #expect(copiedUpdates.map(\.packetID) == [1, 2])
+        #expect(copiedUpdates.allSatisfy { !$0.infoSummary.isEmpty })
+        #expect(copiedUpdates.last?.infoSummary != "Ethernet II")
+        if let protocolSummary = copiedUpdates.last?.protocolSummary {
+            #expect(!isHexEtherTypeProtocol(protocolSummary))
+        }
+    }
+
     @Test func livePacketDiskStoreRSSStressIsGated() throws {
         guard ProcessInfo.processInfo.environment["TCPVIEWER_RUN_MEMORY_STRESS"] == "1" else {
             return

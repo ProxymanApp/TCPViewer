@@ -10,36 +10,28 @@ import SystemConfiguration
 @_implementationOnly import TCPViewerNativeBridge
 
 final class EventCallbackBox<Element>: @unchecked Sendable {
-    private let lock = NSLock()
-    private var eventHandler: ((Result<Element, Error>) -> Void)?
+    @Protected private var eventHandler: ((Result<Element, Error>) -> Void)?
 
     var handler: ((Result<Element, Error>) -> Void)? {
         get {
-            lock.lock()
-            let handler = eventHandler
-            lock.unlock()
-            return handler
+            eventHandler
         }
         set {
-            lock.lock()
             eventHandler = newValue
-            lock.unlock()
         }
     }
 
     func yield(_ element: Element) {
-        lock.lock()
         let handler = eventHandler
-        lock.unlock()
-
         handler?(.success(element))
     }
 
     func finish(throwing error: Error? = nil) {
-        lock.lock()
-        let handler = eventHandler
-        eventHandler = nil
-        lock.unlock()
+        let handler = $eventHandler.write { eventHandler in
+            let handler = eventHandler
+            eventHandler = nil
+            return handler
+        }
 
         if let error {
             handler?(.failure(error))
@@ -367,13 +359,7 @@ enum NativeBridgeMapper {
     }
 
     static func packetInspection(_ descriptor: PCPPNativePacketInspectionDescriptor) -> PacketInspection {
-        if let bugMessage = descriptor.wiresharkDissectorBugMessage {
-            // Surface libwireshark DissectorError messages (e.g. "Unregistered hf!") to the
-            // developer console without polluting the Packet Detail panel with a fallback node.
-            print("[TCPViewer] Wireshark dissector error (packet #\(descriptor.packetNumber)): \(bugMessage)")
-        }
-
-        return PacketInspection(
+        PacketInspection(
             packetID: descriptor.packetIdentifier,
             packetNumber: descriptor.packetNumber,
             rawBytes: descriptor.rawBytes,
@@ -409,6 +395,14 @@ enum NativeBridgeMapper {
             decodeStatus: decodeStatus(descriptor.decodeStatus),
             captureMetadata: packetCaptureMetadata(descriptor.captureMetadata),
             sniDomainName: descriptor.sniDomainName
+        )
+    }
+
+    static func packetSummaryUpdate(_ descriptor: PCPPNativePacketSummaryUpdateDescriptor) -> PacketSummaryUpdate {
+        PacketSummaryUpdate(
+            packetID: descriptor.packetIdentifier,
+            protocolSummary: descriptor.protocolSummary,
+            infoSummary: descriptor.infoSummary
         )
     }
 
@@ -710,6 +704,10 @@ final class NativeLivePacketDiskStoreTestHarness {
         try probe.reanalyzePacketSummaries(upTo: identifier).map {
             NativeBridgeMapper.packetSummary($0, source: .live)
         }
+    }
+
+    func reanalyzePacketSummaryUpdates(upTo identifier: UInt64 = 0) throws -> [PacketSummaryUpdate] {
+        try probe.reanalyzePacketSummaryUpdates(upTo: identifier).map(NativeBridgeMapper.packetSummaryUpdate)
     }
 
     func offset(identifier: UInt64) throws -> UInt64 {

@@ -74,48 +74,34 @@ public final class NativeOfflineCaptureDocument: OfflineCaptureDocumentProviding
 }
 
 private final class LockedValueBox<Value>: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value: Value
+    private let storage: Protected<Value>
 
     init(_ value: Value) {
-        self.value = value
+        self.storage = Protected(value)
     }
 
     func get() -> Value {
-        lock.lock()
-        let value = value
-        lock.unlock()
-        return value
+        storage.wrappedValue
     }
 
     func set(_ newValue: Value) {
-        lock.lock()
-        value = newValue
-        lock.unlock()
+        storage.wrappedValue = newValue
     }
 
     func withValue(_ update: (inout Value) -> Void) {
-        lock.lock()
-        update(&value)
-        lock.unlock()
+        storage.write(update)
     }
 }
 
 private final class CancellationFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var cancelled = false
+    @Protected private var cancelled = false
 
     var isCancelled: Bool {
-        lock.lock()
-        let cancelled = cancelled
-        lock.unlock()
-        return cancelled
+        cancelled
     }
 
     func cancel() {
-        lock.lock()
         cancelled = true
-        lock.unlock()
     }
 }
 

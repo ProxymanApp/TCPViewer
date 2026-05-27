@@ -147,6 +147,21 @@ struct LiveCaptureDurationStopTimer: Sendable {
     }
 }
 
+private struct LivePacketSummaryText: Equatable {
+    let protocolSummary: String?
+    let infoSummary: String
+
+    init(packet: PacketSummary) {
+        self.protocolSummary = packet.protocolSummary
+        self.infoSummary = packet.infoSummary
+    }
+
+    init(update: PCPPNativePacketSummaryUpdateDescriptor) {
+        self.protocolSummary = update.protocolSummary
+        self.infoSummary = update.infoSummary
+    }
+}
+
 private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     private static let maxLivePacketBatchSize = 256
     private static let livePacketBatchInterval: DispatchTimeInterval = .milliseconds(100)
@@ -164,7 +179,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     private var packetBatchBuffer = LivePacketBatchBuffer<PacketSummary>(maxBatchSize: maxLivePacketBatchSize)
     private var packetBatchFlushWorkItem: DispatchWorkItem?
     private var packetReanalysisWorkItem: DispatchWorkItem?
-    private var packetSummariesByID: [PacketSummary.ID: PacketSummary] = [:]
+    private var packetSummaryTextByID: [PacketSummary.ID: LivePacketSummaryText] = [:]
     private var durationStopWorkItem: DispatchWorkItem?
     private var durationStopTimer: LiveCaptureDurationStopTimer?
 
@@ -191,8 +206,14 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
 
         self.health = NativeBridgeMapper.healthSnapshot(nativeSession.healthSnapshot)
         nativeSession.packetHandler = { [weak self] packets in
-            self?.queue.async {
-                self?.handlePacketBatch(packets)
+            guard let self else {
+                return
+            }
+
+            // Bridge native packet descriptors into Swift values before the async queue hop.
+            let batch = NativeBridgeMapper.packetBatch(packets, source: .live)
+            self.queue.async { [weak self] in
+                self?.handlePacketBatch(batch)
             }
         }
 
@@ -203,8 +224,14 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
         }
 
         nativeSession.healthHandler = { [weak self] health in
-            self?.queue.async {
-                self?.handleHealthChange(health)
+            guard let self else {
+                return
+            }
+
+            // Keep Objective-C health descriptors out of queued Swift state.
+            let snapshot = NativeBridgeMapper.healthSnapshot(health)
+            self.queue.async { [weak self] in
+                self?.handleHealthChange(snapshot)
             }
         }
 
@@ -315,7 +342,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
             startedAt = Date()
             cancelPacketBatchFlushWorkItem()
             cancelPacketReanalysisWorkItem()
-            packetSummariesByID.removeAll(keepingCapacity: true)
+            packetSummaryTextByID.removeAll(keepingCapacity: true)
             packetBatchBuffer.discardPending(releasingCapacity: true)
         }
 
@@ -381,8 +408,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
         }
     }
 
-    private func handlePacketBatch(_ packets: [PCPPNativePacketSummaryDescriptor]) {
-        let batch = NativeBridgeMapper.packetBatch(packets, source: .live)
+    private func handlePacketBatch(_ batch: [PacketSummary]) {
         activeRunPacketCount += UInt64(batch.count)
         if let readyBatch = packetBatchBuffer.append(batch) {
             cancelPacketBatchFlushWorkItem()
@@ -416,8 +442,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
         }
     }
 
-    private func handleHealthChange(_ descriptor: PCPPNativeCaptureHealthDescriptor) {
-        let snapshot = NativeBridgeMapper.healthSnapshot(descriptor)
+    private func handleHealthChange(_ snapshot: CaptureHealthSnapshot) {
         health = snapshot
         eventBox.yield(.healthChanged(snapshot))
     }
@@ -437,7 +462,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
         }
 
         for packet in batch {
-            packetSummariesByID[packet.id] = packet
+            packetSummaryTextByID[packet.id] = LivePacketSummaryText(packet: packet)
         }
         eventBox.yield(.packetBatch(batch, disposition: .append))
         schedulePacketReanalysisIfNeeded()
@@ -473,7 +498,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     }
 
     private func schedulePacketReanalysisIfNeeded() {
-        guard packetReanalysisWorkItem == nil, !packetSummariesByID.isEmpty else {
+        guard packetReanalysisWorkItem == nil, !packetSummaryTextByID.isEmpty else {
             return
         }
 
@@ -487,22 +512,26 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     private func reanalyzePacketSummariesFromTimer() {
         packetReanalysisWorkItem = nil
         do {
-            let descriptors = try nativeSession.reanalyzePacketSummaries()
-            let summaries = NativeBridgeMapper.packetBatch(descriptors, source: .live)
-            let updates = summaries.compactMap { summary -> PacketSummaryUpdate? in
-                guard let current = packetSummariesByID[summary.id] else {
-                    packetSummariesByID[summary.id] = summary
+            // Pull lightweight native updates so timer reanalysis avoids full packet descriptors.
+            let descriptors = try autoreleasepool {
+                try nativeSession.reanalyzePacketSummaryUpdates()
+            }
+            let updates = descriptors.compactMap { descriptor -> PacketSummaryUpdate? in
+                let packetID = descriptor.packetIdentifier
+                let summaryText = LivePacketSummaryText(update: descriptor)
+                guard let current = packetSummaryTextByID[packetID] else {
+                    packetSummaryTextByID[packetID] = summaryText
                     return nil
                 }
 
-                packetSummariesByID[summary.id] = summary
-                guard current.protocolSummary != summary.protocolSummary || current.infoSummary != summary.infoSummary else {
+                guard current != summaryText else {
                     return nil
                 }
+                packetSummaryTextByID[packetID] = summaryText
                 return PacketSummaryUpdate(
-                    packetID: summary.id,
-                    protocolSummary: summary.protocolSummary,
-                    infoSummary: summary.infoSummary
+                    packetID: packetID,
+                    protocolSummary: summaryText.protocolSummary,
+                    infoSummary: summaryText.infoSummary
                 )
             }
 

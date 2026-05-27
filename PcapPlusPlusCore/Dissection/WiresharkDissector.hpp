@@ -22,10 +22,6 @@ struct WiresharkByteSource {
 
 struct WiresharkDissectionResult {
     bool usedWireshark = false;
-    // Set when a libwireshark dissector raised a DissectorError exception (e.g. "Unregistered hf!").
-    // Callers should suppress the user-facing "Wireshark Dissector Unavailable" panel and route the
-    // message to a developer log instead.
-    bool dissectorBugDetected = false;
     std::string fallbackReason;
     WiresharkPacketColumns columns;
     std::vector<WiresharkByteSource> byteSources;

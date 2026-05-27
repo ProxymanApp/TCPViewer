@@ -597,7 +597,7 @@ struct NetworkInspectorSnapshot: Equatable {
     }
 
     var visiblePacketCount: Int {
-        packetTableRowStore.rowCount
+        packetTableRowStore.rows.count
     }
 
     var totalPacketCount: Int {
@@ -632,117 +632,26 @@ struct NetworkInspectorSnapshot: Equatable {
 }
 
 // Class-backed storage for the table's row buffer so the content cache can append rows in place.
-// Reads and writes are locked because AppKit can ask for row values while live updates are queued.
+// A struct-only design forces an Array CoW on every batch (~5.9 % of CPU at 50k rows in profiling
+// before this change) because the published snapshot keeps the rows array's buffer alive. Sharing
+// a class reference end-to-end keeps the buffer uniquely-owned by this store and lets the cache
+// mutate it without copying. Mutations only happen on the main thread, in the same runloop pass
+// that issues the corresponding NSTableView update, so AppKit never observes a torn read.
 final class PacketTableRowStore: @unchecked Sendable {
-    private struct Storage {
-        var rows: [PacketTableRow]
-        var visiblePacketRowIndexByID: [PacketSummary.ID: Int]
-    }
-
-    private let storage: Protected<Storage>
+    var rows: [PacketTableRow] = []
+    var rowIDs: [PacketSummary.ID] = []
+    var visiblePacketRowIndexByID: [PacketSummary.ID: Int] = [:]
 
     static let empty = PacketTableRowStore()
 
-    init(rows: [PacketTableRow] = [], visiblePacketRowIndexByID: [PacketSummary.ID: Int] = [:]) {
-        self.storage = Protected(wrappedValue: Storage(
-            rows: rows,
-            visiblePacketRowIndexByID: visiblePacketRowIndexByID
-        ))
-    }
-
-    var rowCount: Int {
-        storage.read { $0.rows.count }
-    }
-
-    var isEmpty: Bool {
-        storage.read { $0.rows.isEmpty }
-    }
-
-    var visiblePacketIndexCount: Int {
-        storage.read { $0.visiblePacketRowIndexByID.count }
-    }
-
-    var firstRowID: PacketSummary.ID? {
-        storage.read { $0.rows.first?.id }
-    }
-
-    var rows: [PacketTableRow] {
-        storage.read { $0.rows }
-    }
-
-    var visiblePacketRowIndexByID: [PacketSummary.ID: Int] {
-        storage.read { $0.visiblePacketRowIndexByID }
-    }
-
-    func reserveCapacity(rowCount: Int, visibleIndexCount: Int) {
-        storage.write { state in
-            state.rows.reserveCapacity(rowCount)
-            state.visiblePacketRowIndexByID.reserveCapacity(visibleIndexCount)
-        }
-    }
-
-    @discardableResult
-    func append(_ row: PacketTableRow) -> Int {
-        storage.write { state in
-            let rowIndex = state.rows.count
-            state.rows.append(row)
-            state.visiblePacketRowIndexByID[row.id] = rowIndex
-            return rowIndex
-        }
-    }
-
-    func updateRow(at index: Int, with row: PacketTableRow) -> Bool {
-        storage.write { state in
-            guard state.rows.indices.contains(index) else {
-                return false
-            }
-
-            let previousID = state.rows[index].id
-            state.rows[index] = row
-            if previousID != row.id {
-                state.visiblePacketRowIndexByID.removeValue(forKey: previousID)
-            }
-            state.visiblePacketRowIndexByID[row.id] = index
-            return true
-        }
-    }
-
-    func row(at index: Int) -> PacketTableRow? {
-        storage.read { state in
-            guard state.rows.indices.contains(index) else {
-                return nil
-            }
-
-            return state.rows[index]
-        }
-    }
-
-    func containsRow(_ index: Int) -> Bool {
-        storage.read { $0.rows.indices.contains(index) }
-    }
-
-    func rows(at indexes: [Int]) -> [PacketTableRow] {
-        storage.read { state in
-            indexes.compactMap { index in
-                state.rows.indices.contains(index) ? state.rows[index] : nil
-            }
-        }
-    }
-
-    func rowIDs() -> [PacketSummary.ID] {
-        storage.read { $0.rows.map(\.id) }
-    }
-
-    func visibleRowIndex(for id: PacketSummary.ID?) -> Int? {
-        guard let id else {
-            return nil
-        }
-
-        return storage.read { $0.visiblePacketRowIndexByID[id] }
-    }
-
-    func hasVisibleRow(for id: PacketSummary.ID) -> Bool {
-        storage.read { $0.visiblePacketRowIndexByID[id] != nil }
+    init(
+        rows: [PacketTableRow] = [],
+        visiblePacketRowIndexByID: [PacketSummary.ID: Int] = [:],
+        rowIDs: [PacketSummary.ID]? = nil
+    ) {
+        self.rows = rows
+        self.visiblePacketRowIndexByID = visiblePacketRowIndexByID
+        self.rowIDs = rowIDs ?? rows.map(\.id)
     }
 }
 
@@ -756,9 +665,6 @@ struct PacketTableContent: Sendable {
 
     var rows: [PacketTableRow] { store.rows }
     var visiblePacketRowIndexByID: [PacketSummary.ID: Int] { store.visiblePacketRowIndexByID }
-    var rowCount: Int { store.rowCount }
-    var visiblePacketIndexCount: Int { store.visiblePacketIndexCount }
-    var firstRowID: PacketSummary.ID? { store.firstRowID }
 
     static let empty = PacketTableContent(
         displayFilter: PacketDisplayFilter(""),
@@ -786,7 +692,11 @@ struct PacketTableContent: Sendable {
     }
 
     func selectedRowIndex(id: PacketSummary.ID?) -> Int? {
-        store.visibleRowIndex(for: id)
+        guard let id else {
+            return nil
+        }
+
+        return store.visiblePacketRowIndexByID[id]
     }
 }
 

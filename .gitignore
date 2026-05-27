@@ -7,4 +7,4 @@ Config/TCPViewer.local.xcconfig
 node_modules/
 fastlane/README.md
 fastlane/report.xml
-*.xcuserstate
+TCPViewer.xcodeproj/project.xcworkspace/xcuserdata/nghiatran.xcuserdatad/UserInterfaceState.xcuserstate
