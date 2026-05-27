@@ -328,42 +328,130 @@ struct NetworkInspectorViewModelTests {
             makePacket(packetNumber: 2, source: .live, transportHint: .udp),
             makePacket(packetNumber: 3, source: .live, transportHint: .dns),
         ]
-        let rows = packets.map(PacketTableRow.init(packet:))
 
         #expect(PacketTableSelectionSyncPlanner.action(
-            rows: rows,
+            visualSelectedID: packets[1].id,
             selectedPacketID: packets[1].id,
             selectedRowIndex: 1,
-            tableSelectedRowIndexes: IndexSet(integer: 1)
+            rowCount: packets.count
         ) == .none)
 
         #expect(PacketTableSelectionSyncPlanner.action(
-            rows: rows,
+            visualSelectedID: nil,
             selectedPacketID: packets[1].id,
             selectedRowIndex: 1,
-            tableSelectedRowIndexes: []
+            rowCount: packets.count
         ) == .select(1))
 
         #expect(PacketTableSelectionSyncPlanner.action(
-            rows: rows,
+            visualSelectedID: packets[0].id,
             selectedPacketID: packets[1].id,
             selectedRowIndex: 1,
-            tableSelectedRowIndexes: IndexSet(integer: 0)
+            rowCount: packets.count
         ) == .select(1))
 
         #expect(PacketTableSelectionSyncPlanner.action(
-            rows: rows,
+            visualSelectedID: packets[1].id,
             selectedPacketID: nil,
             selectedRowIndex: nil,
-            tableSelectedRowIndexes: IndexSet(integer: 1)
+            rowCount: packets.count
         ) == .deselect)
 
         #expect(PacketTableSelectionSyncPlanner.action(
-            rows: rows,
+            visualSelectedID: nil,
             selectedPacketID: packets[1].id,
             selectedRowIndex: nil,
-            tableSelectedRowIndexes: []
+            rowCount: packets.count
         ) == .none)
+
+        #expect(PacketTableSelectionSyncPlanner.action(
+            visualSelectedID: packets[1].id,
+            selectedPacketID: packets[1].id,
+            selectedRowIndex: packets.count,
+            rowCount: packets.count
+        ) == .deselect)
+    }
+
+    @Test func packetTableViewModelReleasesReplacedRowsOnRenderPath() {
+        let second = makePacket(packetNumber: 2, source: .live, transportHint: .udp)
+        let secondStore = PacketTableRowStore(
+            rows: [PacketTableRow(packet: second)],
+            visiblePacketRowIndexByID: [second.id: 0]
+        )
+        weak var releasedStore: PacketTableRowStore?
+
+        do {
+            let viewModel = PacketTableViewModel()
+            do {
+                let first = makePacket(packetNumber: 1, source: .live, transportHint: .tcp)
+                let firstStore = PacketTableRowStore(
+                    rows: [PacketTableRow(packet: first)],
+                    visiblePacketRowIndexByID: [first.id: 0]
+                )
+                releasedStore = firstStore
+                let firstSnapshot = makeInspectorSnapshot(
+                    packets: [first],
+                    selectedPacketID: first.id,
+                    packetTableContent: PacketTableContent(
+                        displayFilter: PacketDisplayFilter(""),
+                        displayFilterChips: [],
+                        store: firstStore,
+                        generation: 1,
+                        updatePlan: .reload,
+                        malformedPacketCount: 0
+                    )
+                )
+                _ = viewModel.render(snapshot: firstSnapshot)
+            }
+            #expect(releasedStore != nil)
+
+            let secondSnapshot = makeInspectorSnapshot(
+                packets: [second],
+                selectedPacketID: second.id,
+                packetTableContent: PacketTableContent(
+                    displayFilter: PacketDisplayFilter(""),
+                    displayFilterChips: [],
+                    store: secondStore,
+                    generation: 2,
+                    updatePlan: .reload,
+                    malformedPacketCount: 0
+                )
+            )
+            _ = viewModel.render(snapshot: secondSnapshot)
+        }
+
+        #expect(releasedStore == nil)
+    }
+
+    @Test func packetTableViewModelReadsRowIDsWithoutCopyingRowArray() {
+        let packets = [
+            makePacket(packetNumber: 1, source: .live, transportHint: .tcp),
+            makePacket(packetNumber: 2, source: .live, transportHint: .udp),
+        ]
+        let store = PacketTableRowStore(
+            rows: packets.map(PacketTableRow.init(packet:)),
+            visiblePacketRowIndexByID: [packets[0].id: 0, packets[1].id: 1]
+        )
+        let snapshot = makeInspectorSnapshot(
+            packets: packets,
+            selectedPacketID: packets[1].id,
+            packetTableContent: PacketTableContent(
+                displayFilter: PacketDisplayFilter(""),
+                displayFilterChips: [],
+                store: store,
+                generation: 1,
+                updatePlan: .reload,
+                malformedPacketCount: 0
+            )
+        )
+        let viewModel = PacketTableViewModel()
+        _ = viewModel.render(snapshot: snapshot)
+
+        #expect(viewModel.rowCount == 2)
+        #expect(viewModel.rowID(at: 0) == packets[0].id)
+        #expect(viewModel.rowID(at: 1) == packets[1].id)
+        #expect(viewModel.rowID(at: -1) == nil)
+        #expect(viewModel.rowID(at: 2) == nil)
     }
 
     @Test func inspectorTreeIgnoresUnchangedInspectionDuringAppend() {
@@ -649,6 +737,7 @@ struct NetworkInspectorViewModelTests {
         }
 
         #expect(viewModel.snapshot.packetRows.map(\.id) == packets.map(\.id))
+        #expect(viewModel.snapshot.packetTableRowStore.rowIDs == packets.map(\.id))
         #expect(viewModel.snapshot.packetTableUpdatePlan == .append(1..<3))
     }
 
@@ -942,6 +1031,7 @@ struct NetworkInspectorViewModelTests {
         // owned by the class and Swift's CoW doesn't fire on the next mutation.
         #expect(viewModel.snapshot.packetTableRowStore === storeAfterFirstAppend)
         #expect(viewModel.snapshot.packetRows.count == 2)
+        #expect(viewModel.snapshot.packetTableRowStore.rowIDs == viewModel.snapshot.packetRows.map(\.id))
     }
 
     @Test func rebuildAllocatesAFreshRowStoreInstance() async {
@@ -2187,10 +2277,11 @@ struct NetworkInspectorViewModelTests {
     private func makeInspectorSnapshot(
         packets: [PacketSummary],
         selectedPacketID: PacketSummary.ID?,
-        inspection: PacketInspection?,
-        generation: UInt64,
-        updatePlan: PacketTableUpdatePlan,
-        isLoading: Bool = false
+        inspection: PacketInspection? = nil,
+        generation: UInt64 = 1,
+        updatePlan: PacketTableUpdatePlan = .reload,
+        isLoading: Bool = false,
+        packetTableContent: PacketTableContent? = nil
     ) -> NetworkInspectorSnapshot {
         var base = TCPViewerWindowSnapshot.foundation
         base.packetIngestState.replace(with: packets, source: .live)
@@ -2202,19 +2293,24 @@ struct NetworkInspectorViewModelTests {
             isLoading: isLoading,
             statusMessage: "Packet loaded."
         )
-        let rows = packets.map(PacketTableRow.init(packet:))
-        let visibleIndex = Dictionary(uniqueKeysWithValues: rows.enumerated().map { index, row in
-            (row.id, index)
-        })
-        let store = PacketTableRowStore(rows: rows, visiblePacketRowIndexByID: visibleIndex)
-        let tableContent = PacketTableContent(
-            displayFilter: PacketDisplayFilter(""),
-            displayFilterChips: [],
-            store: store,
-            generation: generation,
-            updatePlan: updatePlan,
-            malformedPacketCount: 0
-        )
+        let tableContent: PacketTableContent
+        if let packetTableContent {
+            tableContent = packetTableContent
+        } else {
+            let rows = packets.map(PacketTableRow.init(packet:))
+            let visibleIndex = Dictionary(uniqueKeysWithValues: rows.enumerated().map { index, row in
+                (row.id, index)
+            })
+            let store = PacketTableRowStore(rows: rows, visiblePacketRowIndexByID: visibleIndex)
+            tableContent = PacketTableContent(
+                displayFilter: PacketDisplayFilter(""),
+                displayFilterChips: [],
+                store: store,
+                generation: generation,
+                updatePlan: updatePlan,
+                malformedPacketCount: 0
+            )
+        }
         return NetworkInspectorSnapshot.make(
             base: base,
             selectedSidebar: .liveCapture,

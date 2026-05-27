@@ -111,20 +111,18 @@ struct PacketTableMenuLogicTests {
             makePacket(packetNumber: 2),
             makePacket(packetNumber: 3),
         ]
-        let rows = packets.map(PacketTableRow.init(packet:))
-
         #expect(PacketTableSelectionSyncPlanner.action(
-            rows: rows,
+            visualSelectedID: packets[0].id,
             selectedPacketID: packets[0].id,
             selectedRowIndex: 0,
-            tableSelectedRowIndexes: IndexSet([0, 2])
+            rowCount: packets.count
         ) == .none)
 
         #expect(PacketTableSelectionSyncPlanner.action(
-            rows: rows,
+            visualSelectedID: packets[0].id,
             selectedPacketID: packets[2].id,
             selectedRowIndex: 2,
-            tableSelectedRowIndexes: IndexSet([0, 2])
+            rowCount: packets.count
         ) == .select(2))
     }
 

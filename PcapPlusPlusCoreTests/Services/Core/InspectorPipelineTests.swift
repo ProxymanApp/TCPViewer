@@ -626,6 +626,32 @@ struct InspectorPipelineTests {
         #expect(copiedSummaries.allSatisfy { !$0.infoSummary.isEmpty })
     }
 
+    @Test func livePacketReanalysisUpdatesReturnStableTextAfterStoreReads() throws {
+        let harness = NativeLivePacketDiskStoreTestHarness()
+        defer { harness.cleanup() }
+
+        let timestamp = Date(timeIntervalSince1970: 1_700_400_000)
+        let firstPacket = makeIPv4UDPPayloadPacket()
+        var secondPacket = makePaddedPacket(base: makeIPv4UDPPayloadPacket(), byteCount: 94)
+        secondPacket[secondPacket.count - 1] = 0x44
+
+        try harness.appendPacket(identifier: 1, rawBytes: firstPacket, timestamp: timestamp)
+        try harness.appendPacket(identifier: 2, rawBytes: secondPacket, timestamp: timestamp.addingTimeInterval(1))
+
+        let firstInspection = try harness.inspectPacket(identifier: 1)
+        #expect(firstInspection.rawBytes == firstPacket)
+
+        let updates = try harness.reanalyzePacketSummaryUpdates(upTo: 2)
+        let copiedUpdates = updates.map { $0 }
+
+        #expect(copiedUpdates.map(\.packetID) == [1, 2])
+        #expect(copiedUpdates.allSatisfy { !$0.infoSummary.isEmpty })
+        #expect(copiedUpdates.last?.infoSummary != "Ethernet II")
+        if let protocolSummary = copiedUpdates.last?.protocolSummary {
+            #expect(!isHexEtherTypeProtocol(protocolSummary))
+        }
+    }
+
     @Test func livePacketDiskStoreRSSStressIsGated() throws {
         guard ProcessInfo.processInfo.environment["TCPVIEWER_RUN_MEMORY_STRESS"] == "1" else {
             return

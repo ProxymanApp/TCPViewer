@@ -29,17 +29,14 @@ enum PacketTableSelectionSyncAction: Equatable {
 
 enum PacketTableSelectionSyncPlanner {
     static func action(
-        rows: [PacketTableRow],
+        visualSelectedID: PacketSummary.ID?,
         selectedPacketID: PacketSummary.ID?,
         selectedRowIndex: Int?,
-        tableSelectedRowIndexes: IndexSet
+        rowCount: Int
     ) -> PacketTableSelectionSyncAction {
-        let tableSelectedRow = tableSelectedRowIndexes.first ?? -1
-        let visualSelectedID = rows.indices.contains(tableSelectedRow) ? rows[tableSelectedRow].id : nil
-
         guard let selectedPacketID,
               let selectedRowIndex,
-              rows.indices.contains(selectedRowIndex) else {
+              (0..<rowCount).contains(selectedRowIndex) else {
             return visualSelectedID == nil ? .none : .deselect
         }
 
@@ -85,8 +82,6 @@ fileprivate final class PacketTableView: NSTableView {
 }
 
 final class PacketTableViewModel {
-    private static let rowStoreReleaseQueue = DispatchQueue(label: "com.proxyman.TCPViewer.packet-table-row-store-release")
-
     // Holds the class reference, NOT a copy of the rows array. Copying the array would re-share
     // its buffer with the cache and re-introduce the per-batch CoW we're trying to avoid.
     private(set) var rowStore: PacketTableRowStore = .empty
@@ -96,6 +91,19 @@ final class PacketTableViewModel {
 
     var rows: [PacketTableRow] {
         rowStore.rows
+    }
+
+    var rowCount: Int {
+        rowStore.rows.count
+    }
+
+    func rowID(at index: Int) -> PacketSummary.ID? {
+        guard rowStore.rows.indices.contains(index),
+              rowStore.rowIDs.indices.contains(index) else {
+            return nil
+        }
+
+        return rowStore.rowIDs[index]
     }
 
     // Store the latest render state so the controller can apply incremental table updates.
@@ -110,20 +118,10 @@ final class PacketTableViewModel {
         contentGeneration = snapshot.packetTableGeneration
         selectedPacketID = snapshot.selectedPacketID
         selectedRowIndex = snapshot.selectedPacketRowIndex
-        releasePreviousRowStoreOffMainIfNeeded(previousRowStore, replacingWith: rowStore)
+
+        // Release old UI-facing row buffers on main with the table render that replaced them.
+        _ = previousRowStore
         return updatePlan
-    }
-
-    private func releasePreviousRowStoreOffMainIfNeeded(_ previousRowStore: PacketTableRowStore, replacingWith currentRowStore: PacketTableRowStore) {
-        guard previousRowStore !== currentRowStore,
-              previousRowStore !== PacketTableRowStore.empty else {
-            return
-        }
-
-        // Large live row buffers can be torn down when a new capture starts; keep that out of AppKit render.
-        Self.rowStoreReleaseQueue.async {
-            _ = previousRowStore.rows.count
-        }
     }
 }
 
@@ -434,7 +432,7 @@ final class PacketTableViewController: NSViewController {
 
     private func syncSelection() {
         let visualRow = tableView.selectedRowIndexes.first ?? -1
-        let visualID: PacketSummary.ID? = rows.indices.contains(visualRow) ? rows[visualRow].id : nil
+        let visualID = viewModel.rowID(at: visualRow)
 
         // Detect a user click whose `tableViewSelectionDidChange` notification
         // hasn't been delivered yet. NSTableView updates the visual selection
@@ -464,10 +462,10 @@ final class PacketTableViewController: NSViewController {
         }
 
         let action = PacketTableSelectionSyncPlanner.action(
-            rows: rows,
+            visualSelectedID: visualID,
             selectedPacketID: viewModel.selectedPacketID,
             selectedRowIndex: viewModel.selectedRowIndex,
-            tableSelectedRowIndexes: tableView.selectedRowIndexes
+            rowCount: viewModel.rowCount
         )
 
         switch action {
@@ -699,7 +697,7 @@ extension PacketTableViewController: NSTableViewDataSource, NSTableViewDelegate 
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         let selectedRow = tableView.selectedRowIndexes.first ?? -1
-        let selectedID = rows.indices.contains(selectedRow) ? rows[selectedRow].id : nil
+        let selectedID = viewModel.rowID(at: selectedRow)
 
         // Suppress only when the change is the echo of a programmatic update
         // we just applied. A genuine user click during a render burst still

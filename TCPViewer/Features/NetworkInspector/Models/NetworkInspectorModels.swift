@@ -639,13 +639,19 @@ struct NetworkInspectorSnapshot: Equatable {
 // that issues the corresponding NSTableView update, so AppKit never observes a torn read.
 final class PacketTableRowStore: @unchecked Sendable {
     var rows: [PacketTableRow] = []
+    var rowIDs: [PacketSummary.ID] = []
     var visiblePacketRowIndexByID: [PacketSummary.ID: Int] = [:]
 
     static let empty = PacketTableRowStore()
 
-    init(rows: [PacketTableRow] = [], visiblePacketRowIndexByID: [PacketSummary.ID: Int] = [:]) {
+    init(
+        rows: [PacketTableRow] = [],
+        visiblePacketRowIndexByID: [PacketSummary.ID: Int] = [:],
+        rowIDs: [PacketSummary.ID]? = nil
+    ) {
         self.rows = rows
         self.visiblePacketRowIndexByID = visiblePacketRowIndexByID
+        self.rowIDs = rowIDs ?? rows.map(\.id)
     }
 }
 

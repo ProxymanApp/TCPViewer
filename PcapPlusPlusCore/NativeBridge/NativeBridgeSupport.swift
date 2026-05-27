@@ -398,6 +398,14 @@ enum NativeBridgeMapper {
         )
     }
 
+    static func packetSummaryUpdate(_ descriptor: PCPPNativePacketSummaryUpdateDescriptor) -> PacketSummaryUpdate {
+        PacketSummaryUpdate(
+            packetID: descriptor.packetIdentifier,
+            protocolSummary: descriptor.protocolSummary,
+            infoSummary: descriptor.infoSummary
+        )
+    }
+
     static func healthSnapshot(_ descriptor: PCPPNativeCaptureHealthDescriptor) -> CaptureHealthSnapshot {
         CaptureHealthSnapshot(
             packetsReceived: descriptor.packetsReceived,
@@ -696,6 +704,10 @@ final class NativeLivePacketDiskStoreTestHarness {
         try probe.reanalyzePacketSummaries(upTo: identifier).map {
             NativeBridgeMapper.packetSummary($0, source: .live)
         }
+    }
+
+    func reanalyzePacketSummaryUpdates(upTo identifier: UInt64 = 0) throws -> [PacketSummaryUpdate] {
+        try probe.reanalyzePacketSummaryUpdates(upTo: identifier).map(NativeBridgeMapper.packetSummaryUpdate)
     }
 
     func offset(identifier: UInt64) throws -> UInt64 {

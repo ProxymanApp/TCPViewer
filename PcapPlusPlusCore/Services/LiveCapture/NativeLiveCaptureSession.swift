@@ -147,6 +147,21 @@ struct LiveCaptureDurationStopTimer: Sendable {
     }
 }
 
+private struct LivePacketSummaryText: Equatable {
+    let protocolSummary: String?
+    let infoSummary: String
+
+    init(packet: PacketSummary) {
+        self.protocolSummary = packet.protocolSummary
+        self.infoSummary = packet.infoSummary
+    }
+
+    init(update: PCPPNativePacketSummaryUpdateDescriptor) {
+        self.protocolSummary = update.protocolSummary
+        self.infoSummary = update.infoSummary
+    }
+}
+
 private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     private static let maxLivePacketBatchSize = 256
     private static let livePacketBatchInterval: DispatchTimeInterval = .milliseconds(100)
@@ -164,7 +179,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     private var packetBatchBuffer = LivePacketBatchBuffer<PacketSummary>(maxBatchSize: maxLivePacketBatchSize)
     private var packetBatchFlushWorkItem: DispatchWorkItem?
     private var packetReanalysisWorkItem: DispatchWorkItem?
-    private var packetSummariesByID: [PacketSummary.ID: PacketSummary] = [:]
+    private var packetSummaryTextByID: [PacketSummary.ID: LivePacketSummaryText] = [:]
     private var durationStopWorkItem: DispatchWorkItem?
     private var durationStopTimer: LiveCaptureDurationStopTimer?
 
@@ -327,7 +342,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
             startedAt = Date()
             cancelPacketBatchFlushWorkItem()
             cancelPacketReanalysisWorkItem()
-            packetSummariesByID.removeAll(keepingCapacity: true)
+            packetSummaryTextByID.removeAll(keepingCapacity: true)
             packetBatchBuffer.discardPending(releasingCapacity: true)
         }
 
@@ -447,7 +462,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
         }
 
         for packet in batch {
-            packetSummariesByID[packet.id] = packet
+            packetSummaryTextByID[packet.id] = LivePacketSummaryText(packet: packet)
         }
         eventBox.yield(.packetBatch(batch, disposition: .append))
         schedulePacketReanalysisIfNeeded()
@@ -483,7 +498,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     }
 
     private func schedulePacketReanalysisIfNeeded() {
-        guard packetReanalysisWorkItem == nil, !packetSummariesByID.isEmpty else {
+        guard packetReanalysisWorkItem == nil, !packetSummaryTextByID.isEmpty else {
             return
         }
 
@@ -497,22 +512,26 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     private func reanalyzePacketSummariesFromTimer() {
         packetReanalysisWorkItem = nil
         do {
-            let descriptors = try nativeSession.reanalyzePacketSummaries()
-            let summaries = NativeBridgeMapper.packetBatch(descriptors, source: .live)
-            let updates = summaries.compactMap { summary -> PacketSummaryUpdate? in
-                guard let current = packetSummariesByID[summary.id] else {
-                    packetSummariesByID[summary.id] = summary
+            // Pull lightweight native updates so timer reanalysis avoids full packet descriptors.
+            let descriptors = try autoreleasepool {
+                try nativeSession.reanalyzePacketSummaryUpdates()
+            }
+            let updates = descriptors.compactMap { descriptor -> PacketSummaryUpdate? in
+                let packetID = descriptor.packetIdentifier
+                let summaryText = LivePacketSummaryText(update: descriptor)
+                guard let current = packetSummaryTextByID[packetID] else {
+                    packetSummaryTextByID[packetID] = summaryText
                     return nil
                 }
 
-                packetSummariesByID[summary.id] = summary
-                guard current.protocolSummary != summary.protocolSummary || current.infoSummary != summary.infoSummary else {
+                guard current != summaryText else {
                     return nil
                 }
+                packetSummaryTextByID[packetID] = summaryText
                 return PacketSummaryUpdate(
-                    packetID: summary.id,
-                    protocolSummary: summary.protocolSummary,
-                    infoSummary: summary.infoSummary
+                    packetID: packetID,
+                    protocolSummary: summaryText.protocolSummary,
+                    infoSummary: summaryText.infoSummary
                 )
             }
 

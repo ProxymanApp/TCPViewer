@@ -165,6 +165,7 @@ private enum PacketTableContentBuilder {
         let sourcePackets = packets(from: input)
 
         store.rows.reserveCapacity(sourcePackets.count)
+        store.rowIDs.reserveCapacity(sourcePackets.count)
         store.visiblePacketRowIndexByID.reserveCapacity(sourcePackets.count)
 
         var malformedPacketCount = 0
@@ -188,6 +189,7 @@ private enum PacketTableContentBuilder {
 
             let rowIndex = store.rows.count
             store.rows.append(rowTimingState.row(for: packet))
+            store.rowIDs.append(packet.id)
             store.visiblePacketRowIndexByID[packet.id] = rowIndex
         }
 
@@ -503,6 +505,7 @@ private struct PacketTableContentCache {
         let appendStartIndex = store.rows.count
 
         store.rows.reserveCapacity(store.rows.count + newPackets.count)
+        store.rowIDs.reserveCapacity(store.rowIDs.count + newPackets.count)
         store.visiblePacketRowIndexByID.reserveCapacity(store.visiblePacketRowIndexByID.count + newPackets.count)
         let structuredFilterContext = structuredFilterService.evaluationContext(for: structuredFilterGroup)
 
@@ -520,6 +523,7 @@ private struct PacketTableContentCache {
 
             let rowIndex = store.rows.count
             store.rows.append(rowTimingState.row(for: packet))
+            store.rowIDs.append(packet.id)
             store.visiblePacketRowIndexByID[packet.id] = rowIndex
         }
 

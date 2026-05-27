@@ -179,6 +179,19 @@ typedef NS_ENUM(NSInteger, PCPPNativeLiveSessionPhase) {
 
 @end
 
+@interface PCPPNativePacketSummaryUpdateDescriptor : NSObject
+
+@property (nonatomic, readonly) unsigned long long packetIdentifier;
+@property (nonatomic, copy, readonly, nullable) NSString *protocolSummary;
+@property (nonatomic, copy, readonly) NSString *infoSummary;
+
+- (instancetype)initWithPacketIdentifier:(unsigned long long)packetIdentifier
+                         protocolSummary:(nullable NSString *)protocolSummary
+                             infoSummary:(NSString *)infoSummary NS_DESIGNATED_INITIALIZER;
+- (instancetype)init NS_UNAVAILABLE;
+
+@end
+
 @interface PCPPNativePacketSummaryDescriptor : NSObject
 
 @property (nonatomic, readonly) unsigned long long identifier;
@@ -421,6 +434,8 @@ typedef BOOL (^PCPPNativeCancellationHandler)(void);
 - (nullable PCPPNativePacketInspectionDescriptor *)inspectPacketWithIdentifier:(unsigned long long)identifier error:(NSError **)error;
 - (nullable NSArray<PCPPNativePacketSummaryDescriptor *> *)reanalyzePacketSummariesAndReturnError:(NSError **)error
     NS_SWIFT_NAME(reanalyzePacketSummaries());
+- (nullable NSArray<PCPPNativePacketSummaryUpdateDescriptor *> *)reanalyzePacketSummaryUpdatesAndReturnError:(NSError **)error
+    NS_SWIFT_NAME(reanalyzePacketSummaryUpdates());
 - (BOOL)exportPacketsWithIdentifiers:(NSArray<NSNumber *> *)identifiers
                                 toURL:(NSURL *)url
                                format:(NSString *)format
@@ -489,6 +504,9 @@ typedef BOOL (^PCPPNativeCancellationHandler)(void);
 - (nullable NSArray<PCPPNativePacketSummaryDescriptor *> *)reanalyzePacketSummariesUpToIdentifier:(unsigned long long)identifier
                                                                                              error:(NSError **)error
     NS_SWIFT_NAME(reanalyzePacketSummaries(upTo:));
+- (nullable NSArray<PCPPNativePacketSummaryUpdateDescriptor *> *)reanalyzePacketSummaryUpdatesUpToIdentifier:(unsigned long long)identifier
+                                                                                               error:(NSError **)error
+    NS_SWIFT_NAME(reanalyzePacketSummaryUpdates(upTo:));
 - (nullable NSNumber *)offsetForPacketWithIdentifier:(unsigned long long)identifier
                                                error:(NSError **)error NS_SWIFT_NAME(offset(identifier:));
 - (void)cleanup;
