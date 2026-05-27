@@ -113,6 +113,26 @@ struct TCPViewerNetworkHelperToolManagerTests {
         #expect(logs.messages.contains { $0.contains("❌ ERROR") && $0.contains("Launch helper status failed") })
     }
 
+    @Test func launchStatusLogsInstalledHelperVersion() async throws {
+        let logs = LockedLogSink()
+        let fixture = try makeBlessFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.rootURL) }
+        let installedHelperURL = fixture.privilegedHelperToolsDirectoryURL
+            .appendingPathComponent(TCPViewerNetworkHelperConstants.serviceLabel)
+        try createHelperInfoPlist(at: installedHelperURL, shortVersion: "2.3", buildVersion: "45")
+        let manager = TCPViewerNetworkHelperToolManager(
+            serviceController: makeBlessController(fixture: fixture),
+            bpfChecker: ReadyNetworkHelperBPFChecker(),
+            logger: TCPViewerNetworkHelperLogger(output: logs.append)
+        )
+
+        _ = await refreshStatusForLaunch(manager)
+
+        #expect(logs.messages.contains {
+            $0.contains("Launch helper status succeeded") && $0.contains("installedVersion=2.3 (45)")
+        })
+    }
+
     @Test func constantsUseTCPViewerHelperIdentityAndFreshCaptureGroup() {
         #expect(TCPViewerNetworkHelperConstants.serviceLabel == "com.proxyman.tcpviewer.helpertool")
         #expect(TCPViewerNetworkHelperConstants.launchDaemonPlistName == "com.proxyman.tcpviewer.helpertool.plist")
@@ -325,6 +345,16 @@ struct TCPViewerNetworkHelperToolManagerTests {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data().write(to: url)
     }
+
+    private func createHelperInfoPlist(at url: URL, shortVersion: String, buildVersion: String) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let plist = [
+            "CFBundleShortVersionString": shortVersion,
+            "CFBundleVersion": buildVersion,
+        ]
+        let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+        try data.write(to: url)
+    }
 }
 
 private struct BlessFixture {
@@ -356,23 +386,32 @@ private final class FakeNetworkHelperServiceController: TCPViewerNetworkHelperSe
     private var storedStatus: TCPViewerNetworkHelperAuthorizationStatus
     private let registerError: Error?
     private let unregisterError: Error?
+    private let storedInstalledHelperToolVersion: String?
     private(set) var registerCallCount = 0
     private(set) var unregisterCallCount = 0
 
     init(
         status: TCPViewerNetworkHelperAuthorizationStatus,
         registerError: Error? = nil,
-        unregisterError: Error? = nil
+        unregisterError: Error? = nil,
+        installedHelperToolVersion: String? = nil
     ) {
         self.storedStatus = status
         self.registerError = registerError
         self.unregisterError = unregisterError
+        self.storedInstalledHelperToolVersion = installedHelperToolVersion
     }
 
     var status: TCPViewerNetworkHelperAuthorizationStatus {
         lock.lock()
         defer { lock.unlock() }
         return storedStatus
+    }
+
+    var installedHelperToolVersion: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedStatus == .enabled ? storedInstalledHelperToolVersion : nil
     }
 
     func register() throws {

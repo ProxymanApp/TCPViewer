@@ -1091,7 +1091,12 @@ final class TCPViewerWorkspaceController {
                 self.persistCaptureFilter(validatedOptions.captureFilterExpression)
 
                 let configuration = LiveSessionConfiguration(interfaceID: interface.id, options: validatedOptions)
-                if self.liveSession == nil || self.liveSessionConfiguration != configuration {
+                // A new capture run must not inherit delayed packet callbacks from the stopped session.
+                let needsFreshSession = self.liveSession == nil ||
+                    self.liveSessionConfiguration != configuration ||
+                    self.snapshot.sessionState.phase == .stopped ||
+                    self.snapshot.sessionState.phase == .failed
+                if needsFreshSession {
                     self.resetLiveSession { [weak self] result in
                         DispatchQueue.main.async {
                             guard let self else {

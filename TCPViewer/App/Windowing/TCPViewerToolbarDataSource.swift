@@ -465,7 +465,7 @@ final class TCPViewerToolbarDataSource: NSObject {
 
     private func renderTrialButton() {
         trialButton.title = "TRIAL VERSION"
-        trialButton.isHidden = !viewModel.showsTrialButton
+        trialButton.isHidden = true
     }
 
     private func renderSharePopup() {

@@ -278,6 +278,38 @@ struct PacketInspectorTreeViewModelTests {
         #expect(viewModel.rootItems.first?.displayText == "Frame: Packet 2")
     }
 
+    @MainActor
+    @Test func filterRerenderUsesLatestInspectionStateAfterSnapshotReplacement() throws {
+        let firstPacket = makePacket(packetNumber: 1)
+        let secondPacket = makePacket(packetNumber: 2)
+        let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        controller.loadViewIfNeeded()
+
+        let outlineView = try #require(firstSubview(ofType: NSOutlineView.self, in: controller.view))
+        let searchField = try #require(firstSubview(ofType: NSSearchField.self, in: controller.view))
+
+        controller.render(snapshot: makeSnapshot(
+            packet: firstPacket,
+            inspectionState: loadedInspectionState(packet: firstPacket, inspection: makeFrameInspection(for: firstPacket))
+        ))
+        searchField.stringValue = "Packet 1"
+        controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: searchField))
+        let firstItem = try #require(outlineView.item(atRow: 0) as? PacketInspectorTreeItem)
+        #expect(firstItem.displayText == "Frame: Packet 1")
+
+        controller.render(snapshot: makeSnapshot(
+            packet: secondPacket,
+            inspectionState: loadedInspectionState(packet: secondPacket, inspection: makeFrameInspection(for: secondPacket))
+        ))
+        let staleFilterItem = try #require(outlineView.item(atRow: 0) as? PacketInspectorTreeItem)
+        #expect(staleFilterItem.displayText == "No inspector fields match \"Packet 1\".")
+
+        searchField.stringValue = "Packet 2"
+        controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: searchField))
+        let latestItem = try #require(outlineView.item(atRow: 0) as? PacketInspectorTreeItem)
+        #expect(latestItem.displayText == "Frame: Packet 2")
+    }
+
     @Test func longLayerSummaryBreaksIntoReadableChildRows() throws {
         let packet = makePacket()
         let inspection = makeLongLayerSummaryInspection(for: packet)

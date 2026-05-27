@@ -113,7 +113,8 @@ private final class FakeFactoryResetHelperToolManager: TCPViewerNetworkHelperToo
         status: .ready,
         authorizationStatus: .enabled,
         lastCheckedAt: nil,
-        message: "Ready"
+        message: "Ready",
+        installedHelperToolVersion: nil
     )
     private(set) var uninstallCallCount = 0
 

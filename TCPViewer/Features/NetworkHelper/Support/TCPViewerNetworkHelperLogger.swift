@@ -93,7 +93,7 @@ final class TCPViewerNetworkHelperLogger {
 
 private extension TCPViewerNetworkHelperToolSnapshot {
     var logDescription: String {
-        "status=\(status.rawValue), authorization=\(authorizationStatus.logDescription), message=\"\(message)\""
+        "status=\(status.rawValue), authorization=\(authorizationStatus.logDescription), installedVersion=\(installedHelperToolVersion ?? "none"), message=\"\(message)\""
     }
 }
 
