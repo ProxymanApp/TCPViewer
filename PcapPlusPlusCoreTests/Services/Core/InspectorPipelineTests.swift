@@ -592,6 +592,40 @@ struct InspectorPipelineTests {
         harness.cleanup()
     }
 
+    @Test func livePacketReanalysisSummariesRemainValidAfterNativeStoreCleanup() throws {
+        let harness = NativeLivePacketDiskStoreTestHarness()
+        defer { harness.cleanup() }
+
+        let packet = makeIPv4UDPPayloadPacket()
+        let timestamp = Date(timeIntervalSince1970: 1_700_300_000)
+        for packetNumber in 1...3 {
+            try harness.appendPacket(
+                identifier: UInt64(packetNumber),
+                rawBytes: packet,
+                timestamp: timestamp.addingTimeInterval(TimeInterval(packetNumber))
+            )
+        }
+
+        let summaries = try harness.reanalyzePacketSummaries()
+        let backingFilePath = harness.snapshot.backingFilePath
+
+        harness.cleanup()
+
+        #expect(!FileManager.default.fileExists(atPath: backingFilePath))
+
+        // Force value copies after native descriptors and their packet store are gone.
+        let copiedSummaries = summaries.map { $0 }
+        let summarySet = Set(copiedSummaries)
+
+        #expect(copiedSummaries.map(\.id) == [1, 2, 3])
+        #expect(summarySet.count == 3)
+        #expect(copiedSummaries.allSatisfy { $0.source == .live })
+        #expect(copiedSummaries.allSatisfy { $0.endpoints.source.address == "192.168.0.1" })
+        #expect(copiedSummaries.allSatisfy { $0.endpoints.destination.address == "192.168.0.2" })
+        #expect(copiedSummaries.allSatisfy { $0.layers.map(\.name).contains("UDP") })
+        #expect(copiedSummaries.allSatisfy { !$0.infoSummary.isEmpty })
+    }
+
     @Test func livePacketDiskStoreRSSStressIsGated() throws {
         guard ProcessInfo.processInfo.environment["TCPVIEWER_RUN_MEMORY_STRESS"] == "1" else {
             return

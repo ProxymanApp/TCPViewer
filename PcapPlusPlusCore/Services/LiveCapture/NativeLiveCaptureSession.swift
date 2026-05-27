@@ -191,8 +191,14 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
 
         self.health = NativeBridgeMapper.healthSnapshot(nativeSession.healthSnapshot)
         nativeSession.packetHandler = { [weak self] packets in
-            self?.queue.async {
-                self?.handlePacketBatch(packets)
+            guard let self else {
+                return
+            }
+
+            // Bridge native packet descriptors into Swift values before the async queue hop.
+            let batch = NativeBridgeMapper.packetBatch(packets, source: .live)
+            self.queue.async { [weak self] in
+                self?.handlePacketBatch(batch)
             }
         }
 
@@ -203,8 +209,14 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
         }
 
         nativeSession.healthHandler = { [weak self] health in
-            self?.queue.async {
-                self?.handleHealthChange(health)
+            guard let self else {
+                return
+            }
+
+            // Keep Objective-C health descriptors out of queued Swift state.
+            let snapshot = NativeBridgeMapper.healthSnapshot(health)
+            self.queue.async { [weak self] in
+                self?.handleHealthChange(snapshot)
             }
         }
 
@@ -381,8 +393,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
         }
     }
 
-    private func handlePacketBatch(_ packets: [PCPPNativePacketSummaryDescriptor]) {
-        let batch = NativeBridgeMapper.packetBatch(packets, source: .live)
+    private func handlePacketBatch(_ batch: [PacketSummary]) {
         activeRunPacketCount += UInt64(batch.count)
         if let readyBatch = packetBatchBuffer.append(batch) {
             cancelPacketBatchFlushWorkItem()
@@ -416,8 +427,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
         }
     }
 
-    private func handleHealthChange(_ descriptor: PCPPNativeCaptureHealthDescriptor) {
-        let snapshot = NativeBridgeMapper.healthSnapshot(descriptor)
+    private func handleHealthChange(_ snapshot: CaptureHealthSnapshot) {
         health = snapshot
         eventBox.yield(.healthChanged(snapshot))
     }

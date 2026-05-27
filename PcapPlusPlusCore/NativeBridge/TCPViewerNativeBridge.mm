@@ -3478,52 +3478,73 @@ static void OnLivePacketArrives(pcpp::RawPacket *rawPacket, pcpp::PcapLiveDevice
 {
     @autoreleasepool {
         auto *session = (__bridge PCPPNativeLiveSession *)userCookie;
-        std::lock_guard<std::mutex> lock(session->_state->mutex);
+        NSArray<PCPPNativePacketSummaryDescriptor *> *packetBatch = nil;
+        NSError *callbackError = nil;
+        PCPPNativePacketBatchHandler packetHandler = nil;
+        PCPPNativeErrorHandler errorHandler = nil;
 
-        try {
-            const unsigned long long packetIdentifier = session->_state->nextPacketIdentifier;
-            session->_state->packetsObserved += 1;
-
-            auto *summary = MakePacketSummary(*rawPacket,
-                                              packetIdentifier,
-                                              session->_state->interfaceIdentifier_,
-                                              session->_state->device == nullptr ? nil : MakeNSString(session->_state->device->getName()),
-                                              nil,
-                                              session->_state->sniReassembly.get(),
-                                              session->_state->wiresharkSession.get());
-            session->_state->packetStore.append(*rawPacket, packetIdentifier);
-            session->_state->nextPacketIdentifier += 1;
+        {
+            std::lock_guard<std::mutex> lock(session->_state->mutex);
 
             try {
-                session->_state->writer_.writePacket(*rawPacket, nil);
-            } catch (const std::exception &exception) {
-                if (session.errorHandler != nil) {
-                    session.errorHandler(MakeError(TCPViewerNativeErrorCodeFileWriteFailed, MakeNSString(exception.what())));
+                const unsigned long long packetIdentifier = session->_state->nextPacketIdentifier;
+                session->_state->packetsObserved += 1;
+
+                auto *summary = MakePacketSummary(*rawPacket,
+                                                  packetIdentifier,
+                                                  session->_state->interfaceIdentifier_,
+                                                  session->_state->device == nullptr ? nil : MakeNSString(session->_state->device->getName()),
+                                                  nil,
+                                                  session->_state->sniReassembly.get(),
+                                                  session->_state->wiresharkSession.get());
+                session->_state->packetStore.append(*rawPacket, packetIdentifier);
+                session->_state->nextPacketIdentifier += 1;
+
+                try {
+                    session->_state->writer_.writePacket(*rawPacket, nil);
+                } catch (const std::exception &exception) {
+                    callbackError = MakeError(TCPViewerNativeErrorCodeFileWriteFailed, MakeNSString(exception.what()));
                 }
+
+                session->_state->statusMessage = @"Capturing live packets.";
+                packetBatch = @[summary];
+            } catch (const std::exception &exception) {
+                callbackError = MakeError(TCPViewerNativeErrorCodeFileWriteFailed, MakeNSString(exception.what()));
             }
 
-            session->_state->statusMessage = @"Capturing live packets.";
-            if (session.packetHandler != nil) {
-                session.packetHandler(@[summary]);
-            }
-        } catch (const std::exception &exception) {
-            if (session.errorHandler != nil) {
-                session.errorHandler(MakeError(TCPViewerNativeErrorCodeFileWriteFailed, MakeNSString(exception.what())));
-            }
+            // Copy handlers while the state is stable, then call Swift outside the native lock.
+            packetHandler = [session.packetHandler copy];
+            errorHandler = [session.errorHandler copy];
+        }
+
+        if (callbackError != nil && errorHandler != nil) {
+            errorHandler(callbackError);
+        }
+        if (packetBatch != nil && packetHandler != nil) {
+            packetHandler(packetBatch);
         }
     }
 }
 
 static void OnLiveStatsUpdate(pcpp::IPcapDevice::PcapStats &stats, void *userCookie)
 {
-    auto *session = (__bridge PCPPNativeLiveSession *)userCookie;
-    std::lock_guard<std::mutex> lock(session->_state->mutex);
-    session->_state->packetsReceived = stats.packetsRecv;
-    session->_state->packetsDropped = stats.packetsDrop;
-    session->_state->packetsDroppedByInterface = stats.packetsDropByInterface;
+    @autoreleasepool {
+        auto *session = (__bridge PCPPNativeLiveSession *)userCookie;
+        PCPPNativeCaptureHealthDescriptor *health = nil;
+        PCPPNativeHealthHandler healthHandler = nil;
 
-    if (session.healthHandler != nil) {
-        session.healthHandler(MakeHealthDescriptor(*session->_state));
+        {
+            std::lock_guard<std::mutex> lock(session->_state->mutex);
+            session->_state->packetsReceived = stats.packetsRecv;
+            session->_state->packetsDropped = stats.packetsDrop;
+            session->_state->packetsDroppedByInterface = stats.packetsDropByInterface;
+            health = MakeHealthDescriptor(*session->_state);
+            healthHandler = [session.healthHandler copy];
+        }
+
+        if (healthHandler != nil) {
+            healthHandler(health);
+        }
     }
 }
 
