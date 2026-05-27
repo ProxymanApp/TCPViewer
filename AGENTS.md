@@ -3,6 +3,7 @@
 - Keep the code simple, testable, and don't create too many abstraction
 - Follow best coding practice
 - This repo is open source; treat every committed file, fixture, log, and config as public.
+- Never generate, synthesize, or restore the top-level `Fixtures/` directory or packet capture fixtures. If tests require missing fixtures, report the missing official fixture data instead.
 - Never store or commit secrets, credentials, tokens, API keys, private certificates, signing identities, personal data, or machine-specific sensitive paths.
 - Keep secrets in local environment variables, ignored local config files, or the platform keychain; document required values with safe placeholders only.
 - Before committing, review changes for accidental secrets, sensitive packet captures, debug logs, or generated artifacts that could expose private data.

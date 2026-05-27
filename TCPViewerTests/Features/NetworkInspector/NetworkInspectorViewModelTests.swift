@@ -331,38 +331,38 @@ struct NetworkInspectorViewModelTests {
         let rows = packets.map(PacketTableRow.init(packet:))
 
         #expect(PacketTableSelectionSyncPlanner.action(
-            rows: rows,
+            rowCount: rows.count,
+            visualSelectedPacketID: packets[1].id,
             selectedPacketID: packets[1].id,
-            selectedRowIndex: 1,
-            tableSelectedRowIndexes: IndexSet(integer: 1)
+            selectedRowIndex: 1
         ) == .none)
 
         #expect(PacketTableSelectionSyncPlanner.action(
-            rows: rows,
+            rowCount: rows.count,
+            visualSelectedPacketID: nil,
             selectedPacketID: packets[1].id,
-            selectedRowIndex: 1,
-            tableSelectedRowIndexes: []
+            selectedRowIndex: 1
         ) == .select(1))
 
         #expect(PacketTableSelectionSyncPlanner.action(
-            rows: rows,
+            rowCount: rows.count,
+            visualSelectedPacketID: packets[0].id,
             selectedPacketID: packets[1].id,
-            selectedRowIndex: 1,
-            tableSelectedRowIndexes: IndexSet(integer: 0)
+            selectedRowIndex: 1
         ) == .select(1))
 
         #expect(PacketTableSelectionSyncPlanner.action(
-            rows: rows,
+            rowCount: rows.count,
+            visualSelectedPacketID: packets[1].id,
             selectedPacketID: nil,
-            selectedRowIndex: nil,
-            tableSelectedRowIndexes: IndexSet(integer: 1)
+            selectedRowIndex: nil
         ) == .deselect)
 
         #expect(PacketTableSelectionSyncPlanner.action(
-            rows: rows,
+            rowCount: rows.count,
+            visualSelectedPacketID: nil,
             selectedPacketID: packets[1].id,
-            selectedRowIndex: nil,
-            tableSelectedRowIndexes: []
+            selectedRowIndex: nil
         ) == .none)
     }
 
