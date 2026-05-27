@@ -359,17 +359,13 @@ typedef NS_ENUM(NSInteger, PCPPNativeLiveSessionPhase) {
 @property (nonatomic, copy, readonly) NSArray<PCPPNativePacketByteViewDescriptor *> *byteViews;
 @property (nonatomic, copy, readonly) NSArray<PCPPNativePacketDetailNodeDescriptor *> *detailNodes;
 @property (nonatomic, strong, readonly) PCPPNativeDecodeStatusDescriptor *decodeStatus;
-// Non-nil when libwireshark raised a DissectorError exception (e.g. "Unregistered hf!") while
-// building the detail tree. The Swift layer logs this via print() instead of rendering a panel node.
-@property (nonatomic, copy, readonly, nullable) NSString *wiresharkDissectorBugMessage;
 
 - (instancetype)initWithPacketIdentifier:(unsigned long long)packetIdentifier
                             packetNumber:(unsigned long long)packetNumber
                                 rawBytes:(NSData *)rawBytes
                                byteViews:(NSArray<PCPPNativePacketByteViewDescriptor *> *)byteViews
                              detailNodes:(NSArray<PCPPNativePacketDetailNodeDescriptor *> *)detailNodes
-                            decodeStatus:(PCPPNativeDecodeStatusDescriptor *)decodeStatus
-            wiresharkDissectorBugMessage:(nullable NSString *)wiresharkDissectorBugMessage NS_DESIGNATED_INITIALIZER;
+                            decodeStatus:(PCPPNativeDecodeStatusDescriptor *)decodeStatus NS_DESIGNATED_INITIALIZER;
 - (instancetype)init NS_UNAVAILABLE;
 
 @end

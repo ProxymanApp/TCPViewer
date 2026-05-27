@@ -7,4 +7,3 @@ Config/TCPViewer.local.xcconfig
 node_modules/
 fastlane/README.md
 fastlane/report.xml
-*.xcuserstate

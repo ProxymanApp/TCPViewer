@@ -111,203 +111,21 @@ struct PacketTableMenuLogicTests {
             makePacket(packetNumber: 2),
             makePacket(packetNumber: 3),
         ]
-
-        #expect(PacketTableSelectionSyncPlanner.action(
-            rowCount: packets.count,
-            visualSelectedPacketID: packets[0].id,
-            selectedPacketID: packets[0].id,
-            selectedRowIndex: 0
-        ) == .none)
-
-        #expect(PacketTableSelectionSyncPlanner.action(
-            rowCount: packets.count,
-            visualSelectedPacketID: packets[0].id,
-            selectedPacketID: packets[2].id,
-            selectedRowIndex: 2
-        ) == .select(2))
-    }
-
-    @Test func selectionSyncIgnoresStaleVisualSelection() {
-        let packets = [
-            makePacket(packetNumber: 1),
-            makePacket(packetNumber: 2),
-        ]
-
-        #expect(PacketTableSelectionSyncPlanner.action(
-            rowCount: packets.count,
-            visualSelectedPacketID: nil,
-            selectedPacketID: packets[1].id,
-            selectedRowIndex: 2
-        ) == .none)
-
-        #expect(PacketTableSelectionSyncPlanner.action(
-            rowCount: packets.count,
-            visualSelectedPacketID: packets[0].id,
-            selectedPacketID: nil,
-            selectedRowIndex: nil
-        ) == .deselect)
-    }
-
-    @Test func clickSelectionCollapsePreparesOnlyForPlainSingleClickInsideMultiSelection() {
-        let selectedRows = IndexSet([1, 3])
-
-        #expect(PacketTableClickSelectionCollapsePlanner.shouldPrepareCollapse(
-            clickedRow: 3,
-            selectedRowIndexes: selectedRows,
-            modifierFlags: [],
-            clickCount: 1
-        ))
-        #expect(!PacketTableClickSelectionCollapsePlanner.shouldPrepareCollapse(
-            clickedRow: 3,
-            selectedRowIndexes: selectedRows,
-            modifierFlags: .command,
-            clickCount: 1
-        ))
-        #expect(!PacketTableClickSelectionCollapsePlanner.shouldPrepareCollapse(
-            clickedRow: 3,
-            selectedRowIndexes: selectedRows,
-            modifierFlags: [],
-            clickCount: 2
-        ))
-        #expect(!PacketTableClickSelectionCollapsePlanner.shouldPrepareCollapse(
-            clickedRow: 2,
-            selectedRowIndexes: selectedRows,
-            modifierFlags: [],
-            clickCount: 1
-        ))
-    }
-
-    @Test func clickSelectionCollapseAppliesOnlyAfterNonDragTrackingWithValidRow() {
-        let selectedRows = IndexSet([1, 3])
-
-        #expect(PacketTableClickSelectionCollapsePlanner.shouldApplyCollapse(
-            clickedRow: 3,
-            rowCount: 4,
-            selectedRowIndexes: selectedRows,
-            didDrag: false
-        ))
-        #expect(!PacketTableClickSelectionCollapsePlanner.shouldApplyCollapse(
-            clickedRow: 3,
-            rowCount: 4,
-            selectedRowIndexes: selectedRows,
-            didDrag: true
-        ))
-        #expect(!PacketTableClickSelectionCollapsePlanner.shouldApplyCollapse(
-            clickedRow: 4,
-            rowCount: 4,
-            selectedRowIndexes: selectedRows,
-            didDrag: false
-        ))
-        #expect(!PacketTableClickSelectionCollapsePlanner.shouldApplyCollapse(
-            clickedRow: 3,
-            rowCount: 4,
-            selectedRowIndexes: IndexSet(integer: 3),
-            didDrag: false
-        ))
-    }
-
-    @Test func menuStateProviderIgnoresStaleSelectedIndexes() {
-        let packets = [
-            makePacket(packetNumber: 1),
-            makePacket(packetNumber: 2),
-        ]
         let rows = packets.map(PacketTableRow.init(packet:))
 
-        let state = PacketTableMenuLogic.state(
-            rowCount: rows.count,
-            rowProvider: { rows.indices.contains($0) ? rows[$0] : nil },
-            selectedRowIndexes: IndexSet([1, 2]),
-            clickedRowIndex: nil,
-            clickedColumnIdentifier: "summary"
-        )
+        #expect(PacketTableSelectionSyncPlanner.action(
+            rows: rows,
+            selectedPacketID: packets[0].id,
+            selectedRowIndex: 0,
+            tableSelectedRowIndexes: IndexSet([0, 2])
+        ) == .none)
 
-        #expect(state.targetRows == [1])
-        #expect(state.copyRowEnabled)
-        #expect(state.copyCellEnabled)
-    }
-
-    @Test func rowStoreSerializesConcurrentReadsAndWrites() {
-        let rows = (1...300).map { packetNumber in
-            PacketTableRow(packet: makePacket(packetNumber: UInt64(packetNumber)))
-        }
-        let store = PacketTableRowStore()
-        let queue = DispatchQueue(label: "PacketTableRowStoreTests.concurrent", attributes: .concurrent)
-        let appendGroup = DispatchGroup()
-
-        for (index, row) in rows.enumerated() {
-            appendGroup.enter()
-            queue.async {
-                store.append(row)
-                appendGroup.leave()
-            }
-
-            appendGroup.enter()
-            queue.async {
-                _ = store.row(at: index)
-                _ = store.rows(at: [index - 1, index, index + 1])
-                _ = store.visibleRowIndex(for: row.id)
-                appendGroup.leave()
-            }
-        }
-
-        #expect(appendGroup.wait(timeout: .now() + 5) == .success)
-        #expect(store.rowCount == rows.count)
-        #expect(store.visiblePacketIndexCount == rows.count)
-
-        let updateGroup = DispatchGroup()
-        for row in rows {
-            guard let rowIndex = store.visibleRowIndex(for: row.id) else {
-                Issue.record("Missing visible index for row \(row.id)")
-                continue
-            }
-
-            updateGroup.enter()
-            queue.async {
-                _ = store.updateRow(at: rowIndex, with: row)
-                updateGroup.leave()
-            }
-
-            updateGroup.enter()
-            queue.async {
-                _ = store.row(at: rowIndex)
-                _ = store.rowIDs()
-                updateGroup.leave()
-            }
-        }
-
-        #expect(updateGroup.wait(timeout: .now() + 5) == .success)
-        #expect(store.rowCount == rows.count)
-        for row in rows {
-            #expect(store.visibleRowIndex(for: row.id) != nil)
-        }
-    }
-
-    @MainActor
-    @Test func packetTableDataSourceIgnoresStaleRowsAfterReload() throws {
-        let defaults = Self.makeUserDefaults()
-        let controller = PacketTableViewController(configuration: AppConfiguration(defaults: defaults))
-        controller.loadViewIfNeeded()
-        let tableView = try Self.tableView(in: controller)
-        let summaryColumn = try #require(tableView.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier("summary")))
-        let firstPacket = makePacket(packetNumber: 1, infoSummary: "first")
-        let secondPacket = makePacket(packetNumber: 2, infoSummary: "second")
-
-        controller.render(snapshot: makeSnapshot(
-            packets: [firstPacket, secondPacket],
-            generation: 1,
-            updatePlan: .reload
-        ))
-        #expect(controller.tableView(tableView, objectValueFor: summaryColumn, row: 1) as? String == "second")
-
-        controller.render(snapshot: makeSnapshot(
-            packets: [firstPacket],
-            generation: 2,
-            updatePlan: .reload
-        ))
-
-        #expect(controller.numberOfRows(in: tableView) == 1)
-        #expect(controller.tableView(tableView, objectValueFor: summaryColumn, row: 1) == nil)
-        controller.tableView(tableView, willDisplayCell: PacketTextCell(), for: summaryColumn, row: 1)
+        #expect(PacketTableSelectionSyncPlanner.action(
+            rows: rows,
+            selectedPacketID: packets[2].id,
+            selectedRowIndex: 2,
+            tableSelectedRowIndexes: IndexSet([0, 2])
+        ) == .select(2))
     }
 
     @MainActor
@@ -449,42 +267,6 @@ struct PacketTableMenuLogicTests {
             executablePath: "/Applications/Example.app/Contents/MacOS/Example",
             bundleIdentifier: "com.example.app",
             bundlePath: "/Applications/Example.app"
-        )
-    }
-
-    private func makeSnapshot(
-        packets: [PacketSummary],
-        generation: UInt64,
-        updatePlan: PacketTableUpdatePlan
-    ) -> NetworkInspectorSnapshot {
-        var base = TCPViewerWindowSnapshot.foundation
-        base.packetIngestState.replace(with: packets, source: .live)
-        base.navigationState.visiblePacketIDs = packets.map(\.id)
-
-        let rows = packets.map(PacketTableRow.init(packet:))
-        let visibleIndex = Dictionary(uniqueKeysWithValues: rows.enumerated().map { index, row in
-            (row.id, index)
-        })
-        let tableContent = PacketTableContent(
-            displayFilter: PacketDisplayFilter(""),
-            displayFilterChips: [],
-            store: PacketTableRowStore(rows: rows, visiblePacketRowIndexByID: visibleIndex),
-            generation: generation,
-            updatePlan: updatePlan,
-            malformedPacketCount: 0
-        )
-
-        return NetworkInspectorSnapshot.make(
-            base: base,
-            selectedSidebar: .liveCapture,
-            selectedSourceListSelection: .allPackets,
-            sourceListSnapshot: .empty,
-            sourceListFilterText: "",
-            workspaceMode: .packets,
-            inspectorTab: .summary,
-            isInspectorVisible: true,
-            displayFilterText: "",
-            packetTableContent: tableContent
         )
     }
 

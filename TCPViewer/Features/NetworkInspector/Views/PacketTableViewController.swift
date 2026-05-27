@@ -29,52 +29,25 @@ enum PacketTableSelectionSyncAction: Equatable {
 
 enum PacketTableSelectionSyncPlanner {
     static func action(
-        rowCount: Int,
-        visualSelectedPacketID: PacketSummary.ID?,
+        rows: [PacketTableRow],
         selectedPacketID: PacketSummary.ID?,
-        selectedRowIndex: Int?
+        selectedRowIndex: Int?,
+        tableSelectedRowIndexes: IndexSet
     ) -> PacketTableSelectionSyncAction {
+        let tableSelectedRow = tableSelectedRowIndexes.first ?? -1
+        let visualSelectedID = rows.indices.contains(tableSelectedRow) ? rows[tableSelectedRow].id : nil
+
         guard let selectedPacketID,
               let selectedRowIndex,
-              selectedRowIndex >= 0,
-              selectedRowIndex < rowCount else {
-            return visualSelectedPacketID == nil ? .none : .deselect
+              rows.indices.contains(selectedRowIndex) else {
+            return visualSelectedID == nil ? .none : .deselect
         }
 
-        if visualSelectedPacketID == selectedPacketID {
+        if visualSelectedID == selectedPacketID {
             return .none
         }
 
         return .select(selectedRowIndex)
-    }
-}
-
-enum PacketTableClickSelectionCollapsePlanner {
-    static func shouldPrepareCollapse(
-        clickedRow: Int,
-        selectedRowIndexes: IndexSet,
-        modifierFlags: NSEvent.ModifierFlags,
-        clickCount: Int
-    ) -> Bool {
-        let collapseModifiers: NSEvent.ModifierFlags = [.shift, .command, .control, .option]
-        return clickCount == 1 &&
-            clickedRow >= 0 &&
-            modifierFlags.intersection(collapseModifiers).isEmpty &&
-            selectedRowIndexes.count > 1 &&
-            selectedRowIndexes.contains(clickedRow)
-    }
-
-    static func shouldApplyCollapse(
-        clickedRow: Int,
-        rowCount: Int,
-        selectedRowIndexes: IndexSet,
-        didDrag: Bool
-    ) -> Bool {
-        clickedRow >= 0 &&
-            clickedRow < rowCount &&
-            !didDrag &&
-            selectedRowIndexes.count > 1 &&
-            selectedRowIndexes.contains(clickedRow)
     }
 }
 
@@ -109,49 +82,23 @@ fileprivate final class PacketTableView: NSTableView {
         super.keyDown(with: event)
     }
 
+    // NSTableView's default treats an unmodified click on an already-selected
+    // row inside a multi-selection as a potential drag — the selection is not
+    // collapsed. Match Finder's behavior by collapsing it ourselves.
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        let clickedRow = row(at: point)
+        let row = self.row(at: point)
         let modifierFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        let shouldCollapseSelection = PacketTableClickSelectionCollapsePlanner.shouldPrepareCollapse(
-            clickedRow: clickedRow,
-            selectedRowIndexes: selectedRowIndexes,
-            modifierFlags: modifierFlags,
-            clickCount: event.clickCount
-        )
-        let mouseDownLocation = event.locationInWindow
+        let collapsingModifiers: NSEvent.ModifierFlags = [.shift, .command, .control, .option]
+
+        if row >= 0,
+           modifierFlags.intersection(collapsingModifiers).isEmpty,
+           selectedRowIndexes.count > 1,
+           selectedRowIndexes.contains(row) {
+            selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        }
 
         super.mouseDown(with: event)
-
-        // Collapse after AppKit's tracking loop so selection notifications cannot reload the table mid-mouseDown.
-        collapseSelectionAfterMouseTracking(
-            clickedRow: clickedRow,
-            shouldCollapseSelection: shouldCollapseSelection,
-            mouseDownLocation: mouseDownLocation
-        )
-    }
-
-    private func collapseSelectionAfterMouseTracking(
-        clickedRow: Int,
-        shouldCollapseSelection: Bool,
-        mouseDownLocation: NSPoint
-    ) {
-        guard shouldCollapseSelection else {
-            return
-        }
-
-        let mouseUpLocation = NSApp.currentEvent?.type == .leftMouseUp ? NSApp.currentEvent?.locationInWindow : nil
-        let didDrag = mouseUpLocation.map { hypot($0.x - mouseDownLocation.x, $0.y - mouseDownLocation.y) > 3 } ?? false
-        guard PacketTableClickSelectionCollapsePlanner.shouldApplyCollapse(
-            clickedRow: clickedRow,
-            rowCount: numberOfRows,
-            selectedRowIndexes: selectedRowIndexes,
-            didDrag: didDrag
-        ) else {
-            return
-        }
-
-        selectRowIndexes(IndexSet(integer: clickedRow), byExtendingSelection: false)
     }
 }
 
@@ -165,29 +112,8 @@ final class PacketTableViewModel {
     private(set) var selectedPacketID: PacketSummary.ID?
     private(set) var selectedRowIndex: Int?
 
-    var rowCount: Int {
-        rowStore.rowCount
-    }
-
-    // Resolve one row through the store lock so AppKit never touches mutable array storage directly.
-    func row(at index: Int) -> PacketTableRow? {
-        rowStore.row(at: index)
-    }
-
-    func containsRow(_ index: Int) -> Bool {
-        rowStore.containsRow(index)
-    }
-
-    func packetID(for selectedRowIndexes: IndexSet) -> PacketSummary.ID? {
-        guard let selectedRow = selectedRowIndexes.first else {
-            return nil
-        }
-
-        return row(at: selectedRow)?.id
-    }
-
-    func rows(at indexes: [Int]) -> [PacketTableRow] {
-        rowStore.rows(at: indexes)
+    var rows: [PacketTableRow] {
+        rowStore.rows
     }
 
     // Store the latest render state so the controller can apply incremental table updates.
@@ -214,7 +140,7 @@ final class PacketTableViewModel {
 
         // Large live row buffers can be torn down when a new capture starts; keep that out of AppKit render.
         Self.rowStoreReleaseQueue.async {
-            _ = previousRowStore.rowCount
+            _ = previousRowStore.rows.count
         }
     }
 }
@@ -245,6 +171,10 @@ final class PacketTableViewController: NSViewController {
     // round-trip to acknowledge it.
     private struct PendingUserSelection {
         let id: PacketSummary.ID?
+    }
+
+    private var rows: [PacketTableRow] {
+        viewModel.rows
     }
 
     private var isSuppressingSelectionCallbacks: Bool {
@@ -282,7 +212,7 @@ final class PacketTableViewController: NSViewController {
 
     // Apply packet rows, using append plans when the model says only new visible rows arrived.
     func render(snapshot: NetworkInspectorSnapshot) {
-        let previousRowCount = viewModel.rowCount
+        let previousRowCount = rows.count
         let updatePlan = viewModel.render(snapshot: snapshot)
         applyAppearanceConfiguration(reload: false)
 
@@ -308,7 +238,7 @@ final class PacketTableViewController: NSViewController {
     }
 
     private func applyAppendPlan(range: Range<Int>, previousRowCount: Int) {
-        if range.lowerBound == previousRowCount, range.upperBound <= viewModel.rowCount {
+        if range.lowerBound == previousRowCount, range.upperBound <= rows.count {
             tableView.noteNumberOfRowsChanged()
         } else {
             preserveScrollPosition {
@@ -521,8 +451,8 @@ final class PacketTableViewController: NSViewController {
     }
 
     private func syncSelection() {
-        let visualSelection = tableView.selectedRowIndexes
-        let visualID = viewModel.packetID(for: visualSelection)
+        let visualRow = tableView.selectedRowIndexes.first ?? -1
+        let visualID: PacketSummary.ID? = rows.indices.contains(visualRow) ? rows[visualRow].id : nil
 
         // Detect a user click whose `tableViewSelectionDidChange` notification
         // hasn't been delivered yet. NSTableView updates the visual selection
@@ -552,10 +482,10 @@ final class PacketTableViewController: NSViewController {
         }
 
         let action = PacketTableSelectionSyncPlanner.action(
-            rowCount: viewModel.rowCount,
-            visualSelectedPacketID: visualID,
+            rows: rows,
             selectedPacketID: viewModel.selectedPacketID,
-            selectedRowIndex: viewModel.selectedRowIndex
+            selectedRowIndex: viewModel.selectedRowIndex,
+            tableSelectedRowIndexes: tableView.selectedRowIndexes
         )
 
         switch action {
@@ -611,7 +541,7 @@ final class PacketTableViewController: NSViewController {
         let point = tableView.convert(event.locationInWindow, from: nil)
         let row = tableView.row(at: point)
         let column = tableView.column(at: point)
-        clickedRowIndex = viewModel.containsRow(row) ? row : nil
+        clickedRowIndex = rows.indices.contains(row) ? row : nil
         clickedColumnIdentifier = tableView.tableColumns.indices.contains(column)
             ? tableView.tableColumns[column].identifier.rawValue
             : nil
@@ -619,8 +549,7 @@ final class PacketTableViewController: NSViewController {
 
     private func menuState() -> PacketTableMenuState {
         PacketTableMenuLogic.state(
-            rowCount: viewModel.rowCount,
-            rowProvider: viewModel.row(at:),
+            rows: rows,
             selectedRowIndexes: tableView.selectedRowIndexes,
             clickedRowIndex: clickedRowIndex,
             clickedColumnIdentifier: clickedColumnIdentifier
@@ -628,7 +557,7 @@ final class PacketTableViewController: NSViewController {
     }
 
     private func targetRows() -> [PacketTableRow] {
-        viewModel.rows(at: menuState().targetRows)
+        menuState().targetRows.compactMap { rows.indices.contains($0) ? rows[$0] : nil }
     }
 
     private func targetPacketIDs() -> [PacketSummary.ID] {
@@ -670,10 +599,8 @@ final class PacketTableViewController: NSViewController {
 
     @objc func copyCellFromMenu(_ sender: Any?) {
         let state = menuState()
-        writeToPasteboard(PacketTableCopyFormatter.csvCells(
-            viewModel.rows(at: state.targetRows),
-            column: state.clickedColumn
-        ))
+        let rows = state.targetRows.compactMap { self.rows.indices.contains($0) ? self.rows[$0] : nil }
+        writeToPasteboard(PacketTableCopyFormatter.csvCells(rows, column: state.clickedColumn))
     }
 
     @objc func pinDomainFromMenu(_ sender: Any?) {
@@ -735,14 +662,14 @@ final class PacketTableViewController: NSViewController {
         let state = menuState()
         guard state.targetRows.count == 1,
               let rowIndex = state.targetRows.first,
-              let row = viewModel.row(at: rowIndex) else {
+              rows.indices.contains(rowIndex) else {
             return
         }
 
         delegate?.packetTableViewController(
             self,
             didRequestPin: kind,
-            packetID: row.id,
+            packetID: rows[rowIndex].id,
             clickedColumn: state.clickedColumn
         )
     }
@@ -750,24 +677,23 @@ final class PacketTableViewController: NSViewController {
 
 extension PacketTableViewController: NSTableViewDataSource, NSTableViewDelegate {
     func numberOfRows(in tableView: NSTableView) -> Int {
-        viewModel.rowCount
+        rows.count
     }
 
     func tableView(_ tableView: NSTableView, objectValueFor tableColumn: NSTableColumn?, row: Int) -> Any? {
-        guard let packetRow = viewModel.row(at: row),
-              let column = tableColumn?.identifier.rawValue else {
+        guard rows.indices.contains(row), let column = tableColumn?.identifier.rawValue else {
             return nil
         }
 
-        return text(for: column, in: packetRow)
+        return text(for: column, in: rows[row])
     }
 
     func tableView(_ tableView: NSTableView, willDisplayCell cell: Any, for tableColumn: NSTableColumn?, row: Int) {
-        guard let packetRow = viewModel.row(at: row),
-              let column = tableColumn?.identifier.rawValue else {
+        guard rows.indices.contains(row), let column = tableColumn?.identifier.rawValue else {
             return
         }
 
+        let packetRow = rows[row]
         if let cell = cell as? PacketProtocolCell {
             cell.configure(protocolText: packetRow.protocolText, severity: packetRow.severity, configuration: configuration)
         } else if let cell = cell as? PacketClientCell {
@@ -790,7 +716,8 @@ extension PacketTableViewController: NSTableViewDataSource, NSTableViewDelegate 
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
-        let selectedID = viewModel.packetID(for: tableView.selectedRowIndexes)
+        let selectedRow = tableView.selectedRowIndexes.first ?? -1
+        let selectedID = rows.indices.contains(selectedRow) ? rows[selectedRow].id : nil
 
         // Suppress only when the change is the echo of a programmatic update
         // we just applied. A genuine user click during a render burst still

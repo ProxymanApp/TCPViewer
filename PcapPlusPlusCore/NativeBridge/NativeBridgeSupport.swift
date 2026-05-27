@@ -367,13 +367,7 @@ enum NativeBridgeMapper {
     }
 
     static func packetInspection(_ descriptor: PCPPNativePacketInspectionDescriptor) -> PacketInspection {
-        if let bugMessage = descriptor.wiresharkDissectorBugMessage {
-            // Surface libwireshark DissectorError messages (e.g. "Unregistered hf!") to the
-            // developer console without polluting the Packet Detail panel with a fallback node.
-            print("[TCPViewer] Wireshark dissector error (packet #\(descriptor.packetNumber)): \(bugMessage)")
-        }
-
-        return PacketInspection(
+        PacketInspection(
             packetID: descriptor.packetIdentifier,
             packetNumber: descriptor.packetNumber,
             rawBytes: descriptor.rawBytes,

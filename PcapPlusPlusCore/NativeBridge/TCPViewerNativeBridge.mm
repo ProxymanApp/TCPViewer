@@ -1689,8 +1689,6 @@ NSString *DNSResourceDataValue(pcpp::DnsResource *resource)
 struct PacketDetailBuildResult {
     NSArray<PCPPNativePacketDetailNodeDescriptor *> *nodes = nil;
     std::vector<tcpviewer::dissection::WiresharkByteSource> byteSources;
-    // Carries the libwireshark DissectorError message so the Swift layer can log it via print().
-    NSString *wiresharkDissectorBugMessage = nil;
 };
 
 class PacketDetailTreeBuilder {
@@ -1719,19 +1717,11 @@ public:
         auto context = dissectionContext();
         auto wiresharkResult = wiresharkDissector_.dissect(context);
         if (wiresharkResult.usedWireshark) {
-            return PacketDetailBuildResult{MakeDetailNodes(wiresharkResult.nodes), std::move(wiresharkResult.byteSources), nil};
+            return PacketDetailBuildResult{MakeDetailNodes(wiresharkResult.nodes), std::move(wiresharkResult.byteSources)};
         }
 
         NSMutableArray<PCPPNativePacketDetailNodeDescriptor *> *nodes = [NSMutableArray array];
-        NSString *dissectorBugMessage = nil;
-        if (wiresharkResult.dissectorBugDetected) {
-            // Suppress the user-facing "Wireshark Dissector Unavailable" warning when the failure
-            // originated from a libwireshark DissectorError exception — the Swift layer logs the
-            // raw message via print() so we still see it during development.
-            dissectorBugMessage = MakeNSString(wiresharkResult.fallbackReason);
-        } else {
-            [nodes addObject:MakeDetailNode(tcpviewer::dissection::MakeWiresharkFallbackWarning(wiresharkResult.fallbackReason))];
-        }
+        [nodes addObject:MakeDetailNode(tcpviewer::dissection::MakeWiresharkFallbackWarning(wiresharkResult.fallbackReason))];
         appendFrame(nodes);
         for (pcpp::Layer *layer = packet_.getFirstLayer(); layer != nullptr; layer = layer->getNextLayer()) {
             appendLayer(layer, nodes);
@@ -1742,7 +1732,7 @@ public:
             [nodes addObject:MakeDecodeStatusNode(@"warning.decode", decodeStatus.first, decodeStatus.second)];
         }
 
-        return PacketDetailBuildResult{nodes, {}, dissectorBugMessage};
+        return PacketDetailBuildResult{nodes, {}};
     }
 
 private:
@@ -2648,8 +2638,7 @@ PCPPNativePacketInspectionDescriptor *MakePacketInspection(const pcpp::RawPacket
                                                                              rawBytes:rawBytes
                                                                             byteViews:MakePacketByteViews(rawBytes, detailResult.byteSources)
                                                                           detailNodes:detailResult.nodes
-                                                                         decodeStatus:decodeDescriptor
-                                                         wiresharkDissectorBugMessage:detailResult.wiresharkDissectorBugMessage];
+                                                                         decodeStatus:decodeDescriptor];
     } catch (const std::exception &exception) {
         auto *decodeDescriptor = [[PCPPNativeDecodeStatusDescriptor alloc] initWithKind:PCPPNativeDecodeStatusKindMalformed
                                                                                   reason:MakeNSString(exception.what())];
@@ -2669,8 +2658,7 @@ PCPPNativePacketInspectionDescriptor *MakePacketInspection(const pcpp::RawPacket
                                                                                             @[]),
                                                                               MakeWarningNode(@"warning.decode", MakeNSString(exception.what())),
                                                                           ]
-                                                                         decodeStatus:decodeDescriptor
-                                                         wiresharkDissectorBugMessage:nil];
+                                                                         decodeStatus:decodeDescriptor];
     }
 }
 
@@ -3439,7 +3427,6 @@ PCPPNativeCaptureHealthDescriptor *MakeHealthDescriptor(const LiveCaptureState &
                                byteViews:(NSArray<PCPPNativePacketByteViewDescriptor *> *)byteViews
                              detailNodes:(NSArray<PCPPNativePacketDetailNodeDescriptor *> *)detailNodes
                             decodeStatus:(PCPPNativeDecodeStatusDescriptor *)decodeStatus
-            wiresharkDissectorBugMessage:(nullable NSString *)wiresharkDissectorBugMessage
 {
     self = [super init];
     if (self) {
@@ -3449,7 +3436,6 @@ PCPPNativeCaptureHealthDescriptor *MakeHealthDescriptor(const LiveCaptureState &
         _byteViews = [byteViews copy];
         _detailNodes = [detailNodes copy];
         _decodeStatus = decodeStatus;
-        _wiresharkDissectorBugMessage = [wiresharkDissectorBugMessage copy];
     }
     return self;
 }
