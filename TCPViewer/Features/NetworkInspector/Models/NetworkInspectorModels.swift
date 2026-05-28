@@ -76,6 +76,21 @@ private extension String {
         let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
+
+    // Re-encode through UTF-8 to force a Swift-owned (native) string buffer.
+    //
+    // Strings handed to us by the native packet layer (`PacketSummary.protocolSummary`,
+    // `infoSummary`, `sniDomainName`, endpoint addresses, …) and by Foundation/AppKit lookups
+    // (`PacketClient` bundle identifiers/paths, interface names) are lazily Cocoa-backed: the Swift
+    // `String` only wraps an `NSString` whose lifetime is owned elsewhere. A `PacketTableRow` built
+    // from those strings is long-lived and is copied by AppKit on the main thread while live capture
+    // keeps producing/replacing packets on other threads. If that backing `NSString` is released out
+    // from under the row, copying the row crashes in `objc_retain` (inside `initializeWithCopy for
+    // PacketTableRow`). Copying the bytes into a fresh native buffer now — while the backing is still
+    // valid — makes the row own its strings outright and removes the dangling-backing hazard.
+    var tcpviewerNativeCopy: String {
+        String(decoding: utf8, as: UTF8.self)
+    }
 }
 
 enum PacketInspectorTab: String, CaseIterable, Identifiable, Sendable, Hashable {
@@ -181,11 +196,13 @@ struct PacketTableRow: Identifiable, Sendable, Hashable {
         previousVisiblePacketTimestamp: Date?,
         previousVisibleStreamPacketTimestamp: Date?
     ) {
+        // Passthrough strings keep native-layer / Foundation backing; copy them into Swift-owned
+        // buffers so a row never depends on an NSString whose lifetime is owned elsewhere.
         self.id = packet.id
-        self.sourceAddress = packet.endpoints.source.address
-        self.destinationAddress = packet.endpoints.destination.address
-        self.sniDomainName = packet.sniDomainName
-        self.clientIconFilePath = PacketClientIconPathResolver.iconFilePath(for: packet.client)
+        self.sourceAddress = packet.endpoints.source.address?.tcpviewerNativeCopy
+        self.destinationAddress = packet.endpoints.destination.address?.tcpviewerNativeCopy
+        self.sniDomainName = packet.sniDomainName?.tcpviewerNativeCopy
+        self.clientIconFilePath = PacketClientIconPathResolver.iconFilePath(for: packet.client)?.tcpviewerNativeCopy
         self.hasClient = packet.client != nil
         self.timestamp = packet.timestamp
         self.streamID = packet.streamID
@@ -195,9 +212,9 @@ struct PacketTableRow: Identifiable, Sendable, Hashable {
         self.destinationText = NetworkInspectorFormatters.endpointLabel(packet.endpoints.destination)
         self.sourcePortText = NetworkInspectorFormatters.portLabel(packet.endpoints.source.port)
         self.destinationPortText = NetworkInspectorFormatters.portLabel(packet.endpoints.destination.port)
-        self.domainText = packet.sniDomainName ?? "-"
-        self.clientText = packet.client?.displayName ?? "-"
-        self.protocolText = NetworkInspectorFormatters.protocolLabel(for: packet)
+        self.domainText = (packet.sniDomainName ?? "-").tcpviewerNativeCopy
+        self.clientText = (packet.client?.displayName ?? "-").tcpviewerNativeCopy
+        self.protocolText = NetworkInspectorFormatters.protocolLabel(for: packet).tcpviewerNativeCopy
         self.streamIDText = packet.streamID.map(String.init) ?? "-"
         self.directionText = NetworkInspectorFormatters.directionLabel(packet.direction)
         self.deltaTimeText = NetworkInspectorFormatters.intervalLabel(
@@ -208,14 +225,14 @@ struct PacketTableRow: Identifiable, Sendable, Hashable {
             from: previousVisibleStreamPacketTimestamp,
             to: packet.timestamp
         )
-        self.tcpFlagsText = packet.tcpFlags ?? "-"
+        self.tcpFlagsText = (packet.tcpFlags ?? "-").tcpviewerNativeCopy
         self.tcpPayloadBytesText = packet.tcpPayloadLength.map(NetworkInspectorFormatters.byteCount) ?? "-"
         self.pidText = packet.client.map { String($0.pid) } ?? "-"
-        self.bundleIdentifierText = packet.client?.bundleIdentifier ?? "-"
-        self.decodeStatusText = NetworkInspectorFormatters.decodeStatusLabel(packet.decodeStatus)
-        self.interfaceText = packet.captureMetadata.interfaceName ?? packet.interfaceID ?? "-"
+        self.bundleIdentifierText = (packet.client?.bundleIdentifier ?? "-").tcpviewerNativeCopy
+        self.decodeStatusText = NetworkInspectorFormatters.decodeStatusLabel(packet.decodeStatus).tcpviewerNativeCopy
+        self.interfaceText = (packet.captureMetadata.interfaceName ?? packet.interfaceID ?? "-").tcpviewerNativeCopy
         self.lengthText = NetworkInspectorFormatters.byteCount(packet.capturedLength)
-        self.summaryText = packet.infoSummary
+        self.summaryText = packet.infoSummary.tcpviewerNativeCopy
         self.tags = NetworkInspectorFormatters.tags(for: packet)
         self.severity = NetworkInspectorFormatters.severity(for: packet)
     }

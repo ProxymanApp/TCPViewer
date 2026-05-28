@@ -27,6 +27,12 @@ struct PacketTableRowNativeSummaryLifetimeTests {
         #expect(copiedRows.allSatisfy { $0.destinationText.contains("192.168.0.2") })
         #expect(copiedRows.allSatisfy { !$0.protocolText.isEmpty })
         #expect(copiedRows.allSatisfy { !$0.summaryText.isEmpty })
+
+        // Raw passthrough fields hold native-layer-backed strings; they must survive the native
+        // store teardown just like the formatted ones (this is the field that crashed when rows
+        // kept a dangling NSString backing).
+        #expect(copiedRows.allSatisfy { $0.sourceAddress == "192.168.0.1" })
+        #expect(copiedRows.allSatisfy { $0.destinationAddress == "192.168.0.2" })
     }
 
     @Test func liveNativeSummaryRowsSurviveTableStoreAndCopyFormattingAfterNativeStoreCleanup() throws {
