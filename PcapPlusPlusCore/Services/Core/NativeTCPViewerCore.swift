@@ -6,7 +6,6 @@
 //
 
 import Foundation
-@_implementationOnly import TCPViewerNativeBridge
 
 public final class NativeTCPViewerCore: TCPViewerCoreProviding, @unchecked Sendable {
     private static let defaultQueueLabel = "com.proxyman.tcpviewer.PcapPlusPlusCore.NativeTCPViewerCore"

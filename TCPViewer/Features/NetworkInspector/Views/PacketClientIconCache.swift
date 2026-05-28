@@ -17,7 +17,7 @@ final class PacketClientIconCache {
     }
 
     func image(forPath path: String?) -> NSImage? {
-        guard let path else {
+        guard let path = Self.normalizedIconPath(path) else {
             return nil
         }
 
@@ -29,5 +29,19 @@ final class PacketClientIconCache {
         image.size = NSSize(width: 16, height: 16)
         imagesByKey[path] = image
         return image
+    }
+
+    static func normalizedIconPath(_ path: String?) -> String? {
+        guard let path else {
+            return nil
+        }
+
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("/"),
+              !trimmed.unicodeScalars.contains(where: { $0.value == 0 || CharacterSet.controlCharacters.contains($0) }) else {
+            return nil
+        }
+
+        return String(decoding: trimmed.utf8, as: UTF8.self)
     }
 }

@@ -15,12 +15,11 @@ brew install cmake ninja pkg-config
 
 ## First-Time Setup
 
-Clone the repository with submodules, then let the bootstrap scripts prepare the pinned native dependencies:
+Clone the repository with submodules, then let the bootstrap script prepare the pinned Wireshark dependency:
 
 ```bash
 git clone --recurse-submodules <repo-url>
 cd TCPViewer
-./scripts/bootstrap-pcapplusplus.sh
 ./scripts/bootstrap-wireshark.sh
 ```
 
@@ -28,11 +27,10 @@ If you already cloned without submodules:
 
 ```bash
 git submodule update --init --recursive
-./scripts/bootstrap-pcapplusplus.sh
 ./scripts/bootstrap-wireshark.sh
 ```
 
-This prepares the native capture and dissection libraries used by the default developer build.
+This prepares the native Wireshark libraries staged by the default developer build. TCP Viewer capture, capture-file I/O, and fallback packet dissection are implemented in Swift with the system libpcap runtime.
 
 ## Local Xcode Build Settings
 
@@ -199,7 +197,7 @@ Missing submodule:
 
 ```bash
 git submodule update --init --recursive
-./scripts/bootstrap-pcapplusplus.sh
+./scripts/bootstrap-wireshark.sh
 ```
 
 Missing CMake:

@@ -285,7 +285,6 @@
 			buildPhases = (
 				BA4D26AF2F9A2F760070BE17 /* Headers */,
 				BAWS00032F9E00000070BE17 /* Bootstrap Wireshark */,
-				BA4D26D02F9A30770070BE17 /* Bootstrap PcapPlusPlus */,
 				BA4D26B02F9A2F760070BE17 /* Sources */,
 				BA4D26B12F9A2F760070BE17 /* Frameworks */,
 				BAWS00042F9E00000070BE17 /* Stage Wireshark Runtime Libraries */,
@@ -493,26 +492,6 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		BA4D26D02F9A30770070BE17 /* Bootstrap PcapPlusPlus */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-			);
-			name = "Bootstrap PcapPlusPlus";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-				"$(PROJECT_DIR)/Vendor/.install/pcapplusplus/.tcpviewer-build-stamp",
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "\"$PROJECT_DIR/scripts/bootstrap-pcapplusplus.sh\"\n";
-			showEnvVarsInLog = 0;
-		};
 		BAE100042FA300000070BE17 /* Validate Local Build Environment */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -544,13 +523,12 @@
 				"$(PROJECT_DIR)/LICENSE",
 				"$(PROJECT_DIR)/COPYING",
 				"$(PROJECT_DIR)/SOURCE_CODE_OFFER.md",
-				"$(PROJECT_DIR)/THIRD_PARTY_NOTICES.md",
-				"$(PROJECT_DIR)/Vendor/Wireshark/COPYING",
-				"$(PROJECT_DIR)/Vendor/Wireshark/README.md",
-				"$(PROJECT_DIR)/Vendor/PcapPlusPlus/LICENSE",
-				"$(PROJECT_DIR)/Vendor/HexFiend/License.txt",
-				"$(PROJECT_DIR)/scripts/stage-open-source-notices.sh",
-			);
+					"$(PROJECT_DIR)/THIRD_PARTY_NOTICES.md",
+					"$(PROJECT_DIR)/Vendor/Wireshark/COPYING",
+					"$(PROJECT_DIR)/Vendor/Wireshark/README.md",
+					"$(PROJECT_DIR)/Vendor/HexFiend/License.txt",
+					"$(PROJECT_DIR)/scripts/stage-open-source-notices.sh",
+				);
 			name = "Stage Open Source Notices";
 			outputFileListPaths = (
 			);
@@ -858,7 +836,6 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
-					"$(PROJECT_DIR)/Vendor/.install/pcapplusplus/include",
 					"$(PROJECT_DIR)/Vendor/.build/wireshark-$(CONFIGURATION)-arm64",
 					"$(PROJECT_DIR)/Vendor/Wireshark",
 					"$(PROJECT_DIR)/Vendor/Wireshark/include",
@@ -881,40 +858,22 @@
 				);
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
-					"$(PROJECT_DIR)/Vendor/.install/pcapplusplus/lib",
-					"$(PROJECT_DIR)/Vendor/.install/wireshark/lib",
-					/opt/homebrew/opt/glib/lib,
-					/opt/homebrew/opt/gettext/lib,
-					/usr/local/opt/glib/lib,
-					/usr/local/opt/gettext/lib,
 				);
 				MARKETING_VERSION = 1.0;
-				MODULE_VERIFIER_SUPPORTED_LANGUAGES = "objective-c objective-c++";
-				MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS = "gnu17 gnu++20";
 				OTHER_LDFLAGS = (
 					"$(inherited)",
-					"-lPcap++",
-					"-lPacket++",
-					"-lCommon++",
 					"-lpcap",
-					"-lwireshark",
-					"-lwiretap",
-					"-lwsutil",
-					"-lglib-2.0",
-					"-lintl",
 					"-framework",
 					SystemConfiguration,
 					"-framework",
 					CoreFoundation,
 				);
-				OTHER_SWIFT_FLAGS = "$(inherited) -Xcc -fmodule-map-file=$(PROJECT_DIR)/PcapPlusPlusCore/NativeBridge/module.modulemap";
 				PRODUCT_BUNDLE_IDENTIFIER = com.proxyman.PcapPlusPlusCore;
 				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
 				SKIP_INSTALL = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_INCLUDE_PATHS = "$(inherited) $(PROJECT_DIR)/PcapPlusPlusCore/NativeBridge";
 				SWIFT_INSTALL_MODULE = YES;
 				SWIFT_INSTALL_OBJC_HEADER = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
@@ -941,7 +900,6 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
-					"$(PROJECT_DIR)/Vendor/.install/pcapplusplus/include",
 					"$(PROJECT_DIR)/Vendor/.build/wireshark-$(CONFIGURATION)-arm64",
 					"$(PROJECT_DIR)/Vendor/Wireshark",
 					"$(PROJECT_DIR)/Vendor/Wireshark/include",
@@ -964,40 +922,22 @@
 				);
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
-					"$(PROJECT_DIR)/Vendor/.install/pcapplusplus/lib",
-					"$(PROJECT_DIR)/Vendor/.install/wireshark/lib",
-					/opt/homebrew/opt/glib/lib,
-					/opt/homebrew/opt/gettext/lib,
-					/usr/local/opt/glib/lib,
-					/usr/local/opt/gettext/lib,
 				);
 				MARKETING_VERSION = 1.0;
-				MODULE_VERIFIER_SUPPORTED_LANGUAGES = "objective-c objective-c++";
-				MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS = "gnu17 gnu++20";
 				OTHER_LDFLAGS = (
 					"$(inherited)",
-					"-lPcap++",
-					"-lPacket++",
-					"-lCommon++",
 					"-lpcap",
-					"-lwireshark",
-					"-lwiretap",
-					"-lwsutil",
-					"-lglib-2.0",
-					"-lintl",
 					"-framework",
 					SystemConfiguration,
 					"-framework",
 					CoreFoundation,
 				);
-				OTHER_SWIFT_FLAGS = "$(inherited) -Xcc -fmodule-map-file=$(PROJECT_DIR)/PcapPlusPlusCore/NativeBridge/module.modulemap";
 				PRODUCT_BUNDLE_IDENTIFIER = com.proxyman.PcapPlusPlusCore;
 				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
 				SKIP_INSTALL = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_INCLUDE_PATHS = "$(inherited) $(PROJECT_DIR)/PcapPlusPlusCore/NativeBridge";
 				SWIFT_INSTALL_MODULE = YES;
 				SWIFT_INSTALL_OBJC_HEADER = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;

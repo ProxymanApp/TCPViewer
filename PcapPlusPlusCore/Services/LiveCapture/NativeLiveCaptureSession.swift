@@ -6,7 +6,6 @@
 //
 
 import Foundation
-@_implementationOnly import TCPViewerNativeBridge
 
 public final class NativeLiveCaptureSession: LiveCaptureSessionProviding, @unchecked Sendable {
     private let eventBox = EventCallbackBox<PacketIngestEvent>()

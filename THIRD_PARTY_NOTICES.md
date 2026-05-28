@@ -24,19 +24,6 @@ deep packet detail backend. The bootstrap script installs these libraries into
 the local vendor install directory. Wireshark documents that library builds are
 still GPL-covered and are not LGPL.
 
-## PcapPlusPlus
-
-- Source: https://github.com/seladb/PcapPlusPlus
-- Pinned tag: `v25.05`
-- Pinned commit: `a49a79e0b67b402ad75ffa96c1795def36df75c8`
-- License: Unlicense
-- License text: `Vendor/PcapPlusPlus/LICENSE`
-- Local source path: `Vendor/PcapPlusPlus`
-- Local build/install path: `Vendor/.install/pcapplusplus`
-
-PcapPlusPlus remains TCP Viewer's capture, packet summary, file I/O, and
-fallback detail engine while Wireshark-backed inspection is rolled in.
-
 ## HexFiend
 
 - Source: https://github.com/HexFiend/HexFiend

@@ -116,7 +116,7 @@
       <CommandLineArguments>
          <CommandLineArgument
             argument = "--tcpviewer-run-selection-crash-reproducer"
-            isEnabled = "YES">
+            isEnabled = "NO">
          </CommandLineArgument>
       </CommandLineArguments>
    </LaunchAction>

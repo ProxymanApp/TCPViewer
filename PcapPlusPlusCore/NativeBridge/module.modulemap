@@ -1,4 +1,0 @@
-module TCPViewerNativeBridge {
-  header "TCPViewerNativeBridge.h"
-  export *
-}

@@ -7,7 +7,6 @@
 
 import Foundation
 import SystemConfiguration
-@_implementationOnly import TCPViewerNativeBridge
 
 final class EventCallbackBox<Element>: @unchecked Sendable {
     @Protected private var eventHandler: ((Result<Element, Error>) -> Void)?

@@ -69,7 +69,7 @@ struct InspectorPipelineTests {
         #expect(buffer.flush() == nil)
     }
 
-    @Test func wiresharkUnavailableBackendFallsBackToPcapPlusPlusDetails() async throws {
+    @Test func wiresharkUnavailableBackendFallsBackToSwiftDetails() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
