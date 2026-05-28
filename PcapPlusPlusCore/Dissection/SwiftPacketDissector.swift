@@ -31,18 +31,69 @@ struct SwiftPacketDissection {
     let inspection: PCPPNativePacketInspectionDescriptor
 }
 
+struct SwiftWiresharkRuntimeStatus: Sendable {
+    let isAvailable: Bool
+    let unavailableReason: String
+}
+
+struct SwiftWiresharkConsoleLogger {
+    private let output: (String) -> Void
+
+    init(output: @escaping (String) -> Void = { print($0) }) {
+        self.output = output
+    }
+
+    // Print Wireshark warnings with a prominent marker so console scanning is easy.
+    func warning(_ message: String) {
+        log(level: "WARNING", message: message)
+    }
+
+    // Print Wireshark errors with a prominent marker so console scanning is easy.
+    func error(_ message: String) {
+        log(level: "ERROR", message: message)
+    }
+
+    private func log(level: String, message: String) {
+        output("[TCPViewer][Wireshark] \(Self.timestamp()) ❌ \(level): \(message)")
+    }
+
+    private static func timestamp() -> String {
+        ISO8601DateFormatter().string(from: Date())
+    }
+}
+
 enum SwiftPacketDissector {
+    private static let wiresharkWarningLogLock = NSLock()
+    private static var loggedWiresharkWarningKeys: Set<String> = []
+
     static func dissect(record: NativePacketRecord, disablesWireshark: Bool) -> SwiftPacketDissection {
+        dissect(
+            record: record,
+            disablesWireshark: disablesWireshark,
+            wiresharkRuntimeStatus: SwiftWiresharkRuntime.shared.status,
+            logger: SwiftWiresharkConsoleLogger()
+        )
+    }
+
+    static func dissect(
+        record: NativePacketRecord,
+        disablesWireshark: Bool,
+        wiresharkRuntimeStatus: SwiftWiresharkRuntimeStatus,
+        logger: SwiftWiresharkConsoleLogger = SwiftWiresharkConsoleLogger()
+    ) -> SwiftPacketDissection {
         let analyzer = PacketAnalyzer(record: record)
         let packet = analyzer.analyze()
         var nodes = packet.detailNodes
         if disablesWireshark {
-            nodes.insert(wiresharkFallbackWarning("Wireshark libwireshark backend is disabled for this capture."), at: 0)
-        } else if SwiftWiresharkRuntime.shared.isAvailable {
-            nodes.insert(wiresharkStatusNode("Wireshark libwireshark backend is loaded; Swift fallback details are shown until field-tree extraction is complete."), at: 0)
-        } else {
-            nodes.insert(wiresharkFallbackWarning(SwiftWiresharkRuntime.shared.unavailableReason), at: 0)
+            let reason = "Wireshark libwireshark backend is disabled for this capture."
+            logWiresharkWarningOnce(key: "disabled", message: reason, logger: logger)
+            nodes.insert(wiresharkFallbackWarning(reason), at: 0)
+        } else if !wiresharkRuntimeStatus.isAvailable {
+            let reason = wiresharkRuntimeStatus.unavailableReason
+            logWiresharkWarningOnce(key: "unavailable:\(reason)", message: reason, logger: logger)
+            nodes.insert(wiresharkFallbackWarning(reason), at: 0)
         }
+        logDecodeIssueIfNeeded(packet.decodeStatus, packetNumber: record.packetNumber, logger: logger)
 
         let decodeDescriptor = PCPPNativeDecodeStatusDescriptor(
             kind: packet.decodeStatus.kind.nativeKind,
@@ -109,15 +160,38 @@ enum SwiftPacketDissector {
         )
     }
 
-    private static func wiresharkStatusNode(_ message: String) -> PacketDetailNode {
-        PacketDetailNode(
-            id: "wireshark.status",
-            name: "Wireshark Backend",
-            fieldName: "tcpviewer.wireshark.status",
-            value: message,
-            kind: .field,
-            severity: .info
-        )
+    private static func logWiresharkWarningOnce(key: String, message: String, logger: SwiftWiresharkConsoleLogger) {
+        let shouldLog = wiresharkWarningLogLock.withLock {
+            if loggedWiresharkWarningKeys.contains(key) {
+                return false
+            }
+            loggedWiresharkWarningKeys.insert(key)
+            return true
+        }
+
+        if shouldLog {
+            logger.warning(message)
+        }
+    }
+
+    private static func logDecodeIssueIfNeeded(
+        _ status: PacketDecodeStatus,
+        packetNumber: UInt64,
+        logger: SwiftWiresharkConsoleLogger
+    ) {
+        guard status.kind != .complete else {
+            return
+        }
+
+        let reason = status.reason ?? "No reason provided."
+        switch status.kind {
+        case .complete:
+            return
+        case .malformed:
+            logger.error("Packet #\(packetNumber) detail decode failed: \(reason)")
+        case .partial, .unsupported:
+            logger.warning("Packet #\(packetNumber) detail decode warning: \(reason)")
+        }
     }
 }
 
@@ -131,6 +205,11 @@ final class SwiftWiresharkRuntime {
     private var epanCleanup: (@convention(c) () -> Void)?
     private var initializedWiretap = false
     private var initializedEpan = false
+    private let logger = SwiftWiresharkConsoleLogger()
+
+    var status: SwiftWiresharkRuntimeStatus {
+        SwiftWiresharkRuntimeStatus(isAvailable: isAvailable, unavailableReason: unavailableReason)
+    }
 
     private init() {
         loadRuntime()
@@ -141,6 +220,7 @@ final class SwiftWiresharkRuntime {
             if let errorPointer = dlerror() {
                 unavailableReason = String(cString: errorPointer)
             }
+            logger.error("Failed to load Wireshark libraries: \(unavailableReason)")
             return
         }
 
@@ -151,6 +231,7 @@ final class SwiftWiresharkRuntime {
               let epanCleanup: @convention(c) () -> Void = loadSymbol("epan_cleanup", from: paths.wireshark),
               let prefsApplyAll: @convention(c) () -> Void = loadSymbol("prefs_apply_all", from: paths.wireshark) else {
             unavailableReason = "Wireshark runtime symbols could not be resolved."
+            logger.error(unavailableReason)
             return
         }
 
@@ -162,6 +243,7 @@ final class SwiftWiresharkRuntime {
 
         guard epanInit(nil, nil, true) else {
             unavailableReason = "Wireshark protocol registry failed to initialize."
+            logger.error(unavailableReason)
             wtapCleanup()
             initializedWiretap = false
             return

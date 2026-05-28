@@ -1567,6 +1567,7 @@ final class TCPViewerWorkspaceController {
         let source = snapshot.packetIngestState.source
         let shouldReleaseStoppedLiveSession = snapshot.sessionState.phase == .stopped ||
             snapshot.sessionState.phase == .failed
+        let shouldClearRunningLiveSession = source == .some(.live) && !shouldReleaseStoppedLiveSession
         snapshot.packetIngestState.reset(source: source, message: "Cleared.")
         snapshot.navigationState = PacketNavigationState(
             visiblePacketIDs: [],
@@ -1580,6 +1581,20 @@ final class TCPViewerWorkspaceController {
         services.packetMetadataEnricher.reset()
         if shouldReleaseStoppedLiveSession {
             releaseLiveSession()
+        } else if shouldClearRunningLiveSession {
+            liveSession?.clearCapturedPackets { [weak self] result in
+                guard case .failure(let error) = result else {
+                    return
+                }
+                DispatchQueue.main.async {
+                    guard let self else {
+                        return
+                    }
+                    let tcpviewerError = self.tcpviewerError(from: error, defaultCode: .liveSessionControlFailed)
+                    self.snapshot.sessionState.lastError = tcpviewerError
+                    self.snapshot.sessionState.statusMessage = tcpviewerError.message
+                }
+            }
         }
     }
 

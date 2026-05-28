@@ -41,6 +41,10 @@ public final class NativeLiveCaptureSession: LiveCaptureSessionProviding, @unche
         state.stop(completion: completion)
     }
 
+    public func clearCapturedPackets(completion: @escaping TCPViewerVoidCompletion) {
+        state.clearCapturedPackets(completion: completion)
+    }
+
     public func inspectPacket(id: PacketSummary.ID, completion: @escaping TCPViewerCompletion<PacketInspection>) {
         state.inspectPacket(id: id, completion: completion)
     }
@@ -273,6 +277,14 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
         }
     }
 
+    func clearCapturedPackets(completion: @escaping TCPViewerVoidCompletion) {
+        queue.async {
+            completion(Result {
+                self.clearCapturedPacketsOnQueue()
+            })
+        }
+    }
+
     func healthSnapshot(completion: @escaping (CaptureHealthSnapshot) -> Void) {
         queue.async {
             completion(self.health)
@@ -341,7 +353,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
             startedAt = Date()
             cancelPacketBatchFlushWorkItem()
             cancelPacketReanalysisWorkItem()
-            packetSummaryTextByID.removeAll(keepingCapacity: true)
+            packetSummaryTextByID.removeAll(keepingCapacity: false)
             packetBatchBuffer.discardPending(releasingCapacity: true)
         }
 
@@ -381,6 +393,17 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
         } catch {
             throw NativeBridgeMapper.coreError(error, defaultCode: .liveSessionControlFailed)
         }
+    }
+
+    private func clearCapturedPacketsOnQueue() {
+        cancelPacketBatchFlushWorkItem()
+        cancelPacketReanalysisWorkItem()
+        packetBatchBuffer.discardPending(releasingCapacity: true)
+        packetSummaryTextByID.removeAll(keepingCapacity: false)
+        activeRunPacketCount = 0
+        nativeSession.clearCapturedPackets()
+        health = NativeBridgeMapper.healthSnapshot(nativeSession.healthSnapshot)
+        eventBox.yield(.healthChanged(health))
     }
 
     private func stopOnQueue(reason: String?) throws {

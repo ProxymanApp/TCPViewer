@@ -271,6 +271,39 @@ struct WindowControllerTests {
         await tearDown(controller)
     }
 
+    @Test func clearPacketsDuringRunningLiveCaptureClearsNativeSessionStore() async {
+        let liveSession = FakeLiveSession()
+        let controller = TCPViewerWorkspaceController(
+            services: TCPViewerServiceRegistry(core: FakeTCPViewerCore(
+                interfaceInventories: [[makeInterface(id: "en0", displayName: "Wi-Fi")]],
+                liveSession: liveSession
+            ))
+        )
+
+        await controller.refreshInterfaces()
+        await controller.startLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        liveSession.send(.packetBatch([
+            makePacket(packetNumber: 1, source: .live, transportHint: .tcp),
+            makePacket(packetNumber: 2, source: .live, transportHint: .udp),
+        ], disposition: .append))
+        await waitUntil {
+            controller.snapshot.packetIngestState.totalPacketCount == 2
+        }
+
+        controller.clearPackets()
+
+        #expect(liveSession.clearCapturedPacketsCount == 1)
+        #expect(liveSession.stopCount == 0)
+        #expect(controller.snapshot.packetIngestState.totalPacketCount == 0)
+        #expect(controller.snapshot.sessionState.capturedPacketCount == 0)
+
+        await controller.stopLiveCapture()
+        #expect(liveSession.stopCount == 1)
+
+        await tearDown(controller)
+    }
+
     @Test func terminationPreparationStopsRunningLiveCaptureOnce() async {
         let liveSession = FakeLiveSession()
         let controller = TCPViewerWorkspaceController(
@@ -1432,6 +1465,7 @@ private final class FakeLiveSession: LiveCaptureSessionProviding, @unchecked Sen
     private(set) var pauseCount = 0
     private(set) var resumeCount = 0
     private(set) var stopCount = 0
+    private(set) var clearCapturedPacketsCount = 0
     private(set) var exportRequests: [([PacketSummary.ID], URL, CaptureFileFormat)] = []
     private(set) var latestHealthSnapshot = CaptureHealthSnapshot.empty
 
@@ -1456,6 +1490,12 @@ private final class FakeLiveSession: LiveCaptureSessionProviding, @unchecked Sen
             completion(.failure(stopError))
             return
         }
+        completion(.success(()))
+    }
+
+    func clearCapturedPackets(completion: @escaping TCPViewerVoidCompletion) {
+        clearCapturedPacketsCount += 1
+        latestHealthSnapshot = .empty
         completion(.success(()))
     }
 

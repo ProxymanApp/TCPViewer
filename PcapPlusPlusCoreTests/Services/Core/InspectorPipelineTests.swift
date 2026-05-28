@@ -90,6 +90,59 @@ struct InspectorPipelineTests {
         #expect(findNode(in: inspection.detailNodes, id: "udp.length") != nil)
     }
 
+    @Test func availableWiresharkBackendDoesNotRenderPlaceholderStatusNode() {
+        let packetBytes = makeIPv4UDPPayloadPacket()
+        var consoleLines: [String] = []
+        let record = NativePacketRecord(
+            identifier: 1,
+            packetNumber: 1,
+            timestamp: Date(timeIntervalSince1970: 0),
+            rawBytes: packetBytes,
+            originalLength: packetBytes.count,
+            linkLayerType: Libpcap.dltEthernet,
+            interfaceIdentifier: nil,
+            interfaceName: nil,
+            packetComment: nil
+        )
+        let dissection = SwiftPacketDissector.dissect(
+            record: record,
+            disablesWireshark: false,
+            wiresharkRuntimeStatus: SwiftWiresharkRuntimeStatus(isAvailable: true, unavailableReason: ""),
+            logger: SwiftWiresharkConsoleLogger { consoleLines.append($0) }
+        )
+
+        #expect(findDescriptor(in: dissection.inspection.detailNodes, id: "wireshark.status") == nil)
+        #expect(findDescriptor(in: dissection.inspection.detailNodes, id: "wireshark.fallback") == nil)
+        #expect(findDescriptor(in: dissection.inspection.detailNodes, id: "udp.length") != nil)
+        #expect(consoleLines.isEmpty)
+    }
+
+    @Test func packetDetailWarningsPrintToConsoleWithErrorEmoji() throws {
+        var consoleLines: [String] = []
+        let record = NativePacketRecord(
+            identifier: 1,
+            packetNumber: 1,
+            timestamp: Date(timeIntervalSince1970: 0),
+            rawBytes: Data([0x00]),
+            originalLength: 1,
+            linkLayerType: Libpcap.dltEthernet,
+            interfaceIdentifier: nil,
+            interfaceName: nil,
+            packetComment: nil
+        )
+
+        _ = SwiftPacketDissector.dissect(
+            record: record,
+            disablesWireshark: false,
+            wiresharkRuntimeStatus: SwiftWiresharkRuntimeStatus(isAvailable: true, unavailableReason: ""),
+            logger: SwiftWiresharkConsoleLogger { consoleLines.append($0) }
+        )
+
+        let line = try #require(consoleLines.first)
+        #expect(line.contains("❌ ERROR"))
+        #expect(line.contains("Packet #1 detail decode failed"))
+    }
+
     @Test func offlinePcapNgInterfaceNamesFlowIntoFrameDetails() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -1119,6 +1172,20 @@ private func findNode(in nodes: [PacketDetailNode], id: String) -> PacketDetailN
         }
 
         if let match = findNode(in: node.children, id: id) {
+            return match
+        }
+    }
+
+    return nil
+}
+
+private func findDescriptor(in nodes: [PCPPNativePacketDetailNodeDescriptor], id: String) -> PCPPNativePacketDetailNodeDescriptor? {
+    for node in nodes {
+        if node.identifier == id {
+            return node
+        }
+
+        if let match = findDescriptor(in: node.children, id: id) {
             return match
         }
     }

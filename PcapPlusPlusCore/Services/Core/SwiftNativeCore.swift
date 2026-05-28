@@ -139,7 +139,6 @@ private struct InterfaceBuilder {
 final class PCPPNativeOfflineDocument {
     private let lock = NSLock()
     private var file: NativeCaptureFile
-    private var cachedDissections: [UInt64: SwiftPacketDissection] = [:]
     private var partiallyLoaded = false
     private let disablesWireshark: Bool
 
@@ -211,15 +210,12 @@ final class PCPPNativeOfflineDocument {
 
     func inspectPacket(withIdentifier identifier: UInt64) throws -> PCPPNativePacketInspectionDescriptor {
         try lock.withLock {
-            if let cached = cachedDissections[identifier] {
-                return cached.inspection
-            }
             guard let record = file.records.first(where: { $0.identifier == identifier }) else {
                 throw NativeNSError(.fileReadFailed, "Packet \(identifier) is not available in the backing store.")
             }
-            let dissection = SwiftPacketDissector.dissect(record: record, disablesWireshark: disablesWireshark)
-            cachedDissections[identifier] = dissection
-            return dissection.inspection
+            return autoreleasepool {
+                SwiftPacketDissector.dissect(record: record, disablesWireshark: disablesWireshark).inspection
+            }
         }
     }
 
@@ -273,7 +269,6 @@ final class PCPPNativeOfflineDocument {
                 lock.withLock {
                     file = loaded
                     currentFormat = loaded.format.rawValue
-                    cachedDissections.removeAll(keepingCapacity: true)
                     partiallyLoaded = false
                 }
             }
@@ -300,12 +295,11 @@ final class PCPPNativeOfflineDocument {
                     throw NativeNSError(.operationCancelled, progress.message)
                 }
 
-                let dissection = SwiftPacketDissector.dissect(record: record, disablesWireshark: disablesWireshark)
-                lock.withLock {
-                    cachedDissections[record.identifier] = dissection
+                let summary = autoreleasepool {
+                    SwiftPacketDissector.dissect(record: record, disablesWireshark: disablesWireshark).summary
                 }
-                summaries.append(dissection.summary)
-                pendingBatch.append(dissection.summary)
+                summaries.append(summary)
+                pendingBatch.append(summary)
 
                 if pendingBatch.count >= max(batchSize, 1) {
                     batchHandler?(pendingBatch)
@@ -361,7 +355,6 @@ final class PCPPNativeLiveSession {
     private var paused = false
     private var packetNumber: UInt64 = 1
     private var records: [NativePacketRecord] = []
-    private var cachedDissections: [UInt64: SwiftPacketDissection] = [:]
     private var packetsReceived: UInt64 = 0
     private var packetsDropped: UInt64 = 0
     private var packetsDroppedByInterface: UInt64 = 0
@@ -406,8 +399,7 @@ final class PCPPNativeLiveSession {
             phase = .running
             packetNumber = 1
             liveLinkLayerType = Libpcap.dataLink(for: openedHandle)
-            records.removeAll(keepingCapacity: true)
-            cachedDissections.removeAll(keepingCapacity: true)
+            records.removeAll(keepingCapacity: false)
             packetsReceived = 0
             packetsDropped = 0
             packetsDroppedByInterface = 0
@@ -475,29 +467,33 @@ final class PCPPNativeLiveSession {
         phaseHandler?(.stopped, "Capture stopped.")
     }
 
+    func clearCapturedPackets() {
+        lock.withLock {
+            packetNumber = 1
+            records.removeAll(keepingCapacity: false)
+            packetsReceived = 0
+            packetsDropped = 0
+            packetsDroppedByInterface = 0
+        }
+    }
+
     func inspectPacket(withIdentifier identifier: UInt64) throws -> PCPPNativePacketInspectionDescriptor {
         try lock.withLock {
-            if let cached = cachedDissections[identifier] {
-                return cached.inspection
-            }
             guard let record = records.first(where: { $0.identifier == identifier }) else {
                 throw NativeNSError(.fileReadFailed, "Packet \(identifier) is not available in the live backing store.")
             }
-            let dissection = SwiftPacketDissector.dissect(record: record, disablesWireshark: disablesWireshark)
-            cachedDissections[identifier] = dissection
-            return dissection.inspection
+            return autoreleasepool {
+                SwiftPacketDissector.dissect(record: record, disablesWireshark: disablesWireshark).inspection
+            }
         }
     }
 
     func reanalyzePacketSummaries() throws -> [PCPPNativePacketSummaryDescriptor] {
         lock.withLock {
             records.map { record in
-                if let cached = cachedDissections[record.identifier] {
-                    return cached.summary
+                autoreleasepool {
+                    SwiftPacketDissector.dissect(record: record, disablesWireshark: disablesWireshark).summary
                 }
-                let dissection = SwiftPacketDissector.dissect(record: record, disablesWireshark: disablesWireshark)
-                cachedDissections[record.identifier] = dissection
-                return dissection.summary
             }
         }
     }
@@ -559,12 +555,11 @@ final class PCPPNativeLiveSession {
                 return record
             }
 
-            let dissection = SwiftPacketDissector.dissect(record: record, disablesWireshark: disablesWireshark)
-            lock.withLock {
-                cachedDissections[record.identifier] = dissection
+            let summary = autoreleasepool {
+                SwiftPacketDissector.dissect(record: record, disablesWireshark: disablesWireshark).summary
             }
-            packetHandler?([dissection.summary])
-            if packetNumber % 128 == 0 {
+            packetHandler?([summary])
+            if record.packetNumber % 128 == 0 {
                 healthHandler?(healthSnapshot)
             }
         }
@@ -586,7 +581,6 @@ final class PCPPNativeLiveSession {
 final class PCPPNativeLivePacketStoreTestProbe {
     private let lock = NSLock()
     private var records: [NativePacketRecord] = []
-    private var cachedDissections: [UInt64: SwiftPacketDissection] = [:]
     private var offsets: [UInt64: UInt64] = [:]
     private let backingFileURL: URL
     private var backingFileHandle: FileHandle?
@@ -640,15 +634,12 @@ final class PCPPNativeLivePacketStoreTestProbe {
 
     func inspectPacket(identifier: UInt64) throws -> PCPPNativePacketInspectionDescriptor {
         try lock.withLock {
-            if let cached = cachedDissections[identifier] {
-                return cached.inspection
-            }
             guard let record = records.first(where: { $0.identifier == identifier }) else {
                 throw NativeNSError(.fileReadFailed, "Packet \(identifier) is not available in the live backing store.")
             }
-            let dissection = SwiftPacketDissector.dissect(record: record, disablesWireshark: true)
-            cachedDissections[identifier] = dissection
-            return dissection.inspection
+            return autoreleasepool {
+                SwiftPacketDissector.dissect(record: record, disablesWireshark: true).inspection
+            }
         }
     }
 
@@ -656,12 +647,9 @@ final class PCPPNativeLivePacketStoreTestProbe {
         lock.withLock {
             let limit = identifier == 0 ? UInt64.max : identifier
             return records.filter { $0.identifier <= limit }.map { record in
-                if let cached = cachedDissections[record.identifier] {
-                    return cached.summary
+                autoreleasepool {
+                    SwiftPacketDissector.dissect(record: record, disablesWireshark: true).summary
                 }
-                let dissection = SwiftPacketDissector.dissect(record: record, disablesWireshark: true)
-                cachedDissections[record.identifier] = dissection
-                return dissection.summary
             }
         }
     }
@@ -686,9 +674,8 @@ final class PCPPNativeLivePacketStoreTestProbe {
             try? backingFileHandle?.close()
             backingFileHandle = nil
             currentBackingFileSize = 0
-            records.removeAll(keepingCapacity: true)
-            cachedDissections.removeAll(keepingCapacity: true)
-            offsets.removeAll(keepingCapacity: true)
+            records.removeAll(keepingCapacity: false)
+            offsets.removeAll(keepingCapacity: false)
         }
         try? FileManager.default.removeItem(at: backingFileURL)
     }
