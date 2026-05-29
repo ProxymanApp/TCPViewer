@@ -332,6 +332,21 @@ final class PacketWorkspaceViewController: NSViewController {
     }
 }
 
+#if DEBUG
+extension PacketWorkspaceViewController {
+    // Selects a random packet row through the table controller for debug crash reproduction.
+    @discardableResult
+    func selectRandomPacketRowForTesting() -> Bool {
+        guard !viewModel.isEmpty else {
+            return false
+        }
+
+        showTable()
+        return tableController.selectRandomPacketRowForTesting()
+    }
+}
+#endif
+
 extension PacketWorkspaceViewController: PacketTableViewControllerDelegate {
     func packetTableViewController(_ controller: PacketTableViewController, didSelectPacket identifier: PacketSummary.ID?) {
         delegate?.packetWorkspaceViewController(self, didSelectPacket: identifier)

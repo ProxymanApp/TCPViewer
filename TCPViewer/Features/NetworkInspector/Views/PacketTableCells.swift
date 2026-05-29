@@ -94,6 +94,22 @@ final class PacketProtocolCell: NSTextFieldCell {
         textColor = textColor(for: protocolText, severity: severity)
     }
 
+    override func copy(with zone: NSZone? = nil) -> Any {
+        let savedProtocolText = protocolText
+        let savedSeverity = severity
+        protocolText = ""
+        defer {
+            protocolText = savedProtocolText
+            severity = savedSeverity
+        }
+
+        let copied = super.copy(with: zone) as! PacketProtocolCell
+        // NSCell copies bitwise; refill Swift strings so copied cells own valid storage.
+        copied.protocolText = String(decoding: savedProtocolText.utf8, as: UTF8.self)
+        copied.severity = savedSeverity
+        return copied
+    }
+
     override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
         // Draw protocol values as compact colored pills instead of plain table text.
         let label = protocolText.isEmpty ? stringValue : protocolText
@@ -224,10 +240,23 @@ final class PacketClientCell: NSTextFieldCell {
 
     // Configure the reused cell with the current row's client metadata.
     func configure(displayName: String, iconFilePath: String?, configuration: AppConfiguration) {
-        self.iconFilePath = iconFilePath
+        self.iconFilePath = PacketClientIconCache.normalizedIconPath(iconFilePath)
         stringValue = displayName
         font = configuration.packetFont(weight: .regular)
         textColor = .secondaryLabelColor
+    }
+
+    override func copy(with zone: NSZone? = nil) -> Any {
+        let savedIconFilePath = iconFilePath
+        iconFilePath = nil
+        defer {
+            iconFilePath = savedIconFilePath
+        }
+
+        let copied = super.copy(with: zone) as! PacketClientCell
+        // NSCell copies bitwise; refill Swift strings so copied cells own valid storage.
+        copied.iconFilePath = savedIconFilePath.map { String(decoding: $0.utf8, as: UTF8.self) }
+        return copied
     }
 
     override func drawingRect(forBounds rect: NSRect) -> NSRect {

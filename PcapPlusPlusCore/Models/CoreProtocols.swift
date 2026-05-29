@@ -63,6 +63,7 @@ public protocol LiveCaptureSessionProviding: AnyObject {
     func pause(completion: @escaping TCPViewerVoidCompletion)
     func resume(completion: @escaping TCPViewerVoidCompletion)
     func stop(completion: @escaping TCPViewerVoidCompletion)
+    func clearCapturedPackets(completion: @escaping TCPViewerVoidCompletion)
     func inspectPacket(id: PacketSummary.ID, completion: @escaping TCPViewerCompletion<PacketInspection>)
     func exportPackets(
         withIDs identifiers: [PacketSummary.ID],
@@ -225,6 +226,10 @@ public final class UnconfiguredLiveCaptureSession: LiveCaptureSessionProviding {
 
     public func stop(completion: @escaping TCPViewerVoidCompletion) {
         completion(.failure(TCPViewerCoreError(code: .integrationMisconfigured, message: "Native live capture sessions are not wired into PcapPlusPlusCore yet.")))
+    }
+
+    public func clearCapturedPackets(completion: @escaping TCPViewerVoidCompletion) {
+        completion(.success(()))
     }
 
     public func inspectPacket(id: PacketSummary.ID, completion: @escaping TCPViewerCompletion<PacketInspection>) {

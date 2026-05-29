@@ -761,3 +761,33 @@ extension PacketTableViewController: PacketTableColumnVisibilityMenuActionHandli
         tableView.headerView?.menu?.cancelTracking()
     }
 }
+
+#if DEBUG
+extension PacketTableViewController {
+    // Selects a random NSTableView row so debug automation uses the same selection path as clicks.
+    @discardableResult
+    func selectRandomPacketRowForTesting() -> Bool {
+        let rowCount = viewModel.rowCount
+        guard rowCount > 0 else {
+            return false
+        }
+
+        let rowIndex = randomSelectableRowIndex(rowCount: rowCount, currentRow: tableView.selectedRow)
+        if rowCount == 1, tableView.selectedRow == rowIndex {
+            tableView.deselectAll(nil)
+        }
+        tableView.selectRowIndexes(IndexSet(integer: rowIndex), byExtendingSelection: false)
+        tableView.scrollRowToVisible(rowIndex)
+        return true
+    }
+
+    // Avoids selecting the already-selected row when more than one row is available.
+    private func randomSelectableRowIndex(rowCount: Int, currentRow: Int) -> Int {
+        var rowIndex = Int.random(in: 0..<rowCount)
+        if rowCount > 1, rowIndex == currentRow {
+            rowIndex = (rowIndex + Int.random(in: 1..<rowCount)) % rowCount
+        }
+        return rowIndex
+    }
+}
+#endif

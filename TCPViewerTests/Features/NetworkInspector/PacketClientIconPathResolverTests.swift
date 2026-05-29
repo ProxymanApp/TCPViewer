@@ -5,6 +5,7 @@
 //  Created by Proxyman LLC on 26/4/26.
 //
 
+import AppKit
 import Foundation
 import PcapPlusPlusCore
 import Testing
@@ -54,6 +55,29 @@ struct PacketClientIconPathResolverTests {
     @Test func emptyPathsAreIgnored() {
         #expect(PacketClientIconPathResolver.iconFilePath(bundlePath: "  ", executablePath: "\n\t") == nil)
         #expect(PacketClientIconPathResolver.iconFilePath(bundlePath: " /Applications/Example.app ", executablePath: " ") == "/Applications/Example.app")
+    }
+
+    @Test func iconCacheRejectsCorruptAndNonAbsolutePaths() {
+        #expect(PacketClientIconCache.normalizedIconPath(String(repeating: "\0", count: 23)) == nil)
+        #expect(PacketClientIconCache.normalizedIconPath("relative/example.app") == nil)
+        #expect(PacketClientIconCache.normalizedIconPath(" /Applications/Example.app ") == "/Applications/Example.app")
+    }
+
+    @Test func packetClientCellCopyKeepsConfiguredSwiftState() throws {
+        let suiteName = "PacketClientCellCopy-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let configuration = AppConfiguration(defaults: defaults)
+        let cell = PacketClientCell()
+
+        cell.configure(
+            displayName: "Example",
+            iconFilePath: "/Applications/Example.app",
+            configuration: configuration
+        )
+        let copiedCell = try #require(cell.copy() as? PacketClientCell)
+
+        #expect(copiedCell.stringValue == "Example")
     }
 
     @Test func clientConvenienceUsesPacketClientPaths() {

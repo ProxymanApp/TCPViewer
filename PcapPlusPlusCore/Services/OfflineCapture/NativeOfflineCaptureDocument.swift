@@ -6,7 +6,6 @@
 //
 
 import Foundation
-@_implementationOnly import TCPViewerNativeBridge
 
 public final class NativeOfflineCaptureDocument: OfflineCaptureDocumentProviding, @unchecked Sendable {
     private let eventBox = EventCallbackBox<PacketIngestEvent>()

@@ -12,9 +12,7 @@ import Testing
 struct CoreFacadeTypesTests {
 
     @Test func pinnedIntegrationMetadataMatchesRepositoryDecision() {
-        #expect(PcapPlusPlusCoreModule.plannedVendorPath == "Vendor/PcapPlusPlus")
-        #expect(PcapPlusPlusCoreModule.pinnedTag == "v25.05")
-        #expect(PcapPlusPlusCoreModule.pinnedCommit == "a49a79e0b67b402ad75ffa96c1795def36df75c8")
+        #expect(PcapPlusPlusCoreModule.coreImplementation == "Swift native capture, capture-file I/O, and packet dissection")
         #expect(PcapPlusPlusCoreModule.wiresharkVendorPath == "Vendor/Wireshark")
         #expect(PcapPlusPlusCoreModule.wiresharkPinnedTag == "v4.6.4")
         #expect(PcapPlusPlusCoreModule.wiresharkPinnedCommit == "93282876538d78a2927108dd71ee0ff370aedb0a")

@@ -2590,6 +2590,10 @@ private final class InspectorFakeLiveSession: LiveCaptureSessionProviding, @unch
         completion(.success(()))
     }
 
+    func clearCapturedPackets(completion: @escaping TCPViewerVoidCompletion) {
+        completion(.success(()))
+    }
+
     func inspectPacket(id: PacketSummary.ID, completion: @escaping TCPViewerCompletion<PacketInspection>) {
         guard let inspection = inspections[id] else {
             completion(.failure(TCPViewerCoreError(code: .liveSessionControlFailed, message: "Missing inspection.")))

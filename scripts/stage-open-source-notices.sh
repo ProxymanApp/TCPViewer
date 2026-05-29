@@ -54,7 +54,6 @@ copy_notice "$PROJECT_DIR/SOURCE_CODE_OFFER.md" "SOURCE_CODE_OFFER.md"
 copy_notice "$PROJECT_DIR/THIRD_PARTY_NOTICES.md" "THIRD_PARTY_NOTICES.md"
 copy_notice "$PROJECT_DIR/Vendor/Wireshark/COPYING" "Wireshark-COPYING.txt"
 copy_notice "$PROJECT_DIR/Vendor/Wireshark/README.md" "Wireshark-README.md"
-copy_notice "$PROJECT_DIR/Vendor/PcapPlusPlus/LICENSE" "PcapPlusPlus-LICENSE.txt"
 copy_notice "$PROJECT_DIR/Vendor/HexFiend/License.txt" "HexFiend-LICENSE.txt"
 write_runtime_manifest
 

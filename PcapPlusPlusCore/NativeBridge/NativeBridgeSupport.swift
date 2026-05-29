@@ -7,7 +7,6 @@
 
 import Foundation
 import SystemConfiguration
-@_implementationOnly import TCPViewerNativeBridge
 
 final class EventCallbackBox<Element>: @unchecked Sendable {
     @Protected private var eventHandler: ((Result<Element, Error>) -> Void)?
@@ -538,6 +537,8 @@ enum NativeBridgeMapper {
             code = .invalidCaptureFilter
         case 1011:
             code = .operationCancelled
+        case 1012:
+            code = .unavailableFeature
         default:
             code = defaultCode
         }

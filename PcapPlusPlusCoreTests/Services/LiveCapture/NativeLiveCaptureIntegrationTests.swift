@@ -17,7 +17,7 @@ final class NativeLiveCaptureIntegrationTests {
             return
         }
 
-        let core = NativeTCPViewerCore(disablesWiresharkForOfflineDocuments: true, disablesWiresharkForLiveSessions: true)
+        let core = NativeTCPViewerCore()
         let interfaces = try await core.listInterfaces()
         let captureInterface = try #require(
             interfaces.first { $0.id == requestedInterfaceID },

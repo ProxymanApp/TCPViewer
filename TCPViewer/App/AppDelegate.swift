@@ -27,6 +27,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var skipsNextQuitConfirmation = false
     private var isShowingRenewalRequiredAlert = false
     private var isVerifyingLicenseAtLaunch = false
+    #if DEBUG
+    private var shouldOpenUntitledDocumentAfterIgnoringDebugLaunchFiles = false
+    #endif
 
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
@@ -40,11 +43,32 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         wireHelpMenu()
         verifyLicenseAtLaunch()
         networkHelperToolManager.refreshStatusForLaunch()
+        #if DEBUG
+        openUntitledDocumentAfterIgnoringDebugLaunchFilesIfNeeded()
+        #endif
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
         verifyLicenseIfNeededForForeground()
     }
+
+    #if DEBUG
+    func application(_ sender: NSApplication, openFiles filenames: [String]) {
+        let filteredFilenames = TCPViewerDebugLaunchArgumentFilter.filteredDocumentFilenames(filenames)
+        guard filteredFilenames.count != filenames.count else {
+            openDebugDocuments(filenames, sender: sender)
+            return
+        }
+
+        if filteredFilenames.isEmpty {
+            shouldOpenUntitledDocumentAfterIgnoringDebugLaunchFiles = true
+            sender.reply(toOpenOrPrint: .success)
+            openUntitledDocumentAfterIgnoringDebugLaunchFilesIfNeeded()
+        } else {
+            openDebugDocuments(filteredFilenames, sender: sender)
+        }
+    }
+    #endif
 
     func applicationWillTerminate(_ aNotification: Notification) {
     }
@@ -74,6 +98,55 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         return .terminateLater
     }
+
+    #if DEBUG
+    private func openDebugDocuments(_ filenames: [String], sender: NSApplication) {
+        guard !filenames.isEmpty else {
+            sender.reply(toOpenOrPrint: .success)
+            return
+        }
+
+        var remainingFileCount = filenames.count
+        var didFail = false
+        for filename in filenames {
+            let url = URL(fileURLWithPath: filename)
+            NSDocumentController.shared.openDocument(withContentsOf: url, display: true) { _, _, error in
+                if let error {
+                    didFail = true
+                    NSDocumentController.shared.presentError(error)
+                }
+
+                remainingFileCount -= 1
+                if remainingFileCount == 0 {
+                    sender.reply(toOpenOrPrint: didFail ? .failure : .success)
+                }
+            }
+        }
+    }
+
+    private func openUntitledDocumentAfterIgnoringDebugLaunchFilesIfNeeded() {
+        guard shouldOpenUntitledDocumentAfterIgnoringDebugLaunchFiles else {
+            return
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.shouldOpenUntitledDocumentAfterIgnoringDebugLaunchFiles else {
+                return
+            }
+
+            self.shouldOpenUntitledDocumentAfterIgnoringDebugLaunchFiles = false
+            guard NSApp.windows.contains(where: { $0.windowController is TCPViewerWindowController }) == false else {
+                return
+            }
+
+            do {
+                _ = try NSDocumentController.shared.openUntitledDocumentAndDisplay(true)
+            } catch {
+                NSDocumentController.shared.presentError(error)
+            }
+        }
+    }
+    #endif
 
     private func shouldContinueAfterQuitConfirmation() -> Bool {
         guard !skipsNextQuitConfirmation else {
@@ -585,6 +658,68 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         isShowingRenewalRequiredAlert = false
     }
 }
+
+#if DEBUG
+private enum TCPViewerDebugLaunchArgumentFilter {
+    private static let reproducerLaunchArgument = "--tcpviewer-run-selection-crash-reproducer"
+    private static let reproducerEnvironmentKey = "TCPVIEWER_RUN_SELECTION_CRASH_REPRODUCER"
+    private static let ignoredDocumentValues: Set<String> = ["1", "true", "yes"]
+
+    static func filteredDocumentFilenames(_ filenames: [String]) -> [String] {
+        guard shouldIgnoreReproducerDocumentArguments else {
+            return filenames
+        }
+
+        return filenames.filter { filename in
+            let value = URL(fileURLWithPath: filename).lastPathComponent
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            return !ignoredDocumentValues.contains(value)
+        }
+    }
+
+    private static var shouldIgnoreReproducerDocumentArguments: Bool {
+        let processInfo = ProcessInfo.processInfo
+        return processInfo.arguments.contains(reproducerLaunchArgument) ||
+            isTruthy(processInfo.environment[reproducerEnvironmentKey]) ||
+            hasTruthyLaunchArgumentValue(in: processInfo.arguments)
+    }
+
+    private static func hasTruthyLaunchArgumentValue(in arguments: [String]) -> Bool {
+        for (index, argument) in arguments.enumerated() {
+            if argument == reproducerEnvironmentKey || argument == "-\(reproducerEnvironmentKey)" {
+                let nextIndex = arguments.index(after: index)
+                return nextIndex < arguments.endIndex ? isTruthy(arguments[nextIndex]) : true
+            }
+
+            if let value = value(afterEqualsSignIn: argument, key: reproducerEnvironmentKey) {
+                return isTruthy(value)
+            }
+
+            if let value = value(afterEqualsSignIn: argument, key: "-\(reproducerEnvironmentKey)") {
+                return isTruthy(value)
+            }
+        }
+
+        return false
+    }
+
+    private static func value(afterEqualsSignIn argument: String, key: String) -> String? {
+        guard argument.hasPrefix("\(key)=") else {
+            return nil
+        }
+
+        return String(argument.dropFirst(key.count + 1))
+    }
+
+    private static func isTruthy(_ value: String?) -> Bool {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else {
+            return false
+        }
+        return ignoredDocumentValues.contains(value)
+    }
+}
+#endif
 
 private final class TCPViewerSparkleUpdaterDelegate: NSObject, SPUUpdaterDelegate {
     func feedParameters(for updater: SPUUpdater, sendingSystemProfile sendingProfile: Bool) -> [[String: String]] {
