@@ -858,22 +858,36 @@
 				);
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
+					"$(PROJECT_DIR)/Vendor/.install/wireshark/lib",
+					/opt/homebrew/opt/glib/lib,
+					/opt/homebrew/opt/gettext/lib,
+					/usr/local/opt/glib/lib,
+					/usr/local/opt/gettext/lib,
 				);
 				MARKETING_VERSION = 1.0;
+				MODULE_VERIFIER_SUPPORTED_LANGUAGES = "objective-c objective-c++";
+				MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS = "gnu17 gnu++20";
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lpcap",
+					"-lwireshark",
+					"-lwiretap",
+					"-lwsutil",
+					"-lglib-2.0",
+					"-lintl",
 					"-framework",
 					SystemConfiguration,
 					"-framework",
 					CoreFoundation,
 				);
+				OTHER_SWIFT_FLAGS = "$(inherited) -Xcc -fmodule-map-file=$(PROJECT_DIR)/PcapPlusPlusCore/Dissection/module.modulemap";
 				PRODUCT_BUNDLE_IDENTIFIER = com.proxyman.PcapPlusPlusCore;
 				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
 				SKIP_INSTALL = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_INCLUDE_PATHS = "$(inherited) $(PROJECT_DIR)/PcapPlusPlusCore/Dissection";
 				SWIFT_INSTALL_MODULE = YES;
 				SWIFT_INSTALL_OBJC_HEADER = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
@@ -922,22 +936,36 @@
 				);
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
+					"$(PROJECT_DIR)/Vendor/.install/wireshark/lib",
+					/opt/homebrew/opt/glib/lib,
+					/opt/homebrew/opt/gettext/lib,
+					/usr/local/opt/glib/lib,
+					/usr/local/opt/gettext/lib,
 				);
 				MARKETING_VERSION = 1.0;
+				MODULE_VERIFIER_SUPPORTED_LANGUAGES = "objective-c objective-c++";
+				MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS = "gnu17 gnu++20";
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lpcap",
+					"-lwireshark",
+					"-lwiretap",
+					"-lwsutil",
+					"-lglib-2.0",
+					"-lintl",
 					"-framework",
 					SystemConfiguration,
 					"-framework",
 					CoreFoundation,
 				);
+				OTHER_SWIFT_FLAGS = "$(inherited) -Xcc -fmodule-map-file=$(PROJECT_DIR)/PcapPlusPlusCore/Dissection/module.modulemap";
 				PRODUCT_BUNDLE_IDENTIFIER = com.proxyman.PcapPlusPlusCore;
 				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
 				SKIP_INSTALL = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_INCLUDE_PATHS = "$(inherited) $(PROJECT_DIR)/PcapPlusPlusCore/Dissection";
 				SWIFT_INSTALL_MODULE = YES;
 				SWIFT_INSTALL_OBJC_HEADER = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;

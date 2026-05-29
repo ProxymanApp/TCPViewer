@@ -323,7 +323,7 @@ final class SwiftWiresharkRuntime {
     }
 }
 
-private struct AnalyzedPacket {
+struct AnalyzedPacket {
     var transportHint: TransportProtocolHint = .unknown
     var protocolSummary: String?
     var infoSummary = "Packet"
@@ -340,7 +340,7 @@ private struct AnalyzedPacket {
     var decodeStatus = PacketDecodeStatus(kind: .complete)
 }
 
-private final class PacketAnalyzer {
+final class PacketAnalyzer {
     private let record: NativePacketRecord
     private let bytes: [UInt8]
 
@@ -1539,7 +1539,7 @@ private extension PacketByteRange {
     }
 }
 
-private extension PacketDecodeStatus.Kind {
+extension PacketDecodeStatus.Kind {
     var nativeKind: PCPPNativeDecodeStatusKind {
         switch self {
         case .complete:
@@ -1554,7 +1554,7 @@ private extension PacketDecodeStatus.Kind {
     }
 }
 
-private extension TransportProtocolHint {
+extension TransportProtocolHint {
     var nativeHint: PCPPNativeTransportHint {
         switch self {
         case .ethernet:

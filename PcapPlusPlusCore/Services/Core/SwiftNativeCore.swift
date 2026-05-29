@@ -141,6 +141,7 @@ final class PCPPNativeOfflineDocument {
     private var file: NativeCaptureFile
     private var partiallyLoaded = false
     private let disablesWireshark: Bool
+    private var dissectionSession: WiresharkEpanSession?
 
     private(set) var currentURL: URL
     private(set) var currentFormat: String
@@ -164,6 +165,7 @@ final class PCPPNativeOfflineDocument {
             self.currentFormat = CaptureFileFormat.defaultExportFormat.rawValue
             errorPointer?.pointee = NativeBridgeMapper.coreError(thrownError, defaultCode: .offlineFileOpenFailed) as NSError
         }
+        configureDissectionSession(error: errorPointer)
     }
 
     init(url: URL, disablesWireshark: Bool, error errorPointer: AutoreleasingUnsafeMutablePointer<NSError?>?) {
@@ -178,6 +180,7 @@ final class PCPPNativeOfflineDocument {
             self.currentFormat = CaptureFileFormat.defaultExportFormat.rawValue
             errorPointer?.pointee = NativeBridgeMapper.coreError(thrownError, defaultCode: .offlineFileOpenFailed) as NSError
         }
+        configureDissectionSession(error: errorPointer)
     }
 
     func openAndReturnError(_ errorPointer: AutoreleasingUnsafeMutablePointer<NSError?>?) -> [PCPPNativePacketSummaryDescriptor] {
@@ -213,8 +216,10 @@ final class PCPPNativeOfflineDocument {
             guard let record = file.records.first(where: { $0.identifier == identifier }) else {
                 throw NativeNSError(.fileReadFailed, "Packet \(identifier) is not available in the backing store.")
             }
-            return autoreleasepool {
-                SwiftPacketDissector.dissect(record: record, disablesWireshark: disablesWireshark).inspection
+            return try autoreleasepool {
+                let analyzer = PacketAnalyzer(record: record).analyze()
+                let inspection = try requireDissectionSession().inspect(record)
+                return makePacketInspectionDescriptor(record: record, analyzed: analyzer, wireshark: inspection)
             }
         }
     }
@@ -266,10 +271,11 @@ final class PCPPNativeOfflineDocument {
         do {
             if reload {
                 let loaded = try NativeCaptureFile.load(from: currentURL)
-                lock.withLock {
+                try lock.withLock {
                     file = loaded
                     currentFormat = loaded.format.rawValue
                     partiallyLoaded = false
+                    dissectionSession = try WiresharkEpanSession(disabled: disablesWireshark)
                 }
             }
 
@@ -295,8 +301,12 @@ final class PCPPNativeOfflineDocument {
                     throw NativeNSError(.operationCancelled, progress.message)
                 }
 
-                let summary = autoreleasepool {
-                    SwiftPacketDissector.dissect(record: record, disablesWireshark: disablesWireshark).summary
+                let summary = try autoreleasepool {
+                    let session = try requireDissectionSession()
+                    try session.observe(record)
+                    let wiresharkSummary = try session.summarize(record)
+                    let analyzer = PacketAnalyzer(record: record).analyze()
+                    return makePacketSummaryDescriptor(record: record, analyzed: analyzer, wireshark: wiresharkSummary)
                 }
                 summaries.append(summary)
                 pendingBatch.append(summary)
@@ -318,6 +328,7 @@ final class PCPPNativeOfflineDocument {
             if !pendingBatch.isEmpty {
                 batchHandler?(pendingBatch)
             }
+            try requireDissectionSession().finishFirstPass()
             progressHandler?(PCPPNativePacketLoadProgressDescriptor(
                 phase: "completed",
                 loadedPacketCount: UInt64(summaries.count),
@@ -335,6 +346,23 @@ final class PCPPNativeOfflineDocument {
 
     private func assign(_ thrownError: Error, to errorPointer: AutoreleasingUnsafeMutablePointer<NSError?>?) {
         errorPointer?.pointee = NativeBridgeMapper.coreError(thrownError, defaultCode: .offlineFileOpenFailed) as NSError
+    }
+
+    private func configureDissectionSession(error errorPointer: AutoreleasingUnsafeMutablePointer<NSError?>?) {
+        do {
+            dissectionSession = try WiresharkEpanSession(disabled: disablesWireshark)
+        } catch let thrownError {
+            if errorPointer?.pointee == nil {
+                errorPointer?.pointee = NativeBridgeMapper.coreError(thrownError, defaultCode: .unavailableFeature) as NSError
+            }
+        }
+    }
+
+    private func requireDissectionSession() throws -> WiresharkEpanSession {
+        guard let dissectionSession else {
+            throw NativeNSError(.unavailableFeature, "Wireshark libwireshark backend is unavailable.")
+        }
+        return dissectionSession
     }
 }
 
@@ -359,6 +387,7 @@ final class PCPPNativeLiveSession {
     private var packetsDropped: UInt64 = 0
     private var packetsDroppedByInterface: UInt64 = 0
     private var liveLinkLayerType = Libpcap.dltEthernet
+    private var dissectionSession: WiresharkEpanSession?
 
     var healthSnapshot: PCPPNativeCaptureHealthDescriptor {
         lock.withLock {
@@ -370,12 +399,14 @@ final class PCPPNativeLiveSession {
         self.interfaceIdentifier = interfaceIdentifier
         self.options = options
         self.disablesWireshark = false
+        self.dissectionSession = try? WiresharkEpanSession()
     }
 
     init(interfaceIdentifier: String, options: PCPPNativeCaptureOptionsDescriptor, disablesWireshark: Bool, error: AutoreleasingUnsafeMutablePointer<NSError?>?) {
         self.interfaceIdentifier = interfaceIdentifier
         self.options = options
         self.disablesWireshark = disablesWireshark
+        self.dissectionSession = try? WiresharkEpanSession(disabled: disablesWireshark)
     }
 
     func start() throws {
@@ -391,9 +422,11 @@ final class PCPPNativeLiveSession {
         }
 
         phaseHandler?(.starting, "Starting capture on \(interfaceIdentifier)...")
+        let nextDissectionSession = try WiresharkEpanSession(disabled: disablesWireshark)
         let openedHandle = try Libpcap.openLive(interfaceName: interfaceIdentifier, options: options)
         lock.withLock {
             handle = openedHandle
+            dissectionSession = nextDissectionSession
             running = true
             paused = false
             phase = .running
@@ -450,6 +483,9 @@ final class PCPPNativeLiveSession {
             Libpcap.breakLoop(handleToStop)
             captureQueue.sync {}
         }
+        try? lock.withLock {
+            try dissectionSession?.finishFirstPass()
+        }
 
         lock.withLock {
             phase = .stopped
@@ -474,6 +510,7 @@ final class PCPPNativeLiveSession {
             packetsReceived = 0
             packetsDropped = 0
             packetsDroppedByInterface = 0
+            dissectionSession = try? WiresharkEpanSession(disabled: disablesWireshark)
         }
     }
 
@@ -482,17 +519,21 @@ final class PCPPNativeLiveSession {
             guard let record = records.first(where: { $0.identifier == identifier }) else {
                 throw NativeNSError(.fileReadFailed, "Packet \(identifier) is not available in the live backing store.")
             }
-            return autoreleasepool {
-                SwiftPacketDissector.dissect(record: record, disablesWireshark: disablesWireshark).inspection
+            return try autoreleasepool {
+                let analyzer = PacketAnalyzer(record: record).analyze()
+                let inspection = try requireDissectionSession().inspect(record)
+                return makePacketInspectionDescriptor(record: record, analyzed: analyzer, wireshark: inspection)
             }
         }
     }
 
     func reanalyzePacketSummaries() throws -> [PCPPNativePacketSummaryDescriptor] {
-        lock.withLock {
-            records.map { record in
-                autoreleasepool {
-                    SwiftPacketDissector.dissect(record: record, disablesWireshark: disablesWireshark).summary
+        try lock.withLock {
+            try records.map { record in
+                try autoreleasepool {
+                    let wiresharkSummary = try requireDissectionSession().summarize(record)
+                    let analyzer = PacketAnalyzer(record: record).analyze()
+                    return makePacketSummaryDescriptor(record: record, analyzed: analyzer, wireshark: wiresharkSummary)
                 }
             }
         }
@@ -555,14 +596,36 @@ final class PCPPNativeLiveSession {
                 return record
             }
 
-            let summary = autoreleasepool {
-                SwiftPacketDissector.dissect(record: record, disablesWireshark: disablesWireshark).summary
+            let summary: PCPPNativePacketSummaryDescriptor? = autoreleasepool {
+                do {
+                    let session = try requireDissectionSession()
+                    try session.observe(record)
+                    let wiresharkSummary = try session.summarize(record)
+                    let analyzer = PacketAnalyzer(record: record).analyze()
+                    return makePacketSummaryDescriptor(record: record, analyzed: analyzer, wireshark: wiresharkSummary)
+                } catch {
+                    handleCaptureDissectionFailure(error)
+                    return nil
+                }
+            }
+            guard let summary else {
+                break
             }
             packetHandler?([summary])
             if record.packetNumber % 128 == 0 {
                 healthHandler?(healthSnapshot)
             }
         }
+    }
+
+    private func handleCaptureDissectionFailure(_ error: Error) {
+        let tcpviewerError = NativeBridgeMapper.coreError(error, defaultCode: .unavailableFeature)
+        lock.withLock {
+            running = false
+            phase = .failed
+        }
+        errorHandler?(tcpviewerError)
+        phaseHandler?(.failed, tcpviewerError.message)
     }
 
     private func healthDescriptor(status: String?) -> PCPPNativeCaptureHealthDescriptor {
@@ -575,6 +638,112 @@ final class PCPPNativeLiveSession {
             statusMessage: status
         )
     }
+
+    private func requireDissectionSession() throws -> WiresharkEpanSession {
+        guard let dissectionSession else {
+            throw NativeNSError(.unavailableFeature, "Wireshark libwireshark backend is unavailable.")
+        }
+        return dissectionSession
+    }
+}
+
+private func makePacketSummaryDescriptor(
+    record: NativePacketRecord,
+    analyzed: AnalyzedPacket,
+    wireshark: WiresharkPacketSummaryFields
+) -> PCPPNativePacketSummaryDescriptor {
+    PCPPNativePacketSummaryDescriptor(
+        identifier: record.identifier,
+        packetNumber: record.packetNumber,
+        timestamp: record.timestamp,
+        interfaceIdentifier: record.interfaceIdentifier,
+        transportHint: transportHint(analyzed: analyzed, wireshark: wireshark),
+        protocolSummary: wireshark.protocolSummary,
+        sourceEndpoint: PCPPNativePacketEndpointDescriptor(
+            address: analyzed.sourceAddress,
+            port: analyzed.sourcePort.map { NSNumber(value: $0) }
+        ),
+        destinationEndpoint: PCPPNativePacketEndpointDescriptor(
+            address: analyzed.destinationAddress,
+            port: analyzed.destinationPort.map { NSNumber(value: $0) }
+        ),
+        originalLength: record.originalLength,
+        capturedLength: record.rawBytes.count,
+        streamIdentifier: analyzed.streamID.map { NSNumber(value: $0) },
+        tcpFlags: analyzed.tcpFlags,
+        tcpPayloadLength: analyzed.tcpPayloadLength.map { NSNumber(value: $0) },
+        infoSummary: wireshark.infoSummary,
+        layers: analyzed.layers.map { PCPPNativePacketLayerDescriptor(name: $0.name, detailSummary: $0.detailSummary) },
+        decodeStatus: decodeStatusDescriptor(analyzed.decodeStatus),
+        captureMetadata: captureMetadataDescriptor(record),
+        sniDomainName: wireshark.sniDomainName
+    )
+}
+
+private func transportHint(analyzed: AnalyzedPacket, wireshark: WiresharkPacketSummaryFields) -> PCPPNativeTransportHint {
+    let protocolSummary = wireshark.protocolSummary?.lowercased() ?? ""
+    let infoSummary = wireshark.infoSummary.lowercased()
+
+    // Wireshark has conversation/reassembly state that the metadata analyzer intentionally does not keep.
+    // Let epan's decoded protocol win for app-level hints when it has stronger evidence.
+    if wireshark.sniDomainName?.isEmpty == false
+        || protocolSummary.contains("tls")
+        || infoSummary.contains("client hello")
+        || infoSummary.contains("server hello") {
+        return .tls
+    }
+    if protocolSummary.contains("dns") {
+        return .dns
+    }
+    if protocolSummary.contains("websocket") {
+        return .websocket
+    }
+    if protocolSummary.contains("http") {
+        return .http1
+    }
+
+    return analyzed.transportHint.nativeHint
+}
+
+private func makePacketInspectionDescriptor(
+    record: NativePacketRecord,
+    analyzed: AnalyzedPacket,
+    wireshark: WiresharkPacketInspectionFields
+) -> PCPPNativePacketInspectionDescriptor {
+    PCPPNativePacketInspectionDescriptor(
+        packetIdentifier: record.identifier,
+        packetNumber: record.packetNumber,
+        rawBytes: record.rawBytes,
+        byteViews: wireshark.byteViews.isEmpty ? [PCPPNativePacketByteViewDescriptor(identifier: "frame", label: "Frame", bytes: record.rawBytes)] : wireshark.byteViews,
+        detailNodes: wireshark.detailNodes,
+        decodeStatus: decodeStatusDescriptor(analyzed.decodeStatus)
+    )
+}
+
+private func decodeStatusDescriptor(_ status: PacketDecodeStatus) -> PCPPNativeDecodeStatusDescriptor {
+    PCPPNativeDecodeStatusDescriptor(kind: status.kind.nativeKind, reason: status.reason)
+}
+
+private func captureMetadataDescriptor(_ record: NativePacketRecord) -> PCPPNativePacketCaptureMetadataDescriptor {
+    PCPPNativePacketCaptureMetadataDescriptor(
+        linkType: nativeLinkType(record.linkLayerType),
+        truncated: record.rawBytes.count < record.originalLength,
+        packetComment: record.packetComment,
+        interfaceName: record.interfaceName
+    )
+}
+
+private func nativeLinkType(_ linkLayerType: Int32) -> PCPPNativeLinkType {
+    switch linkLayerType {
+    case Libpcap.dltEthernet:
+        return .ethernet
+    case Libpcap.dltNull:
+        return .loopback
+    case Libpcap.dltRaw:
+        return .raw
+    default:
+        return .unknown
+    }
 }
 
 #if DEBUG
@@ -585,6 +754,7 @@ final class PCPPNativeLivePacketStoreTestProbe {
     private let backingFileURL: URL
     private var backingFileHandle: FileHandle?
     private var currentBackingFileSize: UInt64 = 0
+    private var dissectionSession: WiresharkEpanSession?
 
     var packetCount: UInt {
         lock.withLock { UInt(records.count) }
@@ -605,6 +775,7 @@ final class PCPPNativeLivePacketStoreTestProbe {
     init() {
         self.backingFileURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("TCPViewerLivePacketStore-\(UUID().uuidString).bin")
+        self.dissectionSession = try? WiresharkEpanSession()
     }
 
     func appendPacket(identifier: UInt64, rawBytes: Data, timestamp: Date, linkLayerType: Int, originalLength: Int) throws {
@@ -618,7 +789,7 @@ final class PCPPNativeLivePacketStoreTestProbe {
             currentBackingFileSize += UInt64(rawBytes.count)
             offsets[identifier] = offset
             let packetNumber = UInt64(records.count + 1)
-            records.append(NativePacketRecord(
+            let record = NativePacketRecord(
                 identifier: identifier,
                 packetNumber: packetNumber,
                 timestamp: timestamp,
@@ -628,7 +799,9 @@ final class PCPPNativeLivePacketStoreTestProbe {
                 interfaceIdentifier: nil,
                 interfaceName: nil,
                 packetComment: nil
-            ))
+            )
+            records.append(record)
+            try requireDissectionSession().observe(record)
         }
     }
 
@@ -637,18 +810,27 @@ final class PCPPNativeLivePacketStoreTestProbe {
             guard let record = records.first(where: { $0.identifier == identifier }) else {
                 throw NativeNSError(.fileReadFailed, "Packet \(identifier) is not available in the live backing store.")
             }
-            return autoreleasepool {
-                SwiftPacketDissector.dissect(record: record, disablesWireshark: true).inspection
+            return try autoreleasepool {
+                let analyzer = PacketAnalyzer(record: record).analyze()
+                let inspection = try requireDissectionSession().inspect(record)
+                return makePacketInspectionDescriptor(record: record, analyzed: analyzer, wireshark: inspection)
             }
         }
     }
 
     func reanalyzePacketSummaries(upTo identifier: UInt64) throws -> [PCPPNativePacketSummaryDescriptor] {
-        lock.withLock {
+        try lock.withLock {
             let limit = identifier == 0 ? UInt64.max : identifier
-            return records.filter { $0.identifier <= limit }.map { record in
-                autoreleasepool {
-                    SwiftPacketDissector.dissect(record: record, disablesWireshark: true).summary
+            let selectedRecords = records.filter { $0.identifier <= limit }
+            let session = try WiresharkEpanSession()
+            for record in selectedRecords {
+                try session.observe(record)
+            }
+            return try selectedRecords.map { record in
+                try autoreleasepool {
+                    let wiresharkSummary = try session.summarize(record)
+                    let analyzer = PacketAnalyzer(record: record).analyze()
+                    return makePacketSummaryDescriptor(record: record, analyzed: analyzer, wireshark: wiresharkSummary)
                 }
             }
         }
@@ -676,8 +858,16 @@ final class PCPPNativeLivePacketStoreTestProbe {
             currentBackingFileSize = 0
             records.removeAll(keepingCapacity: false)
             offsets.removeAll(keepingCapacity: false)
+            dissectionSession = nil
         }
         try? FileManager.default.removeItem(at: backingFileURL)
+    }
+
+    private func requireDissectionSession() throws -> WiresharkEpanSession {
+        guard let dissectionSession else {
+            throw NativeNSError(.unavailableFeature, "Wireshark libwireshark backend is unavailable.")
+        }
+        return dissectionSession
     }
 }
 #endif

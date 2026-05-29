@@ -13,7 +13,7 @@ import Testing
 struct PcapPlusPlusCoreTests {
 
     @Test func nativeLiveSessionCanStopBeforeStart() async throws {
-        let core = fallbackCore()
+        let core = NativeTCPViewerCore()
         guard let captureInterface = try await core.listInterfaces().first(where: \.isSelectable) else {
             return
         }
@@ -24,9 +24,5 @@ struct PcapPlusPlusCoreTests {
         )
 
         try await session.stop()
-    }
-
-    private func fallbackCore() -> NativeTCPViewerCore {
-        NativeTCPViewerCore(disablesWiresharkForOfflineDocuments: true, disablesWiresharkForLiveSessions: true)
     }
 }

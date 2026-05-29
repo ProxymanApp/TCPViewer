@@ -537,6 +537,8 @@ enum NativeBridgeMapper {
             code = .invalidCaptureFilter
         case 1011:
             code = .operationCancelled
+        case 1012:
+            code = .unavailableFeature
         default:
             code = defaultCode
         }

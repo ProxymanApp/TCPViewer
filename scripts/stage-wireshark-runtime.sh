@@ -206,8 +206,10 @@ sign_code() {
   CODE_PATH="$1"
   SIGN_IDENTITY="${EXPANDED_CODE_SIGN_IDENTITY:-${CODE_SIGN_IDENTITY:-}}"
 
-  # Unsigned verification builds should not touch local signing identities.
+  # install_name_tool invalidates linker signatures even in CODE_SIGNING_ALLOWED=NO
+  # builds, so ad-hoc sign those local verification artifacts without using an identity.
   if [ "${CODE_SIGNING_ALLOWED:-YES}" = "NO" ]; then
+    codesign --force --sign - --timestamp=none "$CODE_PATH"
     return
   fi
 
@@ -242,6 +244,7 @@ if [ ! -f "$CONSUMER_BINARY" ]; then
 fi
 
 patch_consumer_binary "$CONSUMER_BINARY"
+sign_code "$CONSUMER_BINARY"
 
 while IFS= read -r COPIED_LIBRARY; do
   [ -n "$COPIED_LIBRARY" ] || continue

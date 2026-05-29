@@ -490,6 +490,7 @@ enum TCPViewerNativeErrorCode: Int {
     case invalidOptions = 1009
     case invalidFilter = 1010
     case operationCancelled = 1011
+    case unavailableFeature = 1012
 }
 
 func NativeNSError(_ code: TCPViewerNativeErrorCode, _ message: String) -> NSError {
