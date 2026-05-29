@@ -116,7 +116,7 @@ enum SwiftPacketDissector {
             destinationEndpoint: PCPPNativePacketEndpointDescriptor(address: packet.destinationAddress, port: packet.destinationPort.map { NSNumber(value: $0) }),
             originalLength: record.originalLength,
             capturedLength: record.rawBytes.count,
-            streamIdentifier: nil,
+            streamIdentifier: packet.streamID.map { NSNumber(value: $0) },
             tcpFlags: packet.tcpFlags,
             tcpPayloadLength: packet.tcpPayloadLength.map { NSNumber(value: $0) },
             infoSummary: packet.infoSummary,
@@ -331,6 +331,7 @@ private struct AnalyzedPacket {
     var destinationAddress: String?
     var sourcePort: UInt16?
     var destinationPort: UInt16?
+    var streamID: UInt32?
     var tcpFlags: String?
     var tcpPayloadLength: Int?
     var sniDomainName: String?
@@ -638,6 +639,13 @@ private final class PacketAnalyzer {
         packet.destinationAddress = destinationAddress
         packet.sourcePort = sourcePort
         packet.destinationPort = destinationPort
+        packet.streamID = streamIdentifier(
+            protocolNumber: 6,
+            sourceAddress: sourceAddress,
+            sourcePort: sourcePort,
+            destinationAddress: destinationAddress,
+            destinationPort: destinationPort
+        )
         packet.tcpFlags = flags
         packet.tcpPayloadLength = payloadLength
         packet.infoSummary = "\(sourcePort) -> \(destinationPort) \(flags.isEmpty ? "TCP" : flags)"
@@ -654,6 +662,7 @@ private final class PacketAnalyzer {
             packet.transportHint = .tls
             packet.protocolSummary = versionName
             packet.infoSummary = tls.summary
+            packet.sniDomainName = tls.sniDomainName
             packet.layers.append(PacketLayer(name: versionName, detailSummary: tls.summary))
             packet.detailNodes.append(tls.node)
         } else if let http = httpNode(payload: payload, offset: payloadOffset) {
@@ -711,6 +720,13 @@ private final class PacketAnalyzer {
         packet.destinationAddress = destinationAddress
         packet.sourcePort = sourcePort
         packet.destinationPort = destinationPort
+        packet.streamID = streamIdentifier(
+            protocolNumber: 17,
+            sourceAddress: sourceAddress,
+            sourcePort: sourcePort,
+            destinationAddress: destinationAddress,
+            destinationPort: destinationPort
+        )
         packet.infoSummary = "\(sourcePort) -> \(destinationPort) Len=\(udpLength)"
         packet.layers = inheritedLayers + [PacketLayer(name: "UDP", detailSummary: packet.infoSummary)]
         packet.detailNodes = inheritedNodes + [udpNode]
@@ -778,7 +794,7 @@ private final class PacketAnalyzer {
         return packet
     }
 
-    private func tlsNode(payload: [UInt8], offset: Int) -> (node: PacketDetailNode, summary: String, layerName: String)? {
+    private func tlsNode(payload: [UInt8], offset: Int) -> (node: PacketDetailNode, summary: String, layerName: String, sniDomainName: String?)? {
         guard payload.count >= 5, payload[0] >= 20, payload[0] <= 23 else {
             return nil
         }
@@ -788,26 +804,259 @@ private final class PacketAnalyzer {
             return nil
         }
         let contentType = tlsContentType(payload[0])
-        let versionName = tlsVersionName(version)
-        let encryptedLength = max(recordLength, 0)
-        let encryptedOffset = offset + 5
-        let summary = "\(versionName), \(contentType)"
+        var effectiveVersion = version
+        var sniDomainName: String?
+        var handshakeNames: [String] = []
+        var children: [PacketDetailNode] = [
+            field(id: "tls.record.contentType", name: "Content Type", fieldName: "tls.record.content_type", value: "\(contentType) (\(payload[0]))", offset: offset, length: 1),
+            field(id: "tls.record.version", name: "Version", fieldName: "tls.record.version", value: "\(tlsVersionName(version)) (\(hex16(version)))", offset: offset + 1, length: 2),
+            field(id: "tls.record.length", name: "Length", fieldName: "tls.record.length", value: "\(recordLength)", offset: offset + 3, length: 2),
+        ]
+        if payload[0] == 22 {
+            let handshake = tlsHandshakeNodes(payload: payload, recordLength: recordLength, offset: offset)
+            children.append(contentsOf: handshake.children)
+            handshakeNames = handshake.names
+            sniDomainName = handshake.sniDomainName
+            effectiveVersion = handshake.effectiveVersion ?? effectiveVersion
+        } else {
+            let encryptedLength = max(recordLength, 0)
+            let encryptedOffset = offset + 5
+            children.append(field(id: "tls.appdata", name: "Encrypted Application Data", fieldName: "tls.app_data", value: byteCount(encryptedLength), offset: encryptedOffset, length: encryptedLength))
+            children.append(field(id: "tls.appdata.preview", name: "Encrypted Data Preview", fieldName: "tls.app_data.preview", value: hexBytes(offset: encryptedOffset, length: min(encryptedLength, 16)), offset: encryptedOffset, length: min(encryptedLength, 16)))
+        }
+        let versionName = tlsVersionName(effectiveVersion)
+        let handshakeSummary = handshakeNames.isEmpty ? "" : ": \(handshakeNames.joined(separator: ", "))"
+        let summary = "\(versionName), \(contentType)\(handshakeSummary)"
         let node = PacketDetailNode(
             id: "tls",
             name: "Transport Layer Security",
             fieldName: "tls",
             value: summary,
             kind: .layer,
-            byteRange: range(offset: offset, length: min(5 + encryptedLength, bytes.count - offset)),
-            children: [
-                field(id: "tls.record.contentType", name: "Content Type", fieldName: "tls.record.content_type", value: "\(contentType) (\(payload[0]))", offset: offset, length: 1),
-                field(id: "tls.record.version", name: "Version", fieldName: "tls.record.version", value: "\(versionName) (\(hex16(version)))", offset: offset + 1, length: 2),
-                field(id: "tls.record.length", name: "Length", fieldName: "tls.record.length", value: "\(recordLength)", offset: offset + 3, length: 2),
-                field(id: "tls.appdata", name: "Encrypted Application Data", fieldName: "tls.app_data", value: byteCount(encryptedLength), offset: encryptedOffset, length: encryptedLength),
-                field(id: "tls.appdata.preview", name: "Encrypted Data Preview", fieldName: "tls.app_data.preview", value: hexBytes(offset: encryptedOffset, length: min(encryptedLength, 16)), offset: encryptedOffset, length: min(encryptedLength, 16)),
-            ]
+            byteRange: range(offset: offset, length: min(5 + recordLength, bytes.count - offset)),
+            children: children
         )
-        return (node, summary, versionName)
+        return (node, summary, versionName, sniDomainName)
+    }
+
+    private func tlsHandshakeNodes(payload: [UInt8], recordLength: Int, offset: Int) -> (children: [PacketDetailNode], names: [String], sniDomainName: String?, effectiveVersion: UInt16?) {
+        // Walk plain TLS handshake records enough to restore table summaries and SNI.
+        let recordEnd = min(payload.count, 5 + recordLength)
+        var cursor = 5
+        var messageIndex = 0
+        var messageNodes: [PacketDetailNode] = []
+        var handshakeNames: [String] = []
+        var sniDomainName: String?
+        var effectiveVersion: UInt16?
+
+        while cursor + 4 <= recordEnd {
+            let messageType = payload[cursor]
+            let messageLength = readUInt24BE(payload, at: cursor + 1) ?? 0
+            let messageEnd = cursor + 4 + messageLength
+            let boundedEnd = min(messageEnd, recordEnd)
+            let messageName = tlsHandshakeTypeName(messageType)
+            let messageIdentifier = "tls.handshake.\(messageIndex)"
+            var children: [PacketDetailNode] = [
+                field(id: "\(messageIdentifier).type", name: "Handshake Type", fieldName: "tls.handshake.type", value: "\(messageName) (\(messageType))", offset: offset + cursor, length: 1),
+                field(id: "\(messageIdentifier).length", name: "Length", fieldName: "tls.handshake.length", value: byteCount(messageLength), offset: offset + cursor + 1, length: 3),
+                field(id: "\(messageIdentifier).complete", name: "Complete", fieldName: "tls.handshake.complete", value: messageEnd <= recordEnd ? "Yes" : "No", offset: nil, length: nil),
+            ]
+            let metadata = tlsHandshakeMetadata(
+                payload: payload,
+                messageType: messageType,
+                bodyStart: cursor + 4,
+                bodyEnd: boundedEnd,
+                messageIdentifier: messageIdentifier,
+                offset: offset
+            )
+            children.append(contentsOf: metadata.children)
+            sniDomainName = sniDomainName ?? metadata.sniDomainName
+            effectiveVersion = metadata.effectiveVersion ?? effectiveVersion
+            handshakeNames.append(messageName)
+            messageNodes.append(PacketDetailNode(
+                id: messageIdentifier,
+                name: "Handshake Protocol: \(messageName)",
+                fieldName: "tls.handshake",
+                value: messageName,
+                kind: .field,
+                byteRange: range(offset: offset + cursor, length: max(boundedEnd - cursor, 0)),
+                children: children
+            ))
+
+            guard messageEnd > cursor else { break }
+            cursor = messageEnd
+            messageIndex += 1
+        }
+
+        return (
+            [
+                field(id: "tls.handshake.count", name: "Handshake Message Count", fieldName: "tls.handshake.count", value: "\(messageNodes.count)", offset: nil, length: nil),
+            ] + messageNodes,
+            handshakeNames,
+            sniDomainName,
+            effectiveVersion
+        )
+    }
+
+    private func tlsHandshakeMetadata(
+        payload: [UInt8],
+        messageType: UInt8,
+        bodyStart: Int,
+        bodyEnd: Int,
+        messageIdentifier: String,
+        offset: Int
+    ) -> (children: [PacketDetailNode], sniDomainName: String?, effectiveVersion: UInt16?) {
+        guard bodyEnd >= bodyStart + 2 else {
+            return ([], nil, nil)
+        }
+        let handshakeVersion = readUInt16BE(payload, at: bodyStart) ?? 0
+        var children: [PacketDetailNode] = [
+            field(id: "\(messageIdentifier).handshakeVersion", name: "Handshake Version", fieldName: "tls.handshake.version", value: "\(tlsVersionName(handshakeVersion)) (\(hex16(handshakeVersion)))", offset: offset + bodyStart, length: 2),
+        ]
+        switch messageType {
+        case 1:
+            let clientHello = tlsClientHelloMetadata(payload: payload, bodyStart: bodyStart, bodyEnd: bodyEnd, messageIdentifier: messageIdentifier, offset: offset)
+            children.append(contentsOf: clientHello.children)
+            return (children, clientHello.sniDomainName, clientHello.effectiveVersion)
+        case 2:
+            let serverHello = tlsServerHelloMetadata(payload: payload, bodyStart: bodyStart, bodyEnd: bodyEnd, messageIdentifier: messageIdentifier, offset: offset)
+            children.append(contentsOf: serverHello.children)
+            return (children, nil, serverHello.effectiveVersion)
+        default:
+            return (children, nil, nil)
+        }
+    }
+
+    private func tlsClientHelloMetadata(payload: [UInt8], bodyStart: Int, bodyEnd: Int, messageIdentifier: String, offset: Int) -> (children: [PacketDetailNode], sniDomainName: String?, effectiveVersion: UInt16?) {
+        var cursor = bodyStart + 34
+        guard cursor < bodyEnd else { return ([], nil, nil) }
+        cursor += 1 + Int(payload[cursor])
+        guard cursor + 2 <= bodyEnd else { return ([], nil, nil) }
+        let cipherSuitesLength = Int(readUInt16BE(payload, at: cursor) ?? 0)
+        cursor += 2 + cipherSuitesLength
+        guard cursor < bodyEnd else { return ([field(id: "\(messageIdentifier).cipherSuiteCount", name: "Cipher Suites", fieldName: "tls.handshake.ciphersuites", value: "\(cipherSuitesLength / 2)", offset: nil, length: nil)], nil, nil) }
+        cursor += 1 + Int(payload[cursor])
+        let extensions = tlsExtensions(payload: payload, cursor: cursor, bodyEnd: bodyEnd)
+        var children: [PacketDetailNode] = [
+            field(id: "\(messageIdentifier).cipherSuiteCount", name: "Cipher Suites", fieldName: "tls.handshake.ciphersuites", value: "\(cipherSuitesLength / 2)", offset: nil, length: nil),
+            field(id: "\(messageIdentifier).extensionCount", name: "Extensions", fieldName: "tls.handshake.extensions", value: "\(extensions.count)", offset: nil, length: nil),
+        ]
+        if let sni = extensions.sniDomainName {
+            children.append(field(id: "\(messageIdentifier).sni", name: "Server Name Indication", fieldName: "tls.handshake.extensions_server_name", value: sni, offset: nil, length: nil))
+        }
+        if !extensions.supportedVersions.isEmpty {
+            children.append(field(id: "\(messageIdentifier).supportedVersions", name: "Supported Versions", fieldName: "tls.handshake.extensions.supported_versions", value: extensions.supportedVersions.map(tlsVersionName).joined(separator: ", "), offset: nil, length: nil))
+        }
+        return (children, extensions.sniDomainName, tlsEffectiveSupportedVersion(extensions.supportedVersions))
+    }
+
+    private func tlsServerHelloMetadata(payload: [UInt8], bodyStart: Int, bodyEnd: Int, messageIdentifier: String, offset: Int) -> (children: [PacketDetailNode], effectiveVersion: UInt16?) {
+        var cursor = bodyStart + 34
+        guard cursor < bodyEnd else { return ([], nil) }
+        cursor += 1 + Int(payload[cursor])
+        guard cursor + 3 <= bodyEnd else { return ([], nil) }
+        let cipherSuite = readUInt16BE(payload, at: cursor) ?? 0
+        cursor += 3
+        let extensions = tlsExtensions(payload: payload, cursor: cursor, bodyEnd: bodyEnd)
+        var children: [PacketDetailNode] = [
+            field(id: "\(messageIdentifier).cipherSuite", name: "Cipher Suite", fieldName: "tls.handshake.ciphersuite", value: hex16(cipherSuite), offset: nil, length: nil),
+            field(id: "\(messageIdentifier).extensionCount", name: "Extensions", fieldName: "tls.handshake.extensions", value: "\(extensions.count)", offset: nil, length: nil),
+        ]
+        if !extensions.supportedVersions.isEmpty {
+            children.append(field(id: "\(messageIdentifier).supportedVersions", name: "Supported Versions", fieldName: "tls.handshake.extensions.supported_versions", value: extensions.supportedVersions.map(tlsVersionName).joined(separator: ", "), offset: nil, length: nil))
+        }
+        return (children, extensions.supportedVersions.first)
+    }
+
+    private func tlsExtensions(payload: [UInt8], cursor: Int, bodyEnd: Int) -> (count: Int, sniDomainName: String?, supportedVersions: [UInt16]) {
+        var cursor = cursor
+        guard cursor + 2 <= bodyEnd else {
+            return (0, nil, [])
+        }
+        let extensionsLength = Int(readUInt16BE(payload, at: cursor) ?? 0)
+        cursor += 2
+        let extensionsEnd = min(cursor + extensionsLength, bodyEnd)
+        var count = 0
+        var sniDomainName: String?
+        var supportedVersions: [UInt16] = []
+        while cursor + 4 <= extensionsEnd {
+            let type = readUInt16BE(payload, at: cursor) ?? 0
+            let length = Int(readUInt16BE(payload, at: cursor + 2) ?? 0)
+            let dataStart = cursor + 4
+            let dataEnd = min(dataStart + length, extensionsEnd)
+            if type == 0 {
+                sniDomainName = sniDomainName ?? tlsServerName(payload: payload, start: dataStart, end: dataEnd)
+            } else if type == 43 {
+                supportedVersions = tlsSupportedVersions(payload: payload, start: dataStart, end: dataEnd)
+            }
+            count += 1
+            guard dataStart + length > cursor else { break }
+            cursor = dataStart + length
+        }
+        return (count, sniDomainName, supportedVersions)
+    }
+
+    private func tlsServerName(payload: [UInt8], start: Int, end: Int) -> String? {
+        guard start + 2 <= end else { return nil }
+        var cursor = start + 2
+        while cursor + 3 <= end {
+            let nameType = payload[cursor]
+            let nameLength = Int(readUInt16BE(payload, at: cursor + 1) ?? 0)
+            let nameStart = cursor + 3
+            let nameEnd = nameStart + nameLength
+            if nameType == 0, nameEnd <= end {
+                let hostName = String(bytes: payload[nameStart..<nameEnd], encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if let hostName, !hostName.isEmpty {
+                    return hostName
+                }
+            }
+            cursor = nameEnd
+        }
+        return nil
+    }
+
+    private func tlsSupportedVersions(payload: [UInt8], start: Int, end: Int) -> [UInt16] {
+        if end - start == 2, let selected = readUInt16BE(payload, at: start) {
+            return [selected]
+        }
+        guard start < end else { return [] }
+        let listLength = min(Int(payload[start]), end - start - 1)
+        var versions: [UInt16] = []
+        var cursor = start + 1
+        while cursor + 2 <= start + 1 + listLength {
+            if let version = readUInt16BE(payload, at: cursor) {
+                versions.append(version)
+            }
+            cursor += 2
+        }
+        return versions
+    }
+
+    private func tlsEffectiveSupportedVersion(_ versions: [UInt16]) -> UInt16? {
+        versions.filter { (0x0301...0x0304).contains($0) }.max() ?? versions.first
+    }
+
+    private func streamIdentifier(protocolNumber: UInt8, sourceAddress: String, sourcePort: UInt16, destinationAddress: String, destinationPort: UInt16) -> UInt32 {
+        let sourceKey = "\(sourceAddress.lowercased()):\(sourcePort)"
+        let destinationKey = "\(destinationAddress.lowercased()):\(destinationPort)"
+        let orderedEndpoints = sourceKey <= destinationKey ? [sourceKey, destinationKey] : [destinationKey, sourceKey]
+        var hash: UInt32 = 2_166_136_261
+
+        func append(_ byte: UInt8) {
+            hash ^= UInt32(byte)
+            hash &*= 16_777_619
+        }
+
+        append(protocolNumber)
+        for endpoint in orderedEndpoints {
+            append(0)
+            for byte in endpoint.utf8 {
+                append(byte)
+            }
+        }
+
+        return hash == 0 ? 1 : hash
     }
 
     private func httpNode(payload: [UInt8], offset: Int) -> (node: PacketDetailNode, summary: String)? {
@@ -1180,6 +1429,16 @@ private final class PacketAnalyzer {
         return UInt16(bytes[offset]) << 8 | UInt16(bytes[offset + 1])
     }
 
+    private func readUInt16BE(_ bytes: [UInt8], at offset: Int) -> UInt16? {
+        guard offset >= 0, offset + 2 <= bytes.count else { return nil }
+        return UInt16(bytes[offset]) << 8 | UInt16(bytes[offset + 1])
+    }
+
+    private func readUInt24BE(_ bytes: [UInt8], at offset: Int) -> Int? {
+        guard offset >= 0, offset + 3 <= bytes.count else { return nil }
+        return Int(bytes[offset]) << 16 | Int(bytes[offset + 1]) << 8 | Int(bytes[offset + 2])
+    }
+
     private func readUInt32BE(at offset: Int) -> UInt32? {
         guard offset >= 0, offset + 4 <= bytes.count else { return nil }
         return UInt32(bytes[offset]) << 24 | UInt32(bytes[offset + 1]) << 16 | UInt32(bytes[offset + 2]) << 8 | UInt32(bytes[offset + 3])
@@ -1433,6 +1692,37 @@ private func tlsContentType(_ value: UInt8) -> String {
         return "Handshake"
     case 23:
         return "Application Data"
+    default:
+        return "\(value)"
+    }
+}
+
+private func tlsHandshakeTypeName(_ value: UInt8) -> String {
+    switch value {
+    case 0:
+        return "Hello Request"
+    case 1:
+        return "Client Hello"
+    case 2:
+        return "Server Hello"
+    case 4:
+        return "New Session Ticket"
+    case 8:
+        return "Encrypted Extensions"
+    case 11:
+        return "Certificate"
+    case 12:
+        return "Server Key Exchange"
+    case 13:
+        return "Certificate Request"
+    case 14:
+        return "Server Hello Done"
+    case 15:
+        return "Certificate Verify"
+    case 16:
+        return "Client Key Exchange"
+    case 20:
+        return "Finished"
     default:
         return "\(value)"
     }

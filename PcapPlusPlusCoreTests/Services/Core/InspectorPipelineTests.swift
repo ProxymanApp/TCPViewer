@@ -299,6 +299,40 @@ struct InspectorPipelineTests {
         }
     }
 
+    @Test func tlsHandshakeSummariesExposeHelloTypesAndSNI() async throws {
+        try await withWiresharkDisabled { core in
+            let directory = try makeTemporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: directory) }
+
+            let captureURL = directory.appendingPathComponent("tls-handshakes.pcap")
+            try writePCAP(
+                to: captureURL,
+                packets: [
+                    makeIPv4TLSClientHelloPacket(hostName: "www.google.com"),
+                    makeIPv4TLSServerHelloPacket(),
+                ]
+            )
+
+            let document = try await core.openOfflineCaptureDocument(at: captureURL)
+            let packets = try await document.open()
+            let clientHello = try #require(packets.first)
+            let serverHello = try #require(packets.dropFirst().first)
+
+            #expect(clientHello.transportHint == .tls)
+            #expect(clientHello.streamID != nil)
+            #expect(serverHello.streamID == clientHello.streamID)
+            #expect(clientHello.sniDomainName == "www.google.com")
+            #expect(clientHello.infoSummary.localizedCaseInsensitiveContains("Client Hello"))
+            #expect(serverHello.infoSummary.localizedCaseInsensitiveContains("Server Hello"))
+
+            let inspection = try await document.inspectPacket(id: clientHello.id)
+            let tlsNode = try #require(inspection.detailNodes.first { $0.name == "Transport Layer Security" })
+            #expect(tlsNode.value?.localizedCaseInsensitiveContains("Client Hello") == true)
+            #expect(findNode(in: tlsNode.children, name: "Handshake Protocol: Client Hello") != nil)
+            #expect(findNode(in: tlsNode.children, name: "Server Name Indication")?.value == "www.google.com")
+        }
+    }
+
     @Test func tcpSynInspectionExpandsFlagsAndOptions() async throws {
         try await withWiresharkDisabled { core in
             let directory = try makeTemporaryDirectory()
@@ -977,6 +1011,88 @@ private func makeIPv4TLSApplicationDataPacket(recordVersion: UInt16) -> Data {
     return packet
 }
 
+private func makeIPv4TLSClientHelloPacket(hostName: String) -> Data {
+    makeIPv4TCPPacket(
+        sourcePort: 54_321,
+        destinationPort: 443,
+        identification: 0x1239,
+        payload: makeTLSClientHelloRecord(hostName: hostName)
+    )
+}
+
+private func makeIPv4TLSServerHelloPacket() -> Data {
+    makeIPv4TCPPacket(
+        sourcePort: 443,
+        destinationPort: 54_321,
+        identification: 0x123a,
+        sourceIPv4: [0xc0, 0xa8, 0x00, 0x02],
+        destinationIPv4: [0xc0, 0xa8, 0x00, 0x01],
+        payload: makeTLSServerHelloRecord()
+    )
+}
+
+private func makeTLSClientHelloRecord(hostName: String) -> [UInt8] {
+    let hostBytes = Array(hostName.utf8)
+    var serverNameExtension: [UInt8] = []
+    serverNameExtension.appendBigEndian(UInt16(0))
+    serverNameExtension.appendBigEndian(UInt16(5 + hostBytes.count))
+    serverNameExtension.appendBigEndian(UInt16(3 + hostBytes.count))
+    serverNameExtension.append(0)
+    serverNameExtension.appendBigEndian(UInt16(hostBytes.count))
+    serverNameExtension.append(contentsOf: hostBytes)
+
+    var supportedVersionsExtension: [UInt8] = []
+    supportedVersionsExtension.appendBigEndian(UInt16(43))
+    supportedVersionsExtension.appendBigEndian(UInt16(5))
+    supportedVersionsExtension.append(4)
+    supportedVersionsExtension.appendBigEndian(UInt16(0x0304))
+    supportedVersionsExtension.appendBigEndian(UInt16(0x0303))
+
+    let extensions = serverNameExtension + supportedVersionsExtension
+    var body: [UInt8] = []
+    body.appendBigEndian(UInt16(0x0303))
+    body.append(contentsOf: Array(repeating: 0x11, count: 32))
+    body.append(0)
+    body.appendBigEndian(UInt16(2))
+    body.appendBigEndian(UInt16(0x1301))
+    body.append(1)
+    body.append(0)
+    body.appendBigEndian(UInt16(extensions.count))
+    body.append(contentsOf: extensions)
+
+    return makeTLSRecord(contentType: 22, recordVersion: 0x0303, handshakeType: 1, body: body)
+}
+
+private func makeTLSServerHelloRecord() -> [UInt8] {
+    var supportedVersionsExtension: [UInt8] = []
+    supportedVersionsExtension.appendBigEndian(UInt16(43))
+    supportedVersionsExtension.appendBigEndian(UInt16(2))
+    supportedVersionsExtension.appendBigEndian(UInt16(0x0304))
+
+    var body: [UInt8] = []
+    body.appendBigEndian(UInt16(0x0303))
+    body.append(contentsOf: Array(repeating: 0x22, count: 32))
+    body.append(0)
+    body.appendBigEndian(UInt16(0x1301))
+    body.append(0)
+    body.appendBigEndian(UInt16(supportedVersionsExtension.count))
+    body.append(contentsOf: supportedVersionsExtension)
+
+    return makeTLSRecord(contentType: 22, recordVersion: 0x0303, handshakeType: 2, body: body)
+}
+
+private func makeTLSRecord(contentType: UInt8, recordVersion: UInt16, handshakeType: UInt8, body: [UInt8]) -> [UInt8] {
+    var handshake: [UInt8] = [handshakeType]
+    handshake.appendUInt24BigEndian(body.count)
+    handshake.append(contentsOf: body)
+
+    var record: [UInt8] = [contentType]
+    record.appendBigEndian(recordVersion)
+    record.appendBigEndian(UInt16(handshake.count))
+    record.append(contentsOf: handshake)
+    return record
+}
+
 private func makeIPv4TCPSYNOptionsPacket() -> Data {
     Data([
         0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
@@ -1086,7 +1202,14 @@ private func makeIPv4WebSocketTextFramePacket() -> Data {
     )
 }
 
-private func makeIPv4TCPPacket(sourcePort: UInt16, destinationPort: UInt16, identification: UInt16, payload: [UInt8]) -> Data {
+private func makeIPv4TCPPacket(
+    sourcePort: UInt16,
+    destinationPort: UInt16,
+    identification: UInt16,
+    sourceIPv4: [UInt8] = [0xc0, 0xa8, 0x00, 0x01],
+    destinationIPv4: [UInt8] = [0xc0, 0xa8, 0x00, 0x02],
+    payload: [UInt8]
+) -> Data {
     let ipv4TotalLength = UInt16(20 + 20 + payload.count)
     var packet = Data([
         0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
@@ -1098,9 +1221,9 @@ private func makeIPv4TCPPacket(sourcePort: UInt16, destinationPort: UInt16, iden
     packet.appendBigEndian(identification)
     packet.append(contentsOf: [
         0x40, 0x00, 0x40, 0x06, 0x00, 0x00,
-        0xc0, 0xa8, 0x00, 0x01,
-        0xc0, 0xa8, 0x00, 0x02,
     ])
+    packet.append(contentsOf: sourceIPv4)
+    packet.append(contentsOf: destinationIPv4)
     packet.appendBigEndian(sourcePort)
     packet.appendBigEndian(destinationPort)
     packet.append(contentsOf: [
@@ -1298,6 +1421,21 @@ private extension Data {
         if padding > 0 {
             append(Data(repeating: 0, count: padding))
         }
+    }
+}
+
+private extension Array where Element == UInt8 {
+    mutating func appendBigEndian<T: FixedWidthInteger>(_ value: T) {
+        var bigEndian = value.bigEndian
+        Swift.withUnsafeBytes(of: &bigEndian) { buffer in
+            append(contentsOf: buffer.bindMemory(to: UInt8.self))
+        }
+    }
+
+    mutating func appendUInt24BigEndian(_ value: Int) {
+        append(UInt8((value >> 16) & 0xff))
+        append(UInt8((value >> 8) & 0xff))
+        append(UInt8(value & 0xff))
     }
 }
 
