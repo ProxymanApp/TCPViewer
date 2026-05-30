@@ -115,6 +115,61 @@ struct LivePacketBatchBuffer<Element: Sendable>: Sendable {
     }
 }
 
+struct LivePacketReanalysisQueue<ID: Hashable & Sendable>: Sendable {
+    private var queuedIDs: [ID] = []
+    private var queuedIDSet: Set<ID> = []
+    private var readIndex = 0
+
+    var isEmpty: Bool {
+        pendingCount == 0
+    }
+
+    var pendingCount: Int {
+        queuedIDs.count - readIndex
+    }
+
+    mutating func enqueue(_ ids: [ID]) {
+        for id in ids where queuedIDSet.insert(id).inserted {
+            queuedIDs.append(id)
+        }
+    }
+
+    mutating func dequeue(maxCount: Int) -> [ID] {
+        guard !isEmpty else {
+            return []
+        }
+
+        let upperBound = min(readIndex + max(maxCount, 1), queuedIDs.count)
+        let ids = Array(queuedIDs[readIndex..<upperBound])
+        for id in ids {
+            queuedIDSet.remove(id)
+        }
+        readIndex = upperBound
+        compactIfNeeded()
+        return ids
+    }
+
+    mutating func discardPending(releasingCapacity: Bool) {
+        queuedIDs.removeAll(keepingCapacity: !releasingCapacity)
+        queuedIDSet.removeAll(keepingCapacity: !releasingCapacity)
+        readIndex = 0
+    }
+
+    private mutating func compactIfNeeded() {
+        guard readIndex > 0 else {
+            return
+        }
+
+        if readIndex == queuedIDs.count {
+            queuedIDs.removeAll(keepingCapacity: true)
+            readIndex = 0
+        } else if readIndex > 1_024 && readIndex > queuedIDs.count / 2 {
+            queuedIDs.removeFirst(readIndex)
+            readIndex = 0
+        }
+    }
+}
+
 struct LiveCaptureDurationStopTimer: Sendable {
     let durationMilliseconds: UInt64
     private var deadline: Date?
@@ -167,6 +222,7 @@ private struct LivePacketSummaryText: Equatable {
 
 private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     private static let maxLivePacketBatchSize = 256
+    private static let maxLiveReanalysisBatchSize = 128
     private static let livePacketBatchInterval: DispatchTimeInterval = .milliseconds(100)
     private static let liveReanalysisInterval: DispatchTimeInterval = .milliseconds(250)
 
@@ -182,6 +238,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     private var packetBatchBuffer = LivePacketBatchBuffer<PacketSummary>(maxBatchSize: maxLivePacketBatchSize)
     private var packetBatchFlushWorkItem: DispatchWorkItem?
     private var packetReanalysisWorkItem: DispatchWorkItem?
+    private var packetReanalysisQueue = LivePacketReanalysisQueue<PacketSummary.ID>()
     private var packetSummaryTextByID: [PacketSummary.ID: LivePacketSummaryText] = [:]
     private var durationStopWorkItem: DispatchWorkItem?
     private var durationStopTimer: LiveCaptureDurationStopTimer?
@@ -353,6 +410,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
             startedAt = Date()
             cancelPacketBatchFlushWorkItem()
             cancelPacketReanalysisWorkItem()
+            packetReanalysisQueue.discardPending(releasingCapacity: true)
             packetSummaryTextByID.removeAll(keepingCapacity: false)
             packetBatchBuffer.discardPending(releasingCapacity: true)
         }
@@ -399,6 +457,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
         cancelPacketBatchFlushWorkItem()
         cancelPacketReanalysisWorkItem()
         packetBatchBuffer.discardPending(releasingCapacity: true)
+        packetReanalysisQueue.discardPending(releasingCapacity: true)
         packetSummaryTextByID.removeAll(keepingCapacity: false)
         activeRunPacketCount = 0
         nativeSession.clearCapturedPackets()
@@ -487,6 +546,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
             packetSummaryTextByID[packet.id] = LivePacketSummaryText(packet: packet)
         }
         eventBox.yield(.packetBatch(batch, disposition: .append))
+        packetReanalysisQueue.enqueue(batch.map(\.id))
         schedulePacketReanalysisIfNeeded()
     }
 
@@ -520,7 +580,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     }
 
     private func schedulePacketReanalysisIfNeeded() {
-        guard packetReanalysisWorkItem == nil, !packetSummaryTextByID.isEmpty else {
+        guard packetReanalysisWorkItem == nil, !packetReanalysisQueue.isEmpty else {
             return
         }
 
@@ -533,10 +593,15 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
 
     private func reanalyzePacketSummariesFromTimer() {
         packetReanalysisWorkItem = nil
+        let packetIDs = packetReanalysisQueue.dequeue(maxCount: Self.maxLiveReanalysisBatchSize)
+        guard !packetIDs.isEmpty else {
+            return
+        }
+
         do {
-            // Pull lightweight native updates so timer reanalysis avoids full packet descriptors.
+            // Reanalyze only queued rows so live capture cost does not grow with the full capture.
             let descriptors = try autoreleasepool {
-                try nativeSession.reanalyzePacketSummaryUpdates()
+                try nativeSession.reanalyzePacketSummaryUpdates(withIdentifiers: packetIDs)
             }
             let updates = descriptors.compactMap { descriptor -> PacketSummaryUpdate? in
                 let packetID = descriptor.packetIdentifier
@@ -560,6 +625,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
             if !updates.isEmpty {
                 eventBox.yield(.packetSummaryUpdates(updates))
             }
+            schedulePacketReanalysisIfNeeded()
         } catch {
             // Reanalysis only refines table text; capture delivery should continue if it fails.
         }
