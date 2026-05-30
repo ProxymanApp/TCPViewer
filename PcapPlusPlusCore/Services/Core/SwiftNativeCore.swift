@@ -383,6 +383,7 @@ final class PCPPNativeLiveSession {
     private var paused = false
     private var packetNumber: UInt64 = 1
     private var records: [NativePacketRecord] = []
+    private var recordIndexByID: [UInt64: Int] = [:]
     private var packetsReceived: UInt64 = 0
     private var packetsDropped: UInt64 = 0
     private var packetsDroppedByInterface: UInt64 = 0
@@ -433,6 +434,7 @@ final class PCPPNativeLiveSession {
             packetNumber = 1
             liveLinkLayerType = Libpcap.dataLink(for: openedHandle)
             records.removeAll(keepingCapacity: false)
+            recordIndexByID.removeAll(keepingCapacity: false)
             packetsReceived = 0
             packetsDropped = 0
             packetsDroppedByInterface = 0
@@ -507,6 +509,7 @@ final class PCPPNativeLiveSession {
         lock.withLock {
             packetNumber = 1
             records.removeAll(keepingCapacity: false)
+            recordIndexByID.removeAll(keepingCapacity: false)
             packetsReceived = 0
             packetsDropped = 0
             packetsDroppedByInterface = 0
@@ -516,9 +519,10 @@ final class PCPPNativeLiveSession {
 
     func inspectPacket(withIdentifier identifier: UInt64) throws -> PCPPNativePacketInspectionDescriptor {
         try lock.withLock {
-            guard let record = records.first(where: { $0.identifier == identifier }) else {
+            guard let recordIndex = recordIndexByID[identifier] else {
                 throw NativeNSError(.fileReadFailed, "Packet \(identifier) is not available in the live backing store.")
             }
+            let record = records[recordIndex]
             return try autoreleasepool {
                 let analyzer = PacketAnalyzer(record: record).analyze()
                 let inspection = try requireDissectionSession().inspect(record)
@@ -528,15 +532,7 @@ final class PCPPNativeLiveSession {
     }
 
     func reanalyzePacketSummaries() throws -> [PCPPNativePacketSummaryDescriptor] {
-        try lock.withLock {
-            try records.map { record in
-                try autoreleasepool {
-                    let wiresharkSummary = try requireDissectionSession().summarize(record)
-                    let analyzer = PacketAnalyzer(record: record).analyze()
-                    return makePacketSummaryDescriptor(record: record, analyzed: analyzer, wireshark: wiresharkSummary)
-                }
-            }
-        }
+        try reanalyzePacketSummaries(withIdentifiers: nil)
     }
 
     func reanalyzePacketSummaryUpdates() throws -> [PCPPNativePacketSummaryUpdateDescriptor] {
@@ -546,6 +542,42 @@ final class PCPPNativeLiveSession {
                 protocolSummary: $0.protocolSummary,
                 infoSummary: $0.infoSummary
             )
+        }
+    }
+
+    func reanalyzePacketSummaryUpdates(withIdentifiers identifiers: [UInt64]) throws -> [PCPPNativePacketSummaryUpdateDescriptor] {
+        try reanalyzePacketSummaries(withIdentifiers: identifiers).map {
+            PCPPNativePacketSummaryUpdateDescriptor(
+                packetIdentifier: $0.identifier,
+                protocolSummary: $0.protocolSummary,
+                infoSummary: $0.infoSummary
+            )
+        }
+    }
+
+    private func reanalyzePacketSummaries(withIdentifiers identifiers: [UInt64]?) throws -> [PCPPNativePacketSummaryDescriptor] {
+        try lock.withLock {
+            let selectedRecords = records(for: identifiers)
+            return try selectedRecords.map { record in
+                try autoreleasepool {
+                    let wiresharkSummary = try requireDissectionSession().summarize(record)
+                    let analyzer = PacketAnalyzer(record: record).analyze()
+                    return makePacketSummaryDescriptor(record: record, analyzed: analyzer, wireshark: wiresharkSummary)
+                }
+            }
+        }
+    }
+
+    private func records(for identifiers: [UInt64]?) -> [NativePacketRecord] {
+        guard let identifiers else {
+            return records
+        }
+
+        return identifiers.compactMap { identifier in
+            guard let index = recordIndexByID[identifier] else {
+                return nil
+            }
+            return records[index]
         }
     }
 
@@ -591,6 +623,7 @@ final class PCPPNativeLiveSession {
                     packetComment: nil
                 )
                 packetNumber += 1
+                recordIndexByID[record.identifier] = records.count
                 records.append(record)
                 packetsReceived += 1
                 return record

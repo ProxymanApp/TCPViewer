@@ -69,6 +69,24 @@ struct InspectorPipelineTests {
         #expect(buffer.flush() == nil)
     }
 
+    @Test func livePacketReanalysisQueueDeduplicatesAndDequeuesByLimit() {
+        var queue = LivePacketReanalysisQueue<Int>()
+
+        queue.enqueue([1, 2, 2, 3])
+        #expect(queue.pendingCount == 3)
+        #expect(queue.dequeue(maxCount: 2) == [1, 2])
+        #expect(queue.pendingCount == 1)
+
+        queue.enqueue([3, 4])
+        #expect(queue.pendingCount == 2)
+        #expect(queue.dequeue(maxCount: 10) == [3, 4])
+        #expect(queue.isEmpty)
+
+        queue.enqueue([5, 6])
+        queue.discardPending(releasingCapacity: true)
+        #expect(queue.dequeue(maxCount: 10).isEmpty)
+    }
+
     @Test func wiresharkUnavailableBackendFailsOpenWithUnavailableFeature() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

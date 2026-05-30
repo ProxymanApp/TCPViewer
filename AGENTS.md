@@ -23,6 +23,8 @@
 - Use simple weak delegate protocols for view-model/controller signals; child controllers receive explicit render models and call delegate methods for user actions
 - Keep TCPViewer view models controller-specific and testable; do not add broad global state or automatic observation
 - Keep PcapPlusPlusCore public APIs callback-based unless a future ticket explicitly changes this architecture
+- Live capture can receive 10,000+ packets per second; always think about bounded, incremental, and backpressure-friendly designs before adding capture, parsing, metadata, table, sidebar, or inspector work.
+- Do not run repeated O(total captured packets) work on live-capture timers or append paths; prefer queued packet IDs, capped batches, indexes, caches, and coalesced UI updates. This specifically prevents regressions like reanalyzing every captured packet every 250 ms.
 - After TCPViewer or core changes, verify with `xcodebuild -project TCPViewer.xcodeproj -scheme TCPViewer build`
 - Run `xcodebuild test -project TCPViewer.xcodeproj -scheme TCPViewer -destination 'platform=macOS'` and relevant `PcapPlusPlusCore` tests when app/core behavior changes
 - Try adding 1 line and concise short comment to explain a group of logic if the func is big
