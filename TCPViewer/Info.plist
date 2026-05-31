@@ -12,8 +12,6 @@
 	<string>$(TCPVIEWER_APPCAST_URL)</string>
 	<key>SUPublicEDKey</key>
 	<string>$(TCPVIEWER_SPARKLE_PUBLIC_ED_KEY)</string>
-	<key>TCPViewerBuildKey</key>
-	<string>$(TCPVIEWER_BUILD_KEY)</string>
 	<key>TCPViewerSentryDSN</key>
 	<string>$(TCPVIEWER_SENTRY_DSN)</string>
 	<key>TCPViewerUsesLocalLicenseServer</key>
