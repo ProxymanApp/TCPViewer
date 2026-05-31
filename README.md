@@ -125,6 +125,7 @@ First-time release setup:
 ```bash
 npm install
 bundle install
+gh auth login
 ```
 
 Notarization and Sentry values are read from environment variables only. Set
@@ -164,10 +165,14 @@ uploads dSYMs to Sentry, signs the DMG for Sparkle, uploads it to R2, and prints
 the beta DMG URL.
 Choose `production` to release the app version and build number currently set in
 the Xcode project. The script preflights `ReleaseNote.json`, shows the parsed app
-version and build number in the confirmation summary, runs
-`bundle exec fastlane mac build_production`, performs the same final DMG
-verification before uploading to R2, and writes the Sparkle appcast XML from
-`ReleaseNote.json` into the production artifact folder.
+version and build number in the confirmation summary, verifies the GitHub CLI
+session, checks that the working tree is clean and synced with the default
+branch, and fails if the `v<version>` Git tag or GitHub release already exists.
+It then runs `bundle exec fastlane mac build_production`, performs the same
+final DMG verification before uploading to R2, writes the Sparkle appcast XML
+from `ReleaseNote.json` into the production artifact folder, creates and pushes
+the annotated `v<version>` tag, and publishes the GitHub release with the DMG
+attached.
 
 To also create the production release record through the TCP Viewer backend,
 enable the optional backend publisher in local `.env`:

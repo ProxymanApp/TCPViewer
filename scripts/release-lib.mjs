@@ -185,6 +185,11 @@ export function findReleaseNote(releaseNotes, version) {
   return release;
 }
 
+export function makeGitHubReleaseTagName(version) {
+  const safeVersion = normalizeFileNameSegment(version, "GitHub release version");
+  return `v${safeVersion}`;
+}
+
 export function releaseNotesToHTML(release) {
   validateReleaseNote(release);
 
@@ -204,6 +209,16 @@ export function releaseNotesToHTML(release) {
     .join("");
 
   return `<h1>${escapeHTML(release.title)}</h1>${body}`;
+}
+
+export function releaseNotesToMarkdown(release) {
+  validateReleaseNote(release);
+
+  return [
+    markdownReleaseNoteSection("Features", release.features),
+    markdownReleaseNoteSection("Improvements", release.improvements),
+    markdownReleaseNoteSection("Bug Fixes", release.bugs)
+  ].join("\n\n") + "\n";
 }
 
 export function parseSparkleSignatureOutput(output) {
@@ -389,6 +404,17 @@ function validateDMGFileName(fileName) {
   }
 
   return value;
+}
+
+function markdownReleaseNoteSection(title, entries) {
+  const items = entries.length
+    ? entries.map((entry) => `- ${normalizeMarkdownListText(entry)}`).join("\n")
+    : "- None";
+  return `## ${title}\n${items}`;
+}
+
+function normalizeMarkdownListText(value) {
+  return String(value).trim().replace(/\s+/g, " ");
 }
 
 function toAmzDate(date) {

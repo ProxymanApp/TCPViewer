@@ -22,6 +22,7 @@ import {
   emptyPayloadSHA256,
   findReleaseNote,
   generateAppcastXML,
+  makeGitHubReleaseTagName,
   makeBetaDMGFileName,
   makeR2ObjectURL,
   makeR2ObjectKey,
@@ -38,6 +39,7 @@ import {
   publishReleaseToBackendEnabled,
   redactEnvValue,
   releaseBackendRequiredEnvNames,
+  releaseNotesToMarkdown,
   requiredEnvNames,
   signR2Request
 } from "./release-lib.mjs";
@@ -85,11 +87,17 @@ async function main() {
   }
 
   let releaseNote = null;
+  let githubRelease = null;
   if (releaseType === "production") {
     releaseNote = await loadReleaseNote(version);
+    githubRelease = {
+      tagName: makeGitHubReleaseTagName(version),
+      title: releaseNote.title,
+      repo: null
+    };
   }
 
-  await preflight({ env, releaseType, objectKey, settings, releaseBackend, version, buildNumber });
+  await preflight({ env, releaseType, objectKey, settings, releaseBackend, version, buildNumber, githubRelease });
 
   printReleaseSummary({
     releaseType,
@@ -101,6 +109,7 @@ async function main() {
     downloadURL,
     envFileExists,
     releaseNote,
+    githubRelease,
     releaseBackend
   });
   if (!await askReleaseConfirmation()) {
@@ -134,6 +143,12 @@ async function main() {
         appcastXML
       });
     }
+    await createGitHubRelease({
+      githubRelease,
+      releaseNote,
+      dmgPath,
+      outputDir
+    });
   }
 
   console.log(`${releaseType === "production" ? "Production" : "BETA"} release is ready: ${downloadURL}`);
@@ -158,13 +173,14 @@ async function loadReleaseEnv() {
   };
 }
 
-async function preflight({ env, releaseType, objectKey, settings, releaseBackend, version, buildNumber }) {
+async function preflight({ env, releaseType, objectKey, settings, releaseBackend, version, buildNumber, githubRelease }) {
   // Keep preflight strict because it runs before long signing and notarization work.
   const missing = missingRequiredEnv(env, requiredEnvNames(releaseType));
   if (missing.length) {
     throw new Error(`Missing required env values: ${missing.join(", ")}`);
   }
 
+  await requireTool("git", ["--version"]);
   await requireTool("node", ["--version"]);
   await requireTool("npm", ["--version"]);
   await ensureCreateDMGTool();
@@ -184,6 +200,9 @@ async function preflight({ env, releaseType, objectKey, settings, releaseBackend
 
   await verifyDeveloperID(env.TCPVIEWER_DEVELOPER_ID_APPLICATION);
   await findSparkleSignUpdate(env, settings);
+  if (githubRelease) {
+    githubRelease.repo = await preflightGitHubRelease({ githubRelease });
+  }
   await ensureR2ObjectDoesNotExist(env, objectKey);
   if (releaseBackend) {
     await ensureBackendCanCreateRelease({ releaseBackend, version, buildNumber });
@@ -241,6 +260,35 @@ async function writeAppcastXML({ outputDir, version, appcastXML }) {
   const appcastPath = path.join(outputDir, `appcast-${version}.xml`);
   await writeFile(appcastPath, appcastXML, { mode: 0o600 });
   console.log(`Appcast XML written to: ${appcastPath}`);
+}
+
+async function createGitHubRelease({ githubRelease, releaseNote, dmgPath, outputDir }) {
+  const releaseNotesPath = path.join(outputDir, `github-release-${githubRelease.tagName}.md`);
+  const tagMessagePath = path.join(outputDir, `git-tag-${githubRelease.tagName}.txt`);
+  const releaseNotesMarkdown = releaseNotesToMarkdown(releaseNote);
+
+  await writeFile(releaseNotesPath, releaseNotesMarkdown, { mode: 0o600 });
+  await writeFile(tagMessagePath, `${githubRelease.title}\n\n${releaseNotesMarkdown}`, { mode: 0o600 });
+
+  // Publish GitHub only after the notarized DMG has already been verified and uploaded to R2.
+  await runCommand("git", ["tag", "-a", githubRelease.tagName, "-F", tagMessagePath]);
+  await runCommand("git", ["push", "origin", `refs/tags/${githubRelease.tagName}`]);
+
+  const result = await runCommand("gh", [
+    "release",
+    "create",
+    githubRelease.tagName,
+    dmgPath,
+    "--repo",
+    githubRelease.repo,
+    "--title",
+    githubRelease.title,
+    "--notes-file",
+    releaseNotesPath,
+    "--verify-tag"
+  ], { capture: true });
+  const releaseURL = result.stdout.trim() || `https://github.com/${githubRelease.repo}/releases/tag/${githubRelease.tagName}`;
+  console.log(`GitHub release created: ${releaseURL}`);
 }
 
 async function signDMG({ env, dmgPath, settings }) {
@@ -433,6 +481,138 @@ async function ensureR2ObjectDoesNotExist(env, objectKey) {
   }
 
   throw new Error(`R2 object already exists: ${objectKey}`);
+}
+
+async function preflightGitHubRelease({ githubRelease }) {
+  await requireTool("gh", ["--version"]);
+  await requireTool("gh", ["auth", "status"]);
+  const repo = await resolveGitHubRepo();
+
+  await runCommand("git", ["fetch", "origin", "--tags", "--prune"], { capture: true });
+  await ensureGitReadyForProductionRelease(repo.defaultBranch);
+  await ensureGitHubTagDoesNotExist(githubRelease.tagName);
+  await ensureGitHubReleaseDoesNotExist({
+    tagName: githubRelease.tagName,
+    repo: repo.nameWithOwner
+  });
+
+  console.log(`GitHub release check passed for ${repo.nameWithOwner} ${githubRelease.tagName}.`);
+  return repo.nameWithOwner;
+}
+
+async function resolveGitHubRepo() {
+  const result = await runCommand("gh", [
+    "repo",
+    "view",
+    "--json",
+    "nameWithOwner,defaultBranchRef"
+  ], { capture: true });
+
+  let payload;
+  try {
+    payload = JSON.parse(result.stdout);
+  } catch {
+    throw new Error("Could not parse GitHub repository information from gh.");
+  }
+
+  const nameWithOwner = String(payload?.nameWithOwner ?? "").trim();
+  const defaultBranch = String(payload?.defaultBranchRef?.name ?? "").trim();
+  if (!nameWithOwner || !defaultBranch) {
+    throw new Error("Could not resolve GitHub repository name and default branch from gh.");
+  }
+
+  return { nameWithOwner, defaultBranch };
+}
+
+async function ensureGitReadyForProductionRelease(defaultBranch) {
+  const status = await runCommand("git", ["status", "--porcelain"], { capture: true });
+  if (status.stdout.trim()) {
+    throw new Error("Working tree must be clean before creating a production release tag.");
+  }
+
+  const branch = (await runCommand("git", ["branch", "--show-current"], { capture: true })).stdout.trim();
+  if (!branch) {
+    throw new Error("Production release must run from a branch, not detached HEAD.");
+  }
+
+  if (branch !== defaultBranch) {
+    throw new Error(`Production release must run from ${defaultBranch}; current branch is ${branch}.`);
+  }
+
+  // Keep the release tag pinned to the exact reviewed commit on the default branch.
+  let upstream;
+  try {
+    upstream = (await runCommand("git", [
+      "rev-parse",
+      "--abbrev-ref",
+      "--symbolic-full-name",
+      "@{u}"
+    ], { capture: true })).stdout.trim();
+  } catch {
+    throw new Error(`Production release branch ${branch} must have an upstream remote branch.`);
+  }
+
+  const counts = (await runCommand("git", [
+    "rev-list",
+    "--left-right",
+    "--count",
+    "HEAD...@{u}"
+  ], { capture: true })).stdout.trim().split(/\s+/);
+  if (counts[0] !== "0" || counts[1] !== "0") {
+    throw new Error(`Production release branch ${branch} must be in sync with ${upstream}.`);
+  }
+}
+
+async function ensureGitHubTagDoesNotExist(tagName) {
+  const tagRef = `refs/tags/${tagName}`;
+  if (await gitRefExists(tagRef)) {
+    throw new Error(`Git tag already exists locally: ${tagName}`);
+  }
+
+  const remoteResult = await runCommand("git", [
+    "ls-remote",
+    "--tags",
+    "origin",
+    tagRef,
+    `${tagRef}^{}`
+  ], { capture: true });
+  if (remoteResult.stdout.trim()) {
+    throw new Error(`Git tag already exists on origin: ${tagName}`);
+  }
+}
+
+async function ensureGitHubReleaseDoesNotExist({ tagName, repo }) {
+  try {
+    await runCommand("gh", [
+      "release",
+      "view",
+      tagName,
+      "--repo",
+      repo,
+      "--json",
+      "id"
+    ], { capture: true });
+  } catch (error) {
+    if (isGitHubReleaseNotFoundError(error)) {
+      return;
+    }
+    throw new Error(`GitHub release lookup failed for ${repo} ${tagName}: ${error.message}`);
+  }
+
+  throw new Error(`GitHub release already exists: ${repo} ${tagName}`);
+}
+
+async function gitRefExists(ref) {
+  try {
+    await runCommand("git", ["rev-parse", "--verify", "--quiet", ref], { capture: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isGitHubReleaseNotFoundError(error) {
+  return /release not found|not found/i.test(String(error?.message ?? ""));
 }
 
 async function sha256File(filePath) {
@@ -631,6 +811,7 @@ function printReleaseSummary({
   downloadURL,
   envFileExists,
   releaseNote,
+  githubRelease,
   releaseBackend
 }) {
   console.log("");
@@ -647,6 +828,9 @@ function printReleaseSummary({
   if (releaseNote) {
     console.log(`- Release notes: ReleaseNote.json entry ${releaseNote.version}`);
     console.log(`- Release title: ${releaseNote.title}`);
+  }
+  if (githubRelease) {
+    console.log(`- GitHub release: ${githubRelease.repo} ${githubRelease.tagName}`);
   }
 }
 

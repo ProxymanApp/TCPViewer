@@ -5,6 +5,7 @@ import {
   findReleaseNote,
   generateAppcastXML,
   makeBetaDMGFileName,
+  makeGitHubReleaseTagName,
   makeR2ObjectURL,
   makeR2ObjectKey,
   makeR2StorageObjectKey,
@@ -20,6 +21,7 @@ import {
   publishReleaseToBackendEnabled,
   redactEnvValue,
   releaseBackendRequiredEnvNames,
+  releaseNotesToMarkdown,
   releaseNotesToHTML,
   requiredEnvNames,
   signR2Request
@@ -217,4 +219,31 @@ test("renders all release-note sections", () => {
   assert.match(html, /Features/);
   assert.match(html, /Better release checks/);
   assert.match(html, /Bug Fixes/);
+});
+
+test("formats GitHub release metadata from release notes", () => {
+  const release = {
+    version: "1.2.0",
+    title: "TCP Viewer 1.2 Launch",
+    features: ["New capture mode"],
+    improvements: ["Better\nrelease checks"],
+    bugs: []
+  };
+
+  assert.equal(makeGitHubReleaseTagName(release.version), "v1.2.0");
+  assert.throws(() => makeGitHubReleaseTagName("../1.2.0"), /GitHub release version/);
+  assert.equal(
+    releaseNotesToMarkdown(release),
+    [
+      "## Features",
+      "- New capture mode",
+      "",
+      "## Improvements",
+      "- Better release checks",
+      "",
+      "## Bug Fixes",
+      "- None",
+      ""
+    ].join("\n")
+  );
 });
