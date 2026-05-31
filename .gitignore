@@ -1,5 +1,6 @@
 .DS_Store
 DerivedData/
+buildServer.json
 Vendor/.build/
 Vendor/.install/
 .env
@@ -7,4 +8,9 @@ Config/TCPViewer.local.xcconfig
 node_modules/
 fastlane/README.md
 fastlane/report.xml
-TCPViewer.xcodeproj/project.xcworkspace/xcuserdata/nghiatran.xcuserdatad/UserInterfaceState.xcuserstate
+.claude/*.local.json
+.claude/*.lock
+xcuserdata/
+*.xcuserdatad/
+*.xcuserstate
+*.xcbkptlist
