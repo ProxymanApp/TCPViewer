@@ -143,6 +143,7 @@ Before production, add a matching entry to `ReleaseNote.json`:
 ```json
 {
   "version": "1.1.0",
+  "title": "TCP Viewer 1.1 Release",
   "features": [],
   "improvements": [],
   "bugs": []

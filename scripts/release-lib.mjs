@@ -203,7 +203,7 @@ export function releaseNotesToHTML(release) {
     })
     .join("");
 
-  return `<h1>TCP Viewer ${escapeHTML(release.version)}</h1>${body}`;
+  return `<h1>${escapeHTML(release.title)}</h1>${body}`;
 }
 
 export function parseSparkleSignatureOutput(output) {
@@ -243,7 +243,7 @@ export function generateAppcastXML({
     "    <description>TCP Viewer macOS app updates</description>",
     "    <language>en</language>",
     "    <item>",
-    `      <title>TCP Viewer ${escapeXML(version)}</title>`,
+    `      <title>${escapeXML(releaseNote.title)}</title>`,
     `      <sparkle:version>${escapeXML(buildNumber)}</sparkle:version>`,
     `      <sparkle:shortVersionString>${escapeXML(version)}</sparkle:shortVersionString>`,
     `      <sparkle:minimumSystemVersion>${escapeXML(minimumOSVersion)}</sparkle:minimumSystemVersion>`,
@@ -356,6 +356,10 @@ export function signR2Request({
 function validateReleaseNote(release) {
   if (!release || typeof release.version !== "string" || !release.version.trim()) {
     throw new Error("Each release note must include a version string.");
+  }
+
+  if (typeof release.title !== "string" || !release.title.trim()) {
+    throw new Error(`Release ${release.version} must include a title string.`);
   }
 
   for (const field of ["features", "improvements", "bugs"]) {

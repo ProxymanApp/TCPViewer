@@ -30,6 +30,7 @@ test("parses and validates release notes", () => {
     releases: [
       {
         version: "1.2.0",
+        title: "TCP Viewer 1.2 Launch",
         features: ["New capture mode"],
         improvements: ["Faster table reload"],
         bugs: ["Fixed export crash"]
@@ -40,6 +41,10 @@ test("parses and validates release notes", () => {
   assert.equal(findReleaseNote(notes, "1.2.0").features[0], "New capture mode");
   assert.throws(
     () => parseReleaseNotes(JSON.stringify({ releases: [{ version: "1.0" }] })),
+    /title string/
+  );
+  assert.throws(
+    () => parseReleaseNotes(JSON.stringify({ releases: [{ version: "1.0", title: "Missing lists" }] })),
     /features string array/
   );
 });
@@ -55,6 +60,7 @@ test("generates Sparkle appcast XML from structured notes", () => {
     },
     releaseNote: {
       version: "1.2.0",
+      title: "Packet Inspector Launch",
       features: ["New <feature>"],
       improvements: [],
       bugs: []
@@ -63,6 +69,7 @@ test("generates Sparkle appcast XML from structured notes", () => {
     pubDate: new Date("2026-05-10T12:00:00Z")
   });
 
+  assert.match(xml, /<title>Packet Inspector Launch<\/title>/);
   assert.match(xml, /<sparkle:version>42<\/sparkle:version>/);
   assert.match(xml, /<sparkle:minimumSystemVersion>15.6<\/sparkle:minimumSystemVersion>/);
   assert.match(xml, /sparkle:edSignature="abc123"/);
@@ -200,11 +207,13 @@ test("parses Sparkle signing output", () => {
 test("renders all release-note sections", () => {
   const html = releaseNotesToHTML({
     version: "1.2.0",
+    title: "TCP Viewer 1.2 Launch",
     features: [],
     improvements: ["Better release checks"],
     bugs: []
   });
 
+  assert.match(html, /TCP Viewer 1.2 Launch/);
   assert.match(html, /Features/);
   assert.match(html, /Better release checks/);
   assert.match(html, /Bug Fixes/);

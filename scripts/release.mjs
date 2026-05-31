@@ -127,6 +127,7 @@ async function main() {
     if (releaseBackend) {
       await createBackendRelease({
         releaseBackend,
+        title: releaseNote.title,
         version,
         buildNumber,
         downloadURL,
@@ -343,7 +344,7 @@ async function ensureBackendCanCreateRelease({ releaseBackend, version, buildNum
   console.log("Backend release check passed.");
 }
 
-async function createBackendRelease({ releaseBackend, version, buildNumber, downloadURL, appcastXML }) {
+async function createBackendRelease({ releaseBackend, title, version, buildNumber, downloadURL, appcastXML }) {
   const url = makeReleaseBackendEndpointURL({
     releaseBackend,
     pathName: "api/releases/create-new-release",
@@ -361,6 +362,7 @@ async function createBackendRelease({ releaseBackend, version, buildNumber, down
       "content-type": "application/json"
     },
     body: JSON.stringify({
+      title,
       link: downloadURL,
       note: appcastXML
     })
@@ -644,6 +646,7 @@ function printReleaseSummary({
   console.log(`- Environment source: ${envFileExists ? ".env + shell environment" : "shell environment only"}`);
   if (releaseNote) {
     console.log(`- Release notes: ReleaseNote.json entry ${releaseNote.version}`);
+    console.log(`- Release title: ${releaseNote.title}`);
   }
 }
 

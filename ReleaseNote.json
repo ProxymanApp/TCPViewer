@@ -2,6 +2,7 @@
   "releases": [
     {
       "version": "1.0",
+      "title": "TCP Viewer 1.0 Initial Release",
       "features": [
         "Initial TCP Viewer release for opening, inspecting, and exporting packet captures on macOS.",
         "Wireshark-powered packet detail inspection bundled directly in the app.",
@@ -14,6 +15,7 @@
     },
     {
       "version": "1.0.1",
+      "title": "TCP Viewer 1.0.1 Maintenance Build",
       "features": [
         "New BUILD",
         "Initial TCP Viewer release for opening, inspecting, and exporting packet captures on macOS.",
@@ -24,6 +26,49 @@
         "Packaged as a signed and notarized macOS app with Sparkle update metadata."
       ],
       "bugs": []
+    },
+    {
+      "version": "1.2",
+      "title": "TCP Viewer 1.2 Production Release",
+      "features": [
+        "Open and inspect PCAP and PCAPNG files on macOS.",
+        "Live TCP packet capture with a privileged network helper tool.",
+        "AppKit packet workspace with source list, packet table, inspector, and hex view.",
+        "Wireshark-style packet detail tree bundled directly in the app.",
+        "Swift packet dissection fallback for capture, file I/O, and packet summaries.",
+        "TLS, HTTP, DNS, TCP, IPv4, and IPv6 packet summaries.",
+        "SNI domain and client app attribution in packet tables.",
+        "Quick packet filters and advanced structured filters for large captures.",
+        "Saved and pinned packet workflows for important traffic.",
+        "Packet export menus for sharing captured data.",
+        "Customizable packet table columns.",
+        "Inspector placement toggle with persisted split layout.",
+        "Network interface history and source list management.",
+        "License activation, verification, trial, and free-state windows.",
+        "Sparkle 2 automatic updates for signed production releases.",
+        "Custom About window with app, version, and open-source license details."
+      ],
+      "improvements": [
+        "Ported the native capture and dissection pipeline to Swift.",
+        "Moved live capture storage to a disk-backed design.",
+        "Bounded live packet summary reanalysis for high packet rates.",
+        "Added async packet table filtering for large captures.",
+        "Reduced main-thread CPU during live capture.",
+        "Improved helper install, quit, and factory reset flows.",
+        "Bundled Wireshark runtime libraries for release builds.",
+        "Added inspector empty states and clearer panel filtering.",
+        "Improved release automation for notarized DMGs, Sparkle appcasts, R2 upload, and Sentry dSYMs.",
+        "Added optional backend publishing for production release records.",
+        "Hardened local and production environment configuration handling."
+      ],
+      "bugs": [
+        "Fixed crash when restarting live capture after stop.",
+        "Fixed packet table selection crash during mouse tracking.",
+        "Fixed TCP viewer row selection state bugs.",
+        "Fixed buggy manual resize behavior.",
+        "Fixed license manager edge cases.",
+        "Fixed packet summary lifetime issues in table rows."
+      ]
     }
   ]
 }
