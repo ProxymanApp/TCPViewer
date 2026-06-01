@@ -695,6 +695,15 @@ extension TCPViewerRootViewController: SidebarViewControllerDelegate {
         viewModel.updateSourceListFilterText(text)
     }
 
+    func sidebarViewController(_ controller: SidebarViewController, didRequestPin targets: [PacketSourceListPinTarget]) {
+        guard canUsePinFeature() else {
+            delegate?.tcpviewerRootViewControllerDidRequestPaywall(self)
+            return
+        }
+
+        viewModel.pinSourceListItems(targets)
+    }
+
     func sidebarViewController(_ controller: SidebarViewController, didRequestDelete action: PacketSourceListDeletionAction) {
         viewModel.deleteSourceListItem(action)
     }
@@ -711,11 +720,14 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
 
     func packetWorkspaceViewController(
         _ controller: PacketWorkspaceViewController,
-        didRequestPin kind: PacketPinCreationKind,
-        packetID: PacketSummary.ID,
-        clickedColumn: PacketTableColumnRole
+        didRequestPinPackets identifiers: [PacketSummary.ID]
     ) {
-        viewModel.pinPacket(packetID, kind: kind, clickedColumn: clickedColumn)
+        guard canUsePinFeature() else {
+            delegate?.tcpviewerRootViewControllerDidRequestPaywall(self)
+            return
+        }
+
+        viewModel.pinAppPackets(identifiers)
     }
 
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestSavePackets identifiers: [PacketSummary.ID]) {
@@ -748,6 +760,10 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
 
     func packetWorkspaceViewControllerDidRequestHideStructuredFilter(_ controller: PacketWorkspaceViewController) {
         viewModel.setStructuredFilterVisible(false)
+    }
+
+    fileprivate func canUsePinFeature() -> Bool {
+        TCPViewerLicenseService.shared.isLicenseAuthorized
     }
 }
 

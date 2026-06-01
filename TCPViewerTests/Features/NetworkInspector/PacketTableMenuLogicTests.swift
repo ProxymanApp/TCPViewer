@@ -14,7 +14,7 @@ import PcapPlusPlusCore
 @Suite(.serialized)
 struct PacketTableMenuLogicTests {
 
-    @Test func selectedClickedRowTargetsMultipleRowsAndDisablesPin() {
+    @Test func selectedClickedRowTargetsMultipleRowsAndEnablesPinWhenAnyRowHasApp() {
         let rows = [
             PacketTableRow(packet: makePacket(packetNumber: 1, sniDomainName: "one.example.com", client: makeClient())),
             PacketTableRow(packet: makePacket(packetNumber: 2)),
@@ -31,9 +31,7 @@ struct PacketTableMenuLogicTests {
         #expect(state.targetRows == [0, 2])
         #expect(state.copyRowEnabled)
         #expect(state.copyCellEnabled)
-        #expect(!state.pinDomainEnabled)
-        #expect(!state.pinIPEnabled)
-        #expect(!state.pinClientEnabled)
+        #expect(state.pinEnabled)
         #expect(state.saveEnabled)
         #expect(state.exportEnabled)
         #expect(state.deleteEnabled)
@@ -54,9 +52,7 @@ struct PacketTableMenuLogicTests {
 
         #expect(state.targetRows == [1])
         #expect(state.clickedColumn == .source)
-        #expect(state.pinDomainEnabled)
-        #expect(state.pinIPEnabled)
-        #expect(state.pinClientEnabled)
+        #expect(state.pinEnabled)
         #expect(state.exportEnabled)
     }
 
@@ -203,9 +199,7 @@ struct PacketTableMenuLogicTests {
             clickedColumn: .source,
             copyRowEnabled: true,
             copyCellEnabled: true,
-            pinDomainEnabled: true,
-            pinIPEnabled: true,
-            pinClientEnabled: true,
+            pinEnabled: true,
             saveEnabled: true,
             exportEnabled: true,
             deleteEnabled: true
@@ -225,6 +219,7 @@ struct PacketTableMenuLogicTests {
 
         #expect(copyRowsAsTitles == ["Plain text", "JSON", "Markdown Table", "CSV", "CSV with Header"])
         #expect(copyRowsAsSubmenu.items.filter(\.isSeparatorItem).count == 2)
+        #expect(menu.items.contains { $0.title == "Pin" && $0.submenu == nil })
         #expect(!items.isEmpty)
         #expect(items.allSatisfy { item in item.toolTip?.isEmpty == false })
     }
@@ -311,9 +306,7 @@ private final class MenuActionHandler: NSObject, PacketTableContextMenuActionHan
     func copyRowsAsCSVFromMenu(_ sender: Any?) {}
     func copyRowsAsCSVWithHeaderFromMenu(_ sender: Any?) {}
     func copyCellFromMenu(_ sender: Any?) {}
-    func pinDomainFromMenu(_ sender: Any?) {}
-    func pinIPFromMenu(_ sender: Any?) {}
-    func pinClientFromMenu(_ sender: Any?) {}
+    func pinRowsFromMenu(_ sender: Any?) {}
     func saveRowsFromMenu(_ sender: Any?) {}
     func exportRowsAsPcapFromMenu(_ sender: Any?) {}
     func exportRowsAsPcapngFromMenu(_ sender: Any?) {}

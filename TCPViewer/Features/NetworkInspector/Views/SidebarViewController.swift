@@ -11,6 +11,7 @@ import PcapPlusPlusCore
 protocol SidebarViewControllerDelegate: AnyObject {
     func sidebarViewController(_ controller: SidebarViewController, didSelect selection: PacketSourceListSelection?)
     func sidebarViewController(_ controller: SidebarViewController, didUpdateFilterText text: String)
+    func sidebarViewController(_ controller: SidebarViewController, didRequestPin targets: [PacketSourceListPinTarget])
     func sidebarViewController(_ controller: SidebarViewController, didRequestDelete action: PacketSourceListDeletionAction)
     func sidebarViewController(_ controller: SidebarViewController, didRequestExport selection: PacketSourceListSelection, format: CaptureFileFormat)
 }
@@ -200,6 +201,7 @@ final class SidebarViewController: NSViewController {
     private var pendingReloadWorkItem: DispatchWorkItem?
     private var isSyncingSelection = false
     private var isSyncingFilter = false
+    private var contextMenuItemID: String?
 
     deinit {
         pendingReloadWorkItem?.cancel()
@@ -286,7 +288,7 @@ final class SidebarViewController: NSViewController {
         outlineView.dataSource = self
         outlineView.style = .sourceList
         outlineView.allowsEmptySelection = true
-        outlineView.allowsMultipleSelection = false
+        outlineView.allowsMultipleSelection = true
         outlineView.rowHeight = 28
         outlineView.indentationPerLevel = 18
         outlineView.indentationMarkerFollowsCell = false
@@ -393,15 +395,37 @@ final class SidebarViewController: NSViewController {
         return sourceItem(for: outlineView.item(atRow: selectedRow))
     }
 
+    private func selectedSourceItems() -> [PacketSourceListItem] {
+        outlineView.selectedRowIndexes.compactMap { row in
+            guard row >= 0 else {
+                return nil
+            }
+            return sourceItem(for: outlineView.item(atRow: row))
+        }
+    }
+
+    private func contextSourceItem() -> PacketSourceListItem? {
+        guard let contextMenuItemID else {
+            return nil
+        }
+
+        return viewModel.item(withID: contextMenuItemID)?.sourceItem
+    }
+
     private func selectedDeletionAction() -> PacketSourceListDeletionAction {
-        PacketSourceListDeletionPolicy.action(for: selectedSourceItem())
+        PacketSourceListDeletionPolicy.action(for: contextSourceItem() ?? selectedSourceItem())
     }
 
     private func selectedExportSelection() -> PacketSourceListSelection? {
-        PacketSourceListExportPolicy.selection(for: selectedSourceItem())
+        PacketSourceListExportPolicy.selection(for: contextSourceItem() ?? selectedSourceItem())
+    }
+
+    private func selectedPinTargets() -> [PacketSourceListPinTarget] {
+        PacketSourceListPinPolicy.targets(for: selectedSourceItems())
     }
 
     private func updateSelectionFromCurrentMenuEvent() {
+        contextMenuItemID = nil
         guard let event = view.window?.currentEvent,
               event.type == .rightMouseDown || event.type == .leftMouseDown || event.type == .otherMouseDown else {
             return
@@ -416,7 +440,20 @@ final class SidebarViewController: NSViewController {
             return
         }
 
+        contextMenuItemID = sourceItem(for: item)?.id
+        if outlineView.selectedRowIndexes.contains(row) {
+            return
+        }
         outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+    }
+
+    @objc private func pinSelectedSourceListItems(_ sender: Any?) {
+        let targets = selectedPinTargets()
+        guard !targets.isEmpty else {
+            return
+        }
+
+        delegate?.sidebarViewController(self, didRequestPin: targets)
     }
 
     @objc private func deleteSelectedSourceListItem(_ sender: Any?) {
@@ -551,6 +588,7 @@ extension SidebarViewController: NSOutlineViewDataSource, NSOutlineViewDelegate 
             return
         }
 
+        contextMenuItemID = nil
         let selectedRow = outlineView.selectedRow
         guard selectedRow >= 0,
               let item = outlineView.item(atRow: selectedRow) as? SidebarOutlineItem else {
@@ -591,15 +629,28 @@ extension SidebarViewController: NSSearchFieldDelegate {
 extension SidebarViewController: NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         updateSelectionFromCurrentMenuEvent()
+        let pinTargets = selectedPinTargets()
         let action = selectedDeletionAction()
         let exportSelection = selectedExportSelection()
 
         menu.removeAllItems()
-        guard action.isEnabled || exportSelection != nil else {
+        guard !pinTargets.isEmpty || action.isEnabled || exportSelection != nil else {
             return
         }
 
+        if !pinTargets.isEmpty {
+            let pinItem = NSMenuItem(title: "Pin", action: #selector(pinSelectedSourceListItems(_:)), keyEquivalent: "")
+            pinItem.target = self
+            pinItem.isEnabled = true
+            pinItem.image = NSImage(systemSymbolName: "pin", accessibilityDescription: "Pin")
+            menu.addItem(pinItem)
+        }
+
         if exportSelection != nil {
+            if !pinTargets.isEmpty {
+                menu.addItem(.separator())
+            }
+
             let exportItem = NSMenuItem(title: "Export", action: nil, keyEquivalent: "")
             let exportSubmenu = NSMenu(title: "Export")
             let exportPcapItem = NSMenuItem(title: "as pcap...", action: #selector(exportSelectedSourceListItemAsPcap(_:)), keyEquivalent: "")
@@ -616,7 +667,7 @@ extension SidebarViewController: NSMenuDelegate {
         }
 
         if action.isEnabled {
-            if exportSelection != nil {
+            if !pinTargets.isEmpty || exportSelection != nil {
                 menu.addItem(.separator())
             }
 
@@ -632,6 +683,7 @@ extension SidebarViewController: NSMenuDelegate {
 
 extension SidebarViewController: SidebarOutlineKeyboardActionHandling {
     fileprivate func sidebarOutlineViewDidRequestDeleteFromKeyboard(_ outlineView: SidebarOutlineView) {
+        contextMenuItemID = nil
         deleteSelectedSourceListItem(nil)
     }
 }

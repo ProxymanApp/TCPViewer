@@ -1201,9 +1201,30 @@ final class NetworkInspectorViewModel {
             return
         }
 
-        selectedSourceListSelection = .pinnedItem(pin.id)
-        workspaceMode = .packets
-        rebuildSnapshot()
+        selectAfterPinning([pin])
+    }
+
+    func pinAppPackets(_ identifiers: [PacketSummary.ID]) {
+        let pins = identifiers.compactMap { identifier -> PacketPin? in
+            guard let packet = packet(withID: identifier),
+                  let identity = PacketSourceListClassifier.clientIdentity(for: packet) else {
+                return nil
+            }
+            return try? pinService.upsertClientPin(identity)
+        }
+        selectAfterPinning(pins)
+    }
+
+    func pinSourceListItems(_ targets: [PacketSourceListPinTarget]) {
+        let pins = targets.compactMap { target -> PacketPin? in
+            switch target {
+            case .client(let identity):
+                return try? pinService.upsertClientPin(identity)
+            case .domain(let identity):
+                return try? pinService.upsertDomainPin(identity)
+            }
+        }
+        selectAfterPinning(pins)
     }
 
     func savePackets(_ identifiers: [PacketSummary.ID]) {
@@ -1251,6 +1272,28 @@ final class NetworkInspectorViewModel {
             selectedSourceListSelection = .pinned
         }
         rebuildSnapshot()
+    }
+
+    private func selectAfterPinning(_ pins: [PacketPin]) {
+        let uniquePins = uniquePins(pins)
+        guard !uniquePins.isEmpty else {
+            return
+        }
+
+        selectedSourceListSelection = uniquePins.count == 1 ? .pinnedItem(uniquePins[0].id) : .pinned
+        workspaceMode = .packets
+        rebuildSnapshot()
+    }
+
+    private func uniquePins(_ pins: [PacketPin]) -> [PacketPin] {
+        var seenIDs = Set<PacketPinID>()
+        var uniquePins: [PacketPin] = []
+
+        for pin in pins where seenIDs.insert(pin.id).inserted {
+            uniquePins.append(pin)
+        }
+
+        return uniquePins
     }
 
     private func presentExportPanel(

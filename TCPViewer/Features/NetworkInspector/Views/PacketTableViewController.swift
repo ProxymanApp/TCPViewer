@@ -12,9 +12,7 @@ protocol PacketTableViewControllerDelegate: AnyObject {
     func packetTableViewController(_ controller: PacketTableViewController, didSelectPacket identifier: PacketSummary.ID?)
     func packetTableViewController(
         _ controller: PacketTableViewController,
-        didRequestPin kind: PacketPinCreationKind,
-        packetID: PacketSummary.ID,
-        clickedColumn: PacketTableColumnRole
+        didRequestPinPackets identifiers: [PacketSummary.ID]
     )
     func packetTableViewController(_ controller: PacketTableViewController, didRequestSavePackets identifiers: [PacketSummary.ID])
     func packetTableViewController(_ controller: PacketTableViewController, didRequestExportPackets identifiers: [PacketSummary.ID], format: CaptureFileFormat)
@@ -583,16 +581,8 @@ final class PacketTableViewController: NSViewController {
         writeToPasteboard(PacketTableCopyFormatter.csvCells(rows, column: state.clickedColumn))
     }
 
-    @objc func pinDomainFromMenu(_ sender: Any?) {
-        requestPin(.domain)
-    }
-
-    @objc func pinIPFromMenu(_ sender: Any?) {
-        requestPin(.ip)
-    }
-
-    @objc func pinClientFromMenu(_ sender: Any?) {
-        requestPin(.client)
+    @objc func pinRowsFromMenu(_ sender: Any?) {
+        requestPin()
     }
 
     @objc func saveRowsFromMenu(_ sender: Any?) {
@@ -638,19 +628,15 @@ final class PacketTableViewController: NSViewController {
         delegate?.packetTableViewController(self, didRequestExportPackets: identifiers, format: format)
     }
 
-    private func requestPin(_ kind: PacketPinCreationKind) {
-        let state = menuState()
-        guard state.targetRows.count == 1,
-              let rowIndex = state.targetRows.first,
-              rows.indices.contains(rowIndex) else {
+    private func requestPin() {
+        let identifiers = targetPacketIDs()
+        guard !identifiers.isEmpty else {
             return
         }
 
         delegate?.packetTableViewController(
             self,
-            didRequestPin: kind,
-            packetID: rows[rowIndex].id,
-            clickedColumn: state.clickedColumn
+            didRequestPinPackets: identifiers
         )
     }
 }

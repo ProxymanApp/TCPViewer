@@ -51,9 +51,7 @@ struct PacketTableMenuState: Equatable {
     let clickedColumn: PacketTableColumnRole
     let copyRowEnabled: Bool
     let copyCellEnabled: Bool
-    let pinDomainEnabled: Bool
-    let pinIPEnabled: Bool
-    let pinClientEnabled: Bool
+    let pinEnabled: Bool
     let saveEnabled: Bool
     let exportEnabled: Bool
     let deleteEnabled: Bool
@@ -63,9 +61,7 @@ struct PacketTableMenuState: Equatable {
         clickedColumn: .unknown,
         copyRowEnabled: false,
         copyCellEnabled: false,
-        pinDomainEnabled: false,
-        pinIPEnabled: false,
-        pinClientEnabled: false,
+        pinEnabled: false,
         saveEnabled: false,
         exportEnabled: false,
         deleteEnabled: false
@@ -94,16 +90,13 @@ enum PacketTableMenuLogic {
         )
         let targetRows = targetIndexes.compactMap { rows.indices.contains($0) ? rows[$0] : nil }
         let clickedColumn = PacketTableColumnRole(columnIdentifier: clickedColumnIdentifier)
-        let singleRow = targetRows.count == 1 ? targetRows[0] : nil
 
         return PacketTableMenuState(
             targetRows: targetIndexes,
             clickedColumn: clickedColumn,
             copyRowEnabled: !targetRows.isEmpty,
             copyCellEnabled: !targetRows.isEmpty && clickedColumn != .unknown,
-            pinDomainEnabled: singleRow?.canPinDomain == true,
-            pinIPEnabled: singleRow?.ipAddress(for: clickedColumn) != nil,
-            pinClientEnabled: singleRow?.canPinClient == true,
+            pinEnabled: targetRows.contains { $0.canPinClient },
             saveEnabled: !targetRows.isEmpty,
             exportEnabled: !targetRows.isEmpty,
             deleteEnabled: !targetRows.isEmpty
