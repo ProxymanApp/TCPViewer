@@ -72,7 +72,7 @@ final class PacketWorkspaceViewModel {
             emptyTitle = "Pinned Packets"
             emptyMessage = "Pinned matches will appear here as packets arrive."
             emptyImageName = "pin.fill"
-        case .pinnedItem:
+        case .pinnedItem, .pinnedItemDomain, .pinnedItemIPAddress:
             emptyTitle = "Pinned Packets"
             emptyMessage = "No packets match this pinned item yet."
             emptyImageName = "pin.fill"

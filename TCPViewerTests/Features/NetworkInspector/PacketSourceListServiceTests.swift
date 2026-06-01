@@ -78,6 +78,33 @@ struct PacketSourceListServiceTests {
         #expect(snapshot.item(for: .ipAddress(sourceIPKey))?.count == 2)
     }
 
+    @Test func appRowsNestScopedDomainsAndIPAddresses() throws {
+        let chrome = makeClient(displayName: "Chrome", bundleIdentifier: "com.google.Chrome")
+        let tcpviewer = makeClient(displayName: "TCP Viewer", bundleIdentifier: "com.proxyman.tcpviewer")
+        var state = PacketIngestState.empty
+        state.append([
+            makePacket(packetNumber: 1, sniDomainName: "api.example.com", client: chrome),
+            makePacket(packetNumber: 2, sniDomainName: "api.example.com", client: chrome),
+            makePacket(packetNumber: 3, sniDomainName: nil, client: chrome, sourceAddress: "10.0.0.3", destinationAddress: "10.0.0.4"),
+            makePacket(packetNumber: 4, sniDomainName: "api.example.com", client: tcpviewer),
+            makePacket(packetNumber: 5, sniDomainName: nil, client: tcpviewer, sourceAddress: "10.0.0.5", destinationAddress: "10.0.0.6"),
+        ], source: .live)
+
+        let snapshot = PacketSourceListService().snapshot(for: state)
+        let chromeKey = PacketSourceClientKey(rawValue: "bundleIdentifier:com.google.Chrome")
+        let tcpviewerKey = PacketSourceClientKey(rawValue: "bundleIdentifier:com.proxyman.tcpviewer")
+        let apiKey = domainKey("api.example.com")
+        let ipKey = PacketSourceIPAddressKey(rawValue: "10.0.0.4")
+
+        let chromeItem = try #require(snapshot.item(for: .app(chromeKey)))
+        #expect(chromeItem.children.map(\.title) == ["api.example.com", "IP Addresses"])
+        #expect(snapshot.item(for: .appDomain(chromeKey, apiKey))?.count == 2)
+        #expect(snapshot.item(for: .appDomain(tcpviewerKey, apiKey))?.count == 1)
+        #expect(snapshot.item(for: .appDomain(chromeKey, .ipAddresses))?.count == 1)
+        #expect(snapshot.item(for: .appDomain(chromeKey, .ipAddresses))?.children.map(\.title) == ["10.0.0.4", "10.0.0.3"])
+        #expect(snapshot.item(for: .appIPAddress(chromeKey, ipKey))?.count == 1)
+    }
+
     @Test func deletionPolicyOnlyAllowsDeletableLeafItems() {
         let client = makeClient(displayName: "Example", bundleIdentifier: "com.example.app")
         let pinID = PacketPinID(rawValue: "domain:api.example.com")
@@ -279,6 +306,26 @@ struct PacketSourceListServiceTests {
         #expect(snapshot.item(for: .pinnedItem(pinID))?.iconFilePath == "/Applications/Google Chrome.app")
     }
 
+    @Test func pinnedClientRowsMirrorScopedAppChildren() throws {
+        let client = makeClient(displayName: "Example", bundleIdentifier: "com.example.app")
+        let pin = makeClientPin(displayName: "Example", key: "bundleIdentifier:com.example.app")
+        var state = PacketIngestState.empty
+        state.append([
+            makePacket(packetNumber: 1, sniDomainName: "api.example.com", client: client),
+            makePacket(packetNumber: 2, sniDomainName: nil, client: client, sourceAddress: "10.0.0.3", destinationAddress: "10.0.0.4"),
+        ], source: .live)
+
+        let snapshot = PacketSourceListService().snapshot(for: state, pinnedItems: [pin])
+        let pinItem = try #require(snapshot.item(for: .pinnedItem(pin.id)))
+        let apiKey = domainKey("api.example.com")
+        let ipKey = PacketSourceIPAddressKey(rawValue: "10.0.0.4")
+
+        #expect(pinItem.children.map(\.title) == ["api.example.com", "IP Addresses"])
+        #expect(snapshot.item(for: .pinnedItemDomain(pin.id, apiKey))?.count == 1)
+        #expect(snapshot.item(for: .pinnedItemDomain(pin.id, .ipAddresses))?.children.map(\.title) == ["10.0.0.4", "10.0.0.3"])
+        #expect(snapshot.item(for: .pinnedItemIPAddress(pin.id, ipKey))?.count == 1)
+    }
+
     @Test func resetReplaceAndMetadataUpdatesRebuildTree() {
         let service = PacketSourceListService()
         let client = makeClient(displayName: "Example", bundleIdentifier: "com.example.app")
@@ -353,6 +400,34 @@ struct PacketSourceListServiceTests {
 
         #expect(snapshot.item(for: .apps)?.children.map(\.title) == ["Example"])
         #expect(snapshot.item(for: .apps)?.children.first?.count == 1)
+    }
+
+    @Test func metadataUpdateMovesPacketBetweenScopedAppBucketsIncrementally() {
+        let service = PacketSourceListService()
+        let client = makeClient(displayName: "Example", bundleIdentifier: "com.example.app")
+        let appKey = PacketSourceClientKey(rawValue: "bundleIdentifier:com.example.app")
+        var state = PacketIngestState.empty
+        let unresolved = makePacket(packetNumber: 1, sniDomainName: nil, client: client)
+        let stable = makePacket(packetNumber: 2, sniDomainName: "stable.example.com", client: client)
+        state.append([unresolved, stable], source: .live)
+
+        var snapshot = service.snapshot(for: state)
+        #expect(snapshot.item(for: .appDomain(appKey, .ipAddresses))?.count == 1)
+        #expect(snapshot.item(for: .appDomain(appKey, domainKey("stable.example.com")))?.count == 1)
+
+        state.applyMetadataUpdates([
+            PacketMetadataUpdate(
+                packetIDs: [unresolved.id],
+                sniDomainName: "api.example.com",
+                client: client,
+                direction: .outbound
+            )
+        ])
+        snapshot = service.snapshot(for: state)
+
+        #expect(snapshot.item(for: .appDomain(appKey, .ipAddresses)) == nil)
+        #expect(snapshot.item(for: .appDomain(appKey, domainKey("api.example.com")))?.count == 1)
+        #expect(snapshot.item(for: .appDomain(appKey, domainKey("stable.example.com")))?.count == 1)
     }
 
     @Test func appendAfterMetadataResolutionPicksUpResolvedBucketsWithoutDoubleCounting() {
@@ -432,7 +507,9 @@ struct PacketSourceListServiceTests {
     private func makePacket(
         packetNumber: UInt64,
         sniDomainName: String? = nil,
-        client: PacketClient? = nil
+        client: PacketClient? = nil,
+        sourceAddress: String = "10.0.0.1",
+        destinationAddress: String = "10.0.0.2"
     ) -> PacketSummary {
         PacketSummary(
             packetNumber: packetNumber,
@@ -441,8 +518,8 @@ struct PacketSourceListServiceTests {
             interfaceID: "en0",
             transportHint: .tcp,
             endpoints: PacketEndpoints(
-                source: PacketEndpoint(address: "10.0.0.1", port: 1234),
-                destination: PacketEndpoint(address: "10.0.0.2", port: 443)
+                source: PacketEndpoint(address: sourceAddress, port: 1234),
+                destination: PacketEndpoint(address: destinationAddress, port: 443)
             ),
             originalLength: 128,
             capturedLength: 128,

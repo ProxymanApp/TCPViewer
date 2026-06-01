@@ -1378,6 +1378,36 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[2].id])
     }
 
+    @Test func sourceListAppChildSelectionsFilterPacketRowsByParentAndChild() async throws {
+        let chrome = makeClient(displayName: "Chrome", bundleIdentifier: "com.google.Chrome")
+        let tcpviewer = makeClient(displayName: "TCP Viewer", bundleIdentifier: "com.proxyman.tcpviewer")
+        let packets = [
+            makePacket(packetNumber: 1, source: .offline, transportHint: .tcp, streamID: nil, sniDomainName: "api.example.com", client: chrome),
+            makePacket(packetNumber: 2, source: .offline, transportHint: .udp, streamID: nil, sniDomainName: "openai.com", client: chrome),
+            makePacket(packetNumber: 3, source: .offline, transportHint: .tcp, streamID: nil, sniDomainName: "api.example.com", client: tcpviewer),
+            makePacket(packetNumber: 4, source: .offline, transportHint: .tcp, streamID: nil, sniDomainName: nil, client: chrome, sourceAddress: "10.0.0.3", destinationAddress: "10.0.0.4"),
+            makePacket(packetNumber: 5, source: .offline, transportHint: .tcp, streamID: nil, sniDomainName: nil, client: tcpviewer, sourceAddress: "10.0.0.5", destinationAddress: "10.0.0.4"),
+        ]
+        let viewModel = makeOfflineViewModel(packets: packets)
+
+        await viewModel.openDocument(at: URL(fileURLWithPath: "/tmp/source-list-app-child-selection.pcapng"))
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == packets.count
+        }
+
+        let chromeKey = PacketSourceClientKey(rawValue: "bundleIdentifier:com.google.Chrome")
+        let apiKey = domainKey("api.example.com")
+        let ipKey = PacketSourceIPAddressKey(rawValue: "10.0.0.4")
+        _ = try #require(viewModel.snapshot.sourceListSnapshot.item(for: .appDomain(chromeKey, apiKey)))
+        _ = try #require(viewModel.snapshot.sourceListSnapshot.item(for: .appIPAddress(chromeKey, ipKey)))
+
+        viewModel.selectSourceList(.appDomain(chromeKey, apiKey))
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[0].id])
+
+        viewModel.selectSourceList(.appIPAddress(chromeKey, ipKey))
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[3].id])
+    }
+
     @Test func sourceListParentAndFavoriteSelectionsUseExpectedPacketSets() async {
         let client = makeClient(displayName: "Example", bundleIdentifier: "com.example.app")
         let packets = [
@@ -1716,6 +1746,94 @@ struct NetworkInspectorViewModelTests {
 
         #expect(viewModel.snapshot.packetRows.map(\.id) == [first.id, matchingFuture.id])
         #expect(viewModel.snapshot.sourceListSnapshot.item(for: .pinnedItem(pinID))?.count == 2)
+    }
+
+    @Test func pinnedClientChildSelectionsFilterPacketRowsByPinnedClientAndChild() async throws {
+        let pinService = PacketPinService(storageURL: temporaryDirectory().appendingPathComponent("Pins.json"))
+        let chrome = makeClient(displayName: "Chrome", bundleIdentifier: "com.google.Chrome")
+        let tcpviewer = makeClient(displayName: "TCP Viewer", bundleIdentifier: "com.proxyman.tcpviewer")
+        let packets = [
+            makePacket(packetNumber: 1, source: .offline, transportHint: .tcp, streamID: nil, sniDomainName: "api.example.com", client: chrome),
+            makePacket(packetNumber: 2, source: .offline, transportHint: .udp, streamID: nil, sniDomainName: "openai.com", client: chrome),
+            makePacket(packetNumber: 3, source: .offline, transportHint: .tcp, streamID: nil, sniDomainName: "api.example.com", client: tcpviewer),
+            makePacket(packetNumber: 4, source: .offline, transportHint: .tcp, streamID: nil, sniDomainName: nil, client: chrome, sourceAddress: "10.0.0.3", destinationAddress: "10.0.0.4"),
+        ]
+        let openURL = URL(fileURLWithPath: "/tmp/pinned-client-child-filter.pcapng")
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                document: InspectorFakeDocument(url: openURL, packets: packets)
+            )),
+            userDefaults: isolatedDefaults(),
+            pinService: pinService
+        )
+
+        await viewModel.openDocument(at: openURL)
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == packets.count
+        }
+
+        viewModel.pinAppPackets([packets[0].id])
+        let pinID = try #require(pinService.pins().first?.id)
+        let apiKey = domainKey("api.example.com")
+        let ipKey = PacketSourceIPAddressKey(rawValue: "10.0.0.4")
+        _ = try #require(viewModel.snapshot.sourceListSnapshot.item(for: .pinnedItemDomain(pinID, apiKey)))
+        _ = try #require(viewModel.snapshot.sourceListSnapshot.item(for: .pinnedItemIPAddress(pinID, ipKey)))
+
+        viewModel.selectSourceList(.pinnedItemDomain(pinID, apiKey))
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[0].id])
+
+        viewModel.selectSourceList(.pinnedItemIPAddress(pinID, ipKey))
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[3].id])
+    }
+
+    @Test func appChildSelectionAppendsFutureMatchingPackets() async {
+        let client = makeClient(displayName: "Example", bundleIdentifier: "com.example.app")
+        let first = makePacket(packetNumber: 1, source: .live, transportHint: .tcp, streamID: nil, sniDomainName: "api.example.com", client: client)
+        let matchingFuture = makePacket(packetNumber: 2, source: .live, transportHint: .udp, streamID: nil, sniDomainName: "api.example.com", client: client)
+        let differentDomainFuture = makePacket(packetNumber: 3, source: .live, transportHint: .tcp, streamID: nil, sniDomainName: "openai.com", client: client)
+        let unrelatedClientFuture = makePacket(
+            packetNumber: 4,
+            source: .live,
+            transportHint: .tcp,
+            streamID: nil,
+            sniDomainName: "api.example.com",
+            client: makeClient(displayName: "Other", bundleIdentifier: "com.example.other")
+        )
+        let liveSession = InspectorFakeLiveSession()
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                liveSession: liveSession
+            ), packetMetadataEnricher: PacketMetadataEnrichmentService(
+                clientResolver: InspectorFakePacketClientResolver(defaultClient: nil)
+            )),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.performInitialLoadIfNeeded()
+        await viewModel.toggleLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        liveSession.send(.packetBatch([first], disposition: .append))
+        await waitUntil {
+            viewModel.snapshot.packetRows.map(\.id) == [first.id]
+        }
+
+        let appKey = PacketSourceClientKey(rawValue: "bundleIdentifier:com.example.app")
+        let apiKey = domainKey("api.example.com")
+        viewModel.selectSourceList(.appDomain(appKey, apiKey))
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [first.id])
+
+        liveSession.send(.packetBatch([matchingFuture, differentDomainFuture, unrelatedClientFuture], disposition: .append))
+        await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+            viewModel.hasPendingCoalescedRebuildForTesting || viewModel.snapshot.totalPacketCount == 4
+        }
+        viewModel.flushPendingCoalescedRebuildForTesting()
+        await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+            viewModel.snapshot.packetRows.map(\.id) == [first.id, matchingFuture.id]
+        }
+
+        #expect(viewModel.snapshot.sourceListSnapshot.item(for: .appDomain(appKey, apiKey))?.count == 2)
     }
 
     @Test func sourceListDeleteActionRemovesPinsAndMatchingPackets() async throws {
@@ -2370,6 +2488,10 @@ struct NetworkInspectorViewModelTests {
             .selection
     }
 
+    private func domainKey(_ name: String) -> PacketSourceDomainKey {
+        PacketSourceDomainKey(rawValue: name.lowercased(), isMissingDomain: false)
+    }
+
     private func makeInterface(id: String, displayName: String) -> CaptureInterfaceSummary {
         CaptureInterfaceSummary(
             id: id,
@@ -2459,7 +2581,9 @@ struct NetworkInspectorViewModelTests {
         transportLayerName: String? = nil,
         protocolSummary: String? = nil,
         infoSummary: String? = nil,
-        layerNames: [String]? = nil
+        layerNames: [String]? = nil,
+        sourceAddress: String = "10.0.0.1",
+        destinationAddress: String = "10.0.0.2"
     ) -> PacketSummary {
         let packetLayers = layerNames?.map { PacketLayer(name: $0) } ?? [
             PacketLayer(name: "Ethernet"),
@@ -2473,8 +2597,8 @@ struct NetworkInspectorViewModelTests {
             transportHint: transportHint,
             protocolSummary: protocolSummary,
             endpoints: PacketEndpoints(
-                source: PacketEndpoint(address: "10.0.0.1", port: sourcePort),
-                destination: PacketEndpoint(address: "10.0.0.2", port: destinationPort)
+                source: PacketEndpoint(address: sourceAddress, port: sourcePort),
+                destination: PacketEndpoint(address: destinationAddress, port: destinationPort)
             ),
             originalLength: 128,
             capturedLength: 128,
