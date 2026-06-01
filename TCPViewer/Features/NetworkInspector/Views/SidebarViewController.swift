@@ -74,6 +74,26 @@ enum SidebarOutlineReloadPolicy {
     }
 }
 
+enum SidebarSelectionPolicy {
+    static func navigationRow(
+        selectedRowIndexes: IndexSet,
+        selectedRow: Int,
+        currentEventRow: Int?
+    ) -> Int? {
+        if let currentEventRow,
+           selectedRowIndexes.contains(currentEventRow) {
+            return currentEventRow
+        }
+
+        if selectedRow >= 0,
+           selectedRowIndexes.contains(selectedRow) {
+            return selectedRow
+        }
+
+        return selectedRowIndexes.first
+    }
+}
+
 private extension PacketIngestMutation {
     var isBatchableSidebarMutation: Bool {
         switch self {
@@ -288,6 +308,7 @@ final class SidebarViewController: NSViewController {
         outlineView.dataSource = self
         outlineView.style = .sourceList
         outlineView.allowsEmptySelection = true
+        // Multi-selection is only used by context-menu Pin; navigation still picks one active row.
         outlineView.allowsMultipleSelection = true
         outlineView.rowHeight = 28
         outlineView.indentationPerLevel = 18
@@ -447,6 +468,16 @@ final class SidebarViewController: NSViewController {
         outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
     }
 
+    private func rowFromCurrentMouseEvent() -> Int? {
+        guard let event = view.window?.currentEvent,
+              event.type == .rightMouseDown || event.type == .leftMouseDown || event.type == .otherMouseDown else {
+            return nil
+        }
+
+        let row = outlineView.row(at: outlineView.convert(event.locationInWindow, from: nil))
+        return row >= 0 ? row : nil
+    }
+
     @objc private func pinSelectedSourceListItems(_ sender: Any?) {
         let targets = selectedPinTargets()
         guard !targets.isEmpty else {
@@ -589,8 +620,11 @@ extension SidebarViewController: NSOutlineViewDataSource, NSOutlineViewDelegate 
         }
 
         contextMenuItemID = nil
-        let selectedRow = outlineView.selectedRow
-        guard selectedRow >= 0,
+        guard let selectedRow = SidebarSelectionPolicy.navigationRow(
+            selectedRowIndexes: outlineView.selectedRowIndexes,
+            selectedRow: outlineView.selectedRow,
+            currentEventRow: rowFromCurrentMouseEvent()
+        ),
               let item = outlineView.item(atRow: selectedRow) as? SidebarOutlineItem else {
             delegate?.sidebarViewController(self, didSelect: nil)
             return

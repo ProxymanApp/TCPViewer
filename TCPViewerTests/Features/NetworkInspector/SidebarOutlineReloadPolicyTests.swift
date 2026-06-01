@@ -97,6 +97,29 @@ struct SidebarOutlineReloadPolicyTests {
         #expect(SidebarOutlineReloadPolicy.timing(previous: previous, next: replaced) == .immediate)
     }
 
+    @Test func multiSelectionNavigationUsesCurrentEventRow() {
+        let selectedRows = IndexSet([2, 5])
+
+        #expect(SidebarSelectionPolicy.navigationRow(
+            selectedRowIndexes: selectedRows,
+            selectedRow: 2,
+            currentEventRow: 5
+        ) == 5)
+    }
+
+    @Test func selectionNavigationFallsBackToSingleSelectedRow() {
+        #expect(SidebarSelectionPolicy.navigationRow(
+            selectedRowIndexes: IndexSet(integer: 3),
+            selectedRow: 3,
+            currentEventRow: nil
+        ) == 3)
+        #expect(SidebarSelectionPolicy.navigationRow(
+            selectedRowIndexes: IndexSet(),
+            selectedRow: -1,
+            currentEventRow: nil
+        ) == nil)
+    }
+
     private func reloadState(
         sourceListSnapshot: PacketSourceListSnapshot,
         filterText: String = "",
