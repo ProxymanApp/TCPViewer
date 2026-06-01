@@ -6,6 +6,8 @@
 //
 
 import Foundation
+import AppKit
+import PcapPlusPlusCore
 import Testing
 @testable import TCPViewer
 
@@ -120,6 +122,51 @@ struct SidebarOutlineReloadPolicyTests {
         ) == nil)
     }
 
+    @MainActor
+    @Test func deferredReloadPreservesSidebarScrollPositionAndSelection() async throws {
+        let selectedKey = PacketSourceDomainKey(rawValue: "domain-32.example.com", isMissingDomain: false)
+        let controller = SidebarViewController()
+        let selectionRecorder = SidebarSelectionRecorder()
+        controller.delegate = selectionRecorder
+        controller.loadViewIfNeeded()
+        controller.view.frame = NSRect(x: 0, y: 0, width: 260, height: 240)
+        controller.view.layoutSubtreeIfNeeded()
+
+        controller.render(snapshot: makeSnapshot(
+            sourceListSnapshot: snapshotWithDomains(count: 48),
+            selectedSelection: .domain(selectedKey),
+            packetMutation: .none
+        ))
+        controller.view.layoutSubtreeIfNeeded()
+
+        let outlineScrollView = try #require(findOutlineScrollView(in: controller.view))
+        let outlineView = try #require(outlineScrollView.documentView as? NSOutlineView)
+        #expect(outlineView.selectedRow >= 0)
+
+        outlineScrollView.contentView.scroll(to: NSPoint(x: 0, y: 520))
+        outlineScrollView.reflectScrolledClipView(outlineScrollView.contentView)
+        let originalY = outlineScrollView.contentView.bounds.origin.y
+
+        controller.render(snapshot: makeSnapshot(
+            sourceListSnapshot: snapshotWithDomains(count: 49),
+            selectedSelection: .domain(selectedKey),
+            packetMutation: .append(0..<1)
+        ))
+        try await Task.sleep(nanoseconds: 700_000_000)
+        await Task.yield()
+        controller.view.layoutSubtreeIfNeeded()
+
+        #expect(originalY > 0)
+        #expect(abs(outlineScrollView.contentView.bounds.origin.y - originalY) <= 1)
+
+        selectionRecorder.selectedSelection = nil
+        controller.outlineViewSelectionDidChange(Notification(
+            name: NSTableView.selectionDidChangeNotification,
+            object: outlineView
+        ))
+        #expect(selectionRecorder.selectedSelection == .domain(selectedKey))
+    }
+
     private func reloadState(
         sourceListSnapshot: PacketSourceListSnapshot,
         filterText: String = "",
@@ -158,4 +205,74 @@ struct SidebarOutlineReloadPolicyTests {
             ]
         )
     }
+
+    private func makeSnapshot(
+        sourceListSnapshot: PacketSourceListSnapshot,
+        selectedSelection: PacketSourceListSelection,
+        packetMutation: PacketIngestMutation
+    ) -> NetworkInspectorSnapshot {
+        var base = TCPViewerWindowSnapshot.foundation
+        base.packetIngestState.lastMutation = packetMutation
+        let tableContent = PacketTableContent(
+            displayFilter: PacketDisplayFilter(""),
+            displayFilterChips: [],
+            store: PacketTableRowStore(rows: [], visiblePacketRowIndexByID: [:]),
+            generation: 0,
+            updatePlan: .none,
+            malformedPacketCount: 0
+        )
+
+        return NetworkInspectorSnapshot.make(
+            base: base,
+            selectedSidebar: .liveCapture,
+            selectedSourceListSelection: selectedSelection,
+            sourceListSnapshot: sourceListSnapshot,
+            sourceListFilterText: "",
+            workspaceMode: .packets,
+            inspectorTab: .summary,
+            isInspectorVisible: true,
+            displayFilterText: "",
+            packetTableContent: tableContent
+        )
+    }
+
+    private func snapshotWithDomains(count: Int) -> PacketSourceListSnapshot {
+        PacketSourceListTreeBuilder.makeSnapshot(
+            appBuckets: [],
+            domainBuckets: (0..<count).map { index in
+                let displayName = String(format: "domain-%02d.example.com", index)
+                return PacketSourceListTreeBuilder.DomainBucket(identity: PacketSourceDomainIdentity(
+                    key: PacketSourceDomainKey(rawValue: displayName, isMissingDomain: false),
+                    displayName: displayName
+                ))
+            }
+        )
+    }
+
+    private func findOutlineScrollView(in view: NSView) -> NSScrollView? {
+        allSubviews(ofType: NSScrollView.self, in: view).first { $0.documentView is NSOutlineView }
+    }
+
+    private func allSubviews<T: NSView>(ofType type: T.Type, in view: NSView) -> [T] {
+        let current = (view as? T).map { [$0] } ?? []
+        return view.subviews.reduce(current) { result, subview in
+            result + allSubviews(ofType: type, in: subview)
+        }
+    }
+}
+
+private final class SidebarSelectionRecorder: SidebarViewControllerDelegate {
+    var selectedSelection: PacketSourceListSelection?
+
+    func sidebarViewController(_ controller: SidebarViewController, didSelect selection: PacketSourceListSelection?) {
+        selectedSelection = selection
+    }
+
+    func sidebarViewController(_ controller: SidebarViewController, didUpdateFilterText text: String) {}
+
+    func sidebarViewController(_ controller: SidebarViewController, didRequestPin targets: [PacketSourceListPinTarget]) {}
+
+    func sidebarViewController(_ controller: SidebarViewController, didRequestDelete action: PacketSourceListDeletionAction) {}
+
+    func sidebarViewController(_ controller: SidebarViewController, didRequestExport selection: PacketSourceListSelection, format: CaptureFileFormat) {}
 }

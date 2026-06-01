@@ -253,11 +253,13 @@ final class SidebarViewController: NSViewController {
             captureExpandedItemIDs()
         }
 
+        let preservedScrollOrigin = outlineScrollOrigin()
         viewModel.render(state: state)
         syncSearchField(state.filterText)
         outlineView.reloadData()
         restoreExpandedItems(expandAll: !viewModel.filterText.isEmpty)
         syncSelection()
+        restoreOutlineScrollOrigin(preservedScrollOrigin)
         appliedReloadState = state
         hasRenderedOutline = true
     }
@@ -368,6 +370,30 @@ final class SidebarViewController: NSViewController {
         for item in itemsToExpand where item.sourceItem.reservesDisclosureSpace {
             outlineView.expandItem(item)
         }
+    }
+
+    private func outlineScrollOrigin() -> NSPoint {
+        scrollView.contentView.bounds.origin
+    }
+
+    // Put the sidebar viewport back where it was, clamped to the new content height.
+    private func restoreOutlineScrollOrigin(_ origin: NSPoint) {
+        guard let documentView = scrollView.documentView else {
+            return
+        }
+
+        scrollView.layoutSubtreeIfNeeded()
+        outlineView.layoutSubtreeIfNeeded()
+
+        let clipView = scrollView.contentView
+        let maxX = max(0, documentView.bounds.width - clipView.bounds.width)
+        let maxY = max(0, documentView.bounds.height - clipView.bounds.height)
+        let clampedOrigin = NSPoint(
+            x: min(max(0, origin.x), maxX),
+            y: min(max(0, origin.y), maxY)
+        )
+        clipView.scroll(to: clampedOrigin)
+        scrollView.reflectScrolledClipView(clipView)
     }
 
     private func syncSelection() {
