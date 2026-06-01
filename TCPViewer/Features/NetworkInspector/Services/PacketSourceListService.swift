@@ -171,6 +171,11 @@ struct PacketSourceIPAddressIdentity: Hashable, Sendable {
     let displayName: String
 }
 
+enum PacketSourceListPinTarget: Hashable, Sendable {
+    case client(PacketSourceClientIdentity)
+    case domain(PacketSourceDomainIdentity)
+}
+
 enum PacketSourceListDeletionAction: Equatable, Sendable {
     case none
     case deletePin(PacketPinID)
@@ -193,6 +198,45 @@ enum PacketSourceListExportPolicy {
         case .pinned, .pinnedItem, .saved, .apps, .app, .domains, .domain, .ipAddress:
             return selection
         case .allPackets:
+            return nil
+        }
+    }
+}
+
+enum PacketSourceListPinPolicy {
+    static func targets(for items: [PacketSourceListItem]) -> [PacketSourceListPinTarget] {
+        var seenTargets = Set<PacketSourceListPinTarget>()
+        var targets: [PacketSourceListPinTarget] = []
+
+        for item in items {
+            guard let target = target(for: item),
+                  seenTargets.insert(target).inserted else {
+                continue
+            }
+            targets.append(target)
+        }
+
+        return targets
+    }
+
+    static func target(for item: PacketSourceListItem?) -> PacketSourceListPinTarget? {
+        guard let item else {
+            return nil
+        }
+
+        switch item.selection {
+        case .app(let key):
+            return .client(PacketSourceClientIdentity(
+                key: key,
+                displayName: item.title,
+                iconFilePath: item.iconFilePath
+            ))
+        case .domain(let key) where !key.isMissingDomain:
+            return .domain(PacketSourceDomainIdentity(
+                key: key,
+                displayName: item.title
+            ))
+        default:
             return nil
         }
     }
@@ -332,6 +376,7 @@ final class PacketSourceListService {
         var appIdentity: PacketSourceClientIdentity?
         var domainIdentity: PacketSourceDomainIdentity
         var ipAddressIdentities: [PacketSourceIPAddressIdentity]
+        var pinIPAddresses: Set<String>
     }
 
     private var packetRevision: UInt64?
@@ -346,6 +391,7 @@ final class PacketSourceListService {
     private var ipAddressOrder: [PacketSourceIPAddressKey] = []
     private var packetAssignmentsByID: [PacketSummary.ID: PacketBucketAssignment] = [:]
     private var pinnedItems: [PacketPin] = []
+    private var pinnedPacketCountsByID: [PacketPinID: Int] = [:]
     private var savedPacketCount = 0
 
     func reset() {
@@ -361,6 +407,7 @@ final class PacketSourceListService {
         ipAddressOrder.removeAll(keepingCapacity: false)
         packetAssignmentsByID.removeAll(keepingCapacity: false)
         pinnedItems = []
+        pinnedPacketCountsByID.removeAll(keepingCapacity: false)
         savedPacketCount = 0
     }
 
@@ -379,8 +426,9 @@ final class PacketSourceListService {
         pinnedItems: [PacketPin] = [],
         savedPacketCount: Int = 0
     ) -> PacketSourceListSnapshot {
+        let didChangePinnedItems = self.pinnedItems != pinnedItems
         guard packetRevision != ingestState.packetRevision ||
-                self.pinnedItems != pinnedItems ||
+                didChangePinnedItems ||
                 self.savedPacketCount != savedPacketCount else {
             return cachedSnapshot
         }
@@ -390,6 +438,9 @@ final class PacketSourceListService {
 
         if packetLineageRevision == ingestState.packetLineageRevision,
            sourcePacketCount <= ingestState.packets.count {
+            if didChangePinnedItems {
+                rebuildPinnedCountsFromAssignments()
+            }
             switch ingestState.lastMutation {
             case .append:
                 return appendSnapshot(from: ingestState)
@@ -416,6 +467,7 @@ final class PacketSourceListService {
         ipAddressBuckets = [:]
         ipAddressOrder = []
         packetAssignmentsByID.removeAll(keepingCapacity: true)
+        pinnedPacketCountsByID.removeAll(keepingCapacity: true)
         appendPackets(ingestState.packets)
         return storeSnapshot(for: ingestState)
     }
@@ -437,7 +489,8 @@ final class PacketSourceListService {
         PacketBucketAssignment(
             appIdentity: PacketSourceListClassifier.clientIdentity(for: packet),
             domainIdentity: PacketSourceListClassifier.domainIdentity(for: packet),
-            ipAddressIdentities: PacketSourceListClassifier.ipAddressIdentities(for: packet)
+            ipAddressIdentities: PacketSourceListClassifier.ipAddressIdentities(for: packet),
+            pinIPAddresses: Self.pinIPAddresses(for: packet)
         )
     }
 
@@ -483,6 +536,8 @@ final class PacketSourceListService {
             }
             ipAddressBuckets[ipAddressIdentity.key]?.packetCount += 1
         }
+
+        incrementPinnedCounts(for: assignment)
     }
 
     private func decrement(for assignment: PacketBucketAssignment) {
@@ -519,6 +574,8 @@ final class PacketSourceListService {
                 }
             }
         }
+
+        decrementPinnedCounts(for: assignment)
     }
 
     private func storeSnapshot(for ingestState: PacketIngestState) -> PacketSourceListSnapshot {
@@ -532,16 +589,71 @@ final class PacketSourceListService {
             pinnedBuckets: pinnedItems.map { pin in
                 PacketSourceListTreeBuilder.PinnedBucket(
                     pin: pin,
-                    packetCount: ingestState.packets.reduce(into: 0) { count, packet in
-                        if PacketPinMatcher.matches(packet, pin: pin) {
-                            count += 1
-                        }
-                    }
+                    packetCount: pinnedPacketCountsByID[pin.id, default: 0]
                 )
             },
             savedPacketCount: savedPacketCount
         )
         return cachedSnapshot
+    }
+
+    private func rebuildPinnedCountsFromAssignments() {
+        pinnedPacketCountsByID.removeAll(keepingCapacity: true)
+        for assignment in packetAssignmentsByID.values {
+            incrementPinnedCounts(for: assignment)
+        }
+    }
+
+    private func incrementPinnedCounts(for assignment: PacketBucketAssignment) {
+        guard !pinnedItems.isEmpty else {
+            return
+        }
+
+        for pin in pinnedItems where matches(assignment, pin: pin) {
+            pinnedPacketCountsByID[pin.id, default: 0] += 1
+        }
+    }
+
+    private func decrementPinnedCounts(for assignment: PacketBucketAssignment) {
+        guard !pinnedItems.isEmpty else {
+            return
+        }
+
+        for pin in pinnedItems where matches(assignment, pin: pin) {
+            let updatedCount = pinnedPacketCountsByID[pin.id, default: 0] - 1
+            if updatedCount > 0 {
+                pinnedPacketCountsByID[pin.id] = updatedCount
+            } else {
+                pinnedPacketCountsByID.removeValue(forKey: pin.id)
+            }
+        }
+    }
+
+    private func matches(_ assignment: PacketBucketAssignment, pin: PacketPin) -> Bool {
+        switch pin.kind {
+        case .domain:
+            return assignment.domainIdentity.key.rawValue == pin.domain
+        case .ip:
+            guard let ipAddress = pin.ipAddress?.lowercased() else {
+                return false
+            }
+            return assignment.pinIPAddresses.contains(ipAddress)
+        case .client:
+            return assignment.appIdentity?.key.rawValue == pin.clientKey
+        }
+    }
+
+    private static func pinIPAddresses(for packet: PacketSummary) -> Set<String> {
+        [
+            packet.endpoints.source.address,
+            packet.endpoints.destination.address,
+        ].reduce(into: Set<String>()) { result, address in
+            guard let address = address?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !address.isEmpty else {
+                return
+            }
+            result.insert(address.lowercased())
+        }
     }
 }
 

@@ -1604,6 +1604,120 @@ struct NetworkInspectorViewModelTests {
         #expect(reloadedSavedService.records().isEmpty)
     }
 
+    @Test func bulkAppPinningPinsUniqueAppsAndSelectsPinnedFolder() async throws {
+        let pinService = PacketPinService(storageURL: temporaryDirectory().appendingPathComponent("Pins.json"))
+        let chrome = makeClient(displayName: "Chrome", bundleIdentifier: "com.google.Chrome")
+        let tcpviewer = makeClient(displayName: "TCP Viewer", bundleIdentifier: "com.proxyman.tcpviewer")
+        let packets = [
+            makePacket(packetNumber: 1, source: .offline, transportHint: .tcp, streamID: nil, client: chrome),
+            makePacket(packetNumber: 2, source: .offline, transportHint: .udp, streamID: nil, client: tcpviewer),
+            makePacket(packetNumber: 3, source: .offline, transportHint: .dns, streamID: nil),
+            makePacket(packetNumber: 4, source: .offline, transportHint: .tcp, streamID: nil, client: chrome),
+        ]
+        let openURL = URL(fileURLWithPath: "/tmp/bulk-app-pin-fixture.pcapng")
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                document: InspectorFakeDocument(url: openURL, packets: packets)
+            )),
+            userDefaults: isolatedDefaults(),
+            pinService: pinService
+        )
+
+        await viewModel.openDocument(at: openURL)
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == packets.count
+        }
+
+        viewModel.pinAppPackets(packets.map(\.id))
+
+        #expect(pinService.pins().map(\.id.rawValue) == [
+            "client:bundleIdentifier:com.google.Chrome",
+            "client:bundleIdentifier:com.proxyman.tcpviewer",
+        ])
+        #expect(viewModel.snapshot.selectedSourceListSelection == .pinned)
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[0].id, packets[1].id, packets[3].id])
+    }
+
+    @Test func sourceListPinTargetsCreateAppAndDomainPins() async throws {
+        let pinService = PacketPinService(storageURL: temporaryDirectory().appendingPathComponent("Pins.json"))
+        let client = makeClient(displayName: "Example", bundleIdentifier: "com.example.app")
+        let packets = [
+            makePacket(packetNumber: 1, source: .offline, transportHint: .tcp, streamID: nil, client: client),
+            makePacket(packetNumber: 2, source: .offline, transportHint: .udp, streamID: nil, sniDomainName: "api.example.com"),
+        ]
+        let openURL = URL(fileURLWithPath: "/tmp/source-list-pin-fixture.pcapng")
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                document: InspectorFakeDocument(url: openURL, packets: packets)
+            )),
+            userDefaults: isolatedDefaults(),
+            pinService: pinService
+        )
+
+        await viewModel.openDocument(at: openURL)
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == packets.count
+        }
+
+        let appItem = try #require(viewModel.snapshot.sourceListSnapshot.item(for: .app(PacketSourceClientKey(rawValue: "bundleIdentifier:com.example.app"))))
+        let domainItem = try #require(viewModel.snapshot.sourceListSnapshot.item(for: .domain(PacketSourceDomainKey(rawValue: "api.example.com", isMissingDomain: false))))
+        let targets = PacketSourceListPinPolicy.targets(for: [appItem, domainItem])
+        viewModel.pinSourceListItems(targets)
+
+        #expect(pinService.pins().map(\.id.rawValue) == [
+            "client:bundleIdentifier:com.example.app",
+            "domain:api.example.com",
+        ])
+        #expect(viewModel.snapshot.selectedSourceListSelection == .pinned)
+        #expect(viewModel.snapshot.packetRows.map(\.id) == packets.map(\.id))
+    }
+
+    @Test func pinnedAppSelectionAppendsFutureMatchingPackets() async throws {
+        let pinService = PacketPinService(storageURL: temporaryDirectory().appendingPathComponent("Pins.json"))
+        let client = makeClient(displayName: "Example", bundleIdentifier: "com.example.app")
+        let first = makePacket(packetNumber: 1, source: .live, transportHint: .tcp, streamID: nil, client: client)
+        let matchingFuture = makePacket(packetNumber: 2, source: .live, transportHint: .udp, streamID: nil, client: client)
+        let unrelatedFuture = makePacket(packetNumber: 3, source: .live, transportHint: .dns, streamID: nil)
+        let liveSession = InspectorFakeLiveSession()
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                liveSession: liveSession
+            ), packetMetadataEnricher: PacketMetadataEnrichmentService(
+                clientResolver: InspectorFakePacketClientResolver(defaultClient: nil)
+            )),
+            userDefaults: isolatedDefaults(),
+            pinService: pinService
+        )
+
+        await viewModel.performInitialLoadIfNeeded()
+        await viewModel.toggleLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        liveSession.send(.packetBatch([first], disposition: .append))
+        await waitUntil {
+            viewModel.snapshot.packetRows.map(\.id) == [first.id]
+        }
+
+        viewModel.pinAppPackets([first.id])
+        let pinID = try #require(pinService.pins().first?.id)
+        #expect(viewModel.snapshot.selectedSourceListSelection == .pinnedItem(pinID))
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [first.id])
+
+        liveSession.send(.packetBatch([matchingFuture, unrelatedFuture], disposition: .append))
+        await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+            viewModel.hasPendingCoalescedRebuildForTesting || viewModel.snapshot.totalPacketCount == 3
+        }
+        viewModel.flushPendingCoalescedRebuildForTesting()
+        await waitUntil(timeoutNanoseconds: 5_000_000_000) {
+            viewModel.snapshot.packetRows.map(\.id) == [first.id, matchingFuture.id]
+        }
+
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [first.id, matchingFuture.id])
+        #expect(viewModel.snapshot.sourceListSnapshot.item(for: .pinnedItem(pinID))?.count == 2)
+    }
+
     @Test func sourceListDeleteActionRemovesPinsAndMatchingPackets() async throws {
         let pinURL = temporaryDirectory().appendingPathComponent("Pins.json")
         let pinService = PacketPinService(storageURL: pinURL)
@@ -2216,6 +2330,8 @@ struct NetworkInspectorViewModelTests {
                 document: InspectorFakeDocument(url: openURL, packets: packets)
             )),
             userDefaults: isolatedDefaults(),
+            pinService: PacketPinService(storageURL: temporaryDirectory().appendingPathComponent("Pins.json")),
+            savedPacketService: SavedPacketService(storageURL: temporaryDirectory().appendingPathComponent("Saved.json")),
             packetTableAsyncRebuildThreshold: packetTableAsyncRebuildThreshold
         )
     }

@@ -15,9 +15,7 @@ import AppKit
     func copyRowsAsCSVFromMenu(_ sender: Any?)
     func copyRowsAsCSVWithHeaderFromMenu(_ sender: Any?)
     func copyCellFromMenu(_ sender: Any?)
-    func pinDomainFromMenu(_ sender: Any?)
-    func pinIPFromMenu(_ sender: Any?)
-    func pinClientFromMenu(_ sender: Any?)
+    func pinRowsFromMenu(_ sender: Any?)
     func saveRowsFromMenu(_ sender: Any?)
     func exportRowsAsPcapFromMenu(_ sender: Any?)
     func exportRowsAsPcapngFromMenu(_ sender: Any?)
@@ -61,7 +59,13 @@ final class PacketTableContextMenuController: NSObject {
         menu.addItem(copyRowsAsMenuItem(state: state))
 
         menu.addItem(.separator())
-        menu.addItem(pinMenuItem(state: state))
+        menu.addItem(item(
+            title: "Pin",
+            action: #selector(PacketTableContextMenuActionHandling.pinRowsFromMenu(_:)),
+            isEnabled: state.pinEnabled,
+            toolTip: "Pin the selected app or apps for quick access.",
+            systemSymbolName: "pin"
+        ))
         menu.addItem(item(
             title: "Save",
             action: #selector(PacketTableContextMenuActionHandling.saveRowsFromMenu(_:)),
@@ -127,38 +131,6 @@ final class PacketTableContextMenuController: NSObject {
         menuItem.submenu = submenu
         menuItem.isEnabled = state.copyRowEnabled
         menuItem.toolTip = "Choose a text format for copying the selected packet rows."
-        return menuItem
-    }
-
-    // Create the pin submenu with item enablement derived from packet metadata.
-    private func pinMenuItem(state: PacketTableMenuState) -> NSMenuItem {
-        let menuItem = NSMenuItem(title: "Pin", action: nil, keyEquivalent: "")
-        let submenu = NSMenu(title: "Pin")
-        submenu.autoenablesItems = false
-
-        submenu.addItem(item(
-            title: "Domain",
-            action: #selector(PacketTableContextMenuActionHandling.pinDomainFromMenu(_:)),
-            isEnabled: state.pinDomainEnabled,
-            toolTip: "Pin this packet's domain for quick access."
-        ))
-        submenu.addItem(item(
-            title: "IP",
-            action: #selector(PacketTableContextMenuActionHandling.pinIPFromMenu(_:)),
-            isEnabled: state.pinIPEnabled,
-            toolTip: "Pin the clicked source or destination IP address."
-        ))
-        submenu.addItem(item(
-            title: "Client",
-            action: #selector(PacketTableContextMenuActionHandling.pinClientFromMenu(_:)),
-            isEnabled: state.pinClientEnabled,
-            toolTip: "Pin the client application for quick access."
-        ))
-
-        menuItem.submenu = submenu
-        menuItem.isEnabled = state.pinDomainEnabled || state.pinIPEnabled || state.pinClientEnabled
-        menuItem.toolTip = "Pin packet metadata for quick access."
-        menuItem.image = NSImage(systemSymbolName: "pin", accessibilityDescription: "Pin")
         return menuItem
     }
 

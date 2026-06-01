@@ -147,6 +147,73 @@ struct PacketSourceListServiceTests {
         #expect(PacketSourceListExportPolicy.selection(for: PacketSourceListSnapshot.empty.item(for: .saved)) == nil)
     }
 
+    @Test func pinPolicyExtractsOnlyAppAndRealDomainTargets() throws {
+        let client = makeClient(displayName: "Example", bundleIdentifier: "com.example.app")
+        var state = PacketIngestState.empty
+        state.append([
+            makePacket(packetNumber: 1, sniDomainName: "api.example.com", client: client),
+            makePacket(packetNumber: 2, sniDomainName: nil),
+        ], source: .live)
+
+        let snapshot = PacketSourceListService().snapshot(for: state)
+        let appKey = PacketSourceClientKey(rawValue: "bundleIdentifier:com.example.app")
+        let domainKey = PacketSourceDomainKey(rawValue: "api.example.com", isMissingDomain: false)
+        let ipKey = PacketSourceIPAddressKey(rawValue: "10.0.0.2")
+        let items = [
+            try #require(snapshot.item(for: .apps)),
+            try #require(snapshot.item(for: .app(appKey))),
+            try #require(snapshot.item(for: .domains)),
+            try #require(snapshot.item(for: .domain(domainKey))),
+            try #require(snapshot.item(for: .domain(.ipAddresses))),
+            try #require(snapshot.item(for: .ipAddress(ipKey))),
+        ]
+
+        let targets = PacketSourceListPinPolicy.targets(for: items)
+
+        #expect(targets == [
+            .client(PacketSourceClientIdentity(
+                key: appKey,
+                displayName: "Example",
+                iconFilePath: "/Applications/Example.app"
+            )),
+            .domain(PacketSourceDomainIdentity(
+                key: domainKey,
+                displayName: "api.example.com"
+            )),
+        ])
+    }
+
+    @Test func pinnedCountsUpdateForAppendsAndMetadataChanges() {
+        let service = PacketSourceListService()
+        let client = makeClient(displayName: "Example", bundleIdentifier: "com.example.app")
+        let appPin = makeClientPin(displayName: "Example", key: "bundleIdentifier:com.example.app")
+        let domainPin = makeDomainPin("api.example.com")
+        var state = PacketIngestState.empty
+        let unresolved = makePacket(packetNumber: 1)
+        state.append([unresolved], source: .live)
+
+        var snapshot = service.snapshot(for: state, pinnedItems: [appPin, domainPin])
+        #expect(snapshot.item(for: .pinnedItem(appPin.id))?.count == 0)
+        #expect(snapshot.item(for: .pinnedItem(domainPin.id))?.count == 0)
+
+        state.applyMetadataUpdates([
+            PacketMetadataUpdate(
+                packetIDs: [unresolved.id],
+                sniDomainName: "api.example.com",
+                client: client,
+                direction: .outbound
+            )
+        ])
+        snapshot = service.snapshot(for: state, pinnedItems: [appPin, domainPin])
+        #expect(snapshot.item(for: .pinnedItem(appPin.id))?.count == 1)
+        #expect(snapshot.item(for: .pinnedItem(domainPin.id))?.count == 1)
+
+        state.append([makePacket(packetNumber: 2, sniDomainName: "api.example.com", client: client)], source: .live)
+        snapshot = service.snapshot(for: state, pinnedItems: [appPin, domainPin])
+        #expect(snapshot.item(for: .pinnedItem(appPin.id))?.count == 2)
+        #expect(snapshot.item(for: .pinnedItem(domainPin.id))?.count == 2)
+    }
+
     @Test func clientIdentityFallsBackThroughAvailableFields() {
         let clients = [
             makeClient(displayName: "Bundle", bundleIdentifier: "com.example.bundle", bundlePath: "/Applications/Bundle.app", executablePath: "/Applications/Bundle.app/Contents/MacOS/Bundle"),
@@ -316,6 +383,34 @@ struct PacketSourceListServiceTests {
 
     private func domainKey(_ name: String) -> PacketSourceDomainKey {
         PacketSourceDomainKey(rawValue: name.lowercased(), isMissingDomain: false)
+    }
+
+    private func makeDomainPin(_ domain: String) -> PacketPin {
+        PacketPin(
+            id: PacketPinID(rawValue: "domain:\(domain)"),
+            kind: .domain,
+            title: domain,
+            createdAt: Date(timeIntervalSince1970: 10),
+            domain: domain,
+            ipAddress: nil,
+            clientKey: nil,
+            clientDisplayName: nil,
+            clientIconFilePath: nil
+        )
+    }
+
+    private func makeClientPin(displayName: String, key: String) -> PacketPin {
+        PacketPin(
+            id: PacketPinID(rawValue: "client:\(key)"),
+            kind: .client,
+            title: displayName,
+            createdAt: Date(timeIntervalSince1970: 10),
+            domain: nil,
+            ipAddress: nil,
+            clientKey: key,
+            clientDisplayName: displayName,
+            clientIconFilePath: "/Applications/\(displayName).app"
+        )
     }
 
     @Test func filteringKeepsMatchingDescendantsAndAncestors() {

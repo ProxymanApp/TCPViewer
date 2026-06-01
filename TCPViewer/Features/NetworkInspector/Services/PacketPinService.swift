@@ -115,6 +115,47 @@ final class PacketPinService {
         now: Date = Date()
     ) throws -> PacketPin {
         let pin = try makePin(from: packet, kind: kind, clickedColumn: clickedColumn, now: now)
+        return try upsert(pin)
+    }
+
+    @discardableResult
+    func upsertClientPin(_ identity: PacketSourceClientIdentity, now: Date = Date()) throws -> PacketPin {
+        let pin = PacketPin(
+            id: PacketPinID(rawValue: "client:\(identity.key.rawValue)"),
+            kind: .client,
+            title: identity.displayName,
+            createdAt: now,
+            domain: nil,
+            ipAddress: nil,
+            clientKey: identity.key.rawValue,
+            clientDisplayName: identity.displayName,
+            clientIconFilePath: identity.iconFilePath
+        )
+        return try upsert(pin)
+    }
+
+    @discardableResult
+    func upsertDomainPin(_ identity: PacketSourceDomainIdentity, now: Date = Date()) throws -> PacketPin {
+        guard !identity.key.isMissingDomain else {
+            throw PacketPinCreationError.missingDomain
+        }
+
+        let domain = identity.key.rawValue
+        let pin = PacketPin(
+            id: PacketPinID(rawValue: "domain:\(domain)"),
+            kind: .domain,
+            title: identity.displayName,
+            createdAt: now,
+            domain: domain,
+            ipAddress: nil,
+            clientKey: nil,
+            clientDisplayName: nil,
+            clientIconFilePath: nil
+        )
+        return try upsert(pin)
+    }
+
+    private func upsert(_ pin: PacketPin) throws -> PacketPin {
         if let existingIndex = cachedPins.firstIndex(where: { $0.id == pin.id }) {
             return cachedPins[existingIndex]
         }

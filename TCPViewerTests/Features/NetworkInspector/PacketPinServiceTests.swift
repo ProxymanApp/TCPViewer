@@ -82,6 +82,59 @@ struct PacketPinServiceTests {
         #expect(service.matchingPackets(in: [packet], for: .pinned).map(\.id) == [packet.id])
     }
 
+    @Test func sourceListClientPinPersistsCriteriaOnlyAndDeduplicates() throws {
+        let storageURL = temporaryDirectory().appendingPathComponent("Pins.json")
+        let service = PacketPinService(storageURL: storageURL)
+        let identity = PacketSourceClientIdentity(
+            key: PacketSourceClientKey(rawValue: "bundleIdentifier:com.example.app"),
+            displayName: "Example",
+            iconFilePath: "/Applications/Example.app"
+        )
+
+        let firstPin = try service.upsertClientPin(identity, now: Date(timeIntervalSince1970: 10))
+        let duplicatePin = try service.upsertClientPin(identity, now: Date(timeIntervalSince1970: 20))
+        let reloaded = PacketPinService(storageURL: storageURL)
+        let rawJSON = try String(contentsOf: storageURL)
+
+        #expect(firstPin.id == duplicatePin.id)
+        #expect(firstPin.id.rawValue == "client:bundleIdentifier:com.example.app")
+        #expect(service.pins().count == 1)
+        #expect(reloaded.pins().map(\.id) == [firstPin.id])
+        #expect(!rawJSON.contains("Packet 1"))
+        #expect(!rawJSON.contains("capturedLength"))
+    }
+
+    @Test func sourceListDomainPinRejectsMissingDomainPlaceholder() throws {
+        let storageURL = temporaryDirectory().appendingPathComponent("Pins.json")
+        let service = PacketPinService(storageURL: storageURL)
+        let missingDomain = PacketSourceDomainIdentity(key: .ipAddresses, displayName: "IP Addresses")
+
+        do {
+            _ = try service.upsertDomainPin(missingDomain)
+            Issue.record("Expected missing-domain placeholder pin creation to fail.")
+        } catch let error as PacketPinCreationError {
+            #expect(error == .missingDomain)
+        } catch {
+            Issue.record("Expected PacketPinCreationError.missingDomain, got \(error).")
+        }
+    }
+
+    @Test func sourceListDomainPinMatchesFuturePackets() throws {
+        let storageURL = temporaryDirectory().appendingPathComponent("Pins.json")
+        let service = PacketPinService(storageURL: storageURL)
+        let identity = PacketSourceDomainIdentity(
+            key: PacketSourceDomainKey(rawValue: "api.example.com", isMissingDomain: false),
+            displayName: "API.Example.com"
+        )
+        let future = makePacket(packetNumber: 3, sniDomainName: "api.example.com")
+
+        let pin = try service.upsertDomainPin(identity, now: Date(timeIntervalSince1970: 10))
+
+        #expect(pin.id.rawValue == "domain:api.example.com")
+        #expect(pin.title == "API.Example.com")
+        #expect(service.matchingPackets(in: [future], for: .pinnedItem(pin.id)).map(\.id) == [future.id])
+    }
+
     @Test func clientPinStoresResolvedIconPath() throws {
         let storageURL = temporaryDirectory().appendingPathComponent("Pins.json")
         let service = PacketPinService(storageURL: storageURL)

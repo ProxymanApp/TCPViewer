@@ -12,9 +12,7 @@ protocol PacketWorkspaceViewControllerDelegate: AnyObject {
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didSelectPacket identifier: PacketSummary.ID?)
     func packetWorkspaceViewController(
         _ controller: PacketWorkspaceViewController,
-        didRequestPin kind: PacketPinCreationKind,
-        packetID: PacketSummary.ID,
-        clickedColumn: PacketTableColumnRole
+        didRequestPinPackets identifiers: [PacketSummary.ID]
     )
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestSavePackets identifiers: [PacketSummary.ID])
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestExportPackets identifiers: [PacketSummary.ID], format: CaptureFileFormat)
@@ -354,15 +352,11 @@ extension PacketWorkspaceViewController: PacketTableViewControllerDelegate {
 
     func packetTableViewController(
         _ controller: PacketTableViewController,
-        didRequestPin kind: PacketPinCreationKind,
-        packetID: PacketSummary.ID,
-        clickedColumn: PacketTableColumnRole
+        didRequestPinPackets identifiers: [PacketSummary.ID]
     ) {
         delegate?.packetWorkspaceViewController(
             self,
-            didRequestPin: kind,
-            packetID: packetID,
-            clickedColumn: clickedColumn
+            didRequestPinPackets: identifiers
         )
     }
 
