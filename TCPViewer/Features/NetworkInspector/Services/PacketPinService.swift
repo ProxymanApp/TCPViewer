@@ -167,15 +167,10 @@ final class PacketPinService {
 
     func matchingPackets(in packets: [PacketSummary], for selection: PacketSourceListSelection) -> [PacketSummary] {
         switch selection {
-        case .pinned:
-            return packets.filter { packet in
-                cachedPins.contains { pin in PacketPinMatcher.matches(packet, pin: pin) }
+        case .pinned, .pinnedItem, .pinnedItemDomain, .pinnedItemIPAddress:
+            return packets.filter {
+                PacketSourceListPacketMatcher.matches($0, selection: selection, pinnedItems: cachedPins)
             }
-        case .pinnedItem(let pinID):
-            guard let pin = cachedPins.first(where: { $0.id == pinID }) else {
-                return []
-            }
-            return packets.filter { PacketPinMatcher.matches($0, pin: pin) }
         default:
             return []
         }

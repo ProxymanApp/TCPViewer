@@ -205,7 +205,7 @@ private enum PacketTableContentBuilder {
         switch input.signature.sourceListSelection {
         case .saved:
             return input.signature.savedRecords.map(\.packet)
-        case .pinned, .pinnedItem:
+        case .pinned, .pinnedItem, .pinnedItemDomain, .pinnedItemIPAddress:
             return input.ingestState.packets.filter {
                 matches($0, selection: input.signature.sourceListSelection, pinnedItems: input.signature.pinnedItems)
             }
@@ -219,19 +219,7 @@ private enum PacketTableContentBuilder {
         selection: PacketSourceListSelection,
         pinnedItems: [PacketPin]
     ) -> Bool {
-        switch selection {
-        case .pinned:
-            return pinnedItems.contains { PacketPinMatcher.matches(packet, pin: $0) }
-        case .pinnedItem(let pinID):
-            guard let pin = pinnedItems.first(where: { $0.id == pinID }) else {
-                return false
-            }
-            return PacketPinMatcher.matches(packet, pin: pin)
-        case .saved:
-            return true
-        default:
-            return PacketSourceListClassifier.matches(packet, selection: selection)
-        }
+        PacketSourceListPacketMatcher.matches(packet, selection: selection, pinnedItems: pinnedItems)
     }
 }
 
@@ -815,7 +803,7 @@ private struct PacketTableContentCache {
         switch sourceListSelection {
         case .saved:
             return savedRecords.map(\.packet)
-        case .pinned, .pinnedItem:
+        case .pinned, .pinnedItem, .pinnedItemDomain, .pinnedItemIPAddress:
             return ingestState.packets.filter { matches($0, selection: sourceListSelection, pinnedItems: pinnedItems) }
         default:
             return ingestState.packets
@@ -827,19 +815,7 @@ private struct PacketTableContentCache {
         selection: PacketSourceListSelection,
         pinnedItems: [PacketPin]
     ) -> Bool {
-        switch selection {
-        case .pinned:
-            return pinnedItems.contains { PacketPinMatcher.matches(packet, pin: $0) }
-        case .pinnedItem(let pinID):
-            guard let pin = pinnedItems.first(where: { $0.id == pinID }) else {
-                return false
-            }
-            return PacketPinMatcher.matches(packet, pin: pin)
-        case .saved:
-            return true
-        default:
-            return PacketSourceListClassifier.matches(packet, selection: selection)
-        }
+        PacketSourceListPacketMatcher.matches(packet, selection: selection, pinnedItems: pinnedItems)
     }
 }
 
@@ -1422,22 +1398,10 @@ final class NetworkInspectorViewModel {
         case .saved:
             let identifiers = savedPacketService.records().map(\.packet.id)
             return try validatedExportPacketIDs(identifiers, requiresSavedBacking: true)
-        case .pinned:
+        default:
             let pins = pinService.pins()
             return controller.snapshot.packetIngestState.packets.compactMap { packet in
-                pins.contains { PacketPinMatcher.matches(packet, pin: $0) } ? packet.id : nil
-            }
-        case .pinnedItem(let pinID):
-            guard let pin = pinService.pins().first(where: { $0.id == pinID }) else {
-                return []
-            }
-
-            return controller.snapshot.packetIngestState.packets.compactMap { packet in
-                PacketPinMatcher.matches(packet, pin: pin) ? packet.id : nil
-            }
-        default:
-            return controller.snapshot.packetIngestState.packets.compactMap { packet in
-                PacketSourceListClassifier.matches(packet, selection: selection) ? packet.id : nil
+                PacketSourceListPacketMatcher.matches(packet, selection: selection, pinnedItems: pins) ? packet.id : nil
             }
         }
     }
@@ -1448,8 +1412,9 @@ final class NetworkInspectorViewModel {
     }
 
     private func packetIDs(matching selection: PacketSourceListSelection) -> [PacketSummary.ID] {
-        controller.snapshot.packetIngestState.packets.compactMap { packet in
-            PacketSourceListClassifier.matches(packet, selection: selection) ? packet.id : nil
+        let pins = pinService.pins()
+        return controller.snapshot.packetIngestState.packets.compactMap { packet in
+            PacketSourceListPacketMatcher.matches(packet, selection: selection, pinnedItems: pins) ? packet.id : nil
         }
     }
 
