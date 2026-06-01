@@ -312,7 +312,8 @@ final class SidebarViewController: NSViewController {
         outlineView.allowsMultipleSelection = true
         outlineView.rowHeight = 28
         outlineView.indentationPerLevel = 18
-        outlineView.indentationMarkerFollowsCell = false
+        // Keep disclosure arrows aligned with nested source-list row content.
+        outlineView.indentationMarkerFollowsCell = true
         outlineView.backgroundColor = .clear
         outlineView.focusRingType = .none
         outlineView.keyboardActionHandler = self
