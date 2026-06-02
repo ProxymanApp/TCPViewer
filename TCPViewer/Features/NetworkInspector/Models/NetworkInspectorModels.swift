@@ -629,6 +629,12 @@ struct NetworkInspectorSnapshot: Equatable {
         quickFilterSelection.isActive
     }
 
+    var activeFilterBarLabels: [String] {
+        quickFilterSelection.activeLabels + customFilterItems
+            .filter(\.isSelected)
+            .map(\.title)
+    }
+
     var isQuickFilterResetVisible: Bool {
         quickFilterSelection.isActive
     }

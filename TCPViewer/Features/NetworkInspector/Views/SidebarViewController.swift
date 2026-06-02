@@ -117,9 +117,19 @@ private protocol SidebarOutlineKeyboardActionHandling: AnyObject {
 
 private final class SidebarOutlineView: NSOutlineView {
     weak var keyboardActionHandler: SidebarOutlineKeyboardActionHandling?
+    var suppressesProgrammaticScrollToSelection = false
 
     @objc func delete(_ sender: Any?) {
         keyboardActionHandler?.sidebarOutlineViewDidRequestDeleteFromKeyboard(self)
+    }
+
+    override func scrollRowToVisible(_ row: Int) {
+        // Avoid reload-driven selection sync from pulling a scrolled sidebar back to the selected row.
+        guard !suppressesProgrammaticScrollToSelection else {
+            return
+        }
+
+        super.scrollRowToVisible(row)
     }
 
     override func keyDown(with event: NSEvent) {
@@ -202,6 +212,17 @@ private final class SidebarViewModel {
     }
 }
 
+private struct SidebarOutlineViewport {
+    let origin: NSPoint
+    let anchorItemID: String?
+    let anchorOffsetY: CGFloat
+}
+
+private struct SidebarOutlineState {
+    let viewport: SidebarOutlineViewport
+    let selectedItemIDs: [String]
+}
+
 final class SidebarViewController: NSViewController {
     private static let batchedReloadInterval: TimeInterval = 0.5
 
@@ -222,6 +243,7 @@ final class SidebarViewController: NSViewController {
     private var isSyncingSelection = false
     private var isSyncingFilter = false
     private var contextMenuItemID: String?
+    private var outlineReloadGeneration = 0
 
     deinit {
         pendingReloadWorkItem?.cancel()
@@ -249,19 +271,40 @@ final class SidebarViewController: NSViewController {
     }
 
     private func apply(state: SidebarOutlineReloadState) {
+        outlineReloadGeneration += 1
+        let reloadGeneration = outlineReloadGeneration
+        let shouldPreserveOutlineState = shouldPreserveOutlineState(for: state)
+        let preservedOutlineState = shouldPreserveOutlineState ? captureOutlineState() : nil
         if hasRenderedOutline, viewModel.filterText.isEmpty {
             captureExpandedItemIDs()
         }
 
-        let preservedScrollOrigin = outlineScrollOrigin()
+        isSyncingSelection = true
         viewModel.render(state: state)
         syncSearchField(state.filterText)
         outlineView.reloadData()
         restoreExpandedItems(expandAll: !viewModel.filterText.isEmpty)
-        syncSelection()
-        restoreOutlineScrollOrigin(preservedScrollOrigin)
+        if let preservedOutlineState {
+            restoreOutlineState(preservedOutlineState)
+        } else {
+            syncSelection()
+        }
         appliedReloadState = state
         hasRenderedOutline = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self,
+                  self.outlineReloadGeneration == reloadGeneration,
+                  self.appliedReloadState == state else {
+                return
+            }
+
+            if let preservedOutlineState {
+                self.restoreOutlineState(preservedOutlineState)
+            } else {
+                self.syncSelection()
+            }
+            self.isSyncingSelection = false
+        }
     }
 
     private func scheduleBatchedReload(state: SidebarOutlineReloadState) {
@@ -372,14 +415,100 @@ final class SidebarViewController: NSViewController {
         }
     }
 
-    private func outlineScrollOrigin() -> NSPoint {
-        scrollView.contentView.bounds.origin
+    private func shouldPreserveOutlineState(for state: SidebarOutlineReloadState) -> Bool {
+        guard hasRenderedOutline,
+              let appliedReloadState else {
+            return false
+        }
+
+        // Preserve the user's outline position only for source data refreshes, not filter or selection changes.
+        return appliedReloadState.filterText == state.filterText &&
+            appliedReloadState.selectedSelection == state.selectedSelection
+    }
+
+    private func captureOutlineState() -> SidebarOutlineState {
+        SidebarOutlineState(
+            viewport: captureOutlineViewport(),
+            selectedItemIDs: selectedOutlineItemIDs()
+        )
+    }
+
+    private func captureOutlineViewport() -> SidebarOutlineViewport {
+        let visibleBounds = scrollView.contentView.bounds
+        let visibleRows = outlineView.rows(in: visibleBounds)
+        guard visibleRows.location != NSNotFound,
+              visibleRows.length > 0,
+              let item = outlineView.item(atRow: visibleRows.location) as? SidebarOutlineItem else {
+            return SidebarOutlineViewport(origin: visibleBounds.origin, anchorItemID: nil, anchorOffsetY: 0)
+        }
+
+        let anchorRect = outlineView.rect(ofRow: visibleRows.location)
+        return SidebarOutlineViewport(
+            origin: visibleBounds.origin,
+            anchorItemID: item.sourceItem.id,
+            anchorOffsetY: visibleBounds.origin.y - anchorRect.minY
+        )
+    }
+
+    private func selectedOutlineItemIDs() -> [String] {
+        outlineView.selectedRowIndexes.compactMap { row in
+            guard row >= 0,
+                  let item = outlineView.item(atRow: row) as? SidebarOutlineItem else {
+                return nil
+            }
+
+            return item.sourceItem.id
+        }
+    }
+
+    private func restoreOutlineState(_ state: SidebarOutlineState) {
+        restoreSelectedOutlineItemIDs(state.selectedItemIDs)
+        restoreOutlineViewport(state.viewport)
+    }
+
+    private func restoreSelectedOutlineItemIDs(_ itemIDs: [String]) {
+        let rows = itemIDs.compactMap { itemID -> Int? in
+            guard let item = viewModel.item(withID: itemID) else {
+                return nil
+            }
+
+            let row = outlineView.row(forItem: item)
+            return row >= 0 ? row : nil
+        }
+
+        guard !rows.isEmpty else {
+            syncSelection()
+            return
+        }
+
+        selectOutlineRows(IndexSet(rows))
+    }
+
+    private func restoreOutlineViewport(_ viewport: SidebarOutlineViewport) {
+        guard let anchorItemID = viewport.anchorItemID,
+              let anchorItem = viewModel.item(withID: anchorItemID) else {
+            restoreOutlineScrollOrigin(viewport.origin)
+            return
+        }
+
+        let row = outlineView.row(forItem: anchorItem)
+        guard row >= 0 else {
+            restoreOutlineScrollOrigin(viewport.origin)
+            return
+        }
+
+        let anchorRect = outlineView.rect(ofRow: row)
+        restoreOutlineScrollOrigin(NSPoint(
+            x: viewport.origin.x,
+            y: anchorRect.minY + viewport.anchorOffsetY
+        ))
     }
 
     // Put the sidebar viewport back where it was, clamped to the new content height.
-    private func restoreOutlineScrollOrigin(_ origin: NSPoint) {
+    @discardableResult
+    private func restoreOutlineScrollOrigin(_ origin: NSPoint) -> NSPoint {
         guard let documentView = scrollView.documentView else {
-            return
+            return origin
         }
 
         scrollView.layoutSubtreeIfNeeded()
@@ -394,14 +523,10 @@ final class SidebarViewController: NSViewController {
         )
         clipView.scroll(to: clampedOrigin)
         scrollView.reflectScrolledClipView(clipView)
+        return clampedOrigin
     }
 
     private func syncSelection() {
-        isSyncingSelection = true
-        defer {
-            isSyncingSelection = false
-        }
-
         guard viewModel.selectedSelection != .allPackets,
               let selectedItem = viewModel.item(for: viewModel.selectedSelection) else {
             outlineView.deselectAll(nil)
@@ -410,10 +535,18 @@ final class SidebarViewController: NSViewController {
 
         let row = outlineView.row(forItem: selectedItem)
         if row >= 0 {
-            outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+            selectOutlineRows(IndexSet(integer: row))
         } else {
             outlineView.deselectAll(nil)
         }
+    }
+
+    private func selectOutlineRows(_ rows: IndexSet) {
+        outlineView.suppressesProgrammaticScrollToSelection = true
+        defer {
+            outlineView.suppressesProgrammaticScrollToSelection = false
+        }
+        outlineView.selectRowIndexes(rows, byExtendingSelection: false)
     }
 
     private func syncSearchField(_ filterText: String) {

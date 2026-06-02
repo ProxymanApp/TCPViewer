@@ -2266,6 +2266,41 @@ struct NetworkInspectorViewModelTests {
         #expect(!viewModel.snapshot.isQuickFilterResetVisible)
     }
 
+    @Test func workspaceEmptyStateIncludesSelectedCustomFilterLabels() async throws {
+        let packet = makePacket(
+            packetNumber: 1,
+            source: .offline,
+            transportHint: .tls,
+            streamID: nil,
+            infoSummary: "TLS Client Hello",
+            layerNames: ["Ethernet", "TCP", "TLSv1.3"]
+        )
+        let customFilterService = PacketCustomFilterService(storageURL: temporaryDirectory().appendingPathComponent("CustomFilters.json"))
+        let group = PacketStructuredFilterGroup(
+            filters: [PacketStructuredFilter(query: .summary, condition: .contains, text: "abc")],
+            operator: .and
+        )
+        let savedFilter = try customFilterService.save(name: "abc", group: group)
+        let viewModel = makeOfflineViewModel(packets: [packet], customFilterService: customFilterService)
+
+        await viewModel.openDocument(at: URL(fileURLWithPath: "/tmp/custom-filter-empty-state.pcapng"))
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == 1
+        }
+
+        viewModel.applyCustomFilter(id: savedFilter.id)
+        viewModel.toggleQuickFilter(.clientHello)
+
+        let workspaceViewModel = PacketWorkspaceViewModel()
+        workspaceViewModel.render(snapshot: viewModel.snapshot)
+
+        #expect(viewModel.snapshot.packetRows.isEmpty)
+        #expect(viewModel.snapshot.activeFilterBarLabels == ["Client Hello", "abc"])
+        #expect(workspaceViewModel.emptyTitle == "No Matching Packets")
+        #expect(workspaceViewModel.activeFilterLabels == ["Client Hello", "abc"])
+        #expect(workspaceViewModel.showsResetFiltersButton)
+    }
+
     @Test func structuredFiltersPersistAndRestoreThroughViewModel() {
         let defaults = isolatedDefaults()
         let group = PacketStructuredFilterGroup(
