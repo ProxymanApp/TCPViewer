@@ -18,8 +18,15 @@ protocol PacketWorkspaceViewControllerDelegate: AnyObject {
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestExportPackets identifiers: [PacketSummary.ID], format: CaptureFileFormat)
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestDeletePackets identifiers: [PacketSummary.ID])
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didUpdateStructuredFilterGroup group: PacketStructuredFilterGroup)
+    func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestSaveCustomFilterNamed name: String, group: PacketStructuredFilterGroup)
+    func packetWorkspaceViewController(
+        _ controller: PacketWorkspaceViewController,
+        didRequestOverrideCustomFilter filterID: PacketCustomFilter.ID,
+        group: PacketStructuredFilterGroup
+    )
     func packetWorkspaceViewControllerDidRequestResetQuickFilters(_ controller: PacketWorkspaceViewController)
     func packetWorkspaceViewControllerCanAddStructuredFilter(_ controller: PacketWorkspaceViewController) -> Bool
+    func packetWorkspaceViewControllerCanSaveCustomFilter(_ controller: PacketWorkspaceViewController) -> Bool
     func packetWorkspaceViewControllerDidRequestStructuredFilterPaywall(_ controller: PacketWorkspaceViewController)
     func packetWorkspaceViewControllerDidRequestHideStructuredFilter(_ controller: PacketWorkspaceViewController)
 }
@@ -44,7 +51,7 @@ final class PacketWorkspaceViewModel {
     private(set) var emptyMessage = "Start a live capture or open a pcap/pcapng file."
     private(set) var emptyImageName = "list.bullet.rectangle"
     private(set) var showsResetFiltersButton = false
-    private(set) var quickFilterLabels: [String] = []
+    private(set) var activeFilterLabels: [String] = []
 
     // Convert the root snapshot into packet-workspace-only render data.
     func render(snapshot: NetworkInspectorSnapshot) {
@@ -53,16 +60,16 @@ final class PacketWorkspaceViewModel {
         chips = snapshot.displayFilterChips
         isEmpty = snapshot.packetRows.isEmpty
         showsResetFiltersButton = isEmpty && snapshot.isQuickFilterActive
-        quickFilterLabels = showsResetFiltersButton ? snapshot.quickFilterSelection.activeLabels : []
+        activeFilterLabels = isEmpty ? snapshot.activeFilterBarLabels : []
 
         if snapshot.isPacketTableFiltering && isEmpty {
             showsResetFiltersButton = false
-            quickFilterLabels = []
+            activeFilterLabels = []
         }
 
-        if showsResetFiltersButton {
+        if !activeFilterLabels.isEmpty {
             emptyTitle = "No Matching Packets"
-            emptyMessage = "Filtered by quick filters"
+            emptyMessage = "Filtered by selected filters"
             emptyImageName = "line.3.horizontal.decrease.circle"
             return
         }
@@ -128,7 +135,11 @@ final class PacketWorkspaceViewController: NSViewController {
     // Render the packet workspace and swap between the table and empty state as needed.
     func render(snapshot: NetworkInspectorSnapshot) {
         viewModel.render(snapshot: snapshot)
-        structuredFilterController.render(group: snapshot.structuredFilterGroup, isFiltering: snapshot.isPacketTableFiltering)
+        structuredFilterController.render(
+            group: snapshot.structuredFilterGroup,
+            isFiltering: snapshot.isPacketTableFiltering,
+            customFilterItems: snapshot.customFilterItems
+        )
         applyStructuredFilterVisibility(snapshot.isStructuredFilterVisible)
 
         if viewModel.isEmpty {
@@ -137,7 +148,7 @@ final class PacketWorkspaceViewController: NSViewController {
                 message: viewModel.emptyMessage,
                 imageName: viewModel.emptyImageName,
                 showsResetFiltersButton: viewModel.showsResetFiltersButton,
-                quickFilterLabels: viewModel.quickFilterLabels
+                activeFilterLabels: viewModel.activeFilterLabels
             )
         } else {
             showTable()
@@ -198,7 +209,7 @@ final class PacketWorkspaceViewController: NSViewController {
         message: String,
         imageName: String,
         showsResetFiltersButton: Bool,
-        quickFilterLabels: [String]
+        activeFilterLabels: [String]
     ) {
         if tableController.view.superview != nil {
             tableController.view.removeFromSuperview()
@@ -210,7 +221,7 @@ final class PacketWorkspaceViewController: NSViewController {
             imageName: imageName,
             message: message,
             showsResetFiltersButton: showsResetFiltersButton,
-            quickFilterLabels: quickFilterLabels
+            activeFilterLabels: activeFilterLabels
         )
         TCPViewerUI.pin(placeholder, to: contentContainer)
         placeholderView = placeholder
@@ -221,7 +232,7 @@ final class PacketWorkspaceViewController: NSViewController {
         imageName: String,
         message: String,
         showsResetFiltersButton: Bool,
-        quickFilterLabels: [String]
+        activeFilterLabels: [String]
     ) -> NSView {
         let imageView = NSImageView(image: TCPViewerUI.image(imageName) ?? NSImage())
         imageView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 42, weight: .regular)
@@ -232,14 +243,14 @@ final class PacketWorkspaceViewController: NSViewController {
 
         let messageView: NSView
         let messageWidthConstraint: NSLayoutConstraint?
-        if quickFilterLabels.isEmpty {
+        if activeFilterLabels.isEmpty {
             let messageLabel = TCPViewerUI.label(message, font: .systemFont(ofSize: NSFont.systemFontSize), color: .secondaryLabelColor)
             messageLabel.alignment = .center
             messageLabel.maximumNumberOfLines = 3
             messageView = messageLabel
             messageWidthConstraint = messageLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 420)
         } else {
-            messageView = makeQuickFilterMessage(labels: quickFilterLabels)
+            messageView = makeFilterMessage(labels: activeFilterLabels)
             messageWidthConstraint = nil
         }
 
@@ -272,7 +283,7 @@ final class PacketWorkspaceViewController: NSViewController {
         return container
     }
 
-    private func makeQuickFilterMessage(labels: [String]) -> NSView {
+    private func makeFilterMessage(labels: [String]) -> NSView {
         let prefixLabel = TCPViewerUI.label(
             "Filtered by",
             font: .systemFont(ofSize: NSFont.systemFontSize),
@@ -280,9 +291,9 @@ final class PacketWorkspaceViewController: NSViewController {
         )
 
         let visibleLabels = Array(labels.prefix(4))
-        var views: [NSView] = [prefixLabel] + visibleLabels.map(makeQuickFilterChip(title:))
+        var views: [NSView] = [prefixLabel] + visibleLabels.map(makeFilterChip(title:))
         if labels.count > visibleLabels.count {
-            views.append(makeQuickFilterChip(title: "+\(labels.count - visibleLabels.count)"))
+            views.append(makeFilterChip(title: "+\(labels.count - visibleLabels.count)"))
         }
 
         let stack = NSStackView(views: views)
@@ -292,7 +303,7 @@ final class PacketWorkspaceViewController: NSViewController {
         return stack
     }
 
-    private func makeQuickFilterChip(title: String) -> NSView {
+    private func makeFilterChip(title: String) -> NSView {
         let font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
         let label = TCPViewerUI.label(title, font: font)
         label.cell = VerticallyCenteredTextFieldCell(textCell: title)
@@ -378,8 +389,28 @@ extension PacketWorkspaceViewController: PacketStructuredFilterViewControllerDel
         delegate?.packetWorkspaceViewController(self, didUpdateStructuredFilterGroup: group)
     }
 
+    func packetStructuredFilterViewController(
+        _ controller: PacketStructuredFilterViewController,
+        didRequestSaveCustomFilterNamed name: String,
+        group: PacketStructuredFilterGroup
+    ) {
+        delegate?.packetWorkspaceViewController(self, didRequestSaveCustomFilterNamed: name, group: group)
+    }
+
+    func packetStructuredFilterViewController(
+        _ controller: PacketStructuredFilterViewController,
+        didRequestOverrideCustomFilter filterID: PacketCustomFilter.ID,
+        group: PacketStructuredFilterGroup
+    ) {
+        delegate?.packetWorkspaceViewController(self, didRequestOverrideCustomFilter: filterID, group: group)
+    }
+
     func packetStructuredFilterViewControllerCanAddFilter(_ controller: PacketStructuredFilterViewController) -> Bool {
         delegate?.packetWorkspaceViewControllerCanAddStructuredFilter(self) ?? true
+    }
+
+    func packetStructuredFilterViewControllerCanSaveCustomFilter(_ controller: PacketStructuredFilterViewController) -> Bool {
+        delegate?.packetWorkspaceViewControllerCanSaveCustomFilter(self) ?? true
     }
 
     func packetStructuredFilterViewControllerDidRequestPaywall(_ controller: PacketStructuredFilterViewController) {

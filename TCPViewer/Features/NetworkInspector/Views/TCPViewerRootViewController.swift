@@ -123,6 +123,42 @@ final class TCPViewerRootViewController: NSViewController {
         viewModel.toggleQuickFilter(filterID)
     }
 
+    func applyCustomFilter(_ filterID: PacketCustomFilter.ID) {
+        viewModel.applyCustomFilter(id: filterID)
+    }
+
+    func renameCustomFilter(_ filterID: PacketCustomFilter.ID, name: String) {
+        do {
+            try viewModel.renameCustomFilter(id: filterID, name: name)
+        } catch {
+            presentCustomFilterError(error, title: "Could Not Rename Filter")
+        }
+    }
+
+    func overrideCustomFilter(_ filterID: PacketCustomFilter.ID, group: PacketStructuredFilterGroup) {
+        do {
+            try viewModel.overrideCustomFilter(id: filterID, group: group)
+        } catch {
+            presentCustomFilterError(error, title: "Could Not Override Filter")
+        }
+    }
+
+    func duplicateCustomFilter(_ filterID: PacketCustomFilter.ID) {
+        do {
+            try viewModel.duplicateCustomFilter(id: filterID)
+        } catch {
+            presentCustomFilterError(error, title: "Could Not Duplicate Filter")
+        }
+    }
+
+    func deleteCustomFilter(_ filterID: PacketCustomFilter.ID) {
+        do {
+            try viewModel.deleteCustomFilter(id: filterID)
+        } catch {
+            presentCustomFilterError(error, title: "Could Not Delete Filter")
+        }
+    }
+
     func resetQuickFilters() {
         viewModel.resetQuickFilters()
     }
@@ -746,11 +782,35 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
         viewModel.updateStructuredFilterGroup(group)
     }
 
+    func packetWorkspaceViewController(
+        _ controller: PacketWorkspaceViewController,
+        didRequestSaveCustomFilterNamed name: String,
+        group: PacketStructuredFilterGroup
+    ) {
+        do {
+            try viewModel.saveCustomFilter(name: name, group: group)
+        } catch {
+            presentCustomFilterError(error, title: "Could Not Save Filter")
+        }
+    }
+
+    func packetWorkspaceViewController(
+        _ controller: PacketWorkspaceViewController,
+        didRequestOverrideCustomFilter filterID: PacketCustomFilter.ID,
+        group: PacketStructuredFilterGroup
+    ) {
+        overrideCustomFilter(filterID, group: group)
+    }
+
     func packetWorkspaceViewControllerDidRequestResetQuickFilters(_ controller: PacketWorkspaceViewController) {
         viewModel.resetQuickFilters()
     }
 
     func packetWorkspaceViewControllerCanAddStructuredFilter(_ controller: PacketWorkspaceViewController) -> Bool {
+        TCPViewerLicenseService.shared.isLicenseAuthorized
+    }
+
+    func packetWorkspaceViewControllerCanSaveCustomFilter(_ controller: PacketWorkspaceViewController) -> Bool {
         TCPViewerLicenseService.shared.isLicenseAuthorized
     }
 
@@ -764,6 +824,20 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
 
     fileprivate func canUsePinFeature() -> Bool {
         TCPViewerLicenseService.shared.isLicenseAuthorized
+    }
+
+    // Present persistence failures at the root so child controllers stay model-driven.
+    private func presentCustomFilterError(_ error: Error, title: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        if let window = view.window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
     }
 }
 

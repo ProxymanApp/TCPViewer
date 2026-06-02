@@ -9,7 +9,18 @@ import AppKit
 
 protocol PacketStructuredFilterViewControllerDelegate: AnyObject {
     func packetStructuredFilterViewController(_ controller: PacketStructuredFilterViewController, didUpdate group: PacketStructuredFilterGroup)
+    func packetStructuredFilterViewController(
+        _ controller: PacketStructuredFilterViewController,
+        didRequestSaveCustomFilterNamed name: String,
+        group: PacketStructuredFilterGroup
+    )
+    func packetStructuredFilterViewController(
+        _ controller: PacketStructuredFilterViewController,
+        didRequestOverrideCustomFilter filterID: PacketCustomFilter.ID,
+        group: PacketStructuredFilterGroup
+    )
     func packetStructuredFilterViewControllerCanAddFilter(_ controller: PacketStructuredFilterViewController) -> Bool
+    func packetStructuredFilterViewControllerCanSaveCustomFilter(_ controller: PacketStructuredFilterViewController) -> Bool
     func packetStructuredFilterViewControllerDidRequestPaywall(_ controller: PacketStructuredFilterViewController)
     func packetStructuredFilterViewControllerDidRequestHide(_ controller: PacketStructuredFilterViewController)
 }
@@ -394,12 +405,15 @@ final class PacketStructuredFilterViewController: NSViewController {
     private let rowStack = NSStackView()
     private let footerStack = NSStackView()
     private let operatorPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let saveButton = NSButton(title: "Save", target: nil, action: nil)
     private let bottomSeparator = TCPViewerUI.separator()
     private var rowViews: [PacketStructuredFilterRowView] = []
     private var group = PacketStructuredFilterGroup.default
     private var isFiltering = false
     private var pendingTextChanges: [PacketStructuredFilter.ID: String] = [:]
     private var pendingTextChangeWorkItem: DispatchWorkItem?
+    private var customFilterItems: [PacketCustomFilterItem] = []
+    private var saveMenuGroup: PacketStructuredFilterGroup?
 
     deinit {
         pendingTextChangeWorkItem?.cancel()
@@ -413,10 +427,15 @@ final class PacketStructuredFilterViewController: NSViewController {
         rebuildRows()
     }
 
-    func render(group: PacketStructuredFilterGroup, isFiltering: Bool) {
+    func render(
+        group: PacketStructuredFilterGroup,
+        isFiltering: Bool,
+        customFilterItems: [PacketCustomFilterItem]
+    ) {
         let normalizedGroup = PacketStructuredFilterGroup(filters: group.filters, operator: group.operator)
         let rebuildsRows = normalizedGroup != self.group
         let rebuildsFooter = isFiltering != self.isFiltering
+        self.customFilterItems = customFilterItems
         self.isFiltering = isFiltering
 
         guard rebuildsRows || rebuildsFooter else {
@@ -465,6 +484,7 @@ final class PacketStructuredFilterViewController: NSViewController {
         footerStack.translatesAutoresizingMaskIntoConstraints = false
 
         configureOperatorPopup()
+        configureSaveButton()
         rebuildFooter()
 
         view.addSubview(rootStack)
@@ -478,7 +498,7 @@ final class PacketStructuredFilterViewController: NSViewController {
             rootStack.topAnchor.constraint(equalTo: view.topAnchor),
             rootStack.bottomAnchor.constraint(equalTo: bottomSeparator.topAnchor),
             rowStack.widthAnchor.constraint(equalTo: rootStack.widthAnchor, constant: -(Metrics.horizontalInset * 2)),
-            footerStack.widthAnchor.constraint(lessThanOrEqualTo: rootStack.widthAnchor, constant: -(Metrics.horizontalInset * 2)),
+            footerStack.widthAnchor.constraint(equalTo: rowStack.widthAnchor),
             bottomSeparator.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             bottomSeparator.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             bottomSeparator.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -498,6 +518,20 @@ final class PacketStructuredFilterViewController: NSViewController {
             item?.toolTip = filterOperator.menuToolTip
         }
         operatorPopup.widthAnchor.constraint(equalToConstant: Metrics.operatorWidth).isActive = true
+    }
+
+    // Configure the custom-filter save command independently from row add/remove buttons.
+    private func configureSaveButton() {
+        saveButton.target = self
+        saveButton.action = #selector(showSaveCustomFilterMenu(_:))
+        saveButton.bezelStyle = .rounded
+        saveButton.controlSize = .small
+        saveButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
+        saveButton.toolTip = "Save the current structured filter as a custom filter."
+        NSLayoutConstraint.activate([
+            saveButton.heightAnchor.constraint(equalToConstant: 24),
+            saveButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 68),
+        ])
     }
 
     private func rebuildFooter() {
@@ -534,6 +568,14 @@ final class PacketStructuredFilterViewController: NSViewController {
             )
             footerStack.addArrangedSubview(label)
         }
+
+        // Push Save to the trailing edge while keeping shortcut hints on the same footer row.
+        let trailingSpacer = NSView()
+        trailingSpacer.translatesAutoresizingMaskIntoConstraints = false
+        trailingSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        trailingSpacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        footerStack.addArrangedSubview(trailingSpacer)
+        footerStack.addArrangedSubview(saveButton)
     }
 
     // Build the small inline loader that sits before the shortcut hints.
@@ -816,6 +858,107 @@ final class PacketStructuredFilterViewController: NSViewController {
 
         let currentGroup = consumePendingTextChange()
         apply(currentGroup.updatingOperator(nextOperator))
+    }
+
+    @objc private func showSaveCustomFilterMenu(_ sender: Any?) {
+        let currentGroup = consumePendingTextChange()
+        if currentGroup != group {
+            apply(currentGroup)
+        }
+
+        guard delegate?.packetStructuredFilterViewControllerCanSaveCustomFilter(self) ?? true else {
+            delegate?.packetStructuredFilterViewControllerDidRequestPaywall(self)
+            return
+        }
+
+        saveMenuGroup = currentGroup
+        let menu = makeSaveCustomFilterMenu()
+        let button = (sender as? NSButton) ?? saveButton
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
+    }
+
+    private func makeSaveCustomFilterMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+
+        let newFilterItem = NSMenuItem(title: "New Filter...", action: #selector(saveNewCustomFilter(_:)), keyEquivalent: "")
+        newFilterItem.target = self
+        menu.addItem(newFilterItem)
+        menu.addItem(.separator())
+
+        let overrideItem = NSMenuItem(title: "Override", action: nil, keyEquivalent: "")
+        let overrideMenu = NSMenu()
+        if customFilterItems.isEmpty {
+            let emptyItem = NSMenuItem(title: "No filters", action: nil, keyEquivalent: "")
+            emptyItem.isEnabled = false
+            overrideMenu.addItem(emptyItem)
+        } else {
+            customFilterItems.forEach { customItem in
+                let menuItem = NSMenuItem(title: customItem.title, action: #selector(overrideCustomFilter(_:)), keyEquivalent: "")
+                menuItem.target = self
+                menuItem.representedObject = customItem.id
+                overrideMenu.addItem(menuItem)
+            }
+        }
+        menu.addItem(overrideItem)
+        menu.setSubmenu(overrideMenu, for: overrideItem)
+        return menu
+    }
+
+    @objc private func saveNewCustomFilter(_ sender: Any?) {
+        let currentGroup = saveMenuGroup ?? group
+        guard let name = requestCustomFilterName() else {
+            return
+        }
+
+        delegate?.packetStructuredFilterViewController(self, didRequestSaveCustomFilterNamed: name, group: currentGroup)
+    }
+
+    @objc private func overrideCustomFilter(_ sender: NSMenuItem) {
+        guard let filterID = sender.representedObject as? PacketCustomFilter.ID else {
+            return
+        }
+
+        delegate?.packetStructuredFilterViewController(
+            self,
+            didRequestOverrideCustomFilter: filterID,
+            group: saveMenuGroup ?? group
+        )
+    }
+
+    // Ask for a custom filter name and normalize it before saving.
+    private func requestCustomFilterName() -> String? {
+        let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        textField.placeholderString = "Custom filter name"
+
+        let alert = NSAlert()
+        alert.messageText = "Save Custom Filter"
+        alert.informativeText = "Enter a name for this custom filter."
+        alert.alertStyle = .informational
+        alert.accessoryView = textField
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            return nil
+        }
+
+        do {
+            return try PacketCustomFilterService.normalizedName(textField.stringValue)
+        } catch {
+            showCustomFilterNameValidationError(error)
+            return nil
+        }
+    }
+
+    // Show validation feedback close to the Save action without touching persisted filters.
+    private func showCustomFilterNameValidationError(_ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = "Invalid Filter Name"
+        alert.informativeText = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 }
 

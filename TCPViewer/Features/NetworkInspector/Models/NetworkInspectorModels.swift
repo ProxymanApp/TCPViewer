@@ -514,6 +514,7 @@ struct NetworkInspectorSnapshot: Equatable {
     var sourceListSnapshot: PacketSourceListSnapshot
     var sourceListFilterText: String
     var quickFilterItems: [PacketQuickFilterItem]
+    var customFilterItems: [PacketCustomFilterItem]
     var quickFilterSelection: PacketQuickFilterSelection
     var workspaceMode: NetworkInspectorWorkspaceMode
     var inspectorTab: PacketInspectorTab
@@ -541,6 +542,7 @@ struct NetworkInspectorSnapshot: Equatable {
         sourceListSnapshot: PacketSourceListSnapshot,
         sourceListFilterText: String,
         quickFilterItems: [PacketQuickFilterItem] = PacketQuickFilterService().items(),
+        customFilterItems: [PacketCustomFilterItem] = [],
         quickFilterSelection: PacketQuickFilterSelection = .all,
         workspaceMode: NetworkInspectorWorkspaceMode,
         inspectorTab: PacketInspectorTab,
@@ -559,6 +561,7 @@ struct NetworkInspectorSnapshot: Equatable {
             sourceListSnapshot: sourceListSnapshot,
             sourceListFilterText: sourceListFilterText,
             quickFilterItems: quickFilterItems,
+            customFilterItems: customFilterItems,
             quickFilterSelection: quickFilterSelection,
             workspaceMode: workspaceMode,
             inspectorTab: inspectorTab,
@@ -591,6 +594,7 @@ struct NetworkInspectorSnapshot: Equatable {
             lhs.sourceListSnapshot == rhs.sourceListSnapshot &&
             lhs.sourceListFilterText == rhs.sourceListFilterText &&
             lhs.quickFilterItems == rhs.quickFilterItems &&
+            lhs.customFilterItems == rhs.customFilterItems &&
             lhs.quickFilterSelection == rhs.quickFilterSelection &&
             lhs.workspaceMode == rhs.workspaceMode &&
             lhs.inspectorTab == rhs.inspectorTab &&
@@ -623,6 +627,12 @@ struct NetworkInspectorSnapshot: Equatable {
 
     var isQuickFilterActive: Bool {
         quickFilterSelection.isActive
+    }
+
+    var activeFilterBarLabels: [String] {
+        quickFilterSelection.activeLabels + customFilterItems
+            .filter(\.isSelected)
+            .map(\.title)
     }
 
     var isQuickFilterResetVisible: Bool {

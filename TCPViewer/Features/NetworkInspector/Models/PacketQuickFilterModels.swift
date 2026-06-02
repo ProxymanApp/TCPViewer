@@ -79,6 +79,12 @@ struct PacketQuickFilterItem: Identifiable, Equatable, Sendable {
     let isSelected: Bool
 }
 
+struct PacketCustomFilterItem: Identifiable, Equatable, Sendable {
+    let id: PacketCustomFilter.ID
+    let title: String
+    let isSelected: Bool
+}
+
 struct PacketQuickFilterSelection: Equatable, Sendable, Hashable {
     let selectedIDs: Set<PacketQuickFilterID>
 

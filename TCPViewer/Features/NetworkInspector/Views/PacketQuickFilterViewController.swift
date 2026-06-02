@@ -9,6 +9,14 @@ import AppKit
 
 protocol PacketQuickFilterViewControllerDelegate: AnyObject {
     func packetQuickFilterViewController(_ controller: PacketQuickFilterViewController, didToggle filterID: PacketQuickFilterID)
+    func packetQuickFilterViewController(_ controller: PacketQuickFilterViewController, didApplyCustomFilter filterID: PacketCustomFilter.ID)
+    func packetQuickFilterViewController(
+        _ controller: PacketQuickFilterViewController,
+        didRenameCustomFilter filterID: PacketCustomFilter.ID,
+        name: String
+    )
+    func packetQuickFilterViewController(_ controller: PacketQuickFilterViewController, didDuplicateCustomFilter filterID: PacketCustomFilter.ID)
+    func packetQuickFilterViewController(_ controller: PacketQuickFilterViewController, didDeleteCustomFilter filterID: PacketCustomFilter.ID)
     func packetQuickFilterViewControllerDidRequestReset(_ controller: PacketQuickFilterViewController)
 }
 
@@ -29,6 +37,33 @@ private final class PacketQuickFilterButton: NSButton {
     }
 }
 
+private final class PacketCustomFilterButton: NSButton {
+    let filterID: PacketCustomFilter.ID
+    var rightClickHandler: ((PacketCustomFilterButton, NSEvent) -> Void)?
+
+    init(filterID: PacketCustomFilter.ID, title: String, target: AnyObject?, action: Selector?) {
+        self.filterID = filterID
+        super.init(frame: .zero)
+        self.title = title
+        self.target = target
+        self.action = action
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        rightClickHandler?(self, event)
+    }
+}
+
+private struct PacketCustomFilterButtonSignature: Equatable {
+    let id: PacketCustomFilter.ID
+    let title: String
+}
+
 final class PacketQuickFilterViewController: NSTitlebarAccessoryViewController {
     private enum Metrics {
         static let height: CGFloat = 34
@@ -41,10 +76,15 @@ final class PacketQuickFilterViewController: NSTitlebarAccessoryViewController {
     weak var delegate: PacketQuickFilterViewControllerDelegate?
 
     private let stackView = NSStackView()
+    private let customSeparator = NSBox()
     private let resetSeparator = NSBox()
     private let bottomSeparator = NSBox()
     private let resetButton = NSButton(title: "Reset Filters", target: nil, action: nil)
     private var buttons: [PacketQuickFilterID: PacketQuickFilterButton] = [:]
+    private var customButtons: [PacketCustomFilter.ID: PacketCustomFilterButton] = [:]
+    private var customItemsByID: [PacketCustomFilter.ID: PacketCustomFilterItem] = [:]
+    private var renderedQuickFilterIDs: [PacketQuickFilterID] = []
+    private var renderedCustomFilterSignatures: [PacketCustomFilterButtonSignature] = []
 
     override init(nibName nibNameOrNil: NSNib.Name?, bundle nibBundleOrNil: Bundle?) {
         super.init(nibName: nibNameOrNil, bundle: nibBundleOrNil)
@@ -68,12 +108,24 @@ final class PacketQuickFilterViewController: NSTitlebarAccessoryViewController {
     }
 
     func render(snapshot: NetworkInspectorSnapshot) {
-        ensureButtons(for: snapshot.quickFilterItems)
+        ensureButtons(for: snapshot.quickFilterItems, customItems: snapshot.customFilterItems)
+        customItemsByID = Dictionary(uniqueKeysWithValues: snapshot.customFilterItems.map { ($0.id, $0) })
         for item in snapshot.quickFilterItems {
             guard let button = buttons[item.id] else {
                 continue
             }
             render(button: button, title: item.title, toolTip: item.id.toolTip, isSelected: item.isSelected)
+        }
+        for item in snapshot.customFilterItems {
+            guard let button = customButtons[item.id] else {
+                continue
+            }
+            render(
+                button: button,
+                title: item.title,
+                toolTip: "Apply custom filter \"\(item.title)\"",
+                isSelected: item.isSelected
+            )
         }
 
         resetButton.isHidden = !snapshot.isQuickFilterResetVisible
@@ -96,6 +148,9 @@ final class PacketQuickFilterViewController: NSTitlebarAccessoryViewController {
         resetSeparator.translatesAutoresizingMaskIntoConstraints = false
         resetSeparator.isHidden = true
 
+        customSeparator.boxType = .separator
+        customSeparator.translatesAutoresizingMaskIntoConstraints = false
+
         bottomSeparator.boxType = .separator
         bottomSeparator.translatesAutoresizingMaskIntoConstraints = false
 
@@ -115,6 +170,7 @@ final class PacketQuickFilterViewController: NSTitlebarAccessoryViewController {
             stackView.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor),
             stackView.topAnchor.constraint(equalTo: view.topAnchor),
             stackView.bottomAnchor.constraint(equalTo: bottomSeparator.topAnchor),
+            customSeparator.heightAnchor.constraint(equalToConstant: 18),
             resetSeparator.heightAnchor.constraint(equalToConstant: 18),
             resetButton.heightAnchor.constraint(equalToConstant: Metrics.buttonHeight),
             bottomSeparator.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -124,8 +180,13 @@ final class PacketQuickFilterViewController: NSTitlebarAccessoryViewController {
         ])
     }
 
-    private func ensureButtons(for items: [PacketQuickFilterItem]) {
-        guard buttons.count != items.count else {
+    private func ensureButtons(for items: [PacketQuickFilterItem], customItems: [PacketCustomFilterItem]) {
+        let nextQuickFilterIDs = items.map(\.id)
+        let nextCustomFilterSignatures = customItems.map {
+            PacketCustomFilterButtonSignature(id: $0.id, title: $0.title)
+        }
+        guard renderedQuickFilterIDs != nextQuickFilterIDs ||
+                renderedCustomFilterSignatures != nextCustomFilterSignatures else {
             return
         }
 
@@ -134,6 +195,9 @@ final class PacketQuickFilterViewController: NSTitlebarAccessoryViewController {
             view.removeFromSuperview()
         }
         buttons.removeAll(keepingCapacity: true)
+        customButtons.removeAll(keepingCapacity: true)
+        renderedQuickFilterIDs = nextQuickFilterIDs
+        renderedCustomFilterSignatures = nextCustomFilterSignatures
 
         for item in items {
             let button = PacketQuickFilterButton(filterID: item.id, target: self, action: #selector(toggleFilter(_:)))
@@ -142,6 +206,26 @@ final class PacketQuickFilterViewController: NSTitlebarAccessoryViewController {
             stackView.addArrangedSubview(button)
             button.heightAnchor.constraint(equalToConstant: Metrics.buttonHeight).isActive = true
             button.widthAnchor.constraint(greaterThanOrEqualToConstant: measuredWidth(for: item.title)).isActive = true
+        }
+
+        if !customItems.isEmpty {
+            stackView.addArrangedSubview(customSeparator)
+            for item in customItems {
+                let button = PacketCustomFilterButton(
+                    filterID: item.id,
+                    title: item.title,
+                    target: self,
+                    action: #selector(applyCustomFilter(_:))
+                )
+                button.rightClickHandler = { [weak self] button, event in
+                    self?.showCustomFilterMenu(for: button, event: event)
+                }
+                configure(button: button, isToggle: true)
+                customButtons[item.id] = button
+                stackView.addArrangedSubview(button)
+                button.heightAnchor.constraint(equalToConstant: Metrics.buttonHeight).isActive = true
+                button.widthAnchor.constraint(greaterThanOrEqualToConstant: measuredWidth(for: item.title)).isActive = true
+            }
         }
 
         stackView.addArrangedSubview(resetSeparator)
@@ -191,7 +275,119 @@ final class PacketQuickFilterViewController: NSTitlebarAccessoryViewController {
         delegate?.packetQuickFilterViewController(self, didToggle: sender.filterID)
     }
 
+    @objc private func applyCustomFilter(_ sender: NSButton) {
+        guard let sender = sender as? PacketCustomFilterButton else {
+            return
+        }
+
+        delegate?.packetQuickFilterViewController(self, didApplyCustomFilter: sender.filterID)
+    }
+
     @objc private func resetFilters(_ sender: NSButton) {
         delegate?.packetQuickFilterViewControllerDidRequestReset(self)
+    }
+
+    // Build the per-custom-filter context menu from the current snapshot item.
+    private func showCustomFilterMenu(for button: PacketCustomFilterButton, event: NSEvent) {
+        guard let item = customItemsByID[button.filterID] else {
+            return
+        }
+
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        let renameItem = NSMenuItem(title: "Edit Name", action: #selector(renameCustomFilter(_:)), keyEquivalent: "")
+        renameItem.target = self
+        renameItem.representedObject = item.id
+        menu.addItem(renameItem)
+
+        menu.addItem(.separator())
+        let duplicateItem = NSMenuItem(title: "Duplicate", action: #selector(duplicateCustomFilter(_:)), keyEquivalent: "")
+        duplicateItem.target = self
+        duplicateItem.representedObject = item.id
+        duplicateItem.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Duplicate")
+        menu.addItem(duplicateItem)
+
+        menu.addItem(.separator())
+        let deleteItem = NSMenuItem(title: "Delete", action: #selector(deleteCustomFilter(_:)), keyEquivalent: "\u{8}")
+        deleteItem.target = self
+        deleteItem.representedObject = item.id
+        deleteItem.image = NSImage(systemSymbolName: "trash", accessibilityDescription: "Delete")
+        menu.addItem(deleteItem)
+
+        NSMenu.popUpContextMenu(menu, with: event, for: button)
+    }
+
+    @objc private func renameCustomFilter(_ sender: NSMenuItem) {
+        guard let filterID = sender.representedObject as? PacketCustomFilter.ID,
+              let item = customItemsByID[filterID],
+              let name = requestCustomFilterName(initialName: item.title) else {
+            return
+        }
+
+        delegate?.packetQuickFilterViewController(self, didRenameCustomFilter: filterID, name: name)
+    }
+
+    @objc private func duplicateCustomFilter(_ sender: NSMenuItem) {
+        guard let filterID = sender.representedObject as? PacketCustomFilter.ID else {
+            return
+        }
+
+        delegate?.packetQuickFilterViewController(self, didDuplicateCustomFilter: filterID)
+    }
+
+    @objc private func deleteCustomFilter(_ sender: NSMenuItem) {
+        guard let filterID = sender.representedObject as? PacketCustomFilter.ID,
+              let item = customItemsByID[filterID],
+              confirmDeleteCustomFilter(named: item.title) else {
+            return
+        }
+
+        delegate?.packetQuickFilterViewController(self, didDeleteCustomFilter: filterID)
+    }
+
+    // Ask for a new custom filter name and trim it before handing it to the model layer.
+    private func requestCustomFilterName(initialName: String) -> String? {
+        let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        textField.stringValue = initialName
+
+        let alert = NSAlert()
+        alert.messageText = "Rename Custom Filter"
+        alert.informativeText = "Enter a new name for this custom filter."
+        alert.alertStyle = .informational
+        alert.accessoryView = textField
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            return nil
+        }
+
+        do {
+            return try PacketCustomFilterService.normalizedName(textField.stringValue)
+        } catch {
+            showCustomFilterNameValidationError(error)
+            return nil
+        }
+    }
+
+    // Confirm deletion because custom filters are persisted user settings.
+    private func confirmDeleteCustomFilter(named name: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Delete Custom Filter?"
+        alert.informativeText = "This removes \"\(name)\" from the quick filter bar."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    // Show validation feedback before dispatching a rename action.
+    private func showCustomFilterNameValidationError(_ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = "Invalid Filter Name"
+        alert.informativeText = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 }
