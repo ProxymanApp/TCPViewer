@@ -682,6 +682,99 @@ struct NetworkInspectorViewModelTests {
         #expect(!hiddenReloadedViewModel.snapshot.isStructuredFilterVisible)
     }
 
+    @Test func customFiltersLoadIntoInitialSnapshot() throws {
+        let customFilterService = PacketCustomFilterService(storageURL: temporaryDirectory().appendingPathComponent("CustomFilters.json"))
+        let group = PacketStructuredFilterGroup(
+            filters: [PacketStructuredFilter(query: .protocol, condition: .contains, text: "tcp")],
+            operator: .and
+        )
+        let savedFilter = try customFilterService.save(name: "TCP Preset", group: group)
+        let services = TCPViewerServiceRegistry(core: InspectorFakeCore(
+            interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")]
+        ))
+
+        let viewModel = NetworkInspectorViewModel(
+            services: services,
+            userDefaults: isolatedDefaults(),
+            pinService: PacketPinService(storageURL: temporaryDirectory().appendingPathComponent("Pins.json")),
+            savedPacketService: SavedPacketService(storageURL: temporaryDirectory().appendingPathComponent("Saved.json")),
+            customFilterService: customFilterService
+        )
+
+        #expect(viewModel.snapshot.customFilterItems == [
+            PacketCustomFilterItem(id: savedFilter.id, title: "TCP Preset", isSelected: false),
+        ])
+    }
+
+    @Test func applyingCustomFilterShowsStructuredFilterAndFiltersRows() async throws {
+        let tcpPacket = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp, layerNames: ["Ethernet", "TCP"])
+        let udpPacket = makePacket(packetNumber: 2, source: .offline, transportHint: .udp, layerNames: ["Ethernet", "UDP"])
+        let customFilterService = PacketCustomFilterService(storageURL: temporaryDirectory().appendingPathComponent("CustomFilters.json"))
+        let group = PacketStructuredFilterGroup(
+            filters: [PacketStructuredFilter(query: .protocol, condition: .contains, text: "tcp")],
+            operator: .and
+        )
+        let savedFilter = try customFilterService.save(name: "TCP Only", group: group)
+        let viewModel = makeOfflineViewModel(packets: [tcpPacket, udpPacket], customFilterService: customFilterService)
+
+        await viewModel.openDocument(at: URL(fileURLWithPath: "/tmp/custom-filter-apply.pcapng"))
+        await waitUntil {
+            viewModel.snapshot.packetRows.count == 2
+        }
+
+        viewModel.applyCustomFilter(id: savedFilter.id)
+
+        #expect(viewModel.snapshot.isStructuredFilterVisible)
+        #expect(viewModel.snapshot.structuredFilterGroup == group)
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [tcpPacket.id])
+        #expect(viewModel.snapshot.customFilterItems.first?.isSelected == true)
+    }
+
+    @Test func savingCurrentStructuredFilterAddsSelectedCustomFilter() throws {
+        let customFilterService = PacketCustomFilterService(storageURL: temporaryDirectory().appendingPathComponent("CustomFilters.json"))
+        let viewModel = makeOfflineViewModel(packets: [], customFilterService: customFilterService)
+        let group = PacketStructuredFilterGroup(
+            filters: [
+                PacketStructuredFilter(query: .summary, condition: .matchesRegex, text: "GET|POST", isEnabled: true),
+                PacketStructuredFilter(query: .destinationPort, condition: .greaterThanOrEqual, text: "443", isEnabled: false),
+            ],
+            operator: .or
+        )
+
+        viewModel.updateStructuredFilterGroup(group)
+        viewModel.setStructuredFilterVisible(true)
+        let savedFilter = try viewModel.saveCustomFilter(name: "  HTTP Methods  ", group: viewModel.snapshot.structuredFilterGroup)
+
+        #expect(customFilterService.filters().map(\.id) == [savedFilter.id])
+        #expect(viewModel.snapshot.customFilterItems == [
+            PacketCustomFilterItem(id: savedFilter.id, title: "HTTP Methods", isSelected: true),
+        ])
+    }
+
+    @Test func renamingAndDeletingCustomFilterRefreshesItemsWithoutChangingStructuredGroup() throws {
+        let customFilterService = PacketCustomFilterService(storageURL: temporaryDirectory().appendingPathComponent("CustomFilters.json"))
+        let group = PacketStructuredFilterGroup(
+            filters: [PacketStructuredFilter(query: .client, condition: .contains, text: "Safari")],
+            operator: .and
+        )
+        let savedFilter = try customFilterService.save(name: "Client", group: group)
+        let viewModel = makeOfflineViewModel(packets: [], customFilterService: customFilterService)
+
+        viewModel.applyCustomFilter(id: savedFilter.id)
+        try viewModel.renameCustomFilter(id: savedFilter.id, name: "  Browser  ")
+
+        #expect(viewModel.snapshot.structuredFilterGroup == group)
+        #expect(viewModel.snapshot.customFilterItems == [
+            PacketCustomFilterItem(id: savedFilter.id, title: "Browser", isSelected: true),
+        ])
+
+        try viewModel.deleteCustomFilter(id: savedFilter.id)
+
+        #expect(viewModel.snapshot.structuredFilterGroup == group)
+        #expect(viewModel.snapshot.customFilterItems.isEmpty)
+        #expect(viewModel.snapshot.isStructuredFilterVisible)
+    }
+
     @Test func sidebarThicknessPersistsAndFallsBackWhenInvalid() {
         let defaults = isolatedDefaults()
         let services = TCPViewerServiceRegistry(core: InspectorFakeCore(
@@ -2439,7 +2532,8 @@ struct NetworkInspectorViewModelTests {
 
     private func makeOfflineViewModel(
         packets: [PacketSummary],
-        packetTableAsyncRebuildThreshold: Int = 5_000
+        packetTableAsyncRebuildThreshold: Int = 5_000,
+        customFilterService: PacketCustomFilterService? = nil
     ) -> NetworkInspectorViewModel {
         let openURL = URL(fileURLWithPath: "/tmp/source-list-fixture.pcapng")
         return NetworkInspectorViewModel(
@@ -2450,6 +2544,7 @@ struct NetworkInspectorViewModelTests {
             userDefaults: isolatedDefaults(),
             pinService: PacketPinService(storageURL: temporaryDirectory().appendingPathComponent("Pins.json")),
             savedPacketService: SavedPacketService(storageURL: temporaryDirectory().appendingPathComponent("Saved.json")),
+            customFilterService: customFilterService ?? PacketCustomFilterService(storageURL: temporaryDirectory().appendingPathComponent("CustomFilters.json")),
             packetTableAsyncRebuildThreshold: packetTableAsyncRebuildThreshold
         )
     }

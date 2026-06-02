@@ -876,6 +876,7 @@ final class NetworkInspectorViewModel {
     private let pinService: PacketPinService
     private let savedPacketService: SavedPacketService
     private let quickFilterService: PacketQuickFilterService
+    private let customFilterService: PacketCustomFilterService
     private let structuredFilterService: PacketStructuredFilterService
     private let structuredFilterStore: PacketStructuredFilterStore
     private let packetExportService: PacketExportService
@@ -906,6 +907,7 @@ final class NetworkInspectorViewModel {
     private var isStructuredFilterVisible: Bool
     private var displayFilterText: String
     private var structuredFilterGroup: PacketStructuredFilterGroup
+    private var selectedCustomFilterID: PacketCustomFilter.ID?
     private var helperOnboardingDismissed = false
 
     convenience init(userDefaults: UserDefaults = .standard) {
@@ -919,6 +921,7 @@ final class NetworkInspectorViewModel {
         pinService: PacketPinService = PacketPinService(),
         savedPacketService: SavedPacketService = SavedPacketService(),
         quickFilterService: PacketQuickFilterService = PacketQuickFilterService(),
+        customFilterService: PacketCustomFilterService = PacketCustomFilterService(),
         structuredFilterService: PacketStructuredFilterService = PacketStructuredFilterService(),
         packetExportService: PacketExportService? = nil,
         packetTableAsyncRebuildThreshold: Int = 5_000,
@@ -933,6 +936,7 @@ final class NetworkInspectorViewModel {
         self.pinService = pinService
         self.savedPacketService = savedPacketService
         self.quickFilterService = quickFilterService
+        self.customFilterService = customFilterService
         self.structuredFilterService = structuredFilterService
         self.structuredFilterStore = PacketStructuredFilterStore(defaults: userDefaults)
         self.packetExportService = packetExportService ?? PacketExportService(defaults: userDefaults)
@@ -967,6 +971,9 @@ final class NetworkInspectorViewModel {
         case .ready(let content), .deferred(let content, _):
             packetTableContent = content
         }
+        let initialCustomFilterItems = customFilterService.filters().map { filter in
+            PacketCustomFilterItem(id: filter.id, title: filter.name, isSelected: false)
+        }
         self.snapshot = NetworkInspectorSnapshot.make(
             base: controller.snapshot,
             selectedSidebar: selectedSidebar,
@@ -974,6 +981,7 @@ final class NetworkInspectorViewModel {
             sourceListSnapshot: sourceListSnapshot,
             sourceListFilterText: sourceListFilterText,
             quickFilterItems: quickFilterService.items(),
+            customFilterItems: initialCustomFilterItems,
             quickFilterSelection: quickFilterService.selection,
             workspaceMode: workspaceMode,
             inspectorTab: inspectorTab,
@@ -1128,6 +1136,7 @@ final class NetworkInspectorViewModel {
 
     func updateStructuredFilterGroup(_ group: PacketStructuredFilterGroup) {
         structuredFilterGroup = PacketStructuredFilterGroup(filters: group.filters, operator: group.operator)
+        selectedCustomFilterID = nil
         structuredFilterStore.save(structuredFilterGroup)
         rebuildSnapshot()
     }
@@ -1150,6 +1159,46 @@ final class NetworkInspectorViewModel {
     func resetQuickFilters() {
         quickFilterService.reset()
         rebuildSnapshot(clearsSelectedPacket: true)
+    }
+
+    // Save the current structured filter group as a reusable custom titlebar filter.
+    @discardableResult
+    func saveCustomFilter(name: String, group: PacketStructuredFilterGroup) throws -> PacketCustomFilter {
+        let savedFilter = try customFilterService.save(name: name, group: group)
+        selectedCustomFilterID = savedFilter.id
+        rebuildSnapshot()
+        return savedFilter
+    }
+
+    // Replace the structured filter editor with a saved custom filter and apply it immediately.
+    func applyCustomFilter(id: PacketCustomFilter.ID) {
+        guard let filter = customFilterService.filter(id: id) else {
+            return
+        }
+
+        structuredFilterGroup = PacketStructuredFilterGroup(filters: filter.group.filters, operator: filter.group.operator)
+        structuredFilterStore.save(structuredFilterGroup)
+        selectedCustomFilterID = filter.id
+        if !isStructuredFilterVisible {
+            isStructuredFilterVisible = true
+            preferences.persistStructuredFilterVisible(true)
+        }
+        rebuildSnapshot()
+    }
+
+    // Rename a saved custom filter and refresh titlebar render models.
+    func renameCustomFilter(id: PacketCustomFilter.ID, name: String) throws {
+        try customFilterService.rename(id: id, name: name)
+        rebuildSnapshot()
+    }
+
+    // Delete a saved custom filter while leaving any currently applied structured group intact.
+    func deleteCustomFilter(id: PacketCustomFilter.ID) throws {
+        try customFilterService.delete(id: id)
+        if selectedCustomFilterID == id {
+            selectedCustomFilterID = nil
+        }
+        rebuildSnapshot()
     }
 
     func clearPackets() {
@@ -1756,6 +1805,7 @@ final class NetworkInspectorViewModel {
             sourceListSnapshot: sourceListSnapshot,
             sourceListFilterText: sourceListFilterText,
             quickFilterItems: quickFilterService.items(),
+            customFilterItems: customFilterItems(),
             quickFilterSelection: quickFilterService.selection,
             workspaceMode: workspaceMode,
             inspectorTab: inspectorTab,
@@ -1772,6 +1822,17 @@ final class NetworkInspectorViewModel {
         }
 
         snapshot = updatedSnapshot
+    }
+
+    // Convert saved custom filters into stable button models for the quick-filter bar.
+    private func customFilterItems() -> [PacketCustomFilterItem] {
+        customFilterService.filters().map { filter in
+            PacketCustomFilterItem(
+                id: filter.id,
+                title: filter.name,
+                isSelected: isStructuredFilterVisible && selectedCustomFilterID == filter.id
+            )
+        }
     }
 
     private func makePacketTableBuildInput(

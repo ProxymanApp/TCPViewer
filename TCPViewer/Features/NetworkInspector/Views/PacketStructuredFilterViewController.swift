@@ -9,7 +9,13 @@ import AppKit
 
 protocol PacketStructuredFilterViewControllerDelegate: AnyObject {
     func packetStructuredFilterViewController(_ controller: PacketStructuredFilterViewController, didUpdate group: PacketStructuredFilterGroup)
+    func packetStructuredFilterViewController(
+        _ controller: PacketStructuredFilterViewController,
+        didRequestSaveCustomFilterNamed name: String,
+        group: PacketStructuredFilterGroup
+    )
     func packetStructuredFilterViewControllerCanAddFilter(_ controller: PacketStructuredFilterViewController) -> Bool
+    func packetStructuredFilterViewControllerCanSaveCustomFilter(_ controller: PacketStructuredFilterViewController) -> Bool
     func packetStructuredFilterViewControllerDidRequestPaywall(_ controller: PacketStructuredFilterViewController)
     func packetStructuredFilterViewControllerDidRequestHide(_ controller: PacketStructuredFilterViewController)
 }
@@ -392,8 +398,10 @@ final class PacketStructuredFilterViewController: NSViewController {
 
     private let rootStack = NSStackView()
     private let rowStack = NSStackView()
+    private let saveStack = NSStackView()
     private let footerStack = NSStackView()
     private let operatorPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let saveButton = NSButton(title: "Save", target: nil, action: nil)
     private let bottomSeparator = TCPViewerUI.separator()
     private var rowViews: [PacketStructuredFilterRowView] = []
     private var group = PacketStructuredFilterGroup.default
@@ -459,17 +467,24 @@ final class PacketStructuredFilterViewController: NSViewController {
         rowStack.spacing = 4
         rowStack.translatesAutoresizingMaskIntoConstraints = false
 
+        saveStack.orientation = .horizontal
+        saveStack.alignment = .centerY
+        saveStack.spacing = 0
+        saveStack.translatesAutoresizingMaskIntoConstraints = false
+
         footerStack.orientation = .horizontal
         footerStack.alignment = .centerY
         footerStack.spacing = 18
         footerStack.translatesAutoresizingMaskIntoConstraints = false
 
         configureOperatorPopup()
+        configureSaveButton()
         rebuildFooter()
 
         view.addSubview(rootStack)
         view.addSubview(bottomSeparator)
         rootStack.addArrangedSubview(rowStack)
+        rootStack.addArrangedSubview(saveStack)
         rootStack.addArrangedSubview(footerStack)
 
         NSLayoutConstraint.activate([
@@ -478,6 +493,7 @@ final class PacketStructuredFilterViewController: NSViewController {
             rootStack.topAnchor.constraint(equalTo: view.topAnchor),
             rootStack.bottomAnchor.constraint(equalTo: bottomSeparator.topAnchor),
             rowStack.widthAnchor.constraint(equalTo: rootStack.widthAnchor, constant: -(Metrics.horizontalInset * 2)),
+            saveStack.widthAnchor.constraint(equalTo: rowStack.widthAnchor),
             footerStack.widthAnchor.constraint(lessThanOrEqualTo: rootStack.widthAnchor, constant: -(Metrics.horizontalInset * 2)),
             bottomSeparator.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             bottomSeparator.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -498,6 +514,25 @@ final class PacketStructuredFilterViewController: NSViewController {
             item?.toolTip = filterOperator.menuToolTip
         }
         operatorPopup.widthAnchor.constraint(equalToConstant: Metrics.operatorWidth).isActive = true
+    }
+
+    // Configure the custom-filter save command independently from row add/remove buttons.
+    private func configureSaveButton() {
+        saveButton.target = self
+        saveButton.action = #selector(saveCustomFilter(_:))
+        saveButton.bezelStyle = .rounded
+        saveButton.controlSize = .small
+        saveButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
+        saveButton.toolTip = "Save the current structured filter as a custom filter."
+
+        let spacer = NSView()
+        spacer.translatesAutoresizingMaskIntoConstraints = false
+        saveStack.addArrangedSubview(spacer)
+        saveStack.addArrangedSubview(saveButton)
+        NSLayoutConstraint.activate([
+            saveButton.heightAnchor.constraint(equalToConstant: 24),
+            saveButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 68),
+        ])
     }
 
     private func rebuildFooter() {
@@ -816,6 +851,59 @@ final class PacketStructuredFilterViewController: NSViewController {
 
         let currentGroup = consumePendingTextChange()
         apply(currentGroup.updatingOperator(nextOperator))
+    }
+
+    @objc private func saveCustomFilter(_ sender: Any?) {
+        let currentGroup = consumePendingTextChange()
+        if currentGroup != group {
+            apply(currentGroup)
+        }
+
+        guard delegate?.packetStructuredFilterViewControllerCanSaveCustomFilter(self) ?? true else {
+            delegate?.packetStructuredFilterViewControllerDidRequestPaywall(self)
+            return
+        }
+
+        guard let name = requestCustomFilterName() else {
+            return
+        }
+
+        delegate?.packetStructuredFilterViewController(self, didRequestSaveCustomFilterNamed: name, group: currentGroup)
+    }
+
+    // Ask for a custom filter name and normalize it before saving.
+    private func requestCustomFilterName() -> String? {
+        let textField = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        textField.placeholderString = "Custom filter name"
+
+        let alert = NSAlert()
+        alert.messageText = "Save Custom Filter"
+        alert.informativeText = "Enter a name for this custom filter."
+        alert.alertStyle = .informational
+        alert.accessoryView = textField
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            return nil
+        }
+
+        do {
+            return try PacketCustomFilterService.normalizedName(textField.stringValue)
+        } catch {
+            showCustomFilterNameValidationError(error)
+            return nil
+        }
+    }
+
+    // Show validation feedback close to the Save action without touching persisted filters.
+    private func showCustomFilterNameValidationError(_ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = "Invalid Filter Name"
+        alert.informativeText = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 }
 

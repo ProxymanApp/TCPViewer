@@ -18,8 +18,10 @@ protocol PacketWorkspaceViewControllerDelegate: AnyObject {
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestExportPackets identifiers: [PacketSummary.ID], format: CaptureFileFormat)
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestDeletePackets identifiers: [PacketSummary.ID])
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didUpdateStructuredFilterGroup group: PacketStructuredFilterGroup)
+    func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestSaveCustomFilterNamed name: String, group: PacketStructuredFilterGroup)
     func packetWorkspaceViewControllerDidRequestResetQuickFilters(_ controller: PacketWorkspaceViewController)
     func packetWorkspaceViewControllerCanAddStructuredFilter(_ controller: PacketWorkspaceViewController) -> Bool
+    func packetWorkspaceViewControllerCanSaveCustomFilter(_ controller: PacketWorkspaceViewController) -> Bool
     func packetWorkspaceViewControllerDidRequestStructuredFilterPaywall(_ controller: PacketWorkspaceViewController)
     func packetWorkspaceViewControllerDidRequestHideStructuredFilter(_ controller: PacketWorkspaceViewController)
 }
@@ -378,8 +380,20 @@ extension PacketWorkspaceViewController: PacketStructuredFilterViewControllerDel
         delegate?.packetWorkspaceViewController(self, didUpdateStructuredFilterGroup: group)
     }
 
+    func packetStructuredFilterViewController(
+        _ controller: PacketStructuredFilterViewController,
+        didRequestSaveCustomFilterNamed name: String,
+        group: PacketStructuredFilterGroup
+    ) {
+        delegate?.packetWorkspaceViewController(self, didRequestSaveCustomFilterNamed: name, group: group)
+    }
+
     func packetStructuredFilterViewControllerCanAddFilter(_ controller: PacketStructuredFilterViewController) -> Bool {
         delegate?.packetWorkspaceViewControllerCanAddStructuredFilter(self) ?? true
+    }
+
+    func packetStructuredFilterViewControllerCanSaveCustomFilter(_ controller: PacketStructuredFilterViewController) -> Bool {
+        delegate?.packetWorkspaceViewControllerCanSaveCustomFilter(self) ?? true
     }
 
     func packetStructuredFilterViewControllerDidRequestPaywall(_ controller: PacketStructuredFilterViewController) {
