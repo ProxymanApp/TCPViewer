@@ -69,6 +69,27 @@
         "Fixed license manager edge cases.",
         "Fixed packet summary lifetime issues in table rows."
       ]
+    },
+    {
+      "version": "1.3",
+      "title": "TCP Viewer 1.3 Production Release",
+      "features": [
+        "Custom structured filter presets for saving and reusing packet filters.",
+        "Nested sidebar rows for scoped domain and IP packet sources.",
+        "Pinned packet workflows in the left panel and packet table."
+      ],
+      "improvements": [
+        "Preserved sidebar scroll position during deferred reloads.",
+        "Improved sidebar disclosure alignment for nested source rows.",
+        "Show active filters when no packets match the current filter.",
+        "Added missing icon scales to the app asset catalogs.",
+        "Added GitHub release publishing to the production release flow.",
+        "Removed local Xcode artifacts and ignored local build server files."
+      ],
+      "bugs": [
+        "Fixed sidebar scroll inset behavior.",
+        "Fixed sidebar pin multi-selection navigation."
+      ]
     }
   ]
 }
