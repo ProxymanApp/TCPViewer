@@ -27,6 +27,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var skipsNextQuitConfirmation = false
     private var isShowingRenewalRequiredAlert = false
     private var isVerifyingLicenseAtLaunch = false
+    private var didCheckForUpdatesAtLaunch = false
+    private var isTerminatingAfterFactoryReset = false
     #if DEBUG
     private var shouldOpenUntitledDocumentAfterIgnoringDebugLaunchFiles = false
     #endif
@@ -78,6 +80,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !isTerminatingAfterFactoryReset else {
+            return .terminateNow
+        }
+
         guard !isHandlingTermination else {
             return .terminateLater
         }
@@ -350,6 +356,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         item.target = updaterController
         item.action = #selector(SPUStandardUpdaterController.checkForUpdates(_:))
         item.isEnabled = true
+        checkForUpdatesAtLaunchIfNeeded(using: updaterController)
     }
 
     private func findOrCreateUpdatesMenuItem(in appMenu: NSMenu) -> NSMenuItem {
@@ -382,6 +389,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         )
         updaterController = controller
         return controller
+    }
+
+    private func checkForUpdatesAtLaunchIfNeeded(using updaterController: SPUStandardUpdaterController) {
+        // Ask Sparkle once per launch so any available update shows its standard release-notes prompt.
+        guard !didCheckForUpdatesAtLaunch else {
+            return
+        }
+
+        didCheckForUpdatesAtLaunch = true
+        let updater = updaterController.updater
+        guard updater.automaticallyChecksForUpdates else {
+            return
+        }
+
+        updater.checkForUpdatesInBackground()
     }
 
     private func isSparkleConfigured() -> Bool {
@@ -533,11 +555,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             disableAutosavedWindowStateForFactoryReset()
             NSDocumentController.shared.clearRecentDocuments(nil)
             showFactoryResetCompletionAlert(resetResult, uninstallHelperTool: uninstallHelperTool)
-            skipsNextQuitConfirmation = true
+            prepareForFactoryResetTermination()
             NSApp.terminate(nil)
         case .failure(let error):
             showFactoryResetFailureAlert(error)
         }
+    }
+
+    func prepareForFactoryResetTermination() {
+        // Factory Reset already deleted app state, so the next termination must not be cancellable.
+        isTerminatingAfterFactoryReset = true
+        skipsNextQuitConfirmation = true
     }
 
     private func showFactoryResetCompletionAlert(

@@ -10,6 +10,8 @@
 	</dict>
 	<key>SUFeedURL</key>
 	<string>$(TCPVIEWER_APPCAST_URL)</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
 	<key>SUPublicEDKey</key>
 	<string>$(TCPVIEWER_SPARKLE_PUBLIC_ED_KEY)</string>
 	<key>TCPViewerSentryDSN</key>
