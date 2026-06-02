@@ -94,6 +94,12 @@ enum SidebarSelectionPolicy {
     }
 }
 
+enum SidebarOutlineScrollPositionPolicy {
+    static func normalized(origin: NSPoint) -> NSPoint {
+        NSPoint(x: max(0, origin.x), y: max(0, origin.y))
+    }
+}
+
 private extension PacketIngestMutation {
     var isBatchableSidebarMutation: Bool {
         switch self {
@@ -257,6 +263,11 @@ final class SidebarViewController: NSViewController {
         setupLayout()
     }
 
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        normalizeOutlineScrollOriginIfNeeded()
+    }
+
     func render(snapshot: NetworkInspectorSnapshot) {
         let nextReloadState = SidebarOutlineReloadState(snapshot: snapshot)
         switch SidebarOutlineReloadPolicy.timing(previous: appliedReloadState, next: nextReloadState) {
@@ -273,6 +284,7 @@ final class SidebarViewController: NSViewController {
     private func apply(state: SidebarOutlineReloadState) {
         outlineReloadGeneration += 1
         let reloadGeneration = outlineReloadGeneration
+        normalizeOutlineScrollOriginIfNeeded()
         let shouldPreserveOutlineState = shouldPreserveOutlineState(for: state)
         let preservedOutlineState = shouldPreserveOutlineState ? captureOutlineState() : nil
         if hasRenderedOutline, viewModel.filterText.isEmpty {
@@ -370,6 +382,8 @@ final class SidebarViewController: NSViewController {
 
         scrollView.documentView = outlineView
         scrollView.hasVerticalScroller = true
+        scrollView.automaticallyAdjustsContentInsets = false
+        scrollView.contentInsets = NSEdgeInsetsZero
         scrollView.drawsBackground = false
         scrollView.backgroundColor = .clear
         scrollView.translatesAutoresizingMaskIntoConstraints = false
@@ -390,7 +404,8 @@ final class SidebarViewController: NSViewController {
         NSLayoutConstraint.activate([
             scrollView.leadingAnchor.constraint(equalTo: effectView.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: effectView.trailingAnchor),
-            scrollView.topAnchor.constraint(equalTo: effectView.topAnchor),
+            // Keep rows below the unified titlebar while the sidebar material still fills it.
+            scrollView.topAnchor.constraint(equalTo: effectView.safeAreaLayoutGuide.topAnchor),
             scrollView.bottomAnchor.constraint(equalTo: searchField.topAnchor, constant: -6),
 
             searchField.leadingAnchor.constraint(equalTo: effectView.leadingAnchor, constant: 12),
@@ -398,6 +413,19 @@ final class SidebarViewController: NSViewController {
             searchField.bottomAnchor.constraint(equalTo: effectView.safeAreaLayoutGuide.bottomAnchor, constant: -8),
             searchField.heightAnchor.constraint(equalToConstant: 28),
         ])
+    }
+
+    // Clamp AppKit titlebar inset artifacts before preserving or restoring sidebar position.
+    private func normalizeOutlineScrollOriginIfNeeded() {
+        let clipView = scrollView.contentView
+        let origin = clipView.bounds.origin
+        let normalizedOrigin = SidebarOutlineScrollPositionPolicy.normalized(origin: origin)
+        guard normalizedOrigin.x != origin.x || normalizedOrigin.y != origin.y else {
+            return
+        }
+
+        clipView.scroll(to: normalizedOrigin)
+        scrollView.reflectScrolledClipView(clipView)
     }
 
     private func captureExpandedItemIDs() {

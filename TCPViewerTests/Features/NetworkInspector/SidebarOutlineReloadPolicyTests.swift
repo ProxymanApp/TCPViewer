@@ -122,6 +122,24 @@ struct SidebarOutlineReloadPolicyTests {
         ) == nil)
     }
 
+    @Test func scrollPositionPolicyClampsNegativeTitlebarInsetOrigins() {
+        let negativeOrigin = SidebarOutlineScrollPositionPolicy.normalized(origin: NSPoint(x: 0, y: -44))
+        let validOrigin = SidebarOutlineScrollPositionPolicy.normalized(origin: NSPoint(x: 0, y: 96))
+
+        #expect(negativeOrigin.y == 0)
+        #expect(validOrigin.y == 96)
+    }
+
+    @MainActor
+    @Test func sidebarScrollViewDisablesAutomaticTitlebarInsets() throws {
+        let controller = SidebarViewController()
+        controller.loadViewIfNeeded()
+
+        let outlineScrollView = try #require(findOutlineScrollView(in: controller.view))
+        #expect(!outlineScrollView.automaticallyAdjustsContentInsets)
+        #expect(outlineScrollView.contentInsets.top == 0)
+    }
+
     @MainActor
     @Test func deferredReloadPreservesSidebarScrollPositionAndSelection() async throws {
         let selectedKey = PacketSourceDomainKey(rawValue: "domain-32.example.com", isMissingDomain: false)
