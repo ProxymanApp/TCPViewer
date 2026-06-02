@@ -72,7 +72,7 @@
     },
     {
       "version": "1.3",
-      "title": "TCP Viewer 1.3 Production Release",
+      "title": "TCP Viewer 1.3 Custom Filters, Pinning, and Sidebar Refinements",
       "features": [
         "Custom structured filter presets for saving and reusing packet filters.",
         "Nested sidebar rows for scoped domain and IP packet sources.",

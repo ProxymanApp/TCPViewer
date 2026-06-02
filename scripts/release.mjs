@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import prompts from "prompts";
 import {
+  assertReleaseTitleReflectsChanges,
   defaultDMGFileName,
   emptyPayloadSHA256,
   findReleaseNote,
@@ -223,7 +224,9 @@ async function readXcodeBuildSettings(env) {
 
 async function loadReleaseNote(version) {
   const releaseNotes = parseReleaseNotes(await readFile(path.join(repoRoot, "ReleaseNote.json"), "utf8"));
-  return findReleaseNote(releaseNotes, version);
+  const releaseNote = findReleaseNote(releaseNotes, version);
+  assertReleaseTitleReflectsChanges(releaseNote);
+  return releaseNote;
 }
 
 async function runFastlaneBuild({ env, releaseType, version, buildNumber, outputDir, dmgFileName }) {

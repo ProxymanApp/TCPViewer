@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  assertReleaseTitleReflectsChanges,
   emptyPayloadSHA256,
   findReleaseNote,
   generateAppcastXML,
@@ -49,6 +50,29 @@ test("parses and validates release notes", () => {
     () => parseReleaseNotes(JSON.stringify({ releases: [{ version: "1.0", title: "Missing lists" }] })),
     /features string array/
   );
+});
+
+test("rejects generic release titles for production publishing", () => {
+  const genericRelease = {
+    version: "1.3",
+    title: "TCP Viewer 1.3 Production Release",
+    features: [
+      "Custom structured filter presets for saving and reusing packet filters.",
+      "Nested sidebar rows for scoped domain and IP packet sources."
+    ],
+    improvements: [],
+    bugs: []
+  };
+  const descriptiveRelease = {
+    ...genericRelease,
+    title: "TCP Viewer 1.3 Custom Filters and Sidebar Refinements"
+  };
+
+  assert.throws(
+    () => assertReleaseTitleReflectsChanges(genericRelease),
+    /title "TCP Viewer 1\.3 Production Release" is too generic/
+  );
+  assert.doesNotThrow(() => assertReleaseTitleReflectsChanges(descriptiveRelease));
 });
 
 test("generates Sparkle appcast XML from structured notes", () => {

@@ -185,6 +185,19 @@ export function findReleaseNote(releaseNotes, version) {
   return release;
 }
 
+export function assertReleaseTitleReflectsChanges(release) {
+  validateReleaseNote(release);
+
+  if (!isGenericReleaseTitle(release)) {
+    return;
+  }
+
+  throw new Error(
+    `Release ${release.version} title "${release.title}" is too generic. ` +
+    `Use a title that names the headline changes, for example: "${makeReleaseTitleSuggestion(release)}".`
+  );
+}
+
 export function makeGitHubReleaseTagName(version) {
   const safeVersion = normalizeFileNameSegment(version, "GitHub release version");
   return `v${safeVersion}`;
@@ -382,6 +395,80 @@ function validateReleaseNote(release) {
       throw new Error(`Release ${release.version} must include a ${field} string array.`);
     }
   }
+}
+
+function isGenericReleaseTitle(release) {
+  const title = normalizeTitleText(release.title).toLowerCase();
+  const versionPrefix = new RegExp(`^(?:tcp viewer\\s+)?v?${escapeRegExp(release.version.toLowerCase())}\\s+`);
+  const suffix = title.replace(versionPrefix, "").trim();
+  const genericSuffixes = new Set([
+    "release",
+    "production release",
+    "stable release",
+    "maintenance release",
+    "maintenance build",
+    "build",
+    "new build",
+    "update"
+  ]);
+
+  return genericSuffixes.has(suffix);
+}
+
+function makeReleaseTitleSuggestion(release) {
+  const topics = [...release.features, ...release.improvements, ...release.bugs]
+    .map(releaseTitleTopic)
+    .filter(Boolean)
+    .slice(0, 3);
+
+  if (!topics.length) {
+    return `TCP Viewer ${release.version} Release Highlights`;
+  }
+
+  return `TCP Viewer ${release.version} ${joinTitleTopics(topics)}`;
+}
+
+function releaseTitleTopic(entry) {
+  const topic = normalizeTitleText(entry)
+    .replace(/\.$/, "")
+    .replace(/^(add|added|new|implement|implemented|improve|improved|fix|fixed|preserve|preserved|show|removed|remove)\s+/i, "")
+    .replace(/\s+(for|to|during|when|with|in|on)\s+.*$/i, "")
+    .split(/\s+/)
+    .slice(0, 5)
+    .join(" ");
+
+  return titleCase(topic);
+}
+
+function joinTitleTopics(topics) {
+  if (topics.length <= 2) {
+    return topics.join(" and ");
+  }
+
+  return `${topics.slice(0, -1).join(", ")}, and ${topics[topics.length - 1]}`;
+}
+
+function titleCase(value) {
+  const lowerCaseWords = new Set(["and", "or", "the", "a", "an", "to", "for", "in", "on", "with", "of"]);
+  return value
+    .split(/\s+/)
+    .map((word, index) => {
+      const lowerWord = word.toLowerCase();
+      if (index > 0 && lowerCaseWords.has(lowerWord)) {
+        return lowerWord;
+      }
+
+      return `${lowerWord.slice(0, 1).toUpperCase()}${lowerWord.slice(1)}`;
+    })
+    .join(" ");
+}
+
+function normalizeTitleText(value) {
+  return String(value ?? "").trim().replace(/\s+/g, " ");
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function normalizeFileNameSegment(value, label) {

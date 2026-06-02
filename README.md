@@ -144,7 +144,7 @@ Before production, add a matching entry to `ReleaseNote.json`:
 ```json
 {
   "version": "1.1.0",
-  "title": "TCP Viewer 1.1 Release",
+  "title": "TCP Viewer 1.1 Filter Presets and Sidebar Refinements",
   "features": [],
   "improvements": [],
   "bugs": []
@@ -164,10 +164,11 @@ and notarizes the DMG, verifies the final code-signing and notarization status,
 uploads dSYMs to Sentry, signs the DMG for Sparkle, uploads it to R2, and prints
 the beta DMG URL.
 Choose `production` to release the app version and build number currently set in
-the Xcode project. The script preflights `ReleaseNote.json`, shows the parsed app
-version and build number in the confirmation summary, verifies the GitHub CLI
-session, checks that the working tree is clean and synced with the default
-branch, and fails if the `v<version>` Git tag or GitHub release already exists.
+the Xcode project. The script preflights `ReleaseNote.json`, rejects generic
+titles that do not name the headline changes, shows the parsed app version and
+build number in the confirmation summary, verifies the GitHub CLI session,
+checks that the working tree is clean and synced with the default branch, and
+fails if the `v<version>` Git tag or GitHub release already exists.
 It then runs `bundle exec fastlane mac build_production`, performs the same
 final DMG verification before uploading to R2, writes the Sparkle appcast XML
 from `ReleaseNote.json` into the production artifact folder, creates and pushes
