@@ -706,7 +706,7 @@ struct NetworkInspectorViewModelTests {
         ])
     }
 
-    @Test func applyingCustomFilterShowsStructuredFilterAndFiltersRows() async throws {
+    @Test func applyingCustomFilterTogglesStructuredFilterVisibilityAndRows() async throws {
         let tcpPacket = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp, layerNames: ["Ethernet", "TCP"])
         let udpPacket = makePacket(packetNumber: 2, source: .offline, transportHint: .udp, layerNames: ["Ethernet", "UDP"])
         let customFilterService = PacketCustomFilterService(storageURL: temporaryDirectory().appendingPathComponent("CustomFilters.json"))
@@ -728,6 +728,13 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.structuredFilterGroup == group)
         #expect(viewModel.snapshot.packetRows.map(\.id) == [tcpPacket.id])
         #expect(viewModel.snapshot.customFilterItems.first?.isSelected == true)
+
+        viewModel.applyCustomFilter(id: savedFilter.id)
+
+        #expect(!viewModel.snapshot.isStructuredFilterVisible)
+        #expect(viewModel.snapshot.structuredFilterGroup == group)
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [tcpPacket.id, udpPacket.id])
+        #expect(viewModel.snapshot.customFilterItems.first?.isSelected == false)
     }
 
     @Test func savingCurrentStructuredFilterAddsSelectedCustomFilter() throws {
@@ -773,6 +780,53 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.structuredFilterGroup == group)
         #expect(viewModel.snapshot.customFilterItems.isEmpty)
         #expect(viewModel.snapshot.isStructuredFilterVisible)
+    }
+
+    @Test func overridingCustomFilterKeepsNameAndSelectsUpdatedGroup() throws {
+        let customFilterService = PacketCustomFilterService(storageURL: temporaryDirectory().appendingPathComponent("CustomFilters.json"))
+        let originalGroup = PacketStructuredFilterGroup(
+            filters: [PacketStructuredFilter(query: .client, condition: .contains, text: "Safari")],
+            operator: .and
+        )
+        let replacementGroup = PacketStructuredFilterGroup(
+            filters: [PacketStructuredFilter(query: .summary, condition: .contains, text: "DNS")],
+            operator: .or
+        )
+        let savedFilter = try customFilterService.save(name: "Traffic", group: originalGroup)
+        let viewModel = makeOfflineViewModel(packets: [], customFilterService: customFilterService)
+
+        viewModel.setStructuredFilterVisible(true)
+        try viewModel.overrideCustomFilter(id: savedFilter.id, group: replacementGroup)
+
+        let updatedFilter = try #require(customFilterService.filter(id: savedFilter.id))
+        #expect(updatedFilter.name == "Traffic")
+        #expect(updatedFilter.group == replacementGroup)
+        #expect(viewModel.snapshot.structuredFilterGroup == replacementGroup)
+        #expect(viewModel.snapshot.customFilterItems == [
+            PacketCustomFilterItem(id: savedFilter.id, title: "Traffic", isSelected: true),
+        ])
+    }
+
+    @Test func duplicatingCustomFilterAddsCopyWithoutChangingStructuredGroup() throws {
+        let customFilterService = PacketCustomFilterService(storageURL: temporaryDirectory().appendingPathComponent("CustomFilters.json"))
+        let firstGroup = PacketStructuredFilterGroup(
+            filters: [PacketStructuredFilter(query: .client, condition: .contains, text: "Safari")],
+            operator: .and
+        )
+        let secondGroup = PacketStructuredFilterGroup(
+            filters: [PacketStructuredFilter(query: .summary, condition: .contains, text: "DNS")],
+            operator: .or
+        )
+        let first = try customFilterService.save(name: "Client", group: firstGroup)
+        let second = try customFilterService.save(name: "Summary", group: secondGroup)
+        let viewModel = makeOfflineViewModel(packets: [], customFilterService: customFilterService)
+
+        viewModel.applyCustomFilter(id: second.id)
+        try viewModel.duplicateCustomFilter(id: first.id)
+
+        #expect(viewModel.snapshot.structuredFilterGroup == secondGroup)
+        #expect(viewModel.snapshot.customFilterItems.map(\.title) == ["Client", "Client", "Summary"])
+        #expect(viewModel.snapshot.customFilterItems.map(\.isSelected) == [false, false, true])
     }
 
     @Test func sidebarThicknessPersistsAndFallsBackWhenInvalid() {

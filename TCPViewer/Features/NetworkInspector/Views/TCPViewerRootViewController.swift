@@ -135,6 +135,22 @@ final class TCPViewerRootViewController: NSViewController {
         }
     }
 
+    func overrideCustomFilter(_ filterID: PacketCustomFilter.ID, group: PacketStructuredFilterGroup) {
+        do {
+            try viewModel.overrideCustomFilter(id: filterID, group: group)
+        } catch {
+            presentCustomFilterError(error, title: "Could Not Override Filter")
+        }
+    }
+
+    func duplicateCustomFilter(_ filterID: PacketCustomFilter.ID) {
+        do {
+            try viewModel.duplicateCustomFilter(id: filterID)
+        } catch {
+            presentCustomFilterError(error, title: "Could Not Duplicate Filter")
+        }
+    }
+
     func deleteCustomFilter(_ filterID: PacketCustomFilter.ID) {
         do {
             try viewModel.deleteCustomFilter(id: filterID)
@@ -776,6 +792,14 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
         } catch {
             presentCustomFilterError(error, title: "Could Not Save Filter")
         }
+    }
+
+    func packetWorkspaceViewController(
+        _ controller: PacketWorkspaceViewController,
+        didRequestOverrideCustomFilter filterID: PacketCustomFilter.ID,
+        group: PacketStructuredFilterGroup
+    ) {
+        overrideCustomFilter(filterID, group: group)
     }
 
     func packetWorkspaceViewControllerDidRequestResetQuickFilters(_ controller: PacketWorkspaceViewController) {

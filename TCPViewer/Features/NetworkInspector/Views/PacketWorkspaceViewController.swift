@@ -19,6 +19,11 @@ protocol PacketWorkspaceViewControllerDelegate: AnyObject {
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestDeletePackets identifiers: [PacketSummary.ID])
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didUpdateStructuredFilterGroup group: PacketStructuredFilterGroup)
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestSaveCustomFilterNamed name: String, group: PacketStructuredFilterGroup)
+    func packetWorkspaceViewController(
+        _ controller: PacketWorkspaceViewController,
+        didRequestOverrideCustomFilter filterID: PacketCustomFilter.ID,
+        group: PacketStructuredFilterGroup
+    )
     func packetWorkspaceViewControllerDidRequestResetQuickFilters(_ controller: PacketWorkspaceViewController)
     func packetWorkspaceViewControllerCanAddStructuredFilter(_ controller: PacketWorkspaceViewController) -> Bool
     func packetWorkspaceViewControllerCanSaveCustomFilter(_ controller: PacketWorkspaceViewController) -> Bool
@@ -130,7 +135,11 @@ final class PacketWorkspaceViewController: NSViewController {
     // Render the packet workspace and swap between the table and empty state as needed.
     func render(snapshot: NetworkInspectorSnapshot) {
         viewModel.render(snapshot: snapshot)
-        structuredFilterController.render(group: snapshot.structuredFilterGroup, isFiltering: snapshot.isPacketTableFiltering)
+        structuredFilterController.render(
+            group: snapshot.structuredFilterGroup,
+            isFiltering: snapshot.isPacketTableFiltering,
+            customFilterItems: snapshot.customFilterItems
+        )
         applyStructuredFilterVisibility(snapshot.isStructuredFilterVisible)
 
         if viewModel.isEmpty {
@@ -386,6 +395,14 @@ extension PacketWorkspaceViewController: PacketStructuredFilterViewControllerDel
         group: PacketStructuredFilterGroup
     ) {
         delegate?.packetWorkspaceViewController(self, didRequestSaveCustomFilterNamed: name, group: group)
+    }
+
+    func packetStructuredFilterViewController(
+        _ controller: PacketStructuredFilterViewController,
+        didRequestOverrideCustomFilter filterID: PacketCustomFilter.ID,
+        group: PacketStructuredFilterGroup
+    ) {
+        delegate?.packetWorkspaceViewController(self, didRequestOverrideCustomFilter: filterID, group: group)
     }
 
     func packetStructuredFilterViewControllerCanAddFilter(_ controller: PacketStructuredFilterViewController) -> Bool {

@@ -1170,9 +1170,16 @@ final class NetworkInspectorViewModel {
         return savedFilter
     }
 
-    // Replace the structured filter editor with a saved custom filter and apply it immediately.
+    // Toggle or replace the structured filter editor with a saved custom filter.
     func applyCustomFilter(id: PacketCustomFilter.ID) {
         guard let filter = customFilterService.filter(id: id) else {
+            return
+        }
+
+        if isStructuredFilterVisible, selectedCustomFilterID == filter.id {
+            isStructuredFilterVisible = false
+            preferences.persistStructuredFilterVisible(false)
+            rebuildSnapshot()
             return
         }
 
@@ -1189,6 +1196,22 @@ final class NetworkInspectorViewModel {
     // Rename a saved custom filter and refresh titlebar render models.
     func renameCustomFilter(id: PacketCustomFilter.ID, name: String) throws {
         try customFilterService.rename(id: id, name: name)
+        rebuildSnapshot()
+    }
+
+    // Replace one saved custom filter with the current structured filter group.
+    func overrideCustomFilter(id: PacketCustomFilter.ID, group: PacketStructuredFilterGroup) throws {
+        let replacementGroup = PacketStructuredFilterGroup(filters: group.filters, operator: group.operator)
+        try customFilterService.updateGroup(id: id, group: replacementGroup)
+        structuredFilterGroup = replacementGroup
+        structuredFilterStore.save(replacementGroup)
+        selectedCustomFilterID = id
+        rebuildSnapshot()
+    }
+
+    // Duplicate a saved custom filter without changing the active structured filter group.
+    func duplicateCustomFilter(id: PacketCustomFilter.ID) throws {
+        _ = try customFilterService.duplicate(id: id)
         rebuildSnapshot()
     }
 

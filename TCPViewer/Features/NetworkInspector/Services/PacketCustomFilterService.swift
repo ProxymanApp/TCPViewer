@@ -84,7 +84,12 @@ final class PacketCustomFilterService {
             group: PacketStructuredFilterGroup(filters: group.filters, operator: group.operator)
         )
         cachedFilters.append(filter)
-        try persist()
+        do {
+            try persist()
+        } catch {
+            cachedFilters.removeAll { $0.id == filter.id }
+            throw error
+        }
         return filter
     }
 
@@ -104,6 +109,48 @@ final class PacketCustomFilterService {
             cachedFilters[index] = previousFilter
             throw error
         }
+    }
+
+    // Replace a saved filter payload while keeping its user-facing name and identity.
+    func updateGroup(id: PacketCustomFilter.ID, group: PacketStructuredFilterGroup, now: Date = Date()) throws {
+        guard let index = cachedFilters.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+
+        let previousFilter = cachedFilters[index]
+        cachedFilters[index].group = PacketStructuredFilterGroup(filters: group.filters, operator: group.operator)
+        cachedFilters[index].updatedAt = now
+        do {
+            try persist()
+        } catch {
+            cachedFilters[index] = previousFilter
+            throw error
+        }
+    }
+
+    // Duplicate a saved filter beside its source without changing either filter payload.
+    @discardableResult
+    func duplicate(id: PacketCustomFilter.ID, now: Date = Date()) throws -> PacketCustomFilter? {
+        guard let index = cachedFilters.firstIndex(where: { $0.id == id }) else {
+            return nil
+        }
+
+        let sourceFilter = cachedFilters[index]
+        let duplicatedFilter = PacketCustomFilter(
+            id: UUID().uuidString,
+            name: sourceFilter.name,
+            createdAt: now,
+            updatedAt: now,
+            group: PacketStructuredFilterGroup(filters: sourceFilter.group.filters, operator: sourceFilter.group.operator)
+        )
+        cachedFilters.insert(duplicatedFilter, at: cachedFilters.index(after: index))
+        do {
+            try persist()
+        } catch {
+            cachedFilters.removeAll { $0.id == duplicatedFilter.id }
+            throw error
+        }
+        return duplicatedFilter
     }
 
     // Delete one saved filter and roll back the cache if persistence fails.

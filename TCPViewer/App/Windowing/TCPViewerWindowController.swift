@@ -264,6 +264,10 @@ extension TCPViewerWindowController: PacketQuickFilterViewControllerDelegate {
         rootViewController.renameCustomFilter(filterID, name: name)
     }
 
+    func packetQuickFilterViewController(_ controller: PacketQuickFilterViewController, didDuplicateCustomFilter filterID: PacketCustomFilter.ID) {
+        rootViewController.duplicateCustomFilter(filterID)
+    }
+
     func packetQuickFilterViewController(_ controller: PacketQuickFilterViewController, didDeleteCustomFilter filterID: PacketCustomFilter.ID) {
         rootViewController.deleteCustomFilter(filterID)
     }

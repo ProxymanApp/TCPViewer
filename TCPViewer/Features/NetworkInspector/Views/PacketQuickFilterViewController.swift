@@ -15,6 +15,7 @@ protocol PacketQuickFilterViewControllerDelegate: AnyObject {
         didRenameCustomFilter filterID: PacketCustomFilter.ID,
         name: String
     )
+    func packetQuickFilterViewController(_ controller: PacketQuickFilterViewController, didDuplicateCustomFilter filterID: PacketCustomFilter.ID)
     func packetQuickFilterViewController(_ controller: PacketQuickFilterViewController, didDeleteCustomFilter filterID: PacketCustomFilter.ID)
     func packetQuickFilterViewControllerDidRequestReset(_ controller: PacketQuickFilterViewController)
 }
@@ -294,11 +295,19 @@ final class PacketQuickFilterViewController: NSTitlebarAccessoryViewController {
 
         let menu = NSMenu()
         menu.autoenablesItems = false
-        let renameItem = NSMenuItem(title: "Rename", action: #selector(renameCustomFilter(_:)), keyEquivalent: "")
+        let renameItem = NSMenuItem(title: "Edit Name", action: #selector(renameCustomFilter(_:)), keyEquivalent: "")
         renameItem.target = self
         renameItem.representedObject = item.id
         menu.addItem(renameItem)
 
+        menu.addItem(.separator())
+        let duplicateItem = NSMenuItem(title: "Duplicate", action: #selector(duplicateCustomFilter(_:)), keyEquivalent: "")
+        duplicateItem.target = self
+        duplicateItem.representedObject = item.id
+        duplicateItem.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Duplicate")
+        menu.addItem(duplicateItem)
+
+        menu.addItem(.separator())
         let deleteItem = NSMenuItem(title: "Delete", action: #selector(deleteCustomFilter(_:)), keyEquivalent: "\u{8}")
         deleteItem.target = self
         deleteItem.representedObject = item.id
@@ -316,6 +325,14 @@ final class PacketQuickFilterViewController: NSTitlebarAccessoryViewController {
         }
 
         delegate?.packetQuickFilterViewController(self, didRenameCustomFilter: filterID, name: name)
+    }
+
+    @objc private func duplicateCustomFilter(_ sender: NSMenuItem) {
+        guard let filterID = sender.representedObject as? PacketCustomFilter.ID else {
+            return
+        }
+
+        delegate?.packetQuickFilterViewController(self, didDuplicateCustomFilter: filterID)
     }
 
     @objc private func deleteCustomFilter(_ sender: NSMenuItem) {

@@ -67,6 +67,19 @@ struct PacketCustomFilterServiceTests {
         #expect(service.filters().isEmpty)
     }
 
+    @Test func failedSaveDoesNotKeepUnsavedFilterInMemory() throws {
+        let blockedParentURL = temporaryDirectory().appendingPathComponent("BlockedParent")
+        try "not a directory".write(to: blockedParentURL, atomically: true, encoding: .utf8)
+        let service = PacketCustomFilterService(storageURL: blockedParentURL.appendingPathComponent("CustomFilters.json"))
+
+        do {
+            _ = try service.save(name: "Unsaved", group: .default)
+            Issue.record("Expected save to fail when the storage parent is a file.")
+        } catch {
+            #expect(service.filters().isEmpty)
+        }
+    }
+
     @Test func renameAndDeletePersistChanges() throws {
         let storageURL = temporaryDirectory().appendingPathComponent("CustomFilters.json")
         let service = PacketCustomFilterService(storageURL: storageURL)
@@ -86,6 +99,59 @@ struct PacketCustomFilterServiceTests {
 
         try service.delete(id: saved.id)
         #expect(PacketCustomFilterService(storageURL: storageURL).filters().isEmpty)
+    }
+
+    @Test func updateGroupKeepsNameAndIdentityButPersistsNewPayload() throws {
+        let storageURL = temporaryDirectory().appendingPathComponent("CustomFilters.json")
+        let service = PacketCustomFilterService(storageURL: storageURL)
+        let originalGroup = PacketStructuredFilterGroup(
+            filters: [PacketStructuredFilter(query: .client, condition: .contains, text: "Safari")],
+            operator: .and
+        )
+        let replacementGroup = PacketStructuredFilterGroup(
+            filters: [
+                PacketStructuredFilter(query: .protocol, condition: .contains, text: "udp", isEnabled: true),
+                PacketStructuredFilter(query: .summary, condition: .notContains, text: "DNS", isEnabled: false),
+            ],
+            operator: .or
+        )
+        let saved = try service.save(name: "Traffic", group: originalGroup, now: Date(timeIntervalSince1970: 10))
+
+        try service.updateGroup(id: saved.id, group: replacementGroup, now: Date(timeIntervalSince1970: 40))
+
+        let updated = try #require(PacketCustomFilterService(storageURL: storageURL).filter(id: saved.id))
+        #expect(updated.id == saved.id)
+        #expect(updated.name == "Traffic")
+        #expect(updated.createdAt == Date(timeIntervalSince1970: 10))
+        #expect(updated.updatedAt == Date(timeIntervalSince1970: 40))
+        #expect(updated.group == replacementGroup)
+    }
+
+    @Test func duplicatePersistsCopyNextToSourceWithSameNameAndGroup() throws {
+        let storageURL = temporaryDirectory().appendingPathComponent("CustomFilters.json")
+        let service = PacketCustomFilterService(storageURL: storageURL)
+        let firstGroup = PacketStructuredFilterGroup(
+            filters: [PacketStructuredFilter(query: .protocol, condition: .contains, text: "tcp")],
+            operator: .and
+        )
+        let secondGroup = PacketStructuredFilterGroup(
+            filters: [PacketStructuredFilter(query: .summary, condition: .matchesRegex, text: "GET|POST")],
+            operator: .or
+        )
+        let first = try service.save(name: "Traffic", group: firstGroup, now: Date(timeIntervalSince1970: 10))
+        let second = try service.save(name: "Methods", group: secondGroup, now: Date(timeIntervalSince1970: 20))
+
+        let duplicated = try #require(try service.duplicate(id: first.id, now: Date(timeIntervalSince1970: 30)))
+
+        #expect(duplicated.id != first.id)
+        #expect(duplicated.name == first.name)
+        #expect(duplicated.group == first.group)
+        #expect(duplicated.createdAt == Date(timeIntervalSince1970: 30))
+        #expect(duplicated.updatedAt == Date(timeIntervalSince1970: 30))
+
+        let reloadedFilters = PacketCustomFilterService(storageURL: storageURL).filters()
+        #expect(reloadedFilters.map(\.id) == [first.id, duplicated.id, second.id])
+        #expect(reloadedFilters.map(\.name) == ["Traffic", "Traffic", "Methods"])
     }
 
     private func expectValidationError(
