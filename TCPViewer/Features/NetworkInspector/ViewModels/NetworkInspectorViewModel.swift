@@ -12,6 +12,7 @@ import UniformTypeIdentifiers
 
 enum NetworkInspectorLayoutMetrics {
     static let minimumInspectorThickness: CGFloat = 100
+    static let defaultInspectorThickness: CGFloat = 360
 }
 
 private struct NetworkInspectorPreferences {
@@ -1749,6 +1750,24 @@ final class NetworkInspectorViewModel {
         }
 
         return thickness
+    }
+
+    // Use the saved inspector width when it is usable; otherwise reopen at a visible default width.
+    func restoredInspectorThickness(for availableLength: CGFloat) -> CGFloat? {
+        guard availableLength.isFinite else {
+            return nil
+        }
+
+        if let thickness = preferredInspectorThickness(for: availableLength) {
+            return thickness
+        }
+
+        let maximumThickness = availableLength - 1
+        guard maximumThickness >= NetworkInspectorLayoutMetrics.minimumInspectorThickness else {
+            return nil
+        }
+
+        return min(NetworkInspectorLayoutMetrics.defaultInspectorThickness, maximumThickness)
     }
 
     // Persist the sidebar's visibility so the root split view can restore it on the next launch.

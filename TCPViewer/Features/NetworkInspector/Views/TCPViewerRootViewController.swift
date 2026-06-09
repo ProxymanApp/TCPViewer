@@ -413,11 +413,10 @@ final class TCPViewerRootViewController: NSViewController {
     // Lock the split item briefly so AppKit's uncollapse animation starts at the saved width.
     private func prepareInspectorItemForExactRestore() {
         let splitView = contentSplitViewController.splitView
-        let totalLength = splitView.bounds.width
-        guard let inspectorThickness = viewModel.preferredInspectorThickness(for: totalLength) else {
+        guard let inspectorThickness = inspectorRestoreThickness(for: splitView) else {
             clearTemporaryInspectorRestoreThickness()
             print(
-                "[TCPViewer] Inspector restore will use default width: " +
+                "[TCPViewer] Inspector restore skipped: no usable width. " +
                 "\(inspectorSplitDebugDescription())"
             )
             return
@@ -427,7 +426,7 @@ final class TCPViewerRootViewController: NSViewController {
         inspectorItem?.minimumThickness = inspectorThickness
         inspectorItem?.maximumThickness = inspectorThickness
         print(
-            "[TCPViewer] Inspector restore prepared: lockedWidth=\(debugValue(inspectorThickness)) " +
+            "[TCPViewer] Inspector restore prepared: targetWidth=\(debugValue(inspectorThickness)) " +
             "\(inspectorSplitDebugDescription())"
         )
     }
@@ -458,8 +457,8 @@ final class TCPViewerRootViewController: NSViewController {
             return
         }
 
-        guard let inspectorThickness = viewModel.preferredInspectorThickness(for: totalLength) else {
-            print("[TCPViewer] Inspector restore skipped: no valid saved width. \(inspectorSplitDebugDescription())")
+        guard let inspectorThickness = inspectorRestoreThickness(for: splitView) else {
+            print("[TCPViewer] Inspector restore skipped: no usable width. \(inspectorSplitDebugDescription())")
             return
         }
 
@@ -467,18 +466,23 @@ final class TCPViewerRootViewController: NSViewController {
         guard dividerPosition.isFinite, dividerPosition > 0 else {
             print(
                 "[TCPViewer] Inspector restore skipped: invalid divider=\(debugValue(dividerPosition)) " +
-                "savedWidth=\(debugValue(inspectorThickness)) \(inspectorSplitDebugDescription())"
+                "targetWidth=\(debugValue(inspectorThickness)) \(inspectorSplitDebugDescription())"
             )
             return
         }
 
         print(
-            "[TCPViewer] Inspector restore applying: savedWidth=\(debugValue(inspectorThickness)) " +
+            "[TCPViewer] Inspector restore applying: targetWidth=\(debugValue(inspectorThickness)) " +
             "restoreDivider=\(debugValue(dividerPosition)) subviews=\(splitView.subviews.count) " +
             "\(inspectorSplitDebugDescription())"
         )
         splitView.setPosition(dividerPosition, ofDividerAt: 0)
         print("[TCPViewer] Inspector restore applied: \(inspectorSplitDebugDescription())")
+    }
+
+    private func inspectorRestoreThickness(for splitView: NSSplitView) -> CGFloat? {
+        let availableLength = splitView.bounds.width - splitView.dividerThickness
+        return viewModel.restoredInspectorThickness(for: availableLength)
     }
 
     private func configureSplitViewObservation() {

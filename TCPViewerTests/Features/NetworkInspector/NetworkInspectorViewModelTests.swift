@@ -875,18 +875,23 @@ struct NetworkInspectorViewModelTests {
         )
 
         #expect(reloadedViewModel.preferredInspectorThickness(for: 900) == 360)
+        #expect(reloadedViewModel.restoredInspectorThickness(for: 900) == 360)
 
         reloadedViewModel.rememberInspectorThickness(10_000)
 
         #expect(reloadedViewModel.preferredInspectorThickness(for: 900) == nil)
+        #expect(reloadedViewModel.restoredInspectorThickness(for: 900) == 360)
 
         reloadedViewModel.rememberInspectorThickness(99)
 
         #expect(reloadedViewModel.preferredInspectorThickness(for: 900) == nil)
+        #expect(reloadedViewModel.restoredInspectorThickness(for: 900) == 360)
 
         reloadedViewModel.rememberInspectorThickness(100)
 
         #expect(reloadedViewModel.preferredInspectorThickness(for: 900) == 100)
+        #expect(reloadedViewModel.restoredInspectorThickness(for: 900) == 100)
+        #expect(reloadedViewModel.restoredInspectorThickness(for: 100) == nil)
     }
 
     @Test func packetRowsAppendIncrementallyForMatchingLiveBatches() async {
