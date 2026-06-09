@@ -168,6 +168,19 @@ final class TCPViewerRootViewController: NSViewController {
         workspaceViewController.focusStructuredFilter()
     }
 
+    func focusSidebarFilter() {
+        guard sidebarItem?.isCollapsed == true else {
+            sidebarViewController.focusFilterField()
+            return
+        }
+
+        // Reopen the sidebar before focusing because collapsed split items cannot accept focus.
+        setSidebarVisible(true)
+        DispatchQueue.main.async { [weak self] in
+            self?.sidebarViewController.focusFilterField()
+        }
+    }
+
     func showOpenPanel() {
         viewModel.presentOpenCapturePanel()
     }
@@ -200,6 +213,10 @@ final class TCPViewerRootViewController: NSViewController {
     @objc func toggleSidebar(_ sender: Any?) {
         // Mirror AppKit's toggleSidebar action while keeping the split state persisted in our model.
         setSidebarVisible(sidebarItem?.isCollapsed ?? false)
+    }
+
+    @objc func focusSidebarFilter(_ sender: Any?) {
+        focusSidebarFilter()
     }
 
     private func setupChildControllers() {

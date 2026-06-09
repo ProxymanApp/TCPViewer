@@ -390,11 +390,17 @@ final class SidebarViewController: NSViewController {
     }
 
     private func setupSearchField() {
-        searchField.placeholderString = "Filter"
+        searchField.placeholderString = "Filter (⌘⇧F)"
         searchField.delegate = self
         searchField.target = self
         searchField.action = #selector(searchFieldChanged(_:))
         searchField.translatesAutoresizingMaskIntoConstraints = false
+    }
+
+    // Focus the persistent sidebar filter when the global View menu shortcut is used.
+    func focusFilterField() {
+        view.window?.makeFirstResponder(searchField)
+        searchField.currentEditor()?.selectAll(nil)
     }
 
     private func setupLayout() {
@@ -629,6 +635,10 @@ final class SidebarViewController: NSViewController {
         PacketSourceListExportPolicy.selection(for: contextSourceItem() ?? selectedSourceItem())
     }
 
+    private func selectedFinderURL() -> URL? {
+        PacketSourceListFinderPolicy.fileURL(for: contextSourceItem() ?? selectedSourceItem())
+    }
+
     private func selectedPinTargets() -> [PacketSourceListPinTarget] {
         PacketSourceListPinPolicy.targets(for: selectedSourceItems())
     }
@@ -682,6 +692,14 @@ final class SidebarViewController: NSViewController {
         }
 
         delegate?.sidebarViewController(self, didRequestDelete: action)
+    }
+
+    @objc private func showSelectedSourceListItemInFinder(_ sender: Any?) {
+        guard let url = selectedFinderURL() else {
+            return
+        }
+
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
     @objc private func exportSelectedSourceListItemAsPcap(_ sender: Any?) {
@@ -854,9 +872,10 @@ extension SidebarViewController: NSMenuDelegate {
         let pinTargets = selectedPinTargets()
         let action = selectedDeletionAction()
         let exportSelection = selectedExportSelection()
+        let finderURL = selectedFinderURL()
 
         menu.removeAllItems()
-        guard !pinTargets.isEmpty || action.isEnabled || exportSelection != nil else {
+        guard !pinTargets.isEmpty || action.isEnabled || exportSelection != nil || finderURL != nil else {
             return
         }
 
@@ -888,8 +907,21 @@ extension SidebarViewController: NSMenuDelegate {
             menu.addItem(exportItem)
         }
 
-        if action.isEnabled {
+        if finderURL != nil {
             if !pinTargets.isEmpty || exportSelection != nil {
+                menu.addItem(.separator())
+            }
+
+            let finderItem = NSMenuItem(title: "Show in Finder…", action: #selector(showSelectedSourceListItemInFinder(_:)), keyEquivalent: "")
+            finderItem.target = self
+            finderItem.isEnabled = true
+            finderItem.toolTip = "Reveal the selected app in Finder."
+            finderItem.image = NSImage(systemSymbolName: "folder", accessibilityDescription: "Show in Finder")
+            menu.addItem(finderItem)
+        }
+
+        if action.isEnabled {
+            if !pinTargets.isEmpty || exportSelection != nil || finderURL != nil {
                 menu.addItem(.separator())
             }
 

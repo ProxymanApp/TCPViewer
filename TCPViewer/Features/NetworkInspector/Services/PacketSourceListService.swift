@@ -208,6 +208,25 @@ enum PacketSourceListExportPolicy {
     }
 }
 
+enum PacketSourceListFinderPolicy {
+    // Reveal only app-backed rows with absolute local paths.
+    static func fileURL(for item: PacketSourceListItem?) -> URL? {
+        guard let item,
+              let path = item.iconFilePath?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !path.isEmpty,
+              (path as NSString).isAbsolutePath else {
+            return nil
+        }
+
+        switch item.kind {
+        case .app, .pin:
+            return URL(fileURLWithPath: path)
+        case .group, .favorite, .folder, .domain:
+            return nil
+        }
+    }
+}
+
 enum PacketSourceListPinPolicy {
     static func targets(for items: [PacketSourceListItem]) -> [PacketSourceListPinTarget] {
         var seenTargets = Set<PacketSourceListPinTarget>()

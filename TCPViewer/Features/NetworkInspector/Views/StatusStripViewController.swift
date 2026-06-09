@@ -16,60 +16,17 @@ protocol StatusStripViewControllerDelegate: AnyObject {
 
 final class StatusStripViewModel {
     private(set) var totalText = "0 packets"
-    private(set) var statusText = "Idle"
-    private(set) var statusImageName = "circle"
-    private(set) var statusColor = NSColor.secondaryLabelColor
     private(set) var canCancelLoad = false
     private(set) var canClear = false
     private(set) var isStructuredFilterVisible = false
 
-    // Build the compact bottom status strip from the current packet/capture snapshot.
+    // Build the compact bottom strip controls from the current packet/capture snapshot.
     func render(snapshot: NetworkInspectorSnapshot) {
         let packetCount = snapshot.totalPacketCount
         totalText = packetCount == 1 ? "1 packet" : "\(packetCount) packets"
         canCancelLoad = snapshot.base.loadState.canCancel
         canClear = snapshot.visiblePacketCount > 0 && !canCancelLoad
         isStructuredFilterVisible = snapshot.isStructuredFilterVisible
-
-        let phase = snapshot.base.sessionState.phase
-        statusText = title(for: phase)
-        statusImageName = imageName(for: phase)
-        statusColor = color(for: phase)
-    }
-
-    private func title(for phase: CaptureSessionState.Phase) -> String {
-        switch phase {
-        case .idle: "Idle"
-        case .ready: "Ready to Capture"
-        case .starting: "Starting Capture"
-        case .running: "Capturing"
-        case .paused: "Paused"
-        case .stopping: "Stopping Capture"
-        case .stopped: "Stopped"
-        case .failed: "Failed"
-        }
-    }
-
-    private func imageName(for phase: CaptureSessionState.Phase) -> String {
-        switch phase {
-        case .running: "dot.radiowaves.left.and.right"
-        case .starting, .stopping: "bolt.horizontal.circle"
-        case .paused: "pause.circle.fill"
-        case .ready: "checkmark.circle.fill"
-        case .stopped: "stop.circle.fill"
-        case .failed: "exclamationmark.triangle.fill"
-        case .idle: "circle"
-        }
-    }
-
-    private func color(for phase: CaptureSessionState.Phase) -> NSColor {
-        switch phase {
-        case .running: .systemGreen
-        case .paused: .systemOrange
-        case .failed: .systemRed
-        case .ready: .systemGreen
-        case .starting, .stopping, .stopped, .idle: .secondaryLabelColor
-        }
     }
 }
 
@@ -85,8 +42,6 @@ final class StatusStripViewController: NSViewController {
         font: .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
         color: .secondaryLabelColor
     )
-    private let statusImageView = NSImageView()
-    private let statusLabel = TCPViewerUI.label("", font: .systemFont(ofSize: NSFont.smallSystemFontSize))
 
     override func loadView() {
         view = NSView()
@@ -112,10 +67,6 @@ final class StatusStripViewController: NSViewController {
         clearButton.isEnabled = viewModel.canClear
         filterButton.state = viewModel.isStructuredFilterVisible ? .on : .off
         totalLabel.stringValue = viewModel.totalText
-        statusLabel.stringValue = viewModel.statusText
-        statusLabel.textColor = viewModel.statusColor
-        statusImageView.image = TCPViewerUI.image(viewModel.statusImageName)
-        statusImageView.contentTintColor = viewModel.statusColor
     }
 
     private func setupLayout() {
@@ -135,52 +86,37 @@ final class StatusStripViewController: NSViewController {
         filterButton.toolTip = "Show or hide packet filters"
 
         totalLabel.alignment = .center
+        totalLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        statusImageView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
-        statusImageView.translatesAutoresizingMaskIntoConstraints = false
-
-        let statusStack = NSStackView(views: [statusImageView, statusLabel])
-        statusStack.orientation = .horizontal
-        statusStack.alignment = .centerY
-        statusStack.spacing = 5
-
-        let leadingSpacer = NSView()
-        let trailingSpacer = NSView()
-        leadingSpacer.translatesAutoresizingMaskIntoConstraints = false
-        trailingSpacer.translatesAutoresizingMaskIntoConstraints = false
-
-        let stack = NSStackView(views: [
+        let controlStack = NSStackView(views: [
             cancelButton,
             clearButton,
             filterButton,
-            leadingSpacer,
-            totalLabel,
-            trailingSpacer,
-            statusStack,
         ])
-        stack.orientation = .horizontal
-        stack.alignment = .centerY
-        stack.spacing = 8
-        stack.translatesAutoresizingMaskIntoConstraints = false
+        controlStack.orientation = .horizontal
+        controlStack.alignment = .centerY
+        controlStack.spacing = 8
+        controlStack.translatesAutoresizingMaskIntoConstraints = false
 
         let separator = TCPViewerUI.separator()
         view.addSubview(separator)
-        view.addSubview(stack)
+        view.addSubview(controlStack)
+        view.addSubview(totalLabel)
 
         NSLayoutConstraint.activate([
             view.heightAnchor.constraint(equalToConstant: 33),
-            statusImageView.widthAnchor.constraint(equalToConstant: 14),
-            statusImageView.heightAnchor.constraint(equalToConstant: 14),
 
             separator.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             separator.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             separator.topAnchor.constraint(equalTo: view.topAnchor),
 
-            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 14),
-            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -14),
-            stack.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            controlStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 14),
+            controlStack.centerYAnchor.constraint(equalTo: view.centerYAnchor),
 
-            leadingSpacer.widthAnchor.constraint(equalTo: trailingSpacer.widthAnchor),
+            totalLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            totalLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            totalLabel.leadingAnchor.constraint(greaterThanOrEqualTo: controlStack.trailingAnchor, constant: 12),
+            totalLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -14),
         ])
     }
 
