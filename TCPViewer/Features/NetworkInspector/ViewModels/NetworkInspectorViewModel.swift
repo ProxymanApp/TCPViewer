@@ -1732,19 +1732,20 @@ final class NetworkInspectorViewModel {
 
     // Keep the last usable trailing inspector width for future launches and reopen actions.
     func rememberInspectorThickness(_ thickness: CGFloat) {
-        guard thickness.isFinite, thickness > 0 else {
+        guard thickness.isFinite,
+              thickness > NetworkInspectorLayoutMetrics.minimumInspectorThickness else {
             return
         }
 
         preferences.persistInspectorThickness(thickness)
     }
 
-    // Reject invalid or tiny saved inspector widths so the root controller can keep AppKit's default.
+    // Reject invalid or collapse-threshold inspector widths so reopen can fall back to a visible default.
     func preferredInspectorThickness(for availableLength: CGFloat) -> CGFloat? {
         guard availableLength.isFinite, availableLength > 0,
               let thickness = preferences.inspectorThickness,
               thickness.isFinite,
-              thickness >= NetworkInspectorLayoutMetrics.minimumInspectorThickness,
+              thickness > NetworkInspectorLayoutMetrics.minimumInspectorThickness,
               thickness < availableLength else {
             return nil
         }
@@ -1763,7 +1764,7 @@ final class NetworkInspectorViewModel {
         }
 
         let maximumThickness = availableLength - 1
-        guard maximumThickness >= NetworkInspectorLayoutMetrics.minimumInspectorThickness else {
+        guard maximumThickness > NetworkInspectorLayoutMetrics.minimumInspectorThickness else {
             return nil
         }
 
