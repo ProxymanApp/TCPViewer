@@ -8,6 +8,9 @@
 import AppKit
 
 final class PacketTextCell: NSTextFieldCell {
+    private static let leftPadding: CGFloat = 5
+    private static let rightPadding: CGFloat = 4
+
     enum Style {
         case primary
         case secondary
@@ -55,7 +58,9 @@ final class PacketTextCell: NSTextFieldCell {
 
     private func verticallyCenteredRect(forBounds rect: NSRect) -> NSRect {
         // Center text in compact rows so AppKit's default baseline does not sit high.
-        var drawingRect = super.drawingRect(forBounds: rect).insetBy(dx: 6, dy: 0)
+        var drawingRect = super.drawingRect(forBounds: rect)
+        drawingRect.origin.x += Self.leftPadding
+        drawingRect.size.width = max(0, drawingRect.width - Self.leftPadding - Self.rightPadding)
         let textHeight = cellSize(forBounds: drawingRect).height
         drawingRect.origin.y += floor((drawingRect.height - textHeight) / 2)
         drawingRect.size.height = textHeight
