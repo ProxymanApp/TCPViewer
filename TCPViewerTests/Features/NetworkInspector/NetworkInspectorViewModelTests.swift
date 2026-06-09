@@ -857,6 +857,38 @@ struct NetworkInspectorViewModelTests {
         #expect(reloadedViewModel.preferredSidebarThickness(for: 800) == nil)
     }
 
+    @Test func inspectorThicknessPersistsAndFallsBackWhenInvalid() {
+        let defaults = isolatedDefaults()
+        let services = TCPViewerServiceRegistry(core: InspectorFakeCore(
+            interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")]
+        ))
+        let viewModel = NetworkInspectorViewModel(
+            services: services,
+            userDefaults: defaults
+        )
+
+        viewModel.rememberInspectorThickness(360)
+
+        let reloadedViewModel = NetworkInspectorViewModel(
+            services: services,
+            userDefaults: defaults
+        )
+
+        #expect(reloadedViewModel.preferredInspectorThickness(for: 900) == 360)
+
+        reloadedViewModel.rememberInspectorThickness(10_000)
+
+        #expect(reloadedViewModel.preferredInspectorThickness(for: 900) == nil)
+
+        reloadedViewModel.rememberInspectorThickness(99)
+
+        #expect(reloadedViewModel.preferredInspectorThickness(for: 900) == nil)
+
+        reloadedViewModel.rememberInspectorThickness(100)
+
+        #expect(reloadedViewModel.preferredInspectorThickness(for: 900) == 100)
+    }
+
     @Test func packetRowsAppendIncrementallyForMatchingLiveBatches() async {
         let packets = [
             makePacket(packetNumber: 1, source: .live, transportHint: .tcp),
