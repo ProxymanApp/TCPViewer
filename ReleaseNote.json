@@ -90,6 +90,29 @@
         "Fixed sidebar scroll inset behavior.",
         "Fixed sidebar pin multi-selection navigation."
       ]
+    },
+    {
+      "version": "1.4.0",
+      "title": "TCP Viewer 1.4.0 Inspector Placement, Copy, and Update Fixes",
+      "features": [
+        "Bottom inspector mode with a toolbar toggle for viewing packet details below the packet table.",
+        "Copy All and subtree-aware Copy actions for packet detail rows.",
+        "Show in Finder action for app-backed source list rows.",
+        "View menu command for focusing the sidebar filter."
+      ],
+      "improvements": [
+        "Restored saved inspector placement and pane size across launches, toggles, and first packet load.",
+        "Adjusted the inspector detail and hex split layout for both right-side and bottom inspector placements.",
+        "Simplified the bottom status strip with centered packet counts and clearer control spacing.",
+        "Refined packet table text padding.",
+        "Removed unused Format menu items from the main app menu.",
+        "Require descriptive release titles during production release validation."
+      ],
+      "bugs": [
+        "Fixed inspector split sizing when the first packet is selected.",
+        "Fixed factory reset termination so the app can quit without another confirmation loop.",
+        "Fixed launch update checks so Sparkle checks once per launch when automatic update checks are enabled."
+      ]
     }
   ]
 }
