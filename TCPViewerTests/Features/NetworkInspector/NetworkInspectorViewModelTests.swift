@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import AppKit
 import Testing
 import PcapPlusPlusCore
 @testable import TCPViewer
@@ -529,9 +530,9 @@ struct NetworkInspectorViewModelTests {
         #expect(!viewModel.canClear)
     }
 
-    @Test func statusStripUsesPacketCaptureLanguageWhileRunning() {
+    @Test func statusStripHidesCapturePhaseStatusText() {
         var base = TCPViewerWindowSnapshot.foundation
-        base.sessionState.phase = .running
+        base.sessionState.phase = .stopped
         let snapshot = NetworkInspectorSnapshot.make(
             base: base,
             selectedSidebar: .liveCapture,
@@ -544,11 +545,14 @@ struct NetworkInspectorViewModelTests {
             displayFilterText: "",
             packetTableContent: .empty
         )
-        let viewModel = StatusStripViewModel()
+        let controller = StatusStripViewController()
 
-        viewModel.render(snapshot: snapshot)
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: snapshot)
 
-        #expect(viewModel.statusText == "Capturing")
+        let labels = allSubviews(ofType: NSTextField.self, in: controller.view).map(\.stringValue)
+        #expect(labels.contains("0 packets"))
+        #expect(!labels.contains("Stopped"))
     }
 
     @Test func packetRowsAreCachedAcrossNonPacketUpdates() async {
@@ -2836,6 +2840,13 @@ struct NetworkInspectorViewModelTests {
             await Task.yield()
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
+    }
+}
+
+private func allSubviews<T: NSView>(ofType type: T.Type, in view: NSView) -> [T] {
+    let current = (view as? T).map { [$0] } ?? []
+    return view.subviews.reduce(current) { result, subview in
+        result + allSubviews(ofType: type, in: subview)
     }
 }
 

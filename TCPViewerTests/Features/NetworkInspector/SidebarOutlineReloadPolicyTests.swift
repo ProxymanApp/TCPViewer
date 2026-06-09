@@ -141,6 +141,40 @@ struct SidebarOutlineReloadPolicyTests {
     }
 
     @MainActor
+    @Test func sidebarFilterPlaceholderShowsGlobalShortcut() throws {
+        let controller = SidebarViewController()
+        controller.loadViewIfNeeded()
+
+        let searchField = try #require(allSubviews(ofType: NSSearchField.self, in: controller.view).first)
+        #expect(searchField.placeholderString == "Filter (⌘⇧F)")
+    }
+
+    @MainActor
+    @Test func sidebarContextMenuPlacesShowInFinderAboveDelete() throws {
+        let appKey = PacketSourceClientKey(rawValue: "bundleIdentifier:com.example.App")
+        let controller = SidebarViewController()
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: makeSnapshot(
+            sourceListSnapshot: snapshotWithFinderApp(),
+            selectedSelection: .app(appKey),
+            packetMutation: .none
+        ))
+
+        let outlineView = try #require(findOutlineScrollView(in: controller.view)?.documentView as? NSOutlineView)
+        let menu = try #require(outlineView.menu)
+        #expect(outlineView.selectedRow >= 0)
+
+        controller.menuNeedsUpdate(menu)
+
+        let nonSeparatorTitles = menu.items.filter { !$0.isSeparatorItem }.map(\.title)
+        #expect(nonSeparatorTitles == ["Pin", "Export", "Show in Finder…", "Delete"])
+        let finderIndex = try #require(menu.items.firstIndex { $0.title == "Show in Finder…" })
+        let deleteIndex = try #require(menu.items.firstIndex { $0.title == "Delete" })
+        #expect(deleteIndex == finderIndex + 2)
+        #expect(menu.items[finderIndex + 1].isSeparatorItem)
+    }
+
+    @MainActor
     @Test func deferredReloadPreservesSidebarScrollPositionAndSelection() async throws {
         let selectedKey = PacketSourceDomainKey(rawValue: "domain-32.example.com", isMissingDomain: false)
         let controller = SidebarViewController()
@@ -296,6 +330,26 @@ struct SidebarOutlineReloadPolicyTests {
                     iconFilePath: nil
                 )),
             ],
+            domainBuckets: []
+        )
+    }
+
+    private func snapshotWithFinderApp() -> PacketSourceListSnapshot {
+        var appBucket = PacketSourceListTreeBuilder.AppBucket(identity: PacketSourceClientIdentity(
+            key: PacketSourceClientKey(rawValue: "bundleIdentifier:com.example.App"),
+            displayName: "Example",
+            iconFilePath: "/Applications/Example.app"
+        ))
+        appBucket.increment(
+            domainIdentity: PacketSourceDomainIdentity(
+                key: PacketSourceDomainKey(rawValue: "example.com", isMissingDomain: false),
+                displayName: "example.com"
+            ),
+            ipAddressIdentities: []
+        )
+
+        return PacketSourceListTreeBuilder.makeSnapshot(
+            appBuckets: [appBucket],
             domainBuckets: []
         )
     }

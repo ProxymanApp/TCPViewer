@@ -72,7 +72,7 @@ struct PacketInspectorTreeViewModelTests {
     }
 
     @MainActor
-    @Test func inspectorFilterIsAlwaysVisibleAndCommandShiftFPreservesQuery() throws {
+    @Test func inspectorFilterIsAlwaysVisibleAndCommandShiftFIsReservedForSidebarMenu() throws {
         let packet = makePacket()
         let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
         controller.loadViewIfNeeded()
@@ -87,11 +87,11 @@ struct PacketInspectorTreeViewModelTests {
 
         #expect(!isEffectivelyHidden(searchField))
         #expect(!outlineView.performKeyEquivalent(with: commandFEvent()))
-        #expect(outlineView.performKeyEquivalent(with: commandShiftFEvent()))
+        #expect(!outlineView.performKeyEquivalent(with: commandShiftFEvent()))
         #expect(!isEffectivelyHidden(searchField))
 
         searchField.stringValue = "source"
-        #expect(outlineView.performKeyEquivalent(with: commandShiftFEvent()))
+        #expect(!outlineView.performKeyEquivalent(with: commandShiftFEvent()))
 
         #expect(!isEffectivelyHidden(searchField))
         #expect(searchField.stringValue == "source")
@@ -123,19 +123,20 @@ struct PacketInspectorTreeViewModelTests {
 
         controller.menuNeedsUpdate(menu)
 
-        #expect(menu.items.count == 3)
+        #expect(menu.items.count == 4)
         let copyItem = menu.items[0]
-        let separatorItem = menu.items[1]
-        let filterItem = menu.items[2]
+        let copyAllItem = menu.items[1]
+        let separatorItem = menu.items[2]
+        let filterItem = menu.items[3]
 
         #expect(copyItem.title == "Copy")
         #expect(copyItem.isEnabled)
+        #expect(copyAllItem.title == "Copy All")
+        #expect(copyAllItem.isEnabled)
         #expect(separatorItem.isSeparatorItem)
         #expect(filterItem.title == "Filter")
         #expect(filterItem.isEnabled)
-        #expect(filterItem.keyEquivalent == "f")
-        #expect(filterItem.keyEquivalentModifierMask.contains(.command))
-        #expect(filterItem.keyEquivalentModifierMask.contains(.shift))
+        #expect(filterItem.keyEquivalent.isEmpty)
     }
 
     @MainActor
@@ -401,12 +402,101 @@ struct PacketInspectorTreeViewModelTests {
             PacketInspectorCopyRow(text: "Options:\nTimestamp", indentationLevel: 2),
         ])
 
-        #expect(text == """
-        Frame: Packet 1
-            Ethernet II
-                Options:
-                Timestamp
-        """)
+        let expected = [
+            "Frame: Packet 1",
+            "\tEthernet II",
+            "\t\tOptions:",
+            "\t\tTimestamp",
+        ].joined(separator: "\n")
+        #expect(text == expected)
+    }
+
+    @Test func copyRowsForLeafNodeIncludesOnlyCurrentText() {
+        let packet = makePacket()
+        let viewModel = PacketInspectorTreeViewModel()
+        viewModel.render(snapshot: makeSnapshot(
+            packet: packet,
+            inspectionState: loadedInspectionState(packet: packet, inspection: makeNestedInspection(for: packet))
+        ))
+
+        let text = PacketInspectorCopyFormatter.text(for: viewModel.copyRows(forSelectionIDs: ["frame.flags.df"]))
+
+        #expect(text == "\t\tDon't Fragment: Set")
+    }
+
+    @Test func copyRowsForParentNodeIncludesChildNodesWithTabIndentation() {
+        let packet = makePacket()
+        let viewModel = PacketInspectorTreeViewModel()
+        viewModel.render(snapshot: makeSnapshot(
+            packet: packet,
+            inspectionState: loadedInspectionState(packet: packet, inspection: makeNestedInspection(for: packet))
+        ))
+
+        let text = PacketInspectorCopyFormatter.text(for: viewModel.copyRows(forSelectionIDs: ["frame"]))
+
+        let expected = [
+            "Frame: Packet 1",
+            "\tFlags",
+            "\t\tDon't Fragment: Set",
+        ].joined(separator: "\n")
+        #expect(text == expected)
+    }
+
+    @Test func copyRowsForMultipleSelectionsSkipsChildRowsAlreadyCopiedByParent() {
+        let packet = makePacket()
+        let viewModel = PacketInspectorTreeViewModel()
+        viewModel.render(snapshot: makeSnapshot(
+            packet: packet,
+            inspectionState: loadedInspectionState(packet: packet, inspection: makeNestedInspection(for: packet))
+        ))
+
+        let text = PacketInspectorCopyFormatter.text(for: viewModel.copyRows(forSelectionIDs: ["frame", "frame.flags.df"]))
+
+        let expected = [
+            "Frame: Packet 1",
+            "\tFlags",
+            "\t\tDon't Fragment: Set",
+        ].joined(separator: "\n")
+        #expect(text == expected)
+    }
+
+    @Test func copyAllRowsUsesFullUnfilteredTree() {
+        let packet = makePacket()
+        let inspection = PacketInspection(
+            packetID: packet.id,
+            packetNumber: packet.packetNumber,
+            rawBytes: Data([0x01, 0x02]),
+            detailNodes: [
+                PacketDetailNode(
+                    id: "ipv4",
+                    name: "IPv4",
+                    fieldName: "ip",
+                    kind: .layer,
+                    children: [
+                        PacketDetailNode(id: "ipv4.src", name: "Source", value: "10.0.0.1"),
+                        PacketDetailNode(id: "ipv4.dst", name: "Destination", value: "10.0.0.2"),
+                    ]
+                ),
+                PacketDetailNode(id: "tcp", name: "TCP", value: "443 -> 1234", kind: .layer),
+            ],
+            decodeStatus: PacketDecodeStatus(kind: .complete)
+        )
+        let viewModel = PacketInspectorTreeViewModel()
+
+        viewModel.render(
+            snapshot: makeSnapshot(packet: packet, inspectionState: loadedInspectionState(packet: packet, inspection: inspection)),
+            filterText: "Source"
+        )
+        let text = PacketInspectorCopyFormatter.text(for: viewModel.copyRowsForAllDetails())
+
+        #expect(viewModel.rootItems.first?.children.map(\.displayText) == ["Source: 10.0.0.1"])
+        let expected = [
+            "IPv4",
+            "\tSource: 10.0.0.1",
+            "\tDestination: 10.0.0.2",
+            "TCP: 443 -> 1234",
+        ].joined(separator: "\n")
+        #expect(text == expected)
     }
 
     @Test func selectedDetailNodeIsPreservedWhenPresent() {

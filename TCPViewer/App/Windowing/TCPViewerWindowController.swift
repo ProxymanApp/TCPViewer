@@ -93,6 +93,10 @@ final class TCPViewerWindowController: NSWindowController {
         rootViewController.focusStructuredFilter()
     }
 
+    @IBAction func focusSidebarFilter(_ sender: Any?) {
+        rootViewController.focusSidebarFilter()
+    }
+
     private func setupToolbar() {
         toolbarDataSource.delegate = self
         window?.toolbar = toolbarDataSource.toolbar

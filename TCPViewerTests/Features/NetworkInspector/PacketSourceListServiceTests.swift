@@ -174,6 +174,32 @@ struct PacketSourceListServiceTests {
         #expect(PacketSourceListExportPolicy.selection(for: PacketSourceListSnapshot.empty.item(for: .saved)) == nil)
     }
 
+    @Test func finderPolicyRevealsOnlyAppBackedRowsWithAbsolutePaths() throws {
+        let client = makeClient(displayName: "Example", bundleIdentifier: "com.example.app")
+        let clientPin = makeClientPin(displayName: "Example", key: "bundleIdentifier:com.example.app")
+        var state = PacketIngestState.empty
+        state.append([makePacket(packetNumber: 1, sniDomainName: "api.example.com", client: client)], source: .live)
+
+        let snapshot = PacketSourceListService().snapshot(for: state, pinnedItems: [clientPin])
+        let appKey = PacketSourceClientKey(rawValue: "bundleIdentifier:com.example.app")
+        let domainKey = PacketSourceDomainKey(rawValue: "api.example.com", isMissingDomain: false)
+        let relativeAppItem = PacketSourceListItem(
+            id: "app:relative",
+            title: "Relative",
+            systemImageName: "app",
+            iconFilePath: "Applications/Relative.app",
+            count: 1,
+            kind: .app,
+            selection: .app(PacketSourceClientKey(rawValue: "relative")),
+            children: []
+        )
+
+        #expect(PacketSourceListFinderPolicy.fileURL(for: snapshot.item(for: .app(appKey)))?.path == "/Applications/Example.app")
+        #expect(PacketSourceListFinderPolicy.fileURL(for: snapshot.item(for: .pinnedItem(clientPin.id)))?.path == "/Applications/Example.app")
+        #expect(PacketSourceListFinderPolicy.fileURL(for: snapshot.item(for: .appDomain(appKey, domainKey))) == nil)
+        #expect(PacketSourceListFinderPolicy.fileURL(for: relativeAppItem) == nil)
+    }
+
     @Test func pinPolicyExtractsOnlyAppAndRealDomainTargets() throws {
         let client = makeClient(displayName: "Example", bundleIdentifier: "com.example.app")
         var state = PacketIngestState.empty

@@ -31,11 +31,11 @@ struct PacketInspectorCopyRow: Equatable {
 }
 
 enum PacketInspectorCopyFormatter {
-    // Build copy text that mirrors the outline hierarchy with stable plain-text indentation.
+    // Build copy text that mirrors the outline hierarchy with tab indentation.
     static func text(for rows: [PacketInspectorCopyRow]) -> String {
         rows
             .map { row in
-                let indentation = String(repeating: "    ", count: max(0, row.indentationLevel))
+                let indentation = String(repeating: "\t", count: max(0, row.indentationLevel))
                 return row.text
                     .replacingOccurrences(of: "\r\n", with: "\n")
                     .replacingOccurrences(of: "\r", with: "\n")
@@ -195,6 +195,27 @@ final class PacketInspectorTreeViewModel {
         return itemBySelectionID[nodeID]
     }
 
+    // Report whether the current packet has real detail rows available for Copy All.
+    func hasCopyableDetails() -> Bool {
+        unfilteredRootItems.contains { $0.kind != .message }
+    }
+
+    // Copy All uses the full unfiltered tree, independent of search text or outline expansion.
+    func copyRowsForAllDetails() -> [PacketInspectorCopyRow] {
+        copyRows(from: unfilteredRootItems, level: 0)
+    }
+
+    // Copy selected rows as subtrees while preserving original packet-detail indentation levels.
+    func copyRows(forSelectionIDs selectionIDs: [String]) -> [PacketInspectorCopyRow] {
+        let selectedIDs = Set(selectionIDs)
+        guard !selectedIDs.isEmpty else {
+            return []
+        }
+
+        var copiedItemIDs: Set<String> = []
+        return copyRowsForSelection(from: unfilteredRootItems, level: 0, selectedIDs: selectedIDs, copiedItemIDs: &copiedItemIDs)
+    }
+
     private func makeRootItems(from inspectionState: PacketInspectionState) -> [PacketInspectorTreeItem] {
         if inspectionState.isLoading, inspectionState.currentInspection == nil {
             return [messageItem(id: "loading", message: inspectionState.statusMessage)]
@@ -285,6 +306,61 @@ final class PacketInspectorTreeViewModel {
             }
             collectVisibleItems(item.children, into: &map)
         }
+    }
+
+    // Flatten packet-detail rows depth-first for stable plain-text output.
+    private func copyRows(from items: [PacketInspectorTreeItem], level: Int) -> [PacketInspectorCopyRow] {
+        items.flatMap { item -> [PacketInspectorCopyRow] in
+            guard item.kind != .message else {
+                return []
+            }
+
+            return [PacketInspectorCopyRow(text: item.displayText, indentationLevel: level)] +
+                copyRows(from: item.children, level: level + 1)
+        }
+    }
+
+    // Walk all roots so multi-selection order follows the original packet-detail tree.
+    private func copyRowsForSelection(
+        from items: [PacketInspectorTreeItem],
+        level: Int,
+        selectedIDs: Set<String>,
+        copiedItemIDs: inout Set<String>
+    ) -> [PacketInspectorCopyRow] {
+        var rows: [PacketInspectorCopyRow] = []
+        for item in items {
+            if let selectionID = item.selectionID, selectedIDs.contains(selectionID) {
+                rows.append(contentsOf: copyRowsIfNeeded(from: item, level: level, copiedItemIDs: &copiedItemIDs))
+            } else {
+                rows.append(contentsOf: copyRowsForSelection(
+                    from: item.children,
+                    level: level + 1,
+                    selectedIDs: selectedIDs,
+                    copiedItemIDs: &copiedItemIDs
+                ))
+            }
+        }
+
+        return rows
+    }
+
+    // Skip rows already copied through a selected ancestor.
+    private func copyRowsIfNeeded(
+        from item: PacketInspectorTreeItem,
+        level: Int,
+        copiedItemIDs: inout Set<String>
+    ) -> [PacketInspectorCopyRow] {
+        guard item.kind != .message,
+              copiedItemIDs.insert(item.id).inserted else {
+            return []
+        }
+
+        var rows = [PacketInspectorCopyRow(text: item.displayText, indentationLevel: level)]
+        for child in item.children {
+            rows.append(contentsOf: copyRowsIfNeeded(from: child, level: level + 1, copiedItemIDs: &copiedItemIDs))
+        }
+
+        return rows
     }
 
     private func validSelectedNodeID(from inspectionState: PacketInspectionState) -> String? {
@@ -511,7 +587,6 @@ private extension PacketInspectionState {
 
 fileprivate protocol PacketInspectorOutlineViewActionHandling: AnyObject {
     func packetInspectorOutlineViewDidRequestCopy(_ outlineView: PacketInspectorOutlineView)
-    func packetInspectorOutlineViewDidRequestFind(_ outlineView: PacketInspectorOutlineView)
 }
 
 fileprivate final class PacketInspectorOutlineView: NSOutlineView {
@@ -519,33 +594,6 @@ fileprivate final class PacketInspectorOutlineView: NSOutlineView {
 
     @objc func copy(_ sender: Any?) {
         actionHandler?.packetInspectorOutlineViewDidRequestCopy(self)
-    }
-
-    @objc func find(_ sender: Any?) {
-        actionHandler?.packetInspectorOutlineViewDidRequestFind(self)
-    }
-
-    override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if isInspectorFindShortcut(event) {
-            find(nil)
-            return true
-        }
-
-        return super.performKeyEquivalent(with: event)
-    }
-
-    override func keyDown(with event: NSEvent) {
-        if isInspectorFindShortcut(event) {
-            find(nil)
-            return
-        }
-
-        super.keyDown(with: event)
-    }
-
-    private func isInspectorFindShortcut(_ event: NSEvent) -> Bool {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        return flags == [.command, .shift] && event.charactersIgnoringModifiers?.lowercased() == "f"
     }
 }
 
@@ -652,7 +700,7 @@ final class PacketInspectorViewController: NSViewController {
         filterBarView.wantsLayer = true
         filterBarView.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
 
-        filterSearchField.placeholderString = "Filter key or value (⌘⇧F)"
+        filterSearchField.placeholderString = "Filter key or value"
         filterSearchField.sendsSearchStringImmediately = true
         filterSearchField.sendsWholeSearchString = false
         filterSearchField.delegate = self
@@ -906,23 +954,16 @@ final class PacketInspectorViewController: NSViewController {
         outlineView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
     }
 
-    // Collect selected visible outline rows in display order for copy formatting.
-    private func selectedCopyRows() -> [PacketInspectorCopyRow] {
+    // Collect selected visible outline row IDs in display order for subtree copy formatting.
+    private func selectedCopySelectionIDs() -> [String] {
         outlineView.selectedRowIndexes.compactMap { row in
-            guard let item = outlineView.item(atRow: row) as? PacketInspectorTreeItem else {
-                return nil
-            }
-
-            return PacketInspectorCopyRow(
-                text: item.displayText,
-                indentationLevel: outlineView.level(forRow: row)
-            )
+            (outlineView.item(atRow: row) as? PacketInspectorTreeItem)?.selectionID
         }
     }
 
-    // Write the selected inspector rows to the system pasteboard as plain text.
-    private func copySelectedRowsToPasteboard() {
-        let text = PacketInspectorCopyFormatter.text(for: selectedCopyRows())
+    // Write inspector copy rows to the system pasteboard as plain text.
+    private func copyRowsToPasteboard(_ rows: [PacketInspectorCopyRow]) {
+        let text = PacketInspectorCopyFormatter.text(for: rows)
         guard !text.isEmpty else {
             return
         }
@@ -931,8 +972,20 @@ final class PacketInspectorViewController: NSViewController {
         NSPasteboard.general.setString(text, forType: .string)
     }
 
+    private func copySelectedRowsToPasteboard() {
+        copyRowsToPasteboard(viewModel.copyRows(forSelectionIDs: selectedCopySelectionIDs()))
+    }
+
+    private func copyAllRowsToPasteboard() {
+        copyRowsToPasteboard(viewModel.copyRowsForAllDetails())
+    }
+
     @objc private func copySelectedRowsFromMenu(_ sender: Any?) {
         copySelectedRowsToPasteboard()
+    }
+
+    @objc private func copyAllRowsFromMenu(_ sender: Any?) {
+        copyAllRowsToPasteboard()
     }
 
     @objc private func showFilterFromMenu(_ sender: Any?) {
@@ -1104,10 +1157,6 @@ extension PacketInspectorViewController: PacketInspectorOutlineViewActionHandlin
     fileprivate func packetInspectorOutlineViewDidRequestCopy(_ outlineView: PacketInspectorOutlineView) {
         copySelectedRowsToPasteboard()
     }
-
-    fileprivate func packetInspectorOutlineViewDidRequestFind(_ outlineView: PacketInspectorOutlineView) {
-        focusFilterField()
-    }
 }
 
 extension PacketInspectorViewController: NSSearchFieldDelegate {
@@ -1126,7 +1175,7 @@ extension PacketInspectorViewController: NSMenuDelegate {
         updateSelectionFromCurrentMenuEvent()
 
         menu.removeAllItems()
-        let hasSelectedRows = !selectedCopyRows().isEmpty
+        let hasSelectedRows = !selectedCopySelectionIDs().isEmpty
         let copyItem = NSMenuItem(
             title: "Copy",
             action: #selector(copySelectedRowsFromMenu(_:)),
@@ -1137,15 +1186,25 @@ extension PacketInspectorViewController: NSMenuDelegate {
         copyItem.toolTip = "Copy the selected inspector rows."
         copyItem.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Copy")
         menu.addItem(copyItem)
+
+        let copyAllItem = NSMenuItem(
+            title: "Copy All",
+            action: #selector(copyAllRowsFromMenu(_:)),
+            keyEquivalent: ""
+        )
+        copyAllItem.target = self
+        copyAllItem.isEnabled = viewModel.hasCopyableDetails()
+        copyAllItem.toolTip = "Copy all packet detail rows."
+        copyAllItem.image = NSImage(systemSymbolName: "doc.on.doc.fill", accessibilityDescription: "Copy All")
+        menu.addItem(copyAllItem)
         menu.addItem(.separator())
 
         let filterItem = NSMenuItem(
             title: "Filter",
             action: #selector(showFilterFromMenu(_:)),
-            keyEquivalent: "f"
+            keyEquivalent: ""
         )
         filterItem.target = self
-        filterItem.keyEquivalentModifierMask = [.command, .shift]
         filterItem.isEnabled = hasSelectedRows
         filterItem.toolTip = "Focus the inspector filter."
         filterItem.image = NSImage(systemSymbolName: "line.3.horizontal.decrease.circle", accessibilityDescription: "Filter")
