@@ -625,6 +625,127 @@ struct NetworkInspectorViewModelTests {
         #expect(hiddenReloadedViewModel.snapshot.isInspectorVisible)
     }
 
+    @Test func inspectorPlacementTogglesCloseActivePlacementAndSwitchVisiblePlacement() {
+        let defaults = isolatedDefaults()
+        let services = TCPViewerServiceRegistry(core: InspectorFakeCore(
+            interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")]
+        ))
+        let viewModel = NetworkInspectorViewModel(
+            services: services,
+            userDefaults: defaults
+        )
+
+        #expect(viewModel.snapshot.inspectorPlacement == .trailing)
+        #expect(viewModel.snapshot.isInspectorVisible)
+
+        viewModel.toggleInspector(placement: .trailing)
+        #expect(viewModel.snapshot.inspectorPlacement == .trailing)
+        #expect(!viewModel.snapshot.isInspectorVisible)
+
+        viewModel.toggleInspector(placement: .bottom)
+        #expect(viewModel.snapshot.inspectorPlacement == .bottom)
+        #expect(viewModel.snapshot.isInspectorVisible)
+
+        viewModel.toggleInspector(placement: .trailing)
+        #expect(viewModel.snapshot.inspectorPlacement == .trailing)
+        #expect(viewModel.snapshot.isInspectorVisible)
+
+        viewModel.toggleInspector(placement: .trailing)
+        #expect(viewModel.snapshot.inspectorPlacement == .trailing)
+        #expect(!viewModel.snapshot.isInspectorVisible)
+    }
+
+    @Test func bottomInspectorPlacementPersistsAcrossReloads() {
+        let defaults = isolatedDefaults()
+        let services = TCPViewerServiceRegistry(core: InspectorFakeCore(
+            interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")]
+        ))
+        let viewModel = NetworkInspectorViewModel(
+            services: services,
+            userDefaults: defaults
+        )
+
+        viewModel.toggleInspector(placement: .bottom)
+
+        let reloadedViewModel = NetworkInspectorViewModel(
+            services: services,
+            userDefaults: defaults
+        )
+
+        #expect(reloadedViewModel.snapshot.inspectorPlacement == .bottom)
+        #expect(reloadedViewModel.snapshot.isInspectorVisible)
+
+        reloadedViewModel.toggleInspector(placement: .bottom)
+
+        let hiddenReloadedViewModel = NetworkInspectorViewModel(
+            services: services,
+            userDefaults: defaults
+        )
+
+        #expect(hiddenReloadedViewModel.snapshot.inspectorPlacement == .bottom)
+        #expect(!hiddenReloadedViewModel.snapshot.isInspectorVisible)
+    }
+
+    @Test func bottomInspectorPlacementLaysOutInspectorBelowWorkspace() async throws {
+        let packet = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp)
+        let document = InspectorFakeDocument(
+            url: URL(fileURLWithPath: "/tmp/root-bottom-inspector.pcapng"),
+            packets: [packet]
+        )
+        let defaults = isolatedDefaults()
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                document: document
+            )),
+            userDefaults: defaults
+        )
+        let controller = TCPViewerRootViewController(
+            viewModel: viewModel,
+            configuration: AppConfiguration(defaults: defaults)
+        )
+
+        controller.loadViewIfNeeded()
+        controller.view.frame = NSRect(x: 0, y: 0, width: 1_200, height: 800)
+        controller.view.layoutSubtreeIfNeeded()
+
+        await viewModel.openDocument(at: document.currentURL())
+        await waitUntil {
+            viewModel.snapshot.packetRows.map(\.id) == [packet.id]
+        }
+
+        viewModel.selectPacket(packet.id)
+        await waitUntil {
+            viewModel.snapshot.base.inspectionState.inspection?.packetID == packet.id
+        }
+
+        viewModel.toggleInspector(placement: .bottom)
+        controller.view.layoutSubtreeIfNeeded()
+        await waitUntil {
+            guard let workspaceView = controller.workspaceViewForTesting,
+                  let inspectorView = controller.inspectorViewForTesting else {
+                return false
+            }
+
+            let splitView = controller.inspectorSplitViewForTesting
+            let inspectorFrame = inspectorView.convert(inspectorView.bounds, to: splitView)
+            let workspaceFrame = workspaceView.convert(workspaceView.bounds, to: splitView)
+            return !splitView.isVertical &&
+                inspectorFrame.height > 0 &&
+                workspaceFrame.height > 0 &&
+                frame(inspectorFrame, isVisuallyBelow: workspaceFrame, in: splitView)
+        }
+
+        let splitView = controller.inspectorSplitViewForTesting
+        let workspaceView = try #require(controller.workspaceViewForTesting)
+        let inspectorView = try #require(controller.inspectorViewForTesting)
+        let inspectorFrame = inspectorView.convert(inspectorView.bounds, to: splitView)
+        let workspaceFrame = workspaceView.convert(workspaceView.bounds, to: splitView)
+
+        #expect(!splitView.isVertical)
+        #expect(frame(inspectorFrame, isVisuallyBelow: workspaceFrame, in: splitView))
+    }
+
     @Test func sidebarVisibilityPersistsAcrossReloads() {
         let defaults = isolatedDefaults()
         let services = TCPViewerServiceRegistry(core: InspectorFakeCore(
@@ -897,6 +1018,39 @@ struct NetworkInspectorViewModelTests {
 
         #expect(reloadedViewModel.preferredInspectorThickness(for: 900) == 101)
         #expect(reloadedViewModel.restoredInspectorThickness(for: 900) == 101)
+    }
+
+    @Test func bottomInspectorThicknessPersistsAndFallsBackWhenInvalid() {
+        let defaults = isolatedDefaults()
+        let services = TCPViewerServiceRegistry(core: InspectorFakeCore(
+            interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")]
+        ))
+        let viewModel = NetworkInspectorViewModel(
+            services: services,
+            userDefaults: defaults
+        )
+
+        viewModel.rememberInspectorThickness(420, placement: .trailing)
+        viewModel.rememberInspectorThickness(260, placement: .bottom)
+
+        let reloadedViewModel = NetworkInspectorViewModel(
+            services: services,
+            userDefaults: defaults
+        )
+
+        #expect(reloadedViewModel.preferredInspectorThickness(for: 900, placement: .trailing) == 420)
+        #expect(reloadedViewModel.preferredInspectorThickness(for: 900, placement: .bottom) == 260)
+        #expect(reloadedViewModel.restoredInspectorThickness(for: 900, placement: .bottom) == 260)
+
+        reloadedViewModel.rememberInspectorThickness(10_000, placement: .bottom)
+
+        #expect(reloadedViewModel.preferredInspectorThickness(for: 900, placement: .bottom) == nil)
+        #expect(reloadedViewModel.restoredInspectorThickness(for: 900, placement: .bottom) == 360)
+
+        reloadedViewModel.rememberInspectorThickness(100, placement: .bottom)
+
+        #expect(reloadedViewModel.preferredInspectorThickness(for: 900, placement: .bottom) == nil)
+        #expect(reloadedViewModel.restoredInspectorThickness(for: 100, placement: .bottom) == nil)
     }
 
     @Test func packetRowsAppendIncrementallyForMatchingLiveBatches() async {
@@ -2890,6 +3044,15 @@ private func allSubviews<T: NSView>(ofType type: T.Type, in view: NSView) -> [T]
     return view.subviews.reduce(current) { result, subview in
         result + allSubviews(ofType: type, in: subview)
     }
+}
+
+private func frame(_ lowerFrame: NSRect, isVisuallyBelow upperFrame: NSRect, in view: NSView) -> Bool {
+    let tolerance: CGFloat = 1
+    if view.isFlipped {
+        return lowerFrame.minY >= upperFrame.maxY - tolerance
+    }
+
+    return lowerFrame.maxY <= upperFrame.minY + tolerance
 }
 
 private final class PacketFilterBuildGate: @unchecked Sendable {
