@@ -10,9 +10,15 @@ import Foundation
 import PcapPlusPlusCore
 import UniformTypeIdentifiers
 
+enum NetworkInspectorLayoutMetrics {
+    static let minimumInspectorThickness: CGFloat = 100
+    static let defaultInspectorThickness: CGFloat = 360
+}
+
 private struct NetworkInspectorPreferences {
     private enum Key {
         static let displayFilterText = "TCPViewer.displayFilterText"
+        static let inspectorTrailingThickness = "TCPViewer.inspectorTrailingThickness"
         static let inspectorVisible = "TCPViewer.inspectorVisible"
         static let sidebarLeadingThickness = "TCPViewer.sidebarLeadingThickness"
         static let sidebarVisible = "TCPViewer.sidebarVisible"
@@ -53,6 +59,14 @@ private struct NetworkInspectorPreferences {
         return defaults.bool(forKey: Key.structuredFilterVisible)
     }
 
+    var inspectorThickness: CGFloat? {
+        guard defaults.object(forKey: Key.inspectorTrailingThickness) != nil else {
+            return nil
+        }
+
+        return CGFloat(defaults.double(forKey: Key.inspectorTrailingThickness))
+    }
+
     var sidebarThickness: CGFloat? {
         guard defaults.object(forKey: Key.sidebarLeadingThickness) != nil else {
             return nil
@@ -67,6 +81,10 @@ private struct NetworkInspectorPreferences {
 
     func persistInspectorVisible(_ isVisible: Bool) {
         defaults.set(isVisible, forKey: Key.inspectorVisible)
+    }
+
+    func persistInspectorThickness(_ thickness: CGFloat) {
+        defaults.set(Double(thickness), forKey: Key.inspectorTrailingThickness)
     }
 
     func persistSidebarThickness(_ thickness: CGFloat) {
@@ -1710,6 +1728,47 @@ final class NetworkInspectorViewModel {
 
     func toggleInspector() {
         setInspectorVisible(!isInspectorVisible)
+    }
+
+    // Keep the last usable trailing inspector width for future launches and reopen actions.
+    func rememberInspectorThickness(_ thickness: CGFloat) {
+        guard thickness.isFinite,
+              thickness > NetworkInspectorLayoutMetrics.minimumInspectorThickness else {
+            return
+        }
+
+        preferences.persistInspectorThickness(thickness)
+    }
+
+    // Reject invalid or collapse-threshold inspector widths so reopen can fall back to a visible default.
+    func preferredInspectorThickness(for availableLength: CGFloat) -> CGFloat? {
+        guard availableLength.isFinite, availableLength > 0,
+              let thickness = preferences.inspectorThickness,
+              thickness.isFinite,
+              thickness > NetworkInspectorLayoutMetrics.minimumInspectorThickness,
+              thickness < availableLength else {
+            return nil
+        }
+
+        return thickness
+    }
+
+    // Use the saved inspector width when it is usable; otherwise reopen at a visible default width.
+    func restoredInspectorThickness(for availableLength: CGFloat) -> CGFloat? {
+        guard availableLength.isFinite else {
+            return nil
+        }
+
+        if let thickness = preferredInspectorThickness(for: availableLength) {
+            return thickness
+        }
+
+        let maximumThickness = availableLength - 1
+        guard maximumThickness > NetworkInspectorLayoutMetrics.minimumInspectorThickness else {
+            return nil
+        }
+
+        return min(NetworkInspectorLayoutMetrics.defaultInspectorThickness, maximumThickness)
     }
 
     // Persist the sidebar's visibility so the root split view can restore it on the next launch.
