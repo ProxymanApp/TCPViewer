@@ -505,6 +505,7 @@ enum PacketTableUpdatePlanner {
 
 enum NetworkInspectorPlacement: String, Equatable {
     case trailing
+    case bottom
 }
 
 struct NetworkInspectorSnapshot: Equatable {

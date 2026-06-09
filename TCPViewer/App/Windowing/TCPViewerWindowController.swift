@@ -236,7 +236,11 @@ extension TCPViewerWindowController: TCPViewerToolbarDataSourceDelegate {
     }
 
     func tcpviewerToolbarDataSourceDidToggleInspector(_ dataSource: TCPViewerToolbarDataSource) {
-        rootViewController.toggleInspector()
+        rootViewController.toggleInspector(placement: .trailing)
+    }
+
+    func tcpviewerToolbarDataSourceDidToggleBottomInspector(_ dataSource: TCPViewerToolbarDataSource) {
+        rootViewController.toggleInspector(placement: .bottom)
     }
 
     func tcpviewerToolbarDataSourceDidRequestHelperToolScreen(_ dataSource: TCPViewerToolbarDataSource) {

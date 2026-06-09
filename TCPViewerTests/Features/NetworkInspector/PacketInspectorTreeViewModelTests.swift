@@ -108,6 +108,67 @@ struct PacketInspectorTreeViewModelTests {
     }
 
     @MainActor
+    @Test func rightPlacementLaysOutOutlineAboveHexView() throws {
+        let packet = makePacket()
+        let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        controller.loadViewIfNeeded()
+        controller.view.frame = NSRect(x: 0, y: 0, width: 500, height: 500)
+
+        controller.render(snapshot: makeSnapshot(
+            packet: packet,
+            inspectionState: loadedInspectionState(packet: packet, inspection: makeFrameInspection(for: packet)),
+            inspectorPlacement: .trailing
+        ))
+        controller.view.layoutSubtreeIfNeeded()
+
+        let splitView = try #require(findInspectorDetailSplitView(in: controller.view))
+        let outlinePane = try #require(splitView.subviews.first { firstSubview(ofType: NSOutlineView.self, in: $0) != nil })
+        let hexPane = try #require(splitView.subviews.first { firstSubview(ofType: HFTextView.self, in: $0) != nil })
+        let splitFrame = splitView.convert(splitView.bounds, to: controller.view)
+        let outlineFrame = outlinePane.convert(outlinePane.bounds, to: splitView)
+        let hexFrame = hexPane.convert(hexPane.bounds, to: splitView)
+        let availableHeight = splitView.bounds.height - splitView.dividerThickness
+
+        #expect(!splitView.isVertical)
+        #expect(frame(outlineFrame, isVisuallyAbove: hexFrame, in: splitView))
+        #expect(abs(splitFrame.width - controller.view.bounds.width) <= 1)
+        #expect(abs(splitFrame.height - (controller.view.bounds.height - 34)) <= 1)
+        #expect(abs(outlineFrame.height - availableHeight * 0.70) <= 2)
+        #expect(abs(hexFrame.height - availableHeight * 0.30) <= 2)
+    }
+
+    @MainActor
+    @Test func bottomPlacementLaysOutOutlineBesideHexView() throws {
+        let packet = makePacket()
+        let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        controller.loadViewIfNeeded()
+        controller.view.frame = NSRect(x: 0, y: 0, width: 700, height: 360)
+
+        controller.render(snapshot: makeSnapshot(
+            packet: packet,
+            inspectionState: loadedInspectionState(packet: packet, inspection: makeFrameInspection(for: packet)),
+            inspectorPlacement: .bottom
+        ))
+        controller.view.layoutSubtreeIfNeeded()
+
+        let splitView = try #require(findInspectorDetailSplitView(in: controller.view))
+        let outlinePane = try #require(splitView.subviews.first { firstSubview(ofType: NSOutlineView.self, in: $0) != nil })
+        let hexPane = try #require(splitView.subviews.first { firstSubview(ofType: HFTextView.self, in: $0) != nil })
+        let splitFrame = splitView.convert(splitView.bounds, to: controller.view)
+        let outlineFrame = outlinePane.convert(outlinePane.bounds, to: splitView)
+        let hexFrame = hexPane.convert(hexPane.bounds, to: splitView)
+        let availableWidth = splitView.bounds.width - splitView.dividerThickness
+
+        #expect(splitView.isVertical)
+        #expect(outlinePane.frame.minX < hexPane.frame.minX)
+        #expect(abs(splitFrame.width - controller.view.bounds.width) <= 1)
+        #expect(abs(outlineFrame.minX - splitView.bounds.minX) <= 1)
+        #expect(abs(hexFrame.maxX - splitView.bounds.maxX) <= 1)
+        #expect(abs(outlineFrame.width - availableWidth * 0.70) <= 2)
+        #expect(abs(hexFrame.width - availableWidth * 0.30) <= 2)
+    }
+
+    @MainActor
     @Test func inspectorContextMenuIncludesFilterCommandForRows() throws {
         let packet = makePacket()
         let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
@@ -746,7 +807,11 @@ struct PacketInspectorTreeViewModelTests {
         #expect(abs(outlineScrollView.contentView.bounds.origin.y - originalY) <= 1)
     }
 
-    private func makeSnapshot(packet: PacketSummary? = nil, inspectionState: PacketInspectionState) -> NetworkInspectorSnapshot {
+    private func makeSnapshot(
+        packet: PacketSummary? = nil,
+        inspectionState: PacketInspectionState,
+        inspectorPlacement: NetworkInspectorPlacement = .trailing
+    ) -> NetworkInspectorSnapshot {
         var base = TCPViewerWindowSnapshot.foundation
         if let packet {
             base.packetIngestState.replace(with: [packet], source: packet.source)
@@ -775,6 +840,7 @@ struct PacketInspectorTreeViewModelTests {
             sourceListFilterText: "",
             workspaceMode: .packets,
             inspectorTab: .summary,
+            inspectorPlacement: inspectorPlacement,
             isInspectorVisible: true,
             displayFilterText: "",
             packetTableContent: tableContent
@@ -806,11 +872,27 @@ struct PacketInspectorTreeViewModelTests {
         allSubviews(ofType: NSScrollView.self, in: view).first { $0.documentView is NSOutlineView }
     }
 
+    private func findInspectorDetailSplitView(in view: NSView) -> NSSplitView? {
+        allSubviews(ofType: NSSplitView.self, in: view).first { splitView in
+            splitView.subviews.contains { firstSubview(ofType: NSOutlineView.self, in: $0) != nil } &&
+                splitView.subviews.contains { firstSubview(ofType: HFTextView.self, in: $0) != nil }
+        }
+    }
+
     private func allSubviews<T: NSView>(ofType type: T.Type, in view: NSView) -> [T] {
         let current = (view as? T).map { [$0] } ?? []
         return view.subviews.reduce(current) { result, subview in
             result + allSubviews(ofType: type, in: subview)
         }
+    }
+
+    private func frame(_ upperFrame: NSRect, isVisuallyAbove lowerFrame: NSRect, in view: NSView) -> Bool {
+        let tolerance: CGFloat = 1
+        if view.isFlipped {
+            return upperFrame.maxY <= lowerFrame.minY + tolerance
+        }
+
+        return upperFrame.minY >= lowerFrame.maxY - tolerance
     }
 
     private func hasTopConstraint(from view: NSView, to layoutGuide: NSLayoutGuide, in container: NSView) -> Bool {

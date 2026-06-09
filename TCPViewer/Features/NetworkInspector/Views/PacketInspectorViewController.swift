@@ -617,9 +617,10 @@ final class PacketInspectorViewController: NSViewController {
     private enum Metrics {
         static let rowHeight: CGFloat = 20
         static let cellIdentifier = NSUserInterfaceItemIdentifier("PacketInspectorCell")
-        static let hexPanelHeight: CGFloat = 180
         static let minimumHexPanelHeight: CGFloat = 120
         static let filterBarHeight: CGFloat = 34
+        static let summaryPaneFraction: CGFloat = 0.70
+        static let hexPaneFraction: CGFloat = 0.30
     }
 
     weak var delegate: PacketInspectorViewControllerDelegate?
@@ -628,15 +629,23 @@ final class PacketInspectorViewController: NSViewController {
     private let viewModel = PacketInspectorTreeViewModel()
     private let expansionState = PacketInspectorOutlineExpansionState()
     private let hexViewController: PacketHexViewController
+    private let detailSplitViewController = NSSplitViewController()
+    private let outlineViewController = NSViewController()
     private let stackView = NSStackView()
+    private let detailContainerView = NSView()
     private let filterBarView = NSView()
     private let filterSearchField = NSSearchField()
     private let scrollView = NSScrollView()
     private let outlineView = PacketInspectorOutlineView()
     private let detailColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("detail"))
+    private var outlineItem: NSSplitViewItem?
+    private var hexItem: NSSplitViewItem?
     private var emptyStateView: NSView?
     private var emptyStateMessage: String?
     private var latestInspectionState: PacketInspectionState?
+    private var appliedPlacement: NetworkInspectorPlacement?
+    private var pendingDefaultDetailDividerPlacement: NetworkInspectorPlacement?
+    private var isShowingPacketDetail = false
     private var isApplyingSelection = false
     private var isApplyingExpansionState = false
 
@@ -660,15 +669,126 @@ final class PacketInspectorViewController: NSViewController {
         setupLayout()
     }
 
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        applyPendingDefaultDetailDividerPosition()
+    }
+
     // Render the current packet inspection tree as a single Wireshark-style outline.
     func render(snapshot: NetworkInspectorSnapshot) {
         let inspectionState = snapshot.base.inspectionState
         latestInspectionState = inspectionState
+        let didRevealPacketDetail = updateContentVisibility(for: inspectionState)
+        applyPlacement(
+            snapshot.inspectorPlacement,
+            resetsDefaultDivider: true,
+            forcesDefaultDivider: didRevealPacketDetail
+        )
         let renderChange = viewModel.render(inspectionState: inspectionState, filterText: filterSearchField.stringValue)
         hexViewController.render(inspectionState: inspectionState)
-        updateContentVisibility(for: inspectionState)
 
         applyTreeRenderChange(renderChange, inspectionState: inspectionState)
+    }
+
+    // Switch the outline/hex split to match the outer inspector placement.
+    func applyPlacement(_ placement: NetworkInspectorPlacement) {
+        applyPlacement(placement, resetsDefaultDivider: true, forcesDefaultDivider: false)
+    }
+
+    private func applyPlacement(
+        _ placement: NetworkInspectorPlacement,
+        resetsDefaultDivider: Bool,
+        forcesDefaultDivider: Bool
+    ) {
+        guard let outlineItem, let hexItem else {
+            return
+        }
+
+        let placementChanged = appliedPlacement != placement
+        detailSplitViewController.splitView.isVertical = placement == .bottom
+        outlineItem.preferredThicknessFraction = Metrics.summaryPaneFraction
+        hexItem.preferredThicknessFraction = Metrics.hexPaneFraction
+
+        let targetItems = [outlineItem, hexItem]
+        let orderChanged = !splitItems(detailSplitViewController.splitViewItems, match: targetItems)
+        if orderChanged {
+            for item in detailSplitViewController.splitViewItems.reversed() {
+                detailSplitViewController.removeSplitViewItem(item)
+            }
+            for (index, item) in targetItems.enumerated() {
+                detailSplitViewController.insertSplitViewItem(item, at: index)
+            }
+        }
+
+        appliedPlacement = placement
+        guard resetsDefaultDivider else {
+            pendingDefaultDetailDividerPlacement = placement
+            return
+        }
+
+        if forcesDefaultDivider || placementChanged || orderChanged {
+            scheduleDefaultDetailDividerPosition(for: placement)
+        } else if pendingDefaultDetailDividerPlacement != nil {
+            applyPendingDefaultDetailDividerPosition(afterLayingOut: true)
+        }
+    }
+
+    private func splitItems(_ lhs: [NSSplitViewItem], match rhs: [NSSplitViewItem]) -> Bool {
+        guard lhs.count == rhs.count else {
+            return false
+        }
+
+        return zip(lhs, rhs).allSatisfy { $0 === $1 }
+    }
+
+    private func scheduleDefaultDetailDividerPosition(for placement: NetworkInspectorPlacement) {
+        pendingDefaultDetailDividerPlacement = placement
+        applyPendingDefaultDetailDividerPosition(afterLayingOut: true)
+        DispatchQueue.main.async { [weak self] in
+            self?.applyPendingDefaultDetailDividerPosition(afterLayingOut: true)
+        }
+    }
+
+    private func applyPendingDefaultDetailDividerPosition(afterLayingOut shouldLayout: Bool = false) {
+        if shouldLayout {
+            view.layoutSubtreeIfNeeded()
+        }
+
+        guard let placement = pendingDefaultDetailDividerPlacement,
+              applyDefaultDetailDividerPosition(for: placement) else {
+            return
+        }
+
+        pendingDefaultDetailDividerPlacement = nil
+    }
+
+    @discardableResult
+    private func applyDefaultDetailDividerPosition(for placement: NetworkInspectorPlacement) -> Bool {
+        let splitView = detailSplitViewController.splitView
+        splitView.layoutSubtreeIfNeeded()
+        let totalLength = splitView.isVertical ? splitView.bounds.width : splitView.bounds.height
+        let availableLength = totalLength - splitView.dividerThickness
+        guard splitView.subviews.count >= 2,
+              hasSettledDetailSplitLayout(),
+              availableLength.isFinite,
+              availableLength > 0 else {
+            return false
+        }
+
+        splitView.setPosition((availableLength * Metrics.summaryPaneFraction).rounded(), ofDividerAt: 0)
+        return true
+    }
+
+    private func hasSettledDetailSplitLayout() -> Bool {
+        let detailFrame = detailSplitViewController.view.convert(detailSplitViewController.view.bounds, to: stackView)
+        let expectedDetailHeight = stackView.bounds.height - filterBarView.bounds.height
+        guard stackView.bounds.width > 0,
+              expectedDetailHeight > 0 else {
+            return false
+        }
+
+        return abs(detailFrame.width - stackView.bounds.width) <= 1 &&
+            abs(detailFrame.height - expectedDetailHeight) <= 1
     }
 
     private func applyTreeRenderChange(
@@ -748,36 +868,58 @@ final class PacketInspectorViewController: NSViewController {
     }
 
     private func setupLayout() {
-        addChild(hexViewController)
+        outlineViewController.view = scrollView
+        let outlineItem = NSSplitViewItem(viewController: outlineViewController)
+        outlineItem.minimumThickness = 160
+        let hexItem = NSSplitViewItem(viewController: hexViewController)
+        hexItem.minimumThickness = Metrics.minimumHexPanelHeight
+        self.outlineItem = outlineItem
+        self.hexItem = hexItem
+
+        addChild(detailSplitViewController)
+        // Keep the split layout slot stable while the empty state hides the inspector content.
+        detailContainerView.translatesAutoresizingMaskIntoConstraints = false
+        detailContainerView.addSubview(detailSplitViewController.view)
+        detailSplitViewController.view.translatesAutoresizingMaskIntoConstraints = false
 
         stackView.orientation = .vertical
+        stackView.alignment = .width
         stackView.spacing = 0
         stackView.edgeInsets = NSEdgeInsetsZero
         stackView.translatesAutoresizingMaskIntoConstraints = false
         stackView.addArrangedSubview(filterBarView)
-        stackView.addArrangedSubview(scrollView)
-        stackView.addArrangedSubview(hexViewController.view)
-
-        scrollView.setContentHuggingPriority(.defaultLow, for: .vertical)
-        hexViewController.view.setContentHuggingPriority(.defaultHigh, for: .vertical)
-
-        let hexHeight = hexViewController.view.heightAnchor.constraint(equalToConstant: Metrics.hexPanelHeight)
-        hexHeight.priority = .defaultHigh
+        stackView.addArrangedSubview(detailContainerView)
+        filterBarView.setContentHuggingPriority(.required, for: .vertical)
+        filterBarView.setContentCompressionResistancePriority(.required, for: .vertical)
+        detailContainerView.setContentHuggingPriority(.defaultLow, for: .vertical)
+        detailContainerView.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        applyPlacement(.trailing, resetsDefaultDivider: false, forcesDefaultDivider: false)
 
         view.addSubview(stackView)
         NSLayoutConstraint.activate([
+            filterBarView.widthAnchor.constraint(equalTo: stackView.widthAnchor),
+            detailContainerView.widthAnchor.constraint(equalTo: stackView.widthAnchor),
+            detailContainerView.heightAnchor.constraint(equalTo: stackView.heightAnchor, constant: -Metrics.filterBarHeight),
+            detailSplitViewController.view.leadingAnchor.constraint(equalTo: detailContainerView.leadingAnchor),
+            detailSplitViewController.view.trailingAnchor.constraint(equalTo: detailContainerView.trailingAnchor),
+            detailSplitViewController.view.topAnchor.constraint(equalTo: detailContainerView.topAnchor),
+            detailSplitViewController.view.bottomAnchor.constraint(equalTo: detailContainerView.bottomAnchor),
             stackView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             stackView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             stackView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             stackView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            hexHeight,
-            hexViewController.view.heightAnchor.constraint(greaterThanOrEqualToConstant: Metrics.minimumHexPanelHeight),
         ])
     }
 
     // Swap between the launch empty state and packet-detail controls.
-    private func updateContentVisibility(for inspectionState: PacketInspectionState) {
+    @discardableResult
+    private func updateContentVisibility(for inspectionState: PacketInspectionState) -> Bool {
         let shouldShowEmptyState = inspectionState.selectedPacketID == nil
+        let shouldShowPacketDetail = !shouldShowEmptyState
+        let didRevealPacketDetail = shouldShowPacketDetail && !isShowingPacketDetail
+        isShowingPacketDetail = shouldShowPacketDetail
+
+        detailSplitViewController.view.isHidden = shouldShowEmptyState
         scrollView.isHidden = shouldShowEmptyState
         outlineView.isHidden = shouldShowEmptyState
         hexViewController.view.isHidden = shouldShowEmptyState
@@ -787,6 +929,8 @@ final class PacketInspectorViewController: NSViewController {
         } else {
             hideEmptyState()
         }
+
+        return didRevealPacketDetail
     }
 
     // Focus the always-visible filter field without changing the active query.

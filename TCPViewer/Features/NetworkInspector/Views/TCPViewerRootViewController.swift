@@ -37,8 +37,10 @@ final class TCPViewerRootViewController: NSViewController {
     private let inspectorViewController: PacketInspectorViewController
     private let statusStripViewController = StatusStripViewController()
     private var sidebarItem: NSSplitViewItem?
+    private var workspaceItem: NSSplitViewItem?
     private var inspectorItem: NSSplitViewItem?
     private var appliedInspectorVisibility: Bool?
+    private var appliedInspectorPlacement: NetworkInspectorPlacement?
     private var needsSidebarDividerRefresh = false
     private var needsInspectorDividerRefresh = false
     private var isRestoringInspectorDivider = false
@@ -100,7 +102,7 @@ final class TCPViewerRootViewController: NSViewController {
 
         if needsInspectorDividerRefresh, inspectorItem?.isCollapsed == false {
             needsInspectorDividerRefresh = false
-            applyInspectorDividerPosition()
+            applyInspectorDividerPosition(placement: appliedInspectorPlacement ?? viewModel.snapshot.inspectorPlacement)
         }
     }
 
@@ -138,6 +140,10 @@ final class TCPViewerRootViewController: NSViewController {
 
     func toggleInspector() {
         viewModel.toggleInspector()
+    }
+
+    func toggleInspector(placement: NetworkInspectorPlacement) {
+        viewModel.toggleInspector(placement: placement)
     }
 
     func toggleQuickFilter(_ filterID: PacketQuickFilterID) {
@@ -241,7 +247,7 @@ final class TCPViewerRootViewController: NSViewController {
     }
 
     private func setupChildControllers() {
-        // Build the two-level split layout: sidebar | (table | inspector).
+        // Build the two-level split layout: sidebar | (workspace + inspector).
         sidebarViewController.delegate = self
         workspaceViewController.delegate = self
         inspectorViewController.delegate = self
@@ -253,6 +259,7 @@ final class TCPViewerRootViewController: NSViewController {
         // Keep the table and inspector inside the main container split.
         let workspaceItem = NSSplitViewItem(contentListWithViewController: workspaceViewController)
         contentSplitViewController.addSplitViewItem(workspaceItem)
+        self.workspaceItem = workspaceItem
 
         let inspectorItem = NSSplitViewItem(viewController: inspectorViewController)
         inspectorItem.canCollapse = true
@@ -365,58 +372,104 @@ final class TCPViewerRootViewController: NSViewController {
         splitView.setPosition(sidebarThickness, ofDividerAt: 0)
     }
 
-    // Keep the inspector in the right-side split item and only update collapse state when needed.
+    // Keep inspector placement and collapse state in sync with toolbar/view-model state.
     private func applyInspectorLayout(_ snapshot: NetworkInspectorSnapshot) {
+        let placementChanged = appliedInspectorPlacement != snapshot.inspectorPlacement
         let visibilityChanged = appliedInspectorVisibility != snapshot.isInspectorVisible
+        let previousPlacement = appliedInspectorPlacement ?? snapshot.inspectorPlacement
 
-        contentSplitViewController.splitView.isVertical = true
+        if placementChanged, appliedInspectorVisibility == true {
+            persistCurrentInspectorThicknessIfVisible(placement: previousPlacement)
+        }
+
+        if placementChanged {
+            isRestoringInspectorDivider = true
+            configureInspectorPlacement(snapshot.inspectorPlacement)
+        }
+        inspectorViewController.applyPlacement(snapshot.inspectorPlacement)
+
+        appliedInspectorPlacement = snapshot.inspectorPlacement
         if visibilityChanged {
             if !snapshot.isInspectorVisible {
-                persistCurrentInspectorThicknessIfVisible()
+                persistCurrentInspectorThicknessIfVisible(placement: snapshot.inspectorPlacement)
                 inspectorItem?.isCollapsed = true
             } else {
-                restoreInspectorDividerAfterOpening()
+                restoreInspectorDividerAfterOpening(placement: snapshot.inspectorPlacement)
             }
+        } else if placementChanged, snapshot.isInspectorVisible {
+            restoreInspectorDividerAfterOpening(placement: snapshot.inspectorPlacement)
+        } else if placementChanged {
+            clearTemporaryInspectorRestoreThickness()
+            isRestoringInspectorDivider = false
         }
 
         appliedInspectorVisibility = snapshot.isInspectorVisible
     }
 
-    // Expand the inspector without letting AppKit's intermediate resize overwrite the saved width.
-    private func restoreInspectorDividerAfterOpening() {
+    private func configureInspectorPlacement(_ placement: NetworkInspectorPlacement) {
+        guard let workspaceItem, let inspectorItem else {
+            return
+        }
+
+        contentSplitViewController.splitView.isVertical = placement == .trailing
+
+        // Keep workspace first; this split view is flipped, so the second item renders at the bottom.
+        let targetItems = [workspaceItem, inspectorItem]
+        guard !splitItems(contentSplitViewController.splitViewItems, match: targetItems) else {
+            return
+        }
+
+        for item in contentSplitViewController.splitViewItems.reversed() {
+            contentSplitViewController.removeSplitViewItem(item)
+        }
+        for (index, item) in targetItems.enumerated() {
+            contentSplitViewController.insertSplitViewItem(item, at: index)
+        }
+    }
+
+    private func splitItems(_ lhs: [NSSplitViewItem], match rhs: [NSSplitViewItem]) -> Bool {
+        guard lhs.count == rhs.count else {
+            return false
+        }
+
+        return zip(lhs, rhs).allSatisfy { $0 === $1 }
+    }
+
+    // Expand the inspector without letting AppKit's intermediate resize overwrite the saved size.
+    private func restoreInspectorDividerAfterOpening(placement: NetworkInspectorPlacement) {
         isRestoringInspectorDivider = true
-        prepareInspectorItemForExactRestore()
+        prepareInspectorItemForExactRestore(placement: placement)
         inspectorItem?.isCollapsed = false
-        applyInspectorDividerPosition()
+        applyInspectorDividerPosition(placement: placement)
         DispatchQueue.main.async { [weak self] in
             guard let self else {
                 return
             }
 
-            self.applyInspectorDividerPosition()
+            self.applyInspectorDividerPosition(placement: placement)
             self.view.layoutSubtreeIfNeeded()
             DispatchQueue.main.async { [weak self] in
                 guard let self else {
                     return
                 }
 
-                self.applyInspectorDividerPosition()
+                self.applyInspectorDividerPosition(placement: placement)
                 self.clearTemporaryInspectorRestoreThickness()
                 self.view.layoutSubtreeIfNeeded()
-                self.applyInspectorDividerPosition()
+                self.applyInspectorDividerPosition(placement: placement)
                 self.isRestoringInspectorDivider = false
                 print("[TCPViewer] Inspector restore settled: \(self.inspectorSplitDebugDescription())")
             }
         }
     }
 
-    // Lock the split item briefly so AppKit's uncollapse animation starts at the saved width.
-    private func prepareInspectorItemForExactRestore() {
+    // Lock the split item briefly so AppKit's uncollapse animation starts at the saved size.
+    private func prepareInspectorItemForExactRestore(placement: NetworkInspectorPlacement) {
         let splitView = contentSplitViewController.splitView
-        guard let inspectorThickness = inspectorRestoreThickness(for: splitView) else {
+        guard let inspectorThickness = inspectorRestoreThickness(for: splitView, placement: placement) else {
             clearTemporaryInspectorRestoreThickness()
             print(
-                "[TCPViewer] Inspector restore skipped: no usable width. " +
+                "[TCPViewer] Inspector restore skipped: no usable size. " +
                 "\(inspectorSplitDebugDescription())"
             )
             return
@@ -426,7 +479,7 @@ final class TCPViewerRootViewController: NSViewController {
         inspectorItem?.minimumThickness = inspectorThickness
         inspectorItem?.maximumThickness = inspectorThickness
         print(
-            "[TCPViewer] Inspector restore prepared: targetWidth=\(debugValue(inspectorThickness)) " +
+            "[TCPViewer] Inspector restore prepared: targetSize=\(debugValue(inspectorThickness)) " +
             "\(inspectorSplitDebugDescription())"
         )
     }
@@ -441,8 +494,8 @@ final class TCPViewerRootViewController: NSViewController {
         inspectorItem?.maximumThickness = NSSplitViewItem.unspecifiedDimension
     }
 
-    // Reapply the saved trailing divider position once the split view has a real width.
-    private func applyInspectorDividerPosition() {
+    // Reapply the saved divider position once the split view has a real size.
+    private func applyInspectorDividerPosition(placement: NetworkInspectorPlacement) {
         let splitView = contentSplitViewController.splitView
         guard splitView.dividerThickness.isFinite else {
             print("[TCPViewer] Inspector restore skipped: invalid divider thickness. \(inspectorSplitDebugDescription())")
@@ -450,15 +503,15 @@ final class TCPViewerRootViewController: NSViewController {
         }
 
         splitView.layoutSubtreeIfNeeded()
-        let totalLength = splitView.bounds.width
+        let totalLength = inspectorSplitLength(splitView, placement: placement)
         guard totalLength > 0 else {
             needsInspectorDividerRefresh = true
-            print("[TCPViewer] Inspector restore deferred: split width is \(debugValue(totalLength))")
+            print("[TCPViewer] Inspector restore deferred: split size is \(debugValue(totalLength))")
             return
         }
 
-        guard let inspectorThickness = inspectorRestoreThickness(for: splitView) else {
-            print("[TCPViewer] Inspector restore skipped: no usable width. \(inspectorSplitDebugDescription())")
+        guard let inspectorThickness = inspectorRestoreThickness(for: splitView, placement: placement) else {
+            print("[TCPViewer] Inspector restore skipped: no usable size. \(inspectorSplitDebugDescription())")
             return
         }
 
@@ -466,13 +519,13 @@ final class TCPViewerRootViewController: NSViewController {
         guard dividerPosition.isFinite, dividerPosition > 0 else {
             print(
                 "[TCPViewer] Inspector restore skipped: invalid divider=\(debugValue(dividerPosition)) " +
-                "targetWidth=\(debugValue(inspectorThickness)) \(inspectorSplitDebugDescription())"
+                "targetSize=\(debugValue(inspectorThickness)) \(inspectorSplitDebugDescription())"
             )
             return
         }
 
         print(
-            "[TCPViewer] Inspector restore applying: targetWidth=\(debugValue(inspectorThickness)) " +
+            "[TCPViewer] Inspector restore applying: targetSize=\(debugValue(inspectorThickness)) " +
             "restoreDivider=\(debugValue(dividerPosition)) subviews=\(splitView.subviews.count) " +
             "\(inspectorSplitDebugDescription())"
         )
@@ -480,9 +533,18 @@ final class TCPViewerRootViewController: NSViewController {
         print("[TCPViewer] Inspector restore applied: \(inspectorSplitDebugDescription())")
     }
 
-    private func inspectorRestoreThickness(for splitView: NSSplitView) -> CGFloat? {
-        let availableLength = splitView.bounds.width - splitView.dividerThickness
-        return viewModel.restoredInspectorThickness(for: availableLength)
+    private func inspectorRestoreThickness(for splitView: NSSplitView, placement: NetworkInspectorPlacement) -> CGFloat? {
+        let availableLength = inspectorSplitLength(splitView, placement: placement) - splitView.dividerThickness
+        return viewModel.restoredInspectorThickness(for: availableLength, placement: placement)
+    }
+
+    private func inspectorSplitLength(_ splitView: NSSplitView, placement: NetworkInspectorPlacement) -> CGFloat {
+        switch placement {
+        case .trailing:
+            return splitView.bounds.width
+        case .bottom:
+            return splitView.bounds.height
+        }
     }
 
     private func configureSplitViewObservation() {
@@ -518,7 +580,7 @@ final class TCPViewerRootViewController: NSViewController {
         persistCurrentInspectorLayout()
     }
 
-    // Persist the trailing split state after manual drags and AppKit-driven collapses.
+    // Persist the inspector split state after manual drags and AppKit-driven collapses.
     private func persistCurrentInspectorLayout() {
         let isVisible = inspectorItem?.isCollapsed == false
         viewModel.setInspectorVisible(isVisible)
@@ -526,24 +588,31 @@ final class TCPViewerRootViewController: NSViewController {
     }
 
     // Persist only visible inspector sizes so collapsing the pane never stores a broken zero value.
-    private func persistCurrentInspectorThicknessIfVisible() {
-        guard let thickness = currentInspectorThickness() else {
+    private func persistCurrentInspectorThicknessIfVisible(placement: NetworkInspectorPlacement? = nil) {
+        let placement = placement ?? appliedInspectorPlacement ?? viewModel.snapshot.inspectorPlacement
+        guard let thickness = currentInspectorThickness(placement: placement) else {
             return
         }
 
-        print("[TCPViewer] Inspector persist width: width=\(debugValue(thickness)) \(inspectorSplitDebugDescription())")
-        viewModel.rememberInspectorThickness(thickness)
+        print("[TCPViewer] Inspector persist size: size=\(debugValue(thickness)) \(inspectorSplitDebugDescription())")
+        viewModel.rememberInspectorThickness(thickness, placement: placement)
     }
 
-    // Read the live inspector width from AppKit's trailing split item when it is on screen.
-    private func currentInspectorThickness() -> CGFloat? {
+    // Read the live inspector size from AppKit's split item when it is on screen.
+    private func currentInspectorThickness(placement: NetworkInspectorPlacement) -> CGFloat? {
         guard let inspectorView = inspectorItem?.viewController.view,
               inspectorView.superview != nil,
               inspectorItem?.isCollapsed == false else {
             return nil
         }
 
-        let thickness = inspectorView.frame.width
+        let thickness: CGFloat
+        switch placement {
+        case .trailing:
+            thickness = inspectorView.frame.width
+        case .bottom:
+            thickness = inspectorView.frame.height
+        }
         guard thickness.isFinite, thickness > 0 else {
             return nil
         }
@@ -553,9 +622,16 @@ final class TCPViewerRootViewController: NSViewController {
 
     private func inspectorSplitDebugDescription() -> String {
         let splitView = contentSplitViewController.splitView
-        let dividerPosition = splitView.subviews.first?.frame.maxX
-        let inspectorWidth = inspectorItem?.viewController.view.frame.width
-        return "total=\(debugValue(splitView.bounds.width)) divider=\(debugValue(dividerPosition)) inspectorWidth=\(debugValue(inspectorWidth)) collapsed=\(inspectorItem?.isCollapsed == true)"
+        let placement = appliedInspectorPlacement ?? viewModel.snapshot.inspectorPlacement
+        let dividerPosition: CGFloat?
+        switch placement {
+        case .trailing:
+            dividerPosition = splitView.subviews.first?.frame.maxX
+        case .bottom:
+            dividerPosition = splitView.subviews.first?.frame.maxY
+        }
+        let inspectorSize = currentInspectorThickness(placement: placement)
+        return "placement=\(placement.rawValue) total=\(debugValue(inspectorSplitLength(splitView, placement: placement))) divider=\(debugValue(dividerPosition)) inspectorSize=\(debugValue(inspectorSize)) collapsed=\(inspectorItem?.isCollapsed == true)"
     }
 
     private func debugValue(_ value: CGFloat?) -> String {
@@ -923,6 +999,23 @@ extension TCPViewerRootViewController {
         )
         packetSelectionCrashReproducer = reproducer
         reproducer.start()
+    }
+}
+#endif
+
+#if DEBUG
+extension TCPViewerRootViewController {
+    // Expose split geometry to unit tests without depending on nested AppKit view discovery.
+    var inspectorSplitViewForTesting: NSSplitView {
+        contentSplitViewController.splitView
+    }
+
+    var workspaceViewForTesting: NSView? {
+        workspaceItem?.viewController.view
+    }
+
+    var inspectorViewForTesting: NSView? {
+        inspectorItem?.viewController.view
     }
 }
 #endif
