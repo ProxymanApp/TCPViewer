@@ -12,6 +12,23 @@ struct NativeCaptureFile {
     var format: CaptureFileFormat
     var records: [NativePacketRecord]
     var metadata: PCPPNativeCaptureDocumentMetadataDescriptor
+    var skippedPacketCount: Int = 0
+    var partialLoadReason: String?
+
+    var isPartialResult: Bool {
+        skippedPacketCount > 0 || partialLoadReason != nil
+    }
+
+    func loadSummaryMessage(prefix: String) -> String {
+        var message = "\(prefix) \(records.count) packets from \(url.lastPathComponent)."
+        if skippedPacketCount > 0 {
+            message += " Skipped \(skippedPacketCount) malformed packet record\(skippedPacketCount == 1 ? "" : "s")."
+        }
+        if let partialLoadReason {
+            message += " \(partialLoadReason)"
+        }
+        return message
+    }
 
     static func load(from url: URL) throws -> NativeCaptureFile {
         let data: Data
@@ -85,7 +102,14 @@ private struct PcapReader {
             offset += 16
 
             guard capturedLength >= 0, offset + capturedLength <= data.count else {
-                throw NativeNSError(.fileReadFailed, "The capture file contains a truncated packet record.")
+                return NativeCaptureFile(
+                    url: url,
+                    format: .pcap,
+                    records: records,
+                    metadata: metadata(),
+                    skippedPacketCount: 1,
+                    partialLoadReason: "Stopped at a truncated packet record."
+                )
             }
 
             let rawBytes = data.subdata(in: offset..<(offset + capturedLength))
@@ -105,17 +129,24 @@ private struct PcapReader {
             offset += capturedLength
         }
 
+        let trailingByteCount = data.count - offset
         return NativeCaptureFile(
             url: url,
             format: .pcap,
             records: records,
-            metadata: PCPPNativeCaptureDocumentMetadataDescriptor(
-                format: CaptureFileFormat.pcap.rawValue,
-                operatingSystem: nil,
-                hardware: nil,
-                captureApplication: nil,
-                fileComment: nil
-            )
+            metadata: metadata(),
+            skippedPacketCount: trailingByteCount > 0 ? 1 : 0,
+            partialLoadReason: trailingByteCount > 0 ? "Stopped at an incomplete packet header." : nil
+        )
+    }
+
+    private func metadata() -> PCPPNativeCaptureDocumentMetadataDescriptor {
+        PCPPNativeCaptureDocumentMetadataDescriptor(
+            format: CaptureFileFormat.pcap.rawValue,
+            operatingSystem: nil,
+            hardware: nil,
+            captureApplication: nil,
+            fileComment: nil
         )
     }
 
@@ -152,19 +183,29 @@ private struct PcapNGReader {
         var interfaces: [UInt64: Interface] = [:]
         var records: [NativePacketRecord] = []
         var packetNumber: UInt64 = 1
+        var skippedPacketCount = 0
+        var partialLoadReason: String?
 
         while offset + 12 <= data.count {
             let blockStart = offset
             let blockType = readUInt32(at: offset, littleEndian: littleEndian) ?? 0
             let totalLength = Int(readUInt32(at: offset + 4, littleEndian: littleEndian) ?? 0)
             guard totalLength >= 12, blockStart + totalLength <= data.count else {
+                skippedPacketCount += 1
+                partialLoadReason = "Stopped at an invalid PCAPNG block length."
                 break
             }
             let bodyStart = offset + 8
             let bodyEnd = blockStart + totalLength - 4
+            let trailingLength = Int(readUInt32(at: bodyEnd, littleEndian: littleEndian) ?? 0)
+            let hasValidTrailingLength = trailingLength == totalLength
 
             if blockType == 0x0a0d0d0a {
-                guard bodyStart + 4 <= bodyEnd else { break }
+                guard hasValidTrailingLength, bodyStart + 4 <= bodyEnd else {
+                    skippedPacketCount += 1
+                    offset = blockStart + totalLength
+                    continue
+                }
                 let magic = Array(data[bodyStart..<(bodyStart + 4)])
                 if magic == [0x4d, 0x3c, 0x2b, 0x1a] {
                     littleEndian = true
@@ -179,7 +220,11 @@ private struct PcapNGReader {
                 hasSection = true
                 nextInterfaceID = 0
             } else if blockType == 1 {
-                guard bodyStart + 8 <= bodyEnd else { break }
+                guard hasValidTrailingLength, bodyStart + 8 <= bodyEnd else {
+                    skippedPacketCount += 1
+                    offset = blockStart + totalLength
+                    continue
+                }
                 let linkType = Int32(readUInt16(at: bodyStart, littleEndian: littleEndian) ?? UInt16(Libpcap.dltEthernet))
                 let options = readOptions(offset: bodyStart + 8, end: bodyEnd, littleEndian: littleEndian)
                 let interface = Interface(
@@ -192,14 +237,22 @@ private struct PcapNGReader {
                 interfaces[metadataKey(interfaceID: nextInterfaceID, section: section)] = interface
                 nextInterfaceID += 1
             } else if blockType == 6 {
-                guard bodyStart + 20 <= bodyEnd else { break }
+                guard hasValidTrailingLength, bodyStart + 20 <= bodyEnd else {
+                    skippedPacketCount += 1
+                    offset = blockStart + totalLength
+                    continue
+                }
                 let interfaceID = readUInt32(at: bodyStart, littleEndian: littleEndian) ?? 0
                 let timestampHigh = UInt64(readUInt32(at: bodyStart + 4, littleEndian: littleEndian) ?? 0)
                 let timestampLow = UInt64(readUInt32(at: bodyStart + 8, littleEndian: littleEndian) ?? 0)
                 let capturedLength = Int(readUInt32(at: bodyStart + 12, littleEndian: littleEndian) ?? 0)
                 let originalLength = Int(readUInt32(at: bodyStart + 16, littleEndian: littleEndian) ?? UInt32(capturedLength))
                 let packetOffset = bodyStart + 20
-                guard capturedLength >= 0, packetOffset + capturedLength <= bodyEnd else { break }
+                guard capturedLength >= 0, packetOffset + capturedLength <= bodyEnd else {
+                    skippedPacketCount += 1
+                    offset = blockStart + totalLength
+                    continue
+                }
                 let packetData = data.subdata(in: packetOffset..<(packetOffset + capturedLength))
                 let interface = interfaces[metadataKey(interfaceID: interfaceID, section: section)]
                 let timestampMicros = (timestampHigh << 32) | timestampLow
@@ -216,7 +269,11 @@ private struct PcapNGReader {
                 ))
                 packetNumber += 1
             } else if blockType == 3 {
-                guard bodyStart + 4 <= bodyEnd else { break }
+                guard hasValidTrailingLength, bodyStart + 4 <= bodyEnd else {
+                    skippedPacketCount += 1
+                    offset = blockStart + totalLength
+                    continue
+                }
                 let originalLength = Int(readUInt32(at: bodyStart, littleEndian: littleEndian) ?? 0)
                 let packetOffset = bodyStart + 4
                 let capturedLength = min(originalLength, bodyEnd - packetOffset)
@@ -238,6 +295,11 @@ private struct PcapNGReader {
             offset = blockStart + totalLength
         }
 
+        if offset < data.count {
+            skippedPacketCount += 1
+            partialLoadReason = partialLoadReason ?? "Stopped at an incomplete PCAPNG block."
+        }
+
         return NativeCaptureFile(
             url: url,
             format: .pcapng,
@@ -248,7 +310,9 @@ private struct PcapNGReader {
                 hardware: nil,
                 captureApplication: nil,
                 fileComment: nil
-            )
+            ),
+            skippedPacketCount: skippedPacketCount,
+            partialLoadReason: partialLoadReason
         )
     }
 

@@ -160,6 +160,78 @@ struct InspectorPipelineTests {
         #expect(interfaceNode.value?.contains("1") == true)
     }
 
+    @Test func generatedPcapAndPcapNgOpenWithSummariesRawBytesAndDetails() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let fixtures: [(URL, CaptureFileFormat)] = [
+            (directory.appendingPathComponent("generated.pcap"), .pcap),
+            (directory.appendingPathComponent("generated.pcapng"), .pcapng),
+        ]
+        let packets = [makeIPv4UDPPayloadPacket(), makeIPv4DNSResponsePacket()]
+        try writePCAP(to: fixtures[0].0, packets: packets)
+        try writePCAPNG(to: fixtures[1].0, interfaces: ["en0"], packets: packets.map { (packet: $0, interfaceID: 0) })
+
+        for (captureURL, format) in fixtures {
+            let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
+            let summaries = try await document.open()
+            let firstPacket = try #require(summaries.first)
+
+            #expect(document.currentMetadata().format == format)
+            #expect(summaries.count == 2)
+            #expect(summaries.map(\.packetNumber) == [1, 2])
+            #expect(firstPacket.transportHint == .udp)
+            #expect(firstPacket.endpoints.source.address == "192.168.0.1")
+            #expect(firstPacket.endpoints.destination.address == "192.168.0.2")
+            #expect(firstPacket.originalLength == packets[0].count)
+            #expect(firstPacket.capturedLength == packets[0].count)
+
+            let inspection = try await document.inspectPacket(id: firstPacket.id)
+            #expect(inspection.rawBytes == packets[0])
+            #expect(inspection.decodeStatus.kind == .complete)
+            #expect(findNode(in: inspection.detailNodes, fieldName: "udp.length")?.byteRange == PacketByteRange(offset: 38, length: 2))
+        }
+    }
+
+    @Test func malformedPcapNgPacketRecordIsSkippedAndLaterPacketsStillLoad() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let captureURL = directory.appendingPathComponent("recoverable-malformed.pcapng")
+        try writePCAPNGWithMalformedPacketBetweenValidPackets(to: captureURL)
+
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
+        let summaries = try await document.open()
+        let progress = document.loadProgress()
+
+        #expect(summaries.count == 2)
+        #expect(summaries.map(\.packetNumber) == [1, 2])
+        #expect(summaries.map(\.transportHint) == [.udp, .dns])
+        #expect(progress.phase == .completed)
+        #expect(progress.isPartialResult)
+        #expect(progress.message.contains("Skipped 1 malformed packet record"))
+
+        let secondInspection = try await document.inspectPacket(id: summaries[1].id)
+        #expect(secondInspection.rawBytes == makeIPv4DNSResponsePacket())
+        #expect(findNode(in: secondInspection.detailNodes, fieldName: "dns") != nil)
+    }
+
+    @Test func invalidCaptureMagicFailsOfflineOpen() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let captureURL = directory.appendingPathComponent("invalid-magic.pcap")
+        try Data(repeating: 0xEE, count: 32).write(to: captureURL)
+
+        do {
+            _ = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
+            Issue.record("Expected invalid capture magic to fail.")
+        } catch let error as TCPViewerCoreError {
+            #expect(error.code == .offlineFileOpenFailed)
+            #expect(error.message.contains("not PCAP or PCAPNG"))
+        }
+    }
+
     @Test func generatedCaptureInspectionCoversWiresharkFieldsAndByteRanges() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -855,22 +927,54 @@ private func writePCAPNG(to url: URL, interfaces: [String], packets: [(packet: D
     }
 
     for (index, entry) in packets.enumerated() {
-        let packetLength = try UInt32(exactly: entry.packet.count).unwrap()
-        let timestamp = UInt64(1_700_000_000 + index) * 1_000_000
-        var packetBody = Data()
-        packetBody.appendLittleEndian(entry.interfaceID)
-        packetBody.appendLittleEndian(UInt32(timestamp >> 32))
-        packetBody.appendLittleEndian(UInt32(timestamp & 0xffff_ffff))
-        packetBody.appendLittleEndian(packetLength)
-        packetBody.appendLittleEndian(packetLength)
-        packetBody.append(entry.packet)
-        packetBody.appendPCAPNGPadding(for: entry.packet.count)
-        packetBody.appendLittleEndian(UInt16(0))
-        packetBody.appendLittleEndian(UInt16(0))
-        appendPCAPNGBlock(type: 6, body: packetBody, to: &data)
+        try appendPCAPNGEnhancedPacket(entry.packet, interfaceID: entry.interfaceID, index: index, to: &data)
     }
 
     try data.write(to: url)
+}
+
+private func writePCAPNGWithMalformedPacketBetweenValidPackets(to url: URL) throws {
+    var data = Data()
+
+    var sectionBody = Data()
+    sectionBody.appendLittleEndian(UInt32(0x1a2b3c4d))
+    sectionBody.appendLittleEndian(UInt16(1))
+    sectionBody.appendLittleEndian(UInt16(0))
+    sectionBody.appendLittleEndian(UInt64.max)
+    appendPCAPNGBlock(type: 0x0a0d0d0a, body: sectionBody, to: &data)
+
+    var interfaceBody = Data()
+    interfaceBody.appendLittleEndian(UInt16(1))
+    interfaceBody.appendLittleEndian(UInt16(0))
+    interfaceBody.appendLittleEndian(UInt32(65_535))
+    interfaceBody.appendLittleEndian(UInt16(0))
+    interfaceBody.appendLittleEndian(UInt16(0))
+    appendPCAPNGBlock(type: 1, body: interfaceBody, to: &data)
+
+    try appendPCAPNGEnhancedPacket(makeIPv4UDPPayloadPacket(), interfaceID: 0, index: 0, to: &data)
+
+    var malformedPacketBody = Data()
+    malformedPacketBody.appendLittleEndian(UInt32(0))
+    appendPCAPNGBlock(type: 6, body: malformedPacketBody, to: &data)
+
+    try appendPCAPNGEnhancedPacket(makeIPv4DNSResponsePacket(), interfaceID: 0, index: 1, to: &data)
+    try data.write(to: url)
+}
+
+private func appendPCAPNGEnhancedPacket(_ packet: Data, interfaceID: UInt32, index: Int, to data: inout Data) throws {
+    let packetLength = try UInt32(exactly: packet.count).unwrap()
+    let timestamp = UInt64(1_700_000_000 + index) * 1_000_000
+    var packetBody = Data()
+    packetBody.appendLittleEndian(interfaceID)
+    packetBody.appendLittleEndian(UInt32(timestamp >> 32))
+    packetBody.appendLittleEndian(UInt32(timestamp & 0xffff_ffff))
+    packetBody.appendLittleEndian(packetLength)
+    packetBody.appendLittleEndian(packetLength)
+    packetBody.append(packet)
+    packetBody.appendPCAPNGPadding(for: packet.count)
+    packetBody.appendLittleEndian(UInt16(0))
+    packetBody.appendLittleEndian(UInt16(0))
+    appendPCAPNGBlock(type: 6, body: packetBody, to: &data)
 }
 
 private func appendPCAPNGBlock(type: UInt32, body: Data, to data: inout Data) {

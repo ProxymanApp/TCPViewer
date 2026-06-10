@@ -20,11 +20,33 @@ enum PacketIngestMutation: Sendable, Equatable {
     case metadataUpdate(packetIDs: [PacketSummary.ID])
 }
 
+struct ImportedCaptureFileID: Hashable, Sendable, Codable {
+    let rawValue: String
+}
+
+struct ImportedCaptureFile: Identifiable, Sendable, Equatable {
+    let id: ImportedCaptureFileID
+    let url: URL
+    let displayName: String
+    let packetIDs: [PacketSummary.ID]
+
+    var packetCount: Int {
+        packetIDs.count
+    }
+}
+
+struct ImportedPacketReference: Sendable, Equatable {
+    let fileID: ImportedCaptureFileID
+    let originalPacketID: PacketSummary.ID
+}
+
 struct PacketIngestState: Sendable, Equatable {
     var source: CaptureSource?
     var backingIdentity: String?
     var packets: [PacketSummary]
     var packetIndexByID: [PacketSummary.ID: Int]
+    var importedFiles: [ImportedCaptureFile]
+    var importedPacketReferenceByID: [PacketSummary.ID: ImportedPacketReference]
     var packetRevision: UInt64
     var packetLineageRevision: UInt64
     var lastMutation: PacketIngestMutation
@@ -38,6 +60,8 @@ struct PacketIngestState: Sendable, Equatable {
         backingIdentity: nil,
         packets: [],
         packetIndexByID: [:],
+        importedFiles: [],
+        importedPacketReferenceByID: [:],
         packetRevision: 0,
         packetLineageRevision: 0,
         lastMutation: .none,
@@ -61,11 +85,21 @@ struct PacketIngestState: Sendable, Equatable {
         return packets[packetIndex]
     }
 
+    func importedPacketReference(for identifier: PacketSummary.ID?) -> ImportedPacketReference? {
+        guard let identifier else {
+            return nil
+        }
+
+        return importedPacketReferenceByID[identifier]
+    }
+
     mutating func reset(source: CaptureSource? = nil, message: String) {
         self.source = source
         backingIdentity = source == nil ? nil : UUID().uuidString
         packets = []
         packetIndexByID = [:]
+        importedFiles = []
+        importedPacketReferenceByID = [:]
         packetRevision &+= 1
         packetLineageRevision &+= 1
         lastMutation = .reset
@@ -91,11 +125,52 @@ struct PacketIngestState: Sendable, Equatable {
         self.source = source
         packets = batch
         rebuildPacketIndex()
+        importedFiles = []
+        importedPacketReferenceByID = [:]
         packetRevision &+= 1
         packetLineageRevision &+= 1
         lastMutation = .replace
         lastBatchCount = batch.count
         recalculateCounters()
+        if let message {
+            statusMessage = message
+        }
+    }
+
+    mutating func appendImportedFile(
+        _ file: ImportedCaptureFile,
+        packets batch: [PacketSummary],
+        originalPacketIDs: [PacketSummary.ID],
+        metadataUpdates: [PacketMetadataUpdate] = [],
+        message: String? = nil
+    ) {
+        guard !batch.isEmpty, batch.count == originalPacketIDs.count else {
+            lastMutation = .none
+            return
+        }
+
+        source = .offline
+        if backingIdentity == nil {
+            backingIdentity = UUID().uuidString
+        }
+
+        let startIndex = packets.count
+        packets.append(contentsOf: batch)
+        for (offset, packet) in batch.enumerated() {
+            packetIndexByID[packet.id] = startIndex + offset
+            importedPacketReferenceByID[packet.id] = ImportedPacketReference(
+                fileID: file.id,
+                originalPacketID: originalPacketIDs[offset]
+            )
+        }
+        importedFiles.append(file)
+        let updatedPacketIDs = applyMetadataUpdatesInPlace(metadataUpdates)
+        packetRevision &+= 1
+        lastMutation = updatedPacketIDs.isEmpty
+            ? .append(startIndex..<packets.count)
+            : .appendWithMetadataUpdates(range: startIndex..<packets.count, updatedPacketIDs: updatedPacketIDs)
+        lastBatchCount = batch.count
+        addCounters(for: batch)
         if let message {
             statusMessage = message
         }
@@ -135,6 +210,20 @@ struct PacketIngestState: Sendable, Equatable {
         }
 
         rebuildPacketIndex()
+        importedPacketReferenceByID = importedPacketReferenceByID.filter { packetIndexByID[$0.key] != nil }
+        importedFiles = importedFiles.compactMap { file in
+            let remainingPacketIDs = file.packetIDs.filter { packetIndexByID[$0] != nil }
+            guard !remainingPacketIDs.isEmpty else {
+                return nil
+            }
+
+            return ImportedCaptureFile(
+                id: file.id,
+                url: file.url,
+                displayName: file.displayName,
+                packetIDs: remainingPacketIDs
+            )
+        }
         packetRevision &+= 1
         packetLineageRevision &+= 1
         lastMutation = .replace
@@ -272,6 +361,7 @@ struct PacketIngestState: Sendable, Equatable {
             lhs.truncatedPacketCount == rhs.truncatedPacketCount &&
             lhs.decodeIssueCount == rhs.decodeIssueCount &&
             lhs.statusMessage == rhs.statusMessage &&
+            lhs.importedFiles == rhs.importedFiles &&
             lhs.packets.count == rhs.packets.count
     }
 
@@ -599,6 +689,35 @@ struct TCPViewerServiceRegistry {
     )
 }
 
+enum TCPViewerCaptureFileImportPolicy {
+    static let allowedFilenameExtensions: Set<String> = ["pcap", "pcapng"]
+
+    static var allowedContentTypes: [UTType] {
+        allowedFilenameExtensions.compactMap { UTType(filenameExtension: $0) }
+    }
+
+    static func isSupportedCaptureFileURL(_ url: URL) -> Bool {
+        allowedFilenameExtensions.contains(url.pathExtension.lowercased())
+    }
+
+    static func standardizedFileURL(_ url: URL) -> URL {
+        url.standardizedFileURL.resolvingSymlinksInPath()
+    }
+}
+
+private extension PacketInspection {
+    func tcpviewerRemapping(packetID: PacketSummary.ID) -> PacketInspection {
+        PacketInspection(
+            packetID: packetID,
+            packetNumber: packetNumber,
+            rawBytes: rawBytes,
+            byteViews: byteViews,
+            detailNodes: detailNodes,
+            decodeStatus: decodeStatus
+        )
+    }
+}
+
 private struct TCPViewerPreferences {
     private enum Key {
         static let captureFilterText = "TCPViewer.captureFilterText"
@@ -755,6 +874,7 @@ final class TCPViewerWorkspaceController {
     private var liveSessionConfiguration: LiveSessionConfiguration?
     private var liveEventGeneration = 0
     private var document: (any OfflineCaptureDocumentProviding)?
+    private var importedDocumentsByFileID: [ImportedCaptureFileID: any OfflineCaptureDocumentProviding] = [:]
     private var documentEventGeneration = 0
     private var inspectionGeneration = 0
     private var filterValidationGeneration = 0
@@ -1223,6 +1343,7 @@ final class TCPViewerWorkspaceController {
                 }
 
                 self.releaseDocumentContext()
+                self.importedDocumentsByFileID.removeAll(keepingCapacity: false)
                 self.resetInspectionState()
                 self.snapshot.selectedPacketID = nil
                 self.snapshot.documentState = CaptureDocumentState(
@@ -1282,6 +1403,78 @@ final class TCPViewerWorkspaceController {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    func importDocuments(at fileURLs: [URL], completion: (() -> Void)? = nil) {
+        openDocuments(at: fileURLs, replacingCurrent: false, completion: completion)
+    }
+
+    func openDocuments(at fileURLs: [URL], replacingCurrent: Bool, completion: (() -> Void)? = nil) {
+        let requestedURLs = uniqueSupportedCaptureURLs(fileURLs)
+        guard !requestedURLs.isEmpty else {
+            completion?()
+            return
+        }
+
+        stopLiveCaptureIfNeeded { [weak self] stopResult in
+            DispatchQueue.main.async {
+                guard let self else {
+                    completion?()
+                    return
+                }
+
+                if case .failure(let error) = stopResult {
+                    let tcpviewerError = self.tcpviewerError(from: error, defaultCode: .liveSessionControlFailed)
+                    self.snapshot.sessionState.phase = .failed
+                    self.snapshot.sessionState.lastError = tcpviewerError
+                    self.snapshot.sessionState.statusMessage = tcpviewerError.message
+                    completion?()
+                    return
+                }
+
+                if replacingCurrent || self.snapshot.packetIngestState.source != .offline {
+                    self.releaseDocumentContext()
+                    self.importedDocumentsByFileID.removeAll(keepingCapacity: false)
+                    self.services.packetMetadataEnricher.reset()
+                    self.snapshot.packetIngestState.reset(source: .offline, message: "Opening \(requestedURLs.first?.lastPathComponent ?? "capture")...")
+                }
+
+                self.resetInspectionState()
+                self.snapshot.selectedPacketID = nil
+                self.snapshot.documentState = CaptureDocumentState(
+                    phase: .opening,
+                    fileURL: replacingCurrent && requestedURLs.count == 1 ? requestedURLs[0] : nil,
+                    format: nil,
+                    metadata: nil,
+                    packetCount: self.snapshot.packetIngestState.totalPacketCount,
+                    isDirty: false,
+                    isPartialResult: false,
+                    statusMessage: "Opening \(requestedURLs.count) capture file\(requestedURLs.count == 1 ? "" : "s")...",
+                    lastError: nil
+                )
+                self.synchronizeVisiblePackets(message: self.snapshot.documentState.statusMessage)
+                self.snapshot.loadState.progress = PacketLoadProgress(
+                    phase: .loading,
+                    loadedPacketCount: 0,
+                    message: self.snapshot.documentState.statusMessage
+                )
+
+                let urlsToImport = self.urlsToImport(requestedURLs, replacingCurrent: replacingCurrent)
+                guard !urlsToImport.isEmpty else {
+                    self.finishDocumentImports(importedCount: 0, skippedDuplicateCount: requestedURLs.count)
+                    completion?()
+                    return
+                }
+
+                self.importDocumentsSequentially(
+                    urlsToImport,
+                    index: 0,
+                    importedCount: 0,
+                    skippedDuplicateCount: requestedURLs.count - urlsToImport.count,
+                    completion: completion
+                )
             }
         }
     }
@@ -1467,6 +1660,34 @@ final class TCPViewerWorkspaceController {
                 }
             }
         case .offline:
+            let importedReferences = identifiers.compactMap { snapshot.packetIngestState.importedPacketReference(for: $0) }
+            if importedReferences.count == identifiers.count, let fileID = importedReferences.first?.fileID {
+                guard importedReferences.allSatisfy({ $0.fileID == fileID }) else {
+                    let error = TCPViewerCoreError(
+                        code: .offlineFileSaveFailed,
+                        message: "Exporting packets from multiple imported files is not supported yet."
+                    )
+                    snapshot.documentState.lastError = error
+                    snapshot.documentState.statusMessage = error.message
+                    completion(.failure(error))
+                    return
+                }
+
+                guard let importedDocument = importedDocumentsByFileID[fileID] else {
+                    completion(.failure(TCPViewerCoreError(code: .offlineFileSaveFailed, message: "The imported capture backing store is not available for export.")))
+                    return
+                }
+
+                snapshot.documentState.statusMessage = "Exporting \(url.lastPathComponent)..."
+                let originalPacketIDs = importedReferences.map(\.originalPacketID)
+                importedDocument.exportPackets(withIDs: originalPacketIDs, to: url, format: format, progress: progress, shouldCancel: cancellationCheck) { [weak self] result in
+                    DispatchQueue.main.async {
+                        self?.completeOfflineExport(result, url: url, completion: completion)
+                    }
+                }
+                return
+            }
+
             guard let document else {
                 completion(.failure(TCPViewerCoreError(code: .offlineFileSaveFailed, message: "The capture document is not available for export.")))
                 return
@@ -1475,23 +1696,7 @@ final class TCPViewerWorkspaceController {
             snapshot.documentState.statusMessage = "Exporting \(url.lastPathComponent)..."
             document.exportPackets(withIDs: identifiers, to: url, format: format, progress: progress, shouldCancel: cancellationCheck) { [weak self] result in
                 DispatchQueue.main.async {
-                    guard let self else {
-                        completion(result)
-                        return
-                    }
-
-                    switch result {
-                    case .success:
-                        self.snapshot.documentState.lastError = nil
-                        self.snapshot.documentState.statusMessage = "Exported \(url.lastPathComponent)."
-                    case .failure(let error):
-                        let tcpviewerError = self.tcpviewerError(from: error, defaultCode: .offlineFileSaveFailed)
-                        self.snapshot.documentState.lastError = tcpviewerError
-                        self.snapshot.documentState.statusMessage = tcpviewerError.message
-                        completion(.failure(tcpviewerError))
-                        return
-                    }
-                    completion(result)
+                    self?.completeOfflineExport(result, url: url, completion: completion)
                 }
             }
         case nil:
@@ -1554,13 +1759,40 @@ final class TCPViewerWorkspaceController {
         }
     }
 
+    private func completeOfflineExport(_ result: Result<Void, Error>, url: URL, completion: @escaping TCPViewerVoidCompletion) {
+        switch result {
+        case .success:
+            snapshot.documentState.lastError = nil
+            snapshot.documentState.statusMessage = "Exported \(url.lastPathComponent)."
+            completion(.success(()))
+        case .failure(let error):
+            let tcpviewerError = tcpviewerError(from: error, defaultCode: .offlineFileSaveFailed)
+            snapshot.documentState.lastError = tcpviewerError
+            snapshot.documentState.statusMessage = tcpviewerError.message
+            completion(.failure(tcpviewerError))
+        }
+    }
+
     func cancelDocumentLoading(completion: (() -> Void)? = nil) {
-        guard let document else {
-            completion?()
+        let documents = Array(importedDocumentsByFileID.values)
+        guard !documents.isEmpty else {
+            guard let document else {
+                completion?()
+                return
+            }
+            document.cancelLoading(completion: completion)
             return
         }
 
-        document.cancelLoading(completion: completion)
+        var remainingCount = documents.count
+        for document in documents {
+            document.cancelLoading {
+                remainingCount -= 1
+                if remainingCount == 0 {
+                    completion?()
+                }
+            }
+        }
     }
 
     func clearPackets() {
@@ -1637,19 +1869,16 @@ final class TCPViewerWorkspaceController {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
+        panel.allowsMultipleSelection = true
         panel.title = "Open Capture File"
         panel.message = "Choose a pcap or pcapng file to inspect."
-        panel.allowedContentTypes = [
-            UTType(filenameExtension: "pcap"),
-            UTType(filenameExtension: "pcapng"),
-        ].compactMap { $0 }
+        panel.allowedContentTypes = TCPViewerCaptureFileImportPolicy.allowedContentTypes
 
-        guard panel.runModal() == .OK, let url = panel.url else {
+        guard panel.runModal() == .OK else {
             return
         }
 
-        openDocument(at: url)
+        importDocuments(at: panel.urls)
     }
 
     func presentSaveCapturePanel(format: CaptureFileFormat) {
@@ -2147,6 +2376,226 @@ final class TCPViewerWorkspaceController {
         synchronizeVisiblePackets(message: "Showing \(packets.count) packets.")
     }
 
+    private func uniqueSupportedCaptureURLs(_ fileURLs: [URL]) -> [URL] {
+        var seenPaths = Set<String>()
+        return fileURLs.compactMap { url in
+            let standardizedURL = TCPViewerCaptureFileImportPolicy.standardizedFileURL(url)
+            guard TCPViewerCaptureFileImportPolicy.isSupportedCaptureFileURL(standardizedURL),
+                  seenPaths.insert(standardizedURL.path).inserted else {
+                return nil
+            }
+
+            return standardizedURL
+        }
+    }
+
+    private func urlsToImport(_ urls: [URL], replacingCurrent: Bool) -> [URL] {
+        guard !replacingCurrent else {
+            return urls
+        }
+
+        let importedPaths = Set(snapshot.packetIngestState.importedFiles.map { $0.url.path })
+        return urls.filter { !importedPaths.contains($0.path) }
+    }
+
+    private func importDocumentsSequentially(
+        _ urls: [URL],
+        index: Int,
+        importedCount: Int,
+        skippedDuplicateCount: Int,
+        failureCount: Int = 0,
+        firstError: TCPViewerCoreError? = nil,
+        completion: (() -> Void)?
+    ) {
+        guard index < urls.count else {
+            finishDocumentImports(
+                importedCount: importedCount,
+                skippedDuplicateCount: skippedDuplicateCount,
+                failureCount: failureCount,
+                firstError: firstError
+            )
+            completion?()
+            return
+        }
+
+        let url = urls[index]
+        snapshot.documentState.statusMessage = "Opening \(url.lastPathComponent)..."
+        snapshot.loadState.progress = PacketLoadProgress(
+            phase: .loading,
+            loadedPacketCount: snapshot.packetIngestState.totalPacketCount,
+            isPartialResult: snapshot.documentState.isPartialResult,
+            message: snapshot.documentState.statusMessage
+        )
+
+        services.core.openOfflineCaptureDocument(at: url) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else {
+                    completion?()
+                    return
+                }
+
+                switch result {
+                case .success(let document):
+                    document.open { [weak self] openResult in
+                        DispatchQueue.main.async {
+                            guard let self else {
+                                completion?()
+                                return
+                            }
+
+                            switch openResult {
+                            case .success(let packets):
+                                self.appendImportedDocument(document, packets: packets)
+                                self.importDocumentsSequentially(
+                                    urls,
+                                    index: index + 1,
+                                    importedCount: importedCount + 1,
+                                    skippedDuplicateCount: skippedDuplicateCount,
+                                    failureCount: failureCount,
+                                    firstError: firstError,
+                                    completion: completion
+                                )
+                            case .failure(let error):
+                                let tcpviewerError = self.tcpviewerError(from: error, defaultCode: .offlineFileOpenFailed)
+                                self.importDocumentsSequentially(
+                                    urls,
+                                    index: index + 1,
+                                    importedCount: importedCount,
+                                    skippedDuplicateCount: skippedDuplicateCount,
+                                    failureCount: failureCount + 1,
+                                    firstError: firstError ?? tcpviewerError,
+                                    completion: completion
+                                )
+                            }
+                        }
+                    }
+                case .failure(let error):
+                    let tcpviewerError = self.tcpviewerError(from: error, defaultCode: .offlineFileOpenFailed)
+                    self.importDocumentsSequentially(
+                        urls,
+                        index: index + 1,
+                        importedCount: importedCount,
+                        skippedDuplicateCount: skippedDuplicateCount,
+                        failureCount: failureCount + 1,
+                        firstError: firstError ?? tcpviewerError,
+                        completion: completion
+                    )
+                }
+            }
+        }
+    }
+
+    private func appendImportedDocument(_ document: any OfflineCaptureDocumentProviding, packets: [PacketSummary]) {
+        let url = TCPViewerCaptureFileImportPolicy.standardizedFileURL(document.currentURL())
+        let fileID = ImportedCaptureFileID(rawValue: url.path)
+        let originalPacketIDs = packets.map(\.id)
+        let nextPacketID = (snapshot.packetIngestState.packets.map(\.id).max() ?? 0) + 1
+        let remappedPackets = packets.enumerated().map { offset, packet in
+            packet.tcpviewerRemapping(identifier: nextPacketID + UInt64(offset), source: .offline)
+        }
+        let importedFile = ImportedCaptureFile(
+            id: fileID,
+            url: url,
+            displayName: url.lastPathComponent,
+            packetIDs: remappedPackets.map(\.id)
+        )
+
+        services.packetMetadataEnricher.reset()
+        let enrichmentResult = services.packetMetadataEnricher.enrich(remappedPackets, source: .offline)
+        importedDocumentsByFileID[fileID] = document
+        document.eventHandler = nil
+        snapshot.packetIngestState.appendImportedFile(
+            importedFile,
+            packets: enrichmentResult.packets,
+            originalPacketIDs: originalPacketIDs,
+            metadataUpdates: enrichmentResult.updates,
+            message: "Imported \(url.lastPathComponent)."
+        )
+
+        if importedDocumentsByFileID.count == 1 {
+            self.document = document
+        } else {
+            self.document = nil
+        }
+
+        let progress = document.loadProgress()
+        snapshot.documentState.isPartialResult = snapshot.documentState.isPartialResult || progress.isPartialResult
+    }
+
+    private func finishDocumentImports(
+        importedCount: Int,
+        skippedDuplicateCount: Int,
+        failureCount: Int = 0,
+        firstError: TCPViewerCoreError? = nil
+    ) {
+        let importedFiles = snapshot.packetIngestState.importedFiles
+        let packetCount = snapshot.packetIngestState.totalPacketCount
+        let hasImportedFiles = !importedFiles.isEmpty
+
+        snapshot.documentState.packetCount = packetCount
+        snapshot.documentState.fileURL = importedFiles.count == 1 ? importedFiles[0].url : nil
+        if let onlyFile = importedFiles.first, importedFiles.count == 1, let document = importedDocumentsByFileID[onlyFile.id] {
+            let metadata = document.currentMetadata()
+            snapshot.documentState.metadata = metadata
+            snapshot.documentState.format = metadata.format
+        } else {
+            snapshot.documentState.metadata = nil
+            snapshot.documentState.format = nil
+        }
+
+        if hasImportedFiles {
+            snapshot.documentState.phase = .loaded
+            snapshot.documentState.lastError = nil
+        } else if let firstError {
+            snapshot.documentState.phase = .failed
+            snapshot.documentState.lastError = firstError
+        } else {
+            snapshot.documentState.phase = .loaded
+            snapshot.documentState.lastError = nil
+        }
+
+        let message = importCompletionMessage(
+            importedCount: importedCount,
+            skippedDuplicateCount: skippedDuplicateCount,
+            failureCount: failureCount,
+            packetCount: packetCount,
+            fallbackError: firstError
+        )
+        snapshot.documentState.statusMessage = message
+        snapshot.loadState.progress = PacketLoadProgress(
+            phase: hasImportedFiles || firstError == nil ? .completed : .failed,
+            loadedPacketCount: packetCount,
+            isPartialResult: snapshot.documentState.isPartialResult || failureCount > 0,
+            message: message
+        )
+        synchronizeVisiblePackets(message: packetCount == 0 ? message : "Showing \(packetCount) imported packets.")
+    }
+
+    private func importCompletionMessage(
+        importedCount: Int,
+        skippedDuplicateCount: Int,
+        failureCount: Int,
+        packetCount: Int,
+        fallbackError: TCPViewerCoreError?
+    ) -> String {
+        if importedCount == 0, failureCount == 0, skippedDuplicateCount > 0 {
+            return "All selected capture files are already imported."
+        }
+
+        if importedCount == 0, let fallbackError {
+            return fallbackError.message
+        }
+
+        var parts = ["Imported \(importedCount) file\(importedCount == 1 ? "" : "s") with \(packetCount) packet\(packetCount == 1 ? "" : "s")."]
+        if skippedDuplicateCount > 0 {
+            parts.append("Skipped \(skippedDuplicateCount) duplicate file\(skippedDuplicateCount == 1 ? "" : "s").")
+        }
+        if failureCount > 0 {
+            parts.append("Failed to import \(failureCount) file\(failureCount == 1 ? "" : "s").")
+        }
+        return parts.joined(separator: " ")
+    }
+
     private func stopLiveCaptureIfNeeded(completion: @escaping TCPViewerVoidCompletion) {
         stopRetainedLiveSessionIfNeeded { [weak self] result in
             DispatchQueue.main.async {
@@ -2221,23 +2670,44 @@ final class TCPViewerWorkspaceController {
     private func cancelBackgroundWorkForTermination(completion: @escaping () -> Void) {
         cancelControllerTasks()
         let currentDocument = document
+        let importedDocuments = importedDocumentsExcluding(currentDocument)
         document = nil
+        importedDocumentsByFileID.removeAll(keepingCapacity: false)
         backgroundCoordinator.cancelAll()
-        currentDocument?.cancelLoading(completion: completion) ?? completion()
+        currentDocument?.cancelLoading(completion: nil)
+        for importedDocument in importedDocuments {
+            importedDocument.cancelLoading(completion: nil)
+        }
+        completion()
     }
 
     private func releaseDocumentContext(resetState: Bool = false) {
         let currentDocument = document
+        let importedDocuments = importedDocumentsExcluding(currentDocument)
         documentEventGeneration += 1
         document?.eventHandler = nil
         inspectionGeneration += 1
         document = nil
+        importedDocumentsByFileID.removeAll(keepingCapacity: false)
         backgroundCoordinator.endOperation("document-events")
         currentDocument?.cancelLoading(completion: nil)
+        for importedDocument in importedDocuments {
+            importedDocument.eventHandler = nil
+            importedDocument.cancelLoading(completion: nil)
+        }
 
         if resetState {
             snapshot.documentState = .idle
             snapshot.loadState = .idle
+        }
+    }
+
+    private func importedDocumentsExcluding(_ excludedDocument: (any OfflineCaptureDocumentProviding)?) -> [any OfflineCaptureDocumentProviding] {
+        importedDocumentsByFileID.values.filter { document in
+            guard let excludedDocument else {
+                return true
+            }
+            return (document as AnyObject) !== (excludedDocument as AnyObject)
         }
     }
 
@@ -2350,7 +2820,14 @@ final class TCPViewerWorkspaceController {
         case .live:
             liveSession?.inspectPacket(id: identifier, completion: completion)
         case .offline:
-            document?.inspectPacket(id: identifier, completion: completion)
+            if let reference = snapshot.packetIngestState.importedPacketReference(for: identifier),
+               let importedDocument = importedDocumentsByFileID[reference.fileID] {
+                importedDocument.inspectPacket(id: reference.originalPacketID) { result in
+                    completion(result.map { $0.tcpviewerRemapping(packetID: identifier) })
+                }
+            } else {
+                document?.inspectPacket(id: identifier, completion: completion)
+            }
         @unknown default:
             break
         }

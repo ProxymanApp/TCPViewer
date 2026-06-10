@@ -24,6 +24,40 @@ private final class TCPViewerInspectorSplitViewController: NSSplitViewController
     }
 }
 
+private final class TCPViewerCaptureDropView: NSView {
+    var importHandler: (([URL]) -> Void)?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        registerForDraggedTypes([.fileURL])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        captureFileURLs(from: sender).isEmpty ? [] : .copy
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let urls = captureFileURLs(from: sender)
+        guard !urls.isEmpty else {
+            return false
+        }
+
+        importHandler?(urls)
+        return true
+    }
+
+    private func captureFileURLs(from draggingInfo: NSDraggingInfo) -> [URL] {
+        let pasteboard = draggingInfo.draggingPasteboard
+        let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        return urls.filter(TCPViewerCaptureFileImportPolicy.isSupportedCaptureFileURL)
+    }
+}
+
 final class TCPViewerRootViewController: NSViewController {
     weak var delegate: TCPViewerRootViewControllerDelegate?
 
@@ -74,7 +108,11 @@ final class TCPViewerRootViewController: NSViewController {
     }
 
     override func loadView() {
-        view = NSView()
+        let rootView = TCPViewerCaptureDropView()
+        rootView.importHandler = { [weak self] urls in
+            self?.importDocuments(at: urls)
+        }
+        view = rootView
         setupChildControllers()
         setupLayout()
     }
@@ -108,6 +146,10 @@ final class TCPViewerRootViewController: NSViewController {
 
     func openDocument(at url: URL) {
         viewModel.openDocument(at: url)
+    }
+
+    func importDocuments(at urls: [URL], completion: (() -> Void)? = nil) {
+        viewModel.importDocuments(at: urls, completion: completion)
     }
 
     func toggleLiveCapture() {

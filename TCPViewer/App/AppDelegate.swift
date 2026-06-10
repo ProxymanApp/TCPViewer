@@ -6,6 +6,7 @@
 //
 
 import Cocoa
+import PcapPlusPlusCore
 import Sparkle
 
 @main
@@ -54,11 +55,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         verifyLicenseIfNeededForForeground()
     }
 
-    #if DEBUG
     func application(_ sender: NSApplication, openFiles filenames: [String]) {
+        #if DEBUG
         let filteredFilenames = TCPViewerDebugLaunchArgumentFilter.filteredDocumentFilenames(filenames)
         guard filteredFilenames.count != filenames.count else {
-            openDebugDocuments(filenames, sender: sender)
+            importCaptureFiles(filenames, sender: sender)
             return
         }
 
@@ -67,10 +68,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             sender.reply(toOpenOrPrint: .success)
             openUntitledDocumentAfterIgnoringDebugLaunchFilesIfNeeded()
         } else {
-            openDebugDocuments(filteredFilenames, sender: sender)
+            importCaptureFiles(filteredFilenames, sender: sender)
         }
+        #else
+        importCaptureFiles(filenames, sender: sender)
+        #endif
     }
-    #endif
 
     func applicationWillTerminate(_ aNotification: Notification) {
     }
@@ -105,31 +108,47 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return .terminateLater
     }
 
-    #if DEBUG
-    private func openDebugDocuments(_ filenames: [String], sender: NSApplication) {
+    private func importCaptureFiles(_ filenames: [String], sender: NSApplication) {
         guard !filenames.isEmpty else {
             sender.reply(toOpenOrPrint: .success)
             return
         }
 
-        var remainingFileCount = filenames.count
-        var didFail = false
-        for filename in filenames {
-            let url = URL(fileURLWithPath: filename)
-            NSDocumentController.shared.openDocument(withContentsOf: url, display: true) { _, _, error in
-                if let error {
-                    didFail = true
-                    NSDocumentController.shared.presentError(error)
-                }
+        let urls = filenames
+            .map { URL(fileURLWithPath: $0) }
+            .filter(TCPViewerCaptureFileImportPolicy.isSupportedCaptureFileURL)
 
-                remainingFileCount -= 1
-                if remainingFileCount == 0 {
-                    sender.reply(toOpenOrPrint: didFail ? .failure : .success)
-                }
+        guard !urls.isEmpty else {
+            sender.reply(toOpenOrPrint: .failure)
+            return
+        }
+
+        do {
+            let windowController = try frontmostOrNewTCPViewerWindowController()
+            windowController.rootViewController.importDocuments(at: urls) {
+                sender.reply(toOpenOrPrint: .success)
             }
+        } catch {
+            NSDocumentController.shared.presentError(error)
+            sender.reply(toOpenOrPrint: .failure)
         }
     }
 
+    private func frontmostOrNewTCPViewerWindowController() throws -> TCPViewerWindowController {
+        if let controller = NSApp.orderedWindows.compactMap({ $0.windowController as? TCPViewerWindowController }).first {
+            controller.showWindow(nil)
+            controller.window?.makeKeyAndOrderFront(nil)
+            return controller
+        }
+
+        let document = try NSDocumentController.shared.openUntitledDocumentAndDisplay(true)
+        guard let controller = document.windowControllers.compactMap({ $0 as? TCPViewerWindowController }).first else {
+            throw TCPViewerCoreError(code: .offlineFileOpenFailed, message: "TCP Viewer could not create a window for imported capture files.")
+        }
+        return controller
+    }
+
+    #if DEBUG
     private func openUntitledDocumentAfterIgnoringDebugLaunchFilesIfNeeded() {
         guard shouldOpenUntitledDocumentAfterIgnoringDebugLaunchFiles else {
             return
