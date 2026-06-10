@@ -193,6 +193,41 @@ struct InspectorPipelineTests {
         }
     }
 
+    @Test func bundledSanitizedSampleCapturesOpenWithExpectedPacketData() async throws {
+        let fixtures: [(fileName: String, format: CaptureFileFormat)] = [
+            ("tinyshield-sanitized-sample.pcap", .pcap),
+            ("tinyshield-sanitized-sample.pcapng", .pcapng),
+        ]
+
+        for fixture in fixtures {
+            let captureURL = try bundledCaptureFixtureURL(fileName: fixture.fileName)
+            let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
+            let summaries = try await document.open()
+            let firstPacket = try #require(summaries.first)
+            let secondPacket = try #require(summaries.dropFirst().first)
+
+            #expect(document.currentMetadata().format == fixture.format)
+            #expect(summaries.count == 2)
+            #expect(summaries.map(\.packetNumber) == [1, 2])
+            #expect(firstPacket.transportHint == .udp)
+            #expect(firstPacket.endpoints.source.address == "192.168.0.1")
+            #expect(firstPacket.endpoints.destination.address == "192.168.0.2")
+            #expect(secondPacket.transportHint == .dns)
+            #expect(secondPacket.endpoints.source.address == "192.168.0.2")
+            #expect(secondPacket.endpoints.destination.address == "192.168.0.1")
+
+            let firstInspection = try await document.inspectPacket(id: firstPacket.id)
+            #expect(firstInspection.rawBytes == makeIPv4UDPPayloadPacket())
+            #expect(findNode(in: firstInspection.detailNodes, fieldName: "udp.length")?.byteRange == PacketByteRange(offset: 38, length: 2))
+
+            let dnsInspection = try await document.inspectPacket(id: secondPacket.id)
+            let dnsNode = try #require(findNode(in: dnsInspection.detailNodes, fieldName: "dns"))
+            #expect(dnsInspection.rawBytes == makeIPv4DNSResponsePacket())
+            #expect(findNode(in: dnsNode.children, fieldName: "dns.qry.name")?.value == "www.example.com")
+            #expect(findNode(in: dnsNode.children, fieldName: "dns.a")?.value == "93.184.216.34")
+        }
+    }
+
     @Test func malformedPcapNgPacketRecordIsSkippedAndLaterPacketsStillLoad() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -843,6 +878,25 @@ private actor LoadEventProbe {
     func current() -> LoadEventSnapshot {
         state
     }
+}
+
+private final class PcapPlusPlusCoreTestBundleToken {}
+
+private func bundledCaptureFixtureURL(fileName: String, fileID: String = #fileID, line: Int = #line) throws -> URL {
+    let bundle = Bundle(for: PcapPlusPlusCoreTestBundleToken.self)
+    let fixtureURL = URL(fileURLWithPath: fileName)
+    let resourceName = fixtureURL.deletingPathExtension().lastPathComponent
+    let fileExtension = fixtureURL.pathExtension
+
+    if let url = bundle.url(forResource: resourceName, withExtension: fileExtension, subdirectory: "Fixtures/CaptureFiles") {
+        return url
+    }
+
+    if let url = bundle.url(forResource: resourceName, withExtension: fileExtension) {
+        return url
+    }
+
+    throw TestSupportError(message: "Missing bundled capture fixture \(fileName).", fileID: fileID, line: line)
 }
 
 private func waitUntil(
