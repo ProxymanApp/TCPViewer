@@ -46,6 +46,16 @@ enum PacketSourceListSelection: Hashable, Sendable {
     case domains
     case domain(PacketSourceDomainKey)
     case ipAddress(PacketSourceIPAddressKey)
+
+    var isImportedFileSelection: Bool {
+        switch self {
+        case .file, .fileApps, .fileApp, .fileAppDomain, .fileAppIPAddress, .fileDomains, .fileDomain, .fileIPAddress:
+            return true
+        case .allPackets, .pinned, .pinnedItem, .pinnedItemDomain, .pinnedItemIPAddress,
+                .saved, .files, .apps, .app, .appDomain, .appIPAddress, .domains, .domain, .ipAddress:
+            return false
+        }
+    }
 }
 
 enum PacketSourceListItemKind: Hashable, Sendable {
@@ -1162,7 +1172,55 @@ enum PacketSourceListTreeBuilder {
             )
         }
         let importedFileItems = importedFileBuckets.map { bucket in
-            PacketSourceListItem(
+            let appChildren = bucket.orderedAppBuckets.map { appBucket in
+                PacketSourceListItem(
+                    id: "file:\(bucket.file.id.rawValue):app:\(appBucket.identity.key.rawValue)",
+                    title: appBucket.identity.displayName,
+                    systemImageName: "app",
+                    iconFilePath: appBucket.identity.iconFilePath,
+                    count: appBucket.packetCount,
+                    kind: .app,
+                    selection: .fileApp(bucket.file.id, appBucket.identity.key),
+                    children: makeDomainItems(
+                        domainBuckets: appBucket.orderedDomainBuckets,
+                        ipAddressBuckets: appBucket.orderedIPAddressBuckets,
+                        idPrefix: "file:\(bucket.file.id.rawValue):app:\(appBucket.identity.key.rawValue)",
+                        domainSelection: { .fileAppDomain(bucket.file.id, appBucket.identity.key, $0) },
+                        ipAddressSelection: { .fileAppIPAddress(bucket.file.id, appBucket.identity.key, $0) }
+                    )
+                )
+            }
+            var children: [PacketSourceListItem] = []
+            if !appChildren.isEmpty {
+                children.append(PacketSourceListItem(
+                    id: "file:\(bucket.file.id.rawValue):apps",
+                    title: "Apps",
+                    systemImageName: "folder.fill",
+                    iconFilePath: nil,
+                    count: appChildren.reduce(0) { $0 + ($1.count ?? 0) },
+                    kind: .folder,
+                    selection: .fileApps(bucket.file.id),
+                    children: appChildren
+                ))
+            }
+            children.append(PacketSourceListItem(
+                id: "file:\(bucket.file.id.rawValue):domains",
+                title: "Domains",
+                systemImageName: "globe",
+                iconFilePath: nil,
+                count: bucket.orderedDomainBuckets.reduce(0) { $0 + $1.packetCount },
+                kind: .folder,
+                selection: .fileDomains(bucket.file.id),
+                children: makeDomainItems(
+                    domainBuckets: bucket.orderedDomainBuckets,
+                    ipAddressBuckets: bucket.orderedIPAddressBuckets,
+                    idPrefix: "file:\(bucket.file.id.rawValue)",
+                    domainSelection: { .fileDomain(bucket.file.id, $0) },
+                    ipAddressSelection: { .fileIPAddress(bucket.file.id, $0) }
+                )
+            ))
+
+            return PacketSourceListItem(
                 id: "file:\(bucket.file.id.rawValue)",
                 title: bucket.file.displayName,
                 systemImageName: "doc",
@@ -1170,51 +1228,7 @@ enum PacketSourceListTreeBuilder {
                 count: bucket.packetCount,
                 kind: .folder,
                 selection: .file(bucket.file.id),
-                children: [
-                    PacketSourceListItem(
-                        id: "file:\(bucket.file.id.rawValue):apps",
-                        title: "Apps",
-                        systemImageName: "folder.fill",
-                        iconFilePath: nil,
-                        count: bucket.orderedAppBuckets.reduce(0) { $0 + $1.packetCount },
-                        kind: .folder,
-                        selection: .fileApps(bucket.file.id),
-                        children: bucket.orderedAppBuckets.map { appBucket in
-                            PacketSourceListItem(
-                                id: "file:\(bucket.file.id.rawValue):app:\(appBucket.identity.key.rawValue)",
-                                title: appBucket.identity.displayName,
-                                systemImageName: "app",
-                                iconFilePath: appBucket.identity.iconFilePath,
-                                count: appBucket.packetCount,
-                                kind: .app,
-                                selection: .fileApp(bucket.file.id, appBucket.identity.key),
-                                children: makeDomainItems(
-                                    domainBuckets: appBucket.orderedDomainBuckets,
-                                    ipAddressBuckets: appBucket.orderedIPAddressBuckets,
-                                    idPrefix: "file:\(bucket.file.id.rawValue):app:\(appBucket.identity.key.rawValue)",
-                                    domainSelection: { .fileAppDomain(bucket.file.id, appBucket.identity.key, $0) },
-                                    ipAddressSelection: { .fileAppIPAddress(bucket.file.id, appBucket.identity.key, $0) }
-                                )
-                            )
-                        }
-                    ),
-                    PacketSourceListItem(
-                        id: "file:\(bucket.file.id.rawValue):domains",
-                        title: "Domains",
-                        systemImageName: "globe",
-                        iconFilePath: nil,
-                        count: bucket.orderedDomainBuckets.reduce(0) { $0 + $1.packetCount },
-                        kind: .folder,
-                        selection: .fileDomains(bucket.file.id),
-                        children: makeDomainItems(
-                            domainBuckets: bucket.orderedDomainBuckets,
-                            ipAddressBuckets: bucket.orderedIPAddressBuckets,
-                            idPrefix: "file:\(bucket.file.id.rawValue)",
-                            domainSelection: { .fileDomain(bucket.file.id, $0) },
-                            ipAddressSelection: { .fileIPAddress(bucket.file.id, $0) }
-                        )
-                    ),
-                ]
+                children: children
             )
         }
 
@@ -1257,7 +1271,7 @@ enum PacketSourceListTreeBuilder {
                 iconFilePath: nil,
                 count: importedFileBuckets.reduce(0) { $0 + $1.packetCount },
                 kind: .group,
-                selection: .files,
+                selection: nil,
                 children: importedFileItems
             ),
             PacketSourceListItem(

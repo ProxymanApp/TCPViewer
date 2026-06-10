@@ -19,6 +19,7 @@ struct PacketSourceListServiceTests {
 
         #expect(snapshot.roots.map(\.title) == ["Favorites", "Files", "All"])
         #expect(snapshot.roots[0].children.map(\.title) == ["Pinned", "Saved"])
+        #expect(snapshot.roots[1].selection == nil)
         #expect(snapshot.roots[1].children.isEmpty)
         #expect(snapshot.roots[2].children.map(\.title) == ["Apps", "Domains"])
         #expect(snapshot.item(for: .apps)?.children.isEmpty == true)
@@ -139,9 +140,12 @@ struct PacketSourceListServiceTests {
         let apiKey = domainKey("api.example.com")
         let ipKey = PacketSourceIPAddressKey(rawValue: "10.0.0.4")
         let fileAItem = try #require(snapshot.item(for: .file(fileAID)))
+        let filesGroup = try filesGroup(in: snapshot)
 
-        #expect(snapshot.item(for: .files)?.count == 4)
-        #expect(snapshot.item(for: .files)?.children.map(\.title) == ["a.pcap", "b.pcapng"])
+        #expect(snapshot.item(for: .files) == nil)
+        #expect(filesGroup.count == 4)
+        #expect(filesGroup.selection == nil)
+        #expect(filesGroup.children.map(\.title) == ["a.pcap", "b.pcapng"])
         #expect(fileAItem.count == 2)
         #expect(fileAItem.children.map(\.title) == ["Apps", "Domains"])
         #expect(snapshot.item(for: .fileApps(fileAID))?.count == 2)
@@ -172,12 +176,36 @@ struct PacketSourceListServiceTests {
 
         let snapshot = PacketSourceListService().snapshot(for: state)
         let fileItem = try #require(snapshot.item(for: .file(fileID)))
+        let filesGroup = try filesGroup(in: snapshot)
 
-        #expect(snapshot.item(for: .files)?.children.map(\.title) == ["empty.pcapng"])
+        #expect(filesGroup.children.map(\.title) == ["empty.pcapng"])
         #expect(fileItem.count == 0)
-        #expect(fileItem.children.map(\.title) == ["Apps", "Domains"])
-        #expect(snapshot.item(for: .fileApps(fileID))?.children.isEmpty == true)
+        #expect(fileItem.children.map(\.title) == ["Domains"])
+        #expect(snapshot.item(for: .fileApps(fileID)) == nil)
         #expect(snapshot.item(for: .fileDomains(fileID))?.children.isEmpty == true)
+    }
+
+    @Test func importedFileHidesAppsFolderWhenNoPacketsHaveAppMetadata() throws {
+        let fileID = ImportedCaptureFileID(rawValue: "/captures/no-apps.pcapng")
+        let packets = [
+            makePacket(packetNumber: 1, sniDomainName: nil),
+            makePacket(packetNumber: 2, sniDomainName: "api.example.com"),
+        ]
+        let file = ImportedCaptureFile(
+            id: fileID,
+            url: URL(fileURLWithPath: fileID.rawValue),
+            displayName: "no-apps.pcapng",
+            packetIDs: packets.map(\.id)
+        )
+        var state = PacketIngestState.empty
+        state.appendImportedFile(file, packets: packets, originalPacketIDs: [1, 2])
+
+        let snapshot = PacketSourceListService().snapshot(for: state)
+        let fileItem = try #require(snapshot.item(for: .file(fileID)))
+
+        #expect(fileItem.children.map(\.title) == ["Domains"])
+        #expect(snapshot.item(for: .fileApps(fileID)) == nil)
+        #expect(snapshot.item(for: .fileDomains(fileID))?.count == 2)
     }
 
     @Test func deletionPolicyOnlyAllowsDeletableLeafItems() {
@@ -559,6 +587,10 @@ struct PacketSourceListServiceTests {
 
     private func domainKey(_ name: String) -> PacketSourceDomainKey {
         PacketSourceDomainKey(rawValue: name.lowercased(), isMissingDomain: false)
+    }
+
+    private func filesGroup(in snapshot: PacketSourceListSnapshot) throws -> PacketSourceListItem {
+        try #require(snapshot.firstItem { $0.id == PacketSourceListTreeBuilder.filesGroupID })
     }
 
     private func makeDomainPin(_ domain: String) -> PacketPin {

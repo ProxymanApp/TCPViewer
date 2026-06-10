@@ -11,6 +11,8 @@ import PcapPlusPlusCore
 import UniformTypeIdentifiers
 
 enum NetworkInspectorLayoutMetrics {
+    static let minimumSidebarThickness: CGFloat = 220
+    static let defaultSidebarThickness: CGFloat = 280
     static let minimumInspectorThickness: CGFloat = 100
     static let defaultInspectorThickness: CGFloat = 360
 }
@@ -1530,6 +1532,25 @@ final class NetworkInspectorViewModel {
         return "TCPViewer-\(title)"
     }
 
+    private func importedFileSelection(for fileURLs: [URL]) -> PacketSourceListSelection {
+        let importedFiles = controller.snapshot.packetIngestState.importedFiles
+        var importedFilesByURL: [URL: ImportedCaptureFile] = [:]
+        for file in importedFiles {
+            importedFilesByURL[file.url] = file
+        }
+        let requestedURLs = fileURLs
+            .map(TCPViewerCaptureFileImportPolicy.standardizedFileURL)
+            .filter(TCPViewerCaptureFileImportPolicy.isSupportedCaptureFileURL)
+
+        for url in requestedURLs.reversed() {
+            if let file = importedFilesByURL[url] {
+                return .file(file.id)
+            }
+        }
+
+        return importedFiles.last.map { .file($0.id) } ?? .allPackets
+    }
+
     private func packetIDs(matching selection: PacketSourceListSelection) -> [PacketSummary.ID] {
         let pins = pinService.pins()
         let ingestState = controller.snapshot.packetIngestState
@@ -1602,23 +1623,21 @@ final class NetworkInspectorViewModel {
 
     func importDocuments(at fileURLs: [URL], completion: (() -> Void)? = nil) {
         controller.importDocuments(at: fileURLs) { [weak self] in
-            guard let self else {
-                completion?()
-                return
-            }
-
-            self.workspaceMode = .packets
-            self.selectedSourceListSelection = fileURLs.count == 1
-                ? self.controller.snapshot.packetIngestState.importedFiles.last.map { .file($0.id) } ?? .allPackets
-                : .files
-            self.rebuildSnapshot()
-            completion?()
+            self?.finishImportedDocuments(fileURLs: fileURLs, completion: completion)
         }
     }
 
-    func presentOpenCapturePanel() {
-        controller.presentOpenCapturePanel()
+    func presentOpenCapturePanel(completion: (() -> Void)? = nil) {
+        controller.presentOpenCapturePanel { [weak self] fileURLs in
+            self?.finishImportedDocuments(fileURLs: fileURLs, completion: completion)
+        }
+    }
+
+    private func finishImportedDocuments(fileURLs: [URL], completion: (() -> Void)? = nil) {
+        workspaceMode = .packets
+        selectedSourceListSelection = importedFileSelection(for: fileURLs)
         rebuildSnapshot()
+        completion?()
     }
 
     func saveDocument(completion: (() -> Void)? = nil) {
@@ -1851,15 +1870,25 @@ final class NetworkInspectorViewModel {
         preferences.persistSidebarThickness(thickness)
     }
 
-    // Reject invalid saved widths so the root controller can keep AppKit's default when needed.
+    // Prefer saved widths, otherwise use the app default when the split view has enough room.
     func preferredSidebarThickness(for availableLength: CGFloat) -> CGFloat? {
-        guard availableLength.isFinite, availableLength > 0,
-              let thickness = preferences.sidebarThickness,
-              thickness.isFinite, thickness > 0, thickness < availableLength else {
+        guard availableLength.isFinite, availableLength > 0 else {
             return nil
         }
 
-        return thickness
+        if let thickness = preferences.sidebarThickness,
+           thickness.isFinite,
+           thickness > 0,
+           thickness < availableLength {
+            return thickness
+        }
+
+        let maximumThickness = availableLength - 1
+        guard maximumThickness > NetworkInspectorLayoutMetrics.minimumSidebarThickness else {
+            return nil
+        }
+
+        return min(NetworkInspectorLayoutMetrics.defaultSidebarThickness, maximumThickness)
     }
 
     // Expose the launch preference without adding sidebar layout state to the main snapshot.

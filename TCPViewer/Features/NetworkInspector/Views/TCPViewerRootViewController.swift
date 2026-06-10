@@ -145,11 +145,14 @@ final class TCPViewerRootViewController: NSViewController {
     }
 
     func openDocument(at url: URL) {
-        viewModel.openDocument(at: url)
+        importDocuments(at: [url])
     }
 
     func importDocuments(at urls: [URL], completion: (() -> Void)? = nil) {
-        viewModel.importDocuments(at: urls, completion: completion)
+        viewModel.importDocuments(at: urls) { [weak self] in
+            self?.sidebarViewController.revealSelectedImportedFileIfNeeded()
+            completion?()
+        }
     }
 
     func toggleLiveCapture() {
@@ -251,7 +254,9 @@ final class TCPViewerRootViewController: NSViewController {
     }
 
     func showOpenPanel() {
-        viewModel.presentOpenCapturePanel()
+        viewModel.presentOpenCapturePanel { [weak self] in
+            self?.sidebarViewController.revealSelectedImportedFileIfNeeded()
+        }
     }
 
     func installNetworkHelperTool() {
@@ -334,7 +339,7 @@ final class TCPViewerRootViewController: NSViewController {
         addChild(mainSplitViewController)
 
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarViewController)
-        sidebarItem.minimumThickness = 220
+        sidebarItem.minimumThickness = NetworkInspectorLayoutMetrics.minimumSidebarThickness
         sidebarItem.canCollapse = true
         mainSplitViewController.addSplitViewItem(sidebarItem)
         self.sidebarItem = sidebarItem

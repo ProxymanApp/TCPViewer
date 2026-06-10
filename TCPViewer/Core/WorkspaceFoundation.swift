@@ -701,6 +701,16 @@ enum TCPViewerCaptureFileImportPolicy {
         allowedFilenameExtensions.compactMap { UTType(filenameExtension: $0) }
     }
 
+    // Keeps every capture open panel aligned on supported types and multi-select behavior.
+    static func configureOpenPanel(_ panel: NSOpenPanel) {
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.title = "Open Capture File"
+        panel.message = "Choose a pcap or pcapng file to inspect."
+        panel.allowedContentTypes = allowedContentTypes
+    }
+
     static func isSupportedCaptureFileURL(_ url: URL) -> Bool {
         allowedFilenameExtensions.contains(url.pathExtension.lowercased())
     }
@@ -1870,20 +1880,18 @@ final class TCPViewerWorkspaceController {
     }
     #endif
 
-    func presentOpenCapturePanel() {
+    func presentOpenCapturePanel(completion: (([URL]) -> Void)? = nil) {
         let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = true
-        panel.title = "Open Capture File"
-        panel.message = "Choose a pcap or pcapng file to inspect."
-        panel.allowedContentTypes = TCPViewerCaptureFileImportPolicy.allowedContentTypes
+        TCPViewerCaptureFileImportPolicy.configureOpenPanel(panel)
 
         guard panel.runModal() == .OK else {
             return
         }
 
-        importDocuments(at: panel.urls)
+        let urls = panel.urls
+        importDocuments(at: urls) {
+            completion?(urls)
+        }
     }
 
     func presentSaveCapturePanel(format: CaptureFileFormat) {
