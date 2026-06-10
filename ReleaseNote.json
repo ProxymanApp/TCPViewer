@@ -113,6 +113,17 @@
         "Fixed factory reset termination so the app can quit without another confirmation loop.",
         "Fixed launch update checks so Sparkle checks once per launch when automatic update checks are enabled."
       ]
+    },
+        {
+      "version": "1.5.0",
+      "title": "TCP Viewer 1.5.0 Support pcap and pcapng",
+      "features": [
+        "TCP Viewer can open pcap and pcapng file by double clicking on the file in Finder or Drag and Drop the file into the app."
+      ],
+      "improvements": [
+      ],
+      "bugs": [
+      ]
     }
   ]
 }
