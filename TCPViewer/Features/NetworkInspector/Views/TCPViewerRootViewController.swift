@@ -24,6 +24,40 @@ private final class TCPViewerInspectorSplitViewController: NSSplitViewController
     }
 }
 
+private final class TCPViewerCaptureDropView: NSView {
+    var importHandler: (([URL]) -> Void)?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        registerForDraggedTypes([.fileURL])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        captureFileURLs(from: sender).isEmpty ? [] : .copy
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let urls = captureFileURLs(from: sender)
+        guard !urls.isEmpty else {
+            return false
+        }
+
+        importHandler?(urls)
+        return true
+    }
+
+    private func captureFileURLs(from draggingInfo: NSDraggingInfo) -> [URL] {
+        let pasteboard = draggingInfo.draggingPasteboard
+        let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        return urls.filter(TCPViewerCaptureFileImportPolicy.isSupportedCaptureFileURL)
+    }
+}
+
 final class TCPViewerRootViewController: NSViewController {
     weak var delegate: TCPViewerRootViewControllerDelegate?
 
@@ -74,7 +108,11 @@ final class TCPViewerRootViewController: NSViewController {
     }
 
     override func loadView() {
-        view = NSView()
+        let rootView = TCPViewerCaptureDropView()
+        rootView.importHandler = { [weak self] urls in
+            self?.importDocuments(at: urls)
+        }
+        view = rootView
         setupChildControllers()
         setupLayout()
     }
@@ -107,7 +145,14 @@ final class TCPViewerRootViewController: NSViewController {
     }
 
     func openDocument(at url: URL) {
-        viewModel.openDocument(at: url)
+        importDocuments(at: [url])
+    }
+
+    func importDocuments(at urls: [URL], completion: (() -> Void)? = nil) {
+        viewModel.importDocuments(at: urls) { [weak self] in
+            self?.sidebarViewController.revealSelectedImportedFileIfNeeded()
+            completion?()
+        }
     }
 
     func toggleLiveCapture() {
@@ -209,7 +254,9 @@ final class TCPViewerRootViewController: NSViewController {
     }
 
     func showOpenPanel() {
-        viewModel.presentOpenCapturePanel()
+        viewModel.presentOpenCapturePanel { [weak self] in
+            self?.sidebarViewController.revealSelectedImportedFileIfNeeded()
+        }
     }
 
     func installNetworkHelperTool() {
@@ -292,7 +339,7 @@ final class TCPViewerRootViewController: NSViewController {
         addChild(mainSplitViewController)
 
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarViewController)
-        sidebarItem.minimumThickness = 220
+        sidebarItem.minimumThickness = NetworkInspectorLayoutMetrics.minimumSidebarThickness
         sidebarItem.canCollapse = true
         mainSplitViewController.addSplitViewItem(sidebarItem)
         self.sidebarItem = sidebarItem
@@ -458,7 +505,6 @@ final class TCPViewerRootViewController: NSViewController {
                 self.view.layoutSubtreeIfNeeded()
                 self.applyInspectorDividerPosition(placement: placement)
                 self.isRestoringInspectorDivider = false
-                print("[TCPViewer] Inspector restore settled: \(self.inspectorSplitDebugDescription())")
             }
         }
     }
@@ -468,20 +514,12 @@ final class TCPViewerRootViewController: NSViewController {
         let splitView = contentSplitViewController.splitView
         guard let inspectorThickness = inspectorRestoreThickness(for: splitView, placement: placement) else {
             clearTemporaryInspectorRestoreThickness()
-            print(
-                "[TCPViewer] Inspector restore skipped: no usable size. " +
-                "\(inspectorSplitDebugDescription())"
-            )
             return
         }
 
         temporaryInspectorRestoreThickness = inspectorThickness
         inspectorItem?.minimumThickness = inspectorThickness
         inspectorItem?.maximumThickness = inspectorThickness
-        print(
-            "[TCPViewer] Inspector restore prepared: targetSize=\(debugValue(inspectorThickness)) " +
-            "\(inspectorSplitDebugDescription())"
-        )
     }
 
     private func clearTemporaryInspectorRestoreThickness() {
@@ -498,7 +536,6 @@ final class TCPViewerRootViewController: NSViewController {
     private func applyInspectorDividerPosition(placement: NetworkInspectorPlacement) {
         let splitView = contentSplitViewController.splitView
         guard splitView.dividerThickness.isFinite else {
-            print("[TCPViewer] Inspector restore skipped: invalid divider thickness. \(inspectorSplitDebugDescription())")
             return
         }
 
@@ -506,31 +543,19 @@ final class TCPViewerRootViewController: NSViewController {
         let totalLength = inspectorSplitLength(splitView, placement: placement)
         guard totalLength > 0 else {
             needsInspectorDividerRefresh = true
-            print("[TCPViewer] Inspector restore deferred: split size is \(debugValue(totalLength))")
             return
         }
 
         guard let inspectorThickness = inspectorRestoreThickness(for: splitView, placement: placement) else {
-            print("[TCPViewer] Inspector restore skipped: no usable size. \(inspectorSplitDebugDescription())")
             return
         }
 
         let dividerPosition = totalLength - splitView.dividerThickness - inspectorThickness
         guard dividerPosition.isFinite, dividerPosition > 0 else {
-            print(
-                "[TCPViewer] Inspector restore skipped: invalid divider=\(debugValue(dividerPosition)) " +
-                "targetSize=\(debugValue(inspectorThickness)) \(inspectorSplitDebugDescription())"
-            )
             return
         }
 
-        print(
-            "[TCPViewer] Inspector restore applying: targetSize=\(debugValue(inspectorThickness)) " +
-            "restoreDivider=\(debugValue(dividerPosition)) subviews=\(splitView.subviews.count) " +
-            "\(inspectorSplitDebugDescription())"
-        )
         splitView.setPosition(dividerPosition, ofDividerAt: 0)
-        print("[TCPViewer] Inspector restore applied: \(inspectorSplitDebugDescription())")
     }
 
     private func inspectorRestoreThickness(for splitView: NSSplitView, placement: NetworkInspectorPlacement) -> CGFloat? {
@@ -569,10 +594,6 @@ final class TCPViewerRootViewController: NSViewController {
             return
         }
 
-        print(
-            "[TCPViewer] Inspector delegate didResizeSubviews: restoring=\(isRestoringInspectorDivider) " +
-            "\(inspectorSplitDebugDescription())"
-        )
         guard !isRestoringInspectorDivider else {
             return
         }
@@ -594,7 +615,6 @@ final class TCPViewerRootViewController: NSViewController {
             return
         }
 
-        print("[TCPViewer] Inspector persist size: size=\(debugValue(thickness)) \(inspectorSplitDebugDescription())")
         viewModel.rememberInspectorThickness(thickness, placement: placement)
     }
 
@@ -618,28 +638,6 @@ final class TCPViewerRootViewController: NSViewController {
         }
 
         return thickness
-    }
-
-    private func inspectorSplitDebugDescription() -> String {
-        let splitView = contentSplitViewController.splitView
-        let placement = appliedInspectorPlacement ?? viewModel.snapshot.inspectorPlacement
-        let dividerPosition: CGFloat?
-        switch placement {
-        case .trailing:
-            dividerPosition = splitView.subviews.first?.frame.maxX
-        case .bottom:
-            dividerPosition = splitView.subviews.first?.frame.maxY
-        }
-        let inspectorSize = currentInspectorThickness(placement: placement)
-        return "placement=\(placement.rawValue) total=\(debugValue(inspectorSplitLength(splitView, placement: placement))) divider=\(debugValue(dividerPosition)) inspectorSize=\(debugValue(inspectorSize)) collapsed=\(inspectorItem?.isCollapsed == true)"
-    }
-
-    private func debugValue(_ value: CGFloat?) -> String {
-        guard let value, value.isFinite else {
-            return "nil"
-        }
-
-        return String(format: "%.2f", Double(value))
     }
 
     // Persist the leading split state after manual drags and AppKit-driven collapses.

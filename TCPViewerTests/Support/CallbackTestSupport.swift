@@ -38,6 +38,10 @@ extension TCPViewerWorkspaceController {
         await waitForCompletion { openDocument(at: fileURL, completion: $0) }
     }
 
+    func importDocuments(at fileURLs: [URL]) async {
+        await waitForCompletion { importDocuments(at: fileURLs, completion: $0) }
+    }
+
     func reopenDocument() async {
         await waitForCompletion { reopenDocument(completion: $0) }
     }
@@ -78,6 +82,10 @@ extension NetworkInspectorViewModel {
 
     func openDocument(at fileURL: URL) async {
         await waitForCompletion { openDocument(at: fileURL, completion: $0) }
+    }
+
+    func importDocuments(at fileURLs: [URL]) async {
+        await waitForCompletion { importDocuments(at: fileURLs, completion: $0) }
     }
 
     func saveDocument() async {

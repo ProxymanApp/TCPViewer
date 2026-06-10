@@ -180,7 +180,12 @@ final class PCPPNativeOfflineDocument {
             loadedFormat = CaptureFileFormat.defaultExportFormat.rawValue
             errorPointer?.pointee = NativeBridgeMapper.coreError(thrownError, defaultCode: .offlineFileOpenFailed) as NSError
         }
-        self.state = Protected(PCPPNativeOfflineDocumentState(file: loadedFile, currentURL: url, currentFormat: loadedFormat))
+        self.state = Protected(PCPPNativeOfflineDocumentState(
+            file: loadedFile,
+            partiallyLoaded: loadedFile.isPartialResult,
+            currentURL: url,
+            currentFormat: loadedFormat
+        ))
         configureDissectionSession(error: errorPointer)
     }
 
@@ -197,7 +202,12 @@ final class PCPPNativeOfflineDocument {
             loadedFormat = CaptureFileFormat.defaultExportFormat.rawValue
             errorPointer?.pointee = NativeBridgeMapper.coreError(thrownError, defaultCode: .offlineFileOpenFailed) as NSError
         }
-        self.state = Protected(PCPPNativeOfflineDocumentState(file: loadedFile, currentURL: url, currentFormat: loadedFormat))
+        self.state = Protected(PCPPNativeOfflineDocumentState(
+            file: loadedFile,
+            partiallyLoaded: loadedFile.isPartialResult,
+            currentURL: url,
+            currentFormat: loadedFormat
+        ))
         configureDissectionSession(error: errorPointer)
     }
 
@@ -234,10 +244,8 @@ final class PCPPNativeOfflineDocument {
             guard let record = state.file.records.first(where: { $0.identifier == identifier }) else {
                 throw NativeNSError(.fileReadFailed, "Packet \(identifier) is not available in the backing store.")
             }
-            return try autoreleasepool {
-                let analyzer = PacketAnalyzer(record: record).analyze()
-                let inspection = try requireDissectionSession(in: state).inspect(record)
-                return makePacketInspectionDescriptor(record: record, analyzed: analyzer, wireshark: inspection)
+            return autoreleasepool {
+                self.makePacketInspectionDescriptorSafely(record: record, state: &state)
             }
         }
     }
@@ -293,12 +301,13 @@ final class PCPPNativeOfflineDocument {
                 try state.write {
                     $0.file = loaded
                     $0.currentFormat = loaded.format.rawValue
-                    $0.partiallyLoaded = false
+                    $0.partiallyLoaded = loaded.isPartialResult
                     $0.dissectionSession = try WiresharkEpanSession(disabled: disablesWireshark)
                 }
             }
 
             let records = state.read { $0.file.records }
+            let initialPartialResult = state.read(\.partiallyLoaded)
             let totalBytes = UInt64((try? FileManager.default.attributesOfItem(atPath: sourceURL.path)[.size] as? NSNumber)?.uint64Value ?? 0)
             var summaries: [PCPPNativePacketSummaryDescriptor] = []
             var pendingBatch: [PCPPNativePacketSummaryDescriptor] = []
@@ -320,13 +329,9 @@ final class PCPPNativeOfflineDocument {
                     throw NativeNSError(.operationCancelled, progress.message)
                 }
 
-                let summary = try autoreleasepool {
-                    try state.write {
-                        let session = try requireDissectionSession(in: $0)
-                        try session.observe(record)
-                        let wiresharkSummary = try session.summarize(record)
-                        let analyzer = PacketAnalyzer(record: record).analyze()
-                        return makePacketSummaryDescriptor(record: record, analyzed: analyzer, wireshark: wiresharkSummary)
+                let summary = autoreleasepool {
+                    state.write {
+                        self.makePacketSummaryDescriptorSafely(record: record, state: &$0)
                     }
                 }
                 summaries.append(summary)
@@ -340,8 +345,8 @@ final class PCPPNativeOfflineDocument {
                         loadedPacketCount: UInt64(summaries.count),
                         processedBytes: NSNumber(value: totalBytes == 0 ? UInt64(summaries.count) : UInt64(Double(totalBytes) * Double(summaries.count) / Double(max(records.count, 1)))),
                         totalBytes: NSNumber(value: totalBytes),
-                        partialResult: false,
-                        message: "Loaded \(summaries.count) packets from \(sourceURL.lastPathComponent)."
+                        partialResult: initialPartialResult,
+                        message: self.loadProgressMessage(prefix: "Loaded", packetCount: summaries.count)
                     ))
                 }
             }
@@ -349,16 +354,17 @@ final class PCPPNativeOfflineDocument {
             if !pendingBatch.isEmpty {
                 batchHandler?(pendingBatch)
             }
-            try state.write {
-                try requireDissectionSession(in: $0).finishFirstPass()
+            state.write {
+                try? requireDissectionSession(in: $0).finishFirstPass()
             }
+            let partialResult = state.read(\.partiallyLoaded)
             progressHandler?(PCPPNativePacketLoadProgressDescriptor(
                 phase: "completed",
                 loadedPacketCount: UInt64(summaries.count),
                 processedBytes: NSNumber(value: totalBytes),
                 totalBytes: NSNumber(value: totalBytes),
-                partialResult: false,
-                message: "Loaded \(summaries.count) packets from \(sourceURL.lastPathComponent)."
+                partialResult: partialResult,
+                message: self.loadProgressMessage(prefix: "Loaded", packetCount: summaries.count)
             ))
             return summaries
         } catch let thrownError {
@@ -389,6 +395,45 @@ final class PCPPNativeOfflineDocument {
             throw NativeNSError(.unavailableFeature, "Wireshark libwireshark backend is unavailable.")
         }
         return dissectionSession
+    }
+
+    private func makePacketSummaryDescriptorSafely(
+        record: NativePacketRecord,
+        state: inout PCPPNativeOfflineDocumentState
+    ) -> PCPPNativePacketSummaryDescriptor {
+        do {
+            let session = try requireDissectionSession(in: state)
+            try session.observe(record)
+            let wiresharkSummary = try session.summarize(record)
+            let analyzer = PacketAnalyzer(record: record).analyze()
+            return makePacketSummaryDescriptor(record: record, analyzed: analyzer, wireshark: wiresharkSummary)
+        } catch {
+            // A single packet can be malformed enough for epan to reject it; keep the file open.
+            state.partiallyLoaded = true
+            return SwiftPacketDissector.dissect(record: record, disablesWireshark: true).summary
+        }
+    }
+
+    private func makePacketInspectionDescriptorSafely(
+        record: NativePacketRecord,
+        state: inout PCPPNativeOfflineDocumentState
+    ) -> PCPPNativePacketInspectionDescriptor {
+        do {
+            let analyzer = PacketAnalyzer(record: record).analyze()
+            let inspection = try requireDissectionSession(in: state).inspect(record)
+            return makePacketInspectionDescriptor(record: record, analyzed: analyzer, wireshark: inspection)
+        } catch {
+            return SwiftPacketDissector.dissect(record: record, disablesWireshark: true).inspection
+        }
+    }
+
+    private func loadProgressMessage(prefix: String, packetCount: Int) -> String {
+        state.read {
+            $0.file.loadSummaryMessage(prefix: prefix).replacingOccurrences(
+                of: "\(prefix) \($0.file.records.count) packets",
+                with: "\(prefix) \(packetCount) packets"
+            )
+        }
     }
 }
 

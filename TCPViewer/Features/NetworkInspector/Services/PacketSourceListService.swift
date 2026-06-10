@@ -30,6 +30,15 @@ enum PacketSourceListSelection: Hashable, Sendable {
     case pinnedItemDomain(PacketPinID, PacketSourceDomainKey)
     case pinnedItemIPAddress(PacketPinID, PacketSourceIPAddressKey)
     case saved
+    case files
+    case file(ImportedCaptureFileID)
+    case fileApps(ImportedCaptureFileID)
+    case fileApp(ImportedCaptureFileID, PacketSourceClientKey)
+    case fileAppDomain(ImportedCaptureFileID, PacketSourceClientKey, PacketSourceDomainKey)
+    case fileAppIPAddress(ImportedCaptureFileID, PacketSourceClientKey, PacketSourceIPAddressKey)
+    case fileDomains(ImportedCaptureFileID)
+    case fileDomain(ImportedCaptureFileID, PacketSourceDomainKey)
+    case fileIPAddress(ImportedCaptureFileID, PacketSourceIPAddressKey)
     case apps
     case app(PacketSourceClientKey)
     case appDomain(PacketSourceClientKey, PacketSourceDomainKey)
@@ -37,6 +46,16 @@ enum PacketSourceListSelection: Hashable, Sendable {
     case domains
     case domain(PacketSourceDomainKey)
     case ipAddress(PacketSourceIPAddressKey)
+
+    var isImportedFileSelection: Bool {
+        switch self {
+        case .file, .fileApps, .fileApp, .fileAppDomain, .fileAppIPAddress, .fileDomains, .fileDomain, .fileIPAddress:
+            return true
+        case .allPackets, .pinned, .pinnedItem, .pinnedItemDomain, .pinnedItemIPAddress,
+                .saved, .files, .apps, .app, .appDomain, .appIPAddress, .domains, .domain, .ipAddress:
+            return false
+        }
+    }
 }
 
 enum PacketSourceListItemKind: Hashable, Sendable {
@@ -79,6 +98,7 @@ struct PacketSourceListSnapshot: Equatable, Sendable {
             appBuckets: [],
             domainBuckets: [],
             ipAddressBuckets: [],
+            importedFileBuckets: [],
             pinnedBuckets: [],
             savedPacketCount: 0
         )
@@ -200,6 +220,7 @@ enum PacketSourceListExportPolicy {
 
         switch selection {
         case .pinned, .pinnedItem, .pinnedItemDomain, .pinnedItemIPAddress,
+                .files, .file, .fileApps, .fileApp, .fileAppDomain, .fileAppIPAddress, .fileDomains, .fileDomain, .fileIPAddress,
                 .saved, .apps, .app, .appDomain, .appIPAddress, .domains, .domain, .ipAddress:
             return selection
         case .allPackets:
@@ -375,7 +396,8 @@ enum PacketSourceListClassifier {
         switch selection {
         case .allPackets:
             return true
-        case .pinned, .pinnedItem, .saved:
+        case .pinned, .pinnedItem, .saved,
+                .files, .file, .fileApps, .fileApp, .fileAppDomain, .fileAppIPAddress, .fileDomains, .fileDomain, .fileIPAddress:
             return false
         case .apps:
             return clientIdentity(for: packet) != nil
@@ -416,9 +438,35 @@ enum PacketSourceListPacketMatcher {
     static func matches(
         _ packet: PacketSummary,
         selection: PacketSourceListSelection,
-        pinnedItems: [PacketPin]
+        pinnedItems: [PacketPin],
+        ingestState: PacketIngestState? = nil
     ) -> Bool {
         switch selection {
+        case .files:
+            return ingestState?.importedPacketReference(for: packet.id) != nil
+        case .file(let fileID):
+            return ingestState?.importedPacketReference(for: packet.id)?.fileID == fileID
+        case .fileApps(let fileID):
+            return ingestState?.importedPacketReference(for: packet.id)?.fileID == fileID &&
+                PacketSourceListClassifier.matches(packet, selection: .apps)
+        case .fileApp(let fileID, let clientKey):
+            return ingestState?.importedPacketReference(for: packet.id)?.fileID == fileID &&
+                PacketSourceListClassifier.matches(packet, selection: .app(clientKey))
+        case .fileAppDomain(let fileID, let clientKey, let domainKey):
+            return ingestState?.importedPacketReference(for: packet.id)?.fileID == fileID &&
+                PacketSourceListClassifier.matches(packet, selection: .appDomain(clientKey, domainKey))
+        case .fileAppIPAddress(let fileID, let clientKey, let ipAddressKey):
+            return ingestState?.importedPacketReference(for: packet.id)?.fileID == fileID &&
+                PacketSourceListClassifier.matches(packet, selection: .appIPAddress(clientKey, ipAddressKey))
+        case .fileDomains(let fileID):
+            return ingestState?.importedPacketReference(for: packet.id)?.fileID == fileID &&
+                PacketSourceListClassifier.matches(packet, selection: .domains)
+        case .fileDomain(let fileID, let domainKey):
+            return ingestState?.importedPacketReference(for: packet.id)?.fileID == fileID &&
+                PacketSourceListClassifier.matches(packet, selection: .domain(domainKey))
+        case .fileIPAddress(let fileID, let ipAddressKey):
+            return ingestState?.importedPacketReference(for: packet.id)?.fileID == fileID &&
+                PacketSourceListClassifier.matches(packet, selection: .ipAddress(ipAddressKey))
         case .pinned:
             return pinnedItems.contains { PacketPinMatcher.matches(packet, pin: $0) }
         case .pinnedItem(let pinID):
@@ -450,6 +498,7 @@ enum PacketSourceListPacketMatcher {
 
 final class PacketSourceListService {
     fileprivate struct PacketBucketAssignment: Equatable {
+        var fileID: ImportedCaptureFileID?
         var appIdentity: PacketSourceClientIdentity?
         var domainIdentity: PacketSourceDomainIdentity
         var ipAddressIdentities: [PacketSourceIPAddressIdentity]
@@ -466,6 +515,9 @@ final class PacketSourceListService {
     private var domainOrder: [PacketSourceDomainKey] = []
     private var ipAddressBuckets: [PacketSourceIPAddressKey: PacketSourceListTreeBuilder.IPAddressBucket] = [:]
     private var ipAddressOrder: [PacketSourceIPAddressKey] = []
+    private var importedFilesByID: [ImportedCaptureFileID: ImportedCaptureFile] = [:]
+    private var importedFileBuckets: [ImportedCaptureFileID: PacketSourceListTreeBuilder.ImportedFileBucket] = [:]
+    private var importedFileOrder: [ImportedCaptureFileID] = []
     private var packetAssignmentsByID: [PacketSummary.ID: PacketBucketAssignment] = [:]
     private var pinnedItems: [PacketPin] = []
     private var pinnedPacketCountsByID: [PacketPinID: Int] = [:]
@@ -482,6 +534,9 @@ final class PacketSourceListService {
         domainOrder.removeAll(keepingCapacity: false)
         ipAddressBuckets.removeAll(keepingCapacity: false)
         ipAddressOrder.removeAll(keepingCapacity: false)
+        importedFilesByID.removeAll(keepingCapacity: false)
+        importedFileBuckets.removeAll(keepingCapacity: false)
+        importedFileOrder.removeAll(keepingCapacity: false)
         packetAssignmentsByID.removeAll(keepingCapacity: false)
         pinnedItems = []
         pinnedPacketCountsByID.removeAll(keepingCapacity: false)
@@ -512,9 +567,11 @@ final class PacketSourceListService {
 
         self.pinnedItems = pinnedItems
         self.savedPacketCount = savedPacketCount
+        importedFilesByID = Dictionary(uniqueKeysWithValues: ingestState.importedFiles.map { ($0.id, $0) })
 
         if packetLineageRevision == ingestState.packetLineageRevision,
            sourcePacketCount <= ingestState.packets.count {
+            syncImportedFileBuckets(with: ingestState.importedFiles)
             if didChangePinnedItems {
                 rebuildPinnedCountsFromAssignments()
             }
@@ -522,7 +579,7 @@ final class PacketSourceListService {
             case .append:
                 return appendSnapshot(from: ingestState)
             case .appendWithMetadataUpdates(_, let updatedPacketIDs):
-                appendPackets(Array(ingestState.packets[sourcePacketCount...]))
+                appendPackets(Array(ingestState.packets[sourcePacketCount...]), in: ingestState)
                 applyMetadataUpdates(packetIDs: updatedPacketIDs, in: ingestState)
                 return storeSnapshot(for: ingestState)
             case .metadataUpdate(let packetIDs):
@@ -543,27 +600,50 @@ final class PacketSourceListService {
         domainOrder = []
         ipAddressBuckets = [:]
         ipAddressOrder = []
+        importedFileBuckets = [:]
+        importedFileOrder = []
         packetAssignmentsByID.removeAll(keepingCapacity: true)
         pinnedPacketCountsByID.removeAll(keepingCapacity: true)
-        appendPackets(ingestState.packets)
+        syncImportedFileBuckets(with: ingestState.importedFiles)
+        appendPackets(ingestState.packets, in: ingestState)
         return storeSnapshot(for: ingestState)
     }
 
     private func appendSnapshot(from ingestState: PacketIngestState) -> PacketSourceListSnapshot {
-        appendPackets(Array(ingestState.packets[sourcePacketCount...]))
+        appendPackets(Array(ingestState.packets[sourcePacketCount...]), in: ingestState)
         return storeSnapshot(for: ingestState)
     }
 
-    private func appendPackets(_ packets: [PacketSummary]) {
+    private func appendPackets(_ packets: [PacketSummary], in ingestState: PacketIngestState) {
         for packet in packets {
-            let assignment = makeAssignment(for: packet)
+            let assignment = makeAssignment(for: packet, in: ingestState)
             increment(for: assignment)
             packetAssignmentsByID[packet.id] = assignment
         }
     }
 
-    private func makeAssignment(for packet: PacketSummary) -> PacketBucketAssignment {
+    private func syncImportedFileBuckets(with importedFiles: [ImportedCaptureFile]) {
+        // File metadata owns visibility so empty imports still appear in the Files section.
+        let importedFileIDs = Set(importedFiles.map(\.id))
+        importedFileOrder.removeAll { !importedFileIDs.contains($0) }
+        importedFileBuckets = importedFileBuckets.filter { importedFileIDs.contains($0.key) }
+
+        var orderedIDs = Set(importedFileOrder)
+        for file in importedFiles {
+            if importedFileBuckets[file.id] == nil {
+                importedFileBuckets[file.id] = PacketSourceListTreeBuilder.ImportedFileBucket(file: file)
+            } else {
+                importedFileBuckets[file.id]?.file = file
+            }
+            if orderedIDs.insert(file.id).inserted {
+                importedFileOrder.append(file.id)
+            }
+        }
+    }
+
+    private func makeAssignment(for packet: PacketSummary, in ingestState: PacketIngestState) -> PacketBucketAssignment {
         PacketBucketAssignment(
+            fileID: ingestState.importedPacketReference(for: packet.id)?.fileID,
             appIdentity: PacketSourceListClassifier.clientIdentity(for: packet),
             domainIdentity: PacketSourceListClassifier.domainIdentity(for: packet),
             ipAddressIdentities: PacketSourceListClassifier.ipAddressIdentities(for: packet),
@@ -578,7 +658,7 @@ final class PacketSourceListService {
             guard let updatedPacket = ingestState.packet(withID: packetID) else {
                 continue
             }
-            let newAssignment = makeAssignment(for: updatedPacket)
+            let newAssignment = makeAssignment(for: updatedPacket, in: ingestState)
             if let oldAssignment = packetAssignmentsByID[packetID] {
                 guard oldAssignment != newAssignment else {
                     continue
@@ -591,6 +671,23 @@ final class PacketSourceListService {
     }
 
     private func increment(for assignment: PacketBucketAssignment) {
+        if let fileID = assignment.fileID,
+           let importedFile = importedFilesByID[fileID] {
+            var fileBucket: PacketSourceListTreeBuilder.ImportedFileBucket
+            if let existingBucket = importedFileBuckets[fileID] {
+                fileBucket = existingBucket
+            } else {
+                importedFileOrder.append(fileID)
+                fileBucket = PacketSourceListTreeBuilder.ImportedFileBucket(file: importedFile)
+            }
+            fileBucket.increment(
+                appIdentity: assignment.appIdentity,
+                domainIdentity: assignment.domainIdentity,
+                ipAddressIdentities: assignment.ipAddressIdentities
+            )
+            importedFileBuckets[fileID] = fileBucket
+        }
+
         if let appIdentity = assignment.appIdentity {
             var appBucket: PacketSourceListTreeBuilder.AppBucket
             if let existingBucket = appBuckets[appIdentity.key] {
@@ -625,6 +722,20 @@ final class PacketSourceListService {
     }
 
     private func decrement(for assignment: PacketBucketAssignment) {
+        if let fileID = assignment.fileID, var bucket = importedFileBuckets[fileID] {
+            bucket.decrement(
+                appIdentity: assignment.appIdentity,
+                domainIdentity: assignment.domainIdentity,
+                ipAddressIdentities: assignment.ipAddressIdentities
+            )
+            if bucket.packetCount <= 0 && importedFilesByID[fileID] == nil {
+                importedFileBuckets.removeValue(forKey: fileID)
+                importedFileOrder.removeAll { $0 == fileID }
+            } else {
+                importedFileBuckets[fileID] = bucket
+            }
+        }
+
         if let appIdentity = assignment.appIdentity, var bucket = appBuckets[appIdentity.key] {
             bucket.decrement(
                 domainIdentity: assignment.domainIdentity,
@@ -673,6 +784,7 @@ final class PacketSourceListService {
             appBuckets: appOrder.compactMap { appBuckets[$0] },
             domainBuckets: domainOrder.compactMap { domainBuckets[$0] },
             ipAddressBuckets: ipAddressOrder.compactMap { ipAddressBuckets[$0] },
+            importedFileBuckets: importedFileOrder.compactMap { importedFileBuckets[$0] },
             pinnedBuckets: pinnedItems.map { pin in
                 let pinnedAppBucket = pin.clientKey.map { PacketSourceClientKey(rawValue: $0) }.flatMap { appBuckets[$0] }
                 return PacketSourceListTreeBuilder.PinnedBucket(
@@ -850,6 +962,118 @@ enum PacketSourceListTreeBuilder {
         var packetCount = 0
     }
 
+    struct ImportedFileBucket: Equatable, Sendable {
+        var file: ImportedCaptureFile
+        var packetCount = 0
+        private var appBuckets: [PacketSourceClientKey: AppBucket] = [:]
+        private var appOrder: [PacketSourceClientKey] = []
+        private var domainBuckets: [PacketSourceDomainKey: DomainBucket] = [:]
+        private var domainOrder: [PacketSourceDomainKey] = []
+        private var ipAddressBuckets: [PacketSourceIPAddressKey: IPAddressBucket] = [:]
+        private var ipAddressOrder: [PacketSourceIPAddressKey] = []
+
+        init(file: ImportedCaptureFile) {
+            self.file = file
+        }
+
+        var orderedAppBuckets: [AppBucket] {
+            appOrder.compactMap { appBuckets[$0] }
+        }
+
+        var orderedDomainBuckets: [DomainBucket] {
+            domainOrder.compactMap { domainBuckets[$0] }
+        }
+
+        var orderedIPAddressBuckets: [IPAddressBucket] {
+            ipAddressOrder.compactMap { ipAddressBuckets[$0] }
+        }
+
+        mutating func increment(
+            appIdentity: PacketSourceClientIdentity?,
+            domainIdentity: PacketSourceDomainIdentity,
+            ipAddressIdentities: [PacketSourceIPAddressIdentity]
+        ) {
+            packetCount += 1
+            if let appIdentity {
+                if appBuckets[appIdentity.key] == nil {
+                    appOrder.append(appIdentity.key)
+                    appBuckets[appIdentity.key] = AppBucket(identity: appIdentity)
+                }
+                appBuckets[appIdentity.key]?.increment(
+                    domainIdentity: domainIdentity,
+                    ipAddressIdentities: ipAddressIdentities
+                )
+            }
+            incrementDomain(domainIdentity)
+            for ipAddressIdentity in ipAddressIdentities {
+                incrementIPAddress(ipAddressIdentity)
+            }
+        }
+
+        mutating func decrement(
+            appIdentity: PacketSourceClientIdentity?,
+            domainIdentity: PacketSourceDomainIdentity,
+            ipAddressIdentities: [PacketSourceIPAddressIdentity]
+        ) {
+            packetCount -= 1
+            if let appIdentity, var bucket = appBuckets[appIdentity.key] {
+                bucket.decrement(domainIdentity: domainIdentity, ipAddressIdentities: ipAddressIdentities)
+                if bucket.packetCount <= 0 {
+                    appBuckets.removeValue(forKey: appIdentity.key)
+                    appOrder.removeAll { $0 == appIdentity.key }
+                } else {
+                    appBuckets[appIdentity.key] = bucket
+                }
+            }
+            decrementDomain(domainIdentity.key)
+            for ipAddressIdentity in ipAddressIdentities {
+                decrementIPAddress(ipAddressIdentity.key)
+            }
+        }
+
+        private mutating func incrementDomain(_ identity: PacketSourceDomainIdentity) {
+            if domainBuckets[identity.key] == nil {
+                domainOrder.append(identity.key)
+                domainBuckets[identity.key] = DomainBucket(identity: identity)
+            }
+            domainBuckets[identity.key]?.packetCount += 1
+        }
+
+        private mutating func decrementDomain(_ key: PacketSourceDomainKey) {
+            guard var bucket = domainBuckets[key] else {
+                return
+            }
+            bucket.packetCount -= 1
+            if bucket.packetCount <= 0 {
+                domainBuckets.removeValue(forKey: key)
+                domainOrder.removeAll { $0 == key }
+            } else {
+                domainBuckets[key] = bucket
+            }
+        }
+
+        private mutating func incrementIPAddress(_ identity: PacketSourceIPAddressIdentity) {
+            if ipAddressBuckets[identity.key] == nil {
+                ipAddressOrder.append(identity.key)
+                ipAddressBuckets[identity.key] = IPAddressBucket(identity: identity)
+            }
+            ipAddressBuckets[identity.key]?.packetCount += 1
+        }
+
+        private mutating func decrementIPAddress(_ key: PacketSourceIPAddressKey) {
+            guard var bucket = ipAddressBuckets[key] else {
+                return
+            }
+            bucket.packetCount -= 1
+            if bucket.packetCount <= 0 {
+                ipAddressBuckets.removeValue(forKey: key)
+                ipAddressOrder.removeAll { $0 == key }
+            } else {
+                ipAddressBuckets[key] = bucket
+            }
+        }
+    }
+
     struct PinnedBucket: Equatable, Sendable {
         let pin: PacketPin
         var packetCount = 0
@@ -858,6 +1082,7 @@ enum PacketSourceListTreeBuilder {
     }
 
     static let favoritesGroupID = "group:favorites"
+    static let filesGroupID = "group:files"
     static let allGroupID = "group:all"
     static let pinnedFolderID = "favorite:pinned"
     static let appsFolderID = "folder:apps"
@@ -865,6 +1090,7 @@ enum PacketSourceListTreeBuilder {
 
     static let defaultExpandedItemIDs: Set<String> = [
         favoritesGroupID,
+        filesGroupID,
         allGroupID,
         pinnedFolderID,
         appsFolderID,
@@ -875,6 +1101,7 @@ enum PacketSourceListTreeBuilder {
         appBuckets: [AppBucket],
         domainBuckets: [DomainBucket],
         ipAddressBuckets: [IPAddressBucket] = [],
+        importedFileBuckets: [ImportedFileBucket] = [],
         pinnedBuckets: [PinnedBucket] = [],
         savedPacketCount: Int = 0
     ) -> PacketSourceListSnapshot {
@@ -883,6 +1110,7 @@ enum PacketSourceListTreeBuilder {
                 appBuckets: appBuckets,
                 domainBuckets: domainBuckets,
                 ipAddressBuckets: ipAddressBuckets,
+                importedFileBuckets: importedFileBuckets,
                 pinnedBuckets: pinnedBuckets,
                 savedPacketCount: savedPacketCount
             )
@@ -893,6 +1121,7 @@ enum PacketSourceListTreeBuilder {
         appBuckets: [AppBucket],
         domainBuckets: [DomainBucket],
         ipAddressBuckets: [IPAddressBucket] = [],
+        importedFileBuckets: [ImportedFileBucket] = [],
         pinnedBuckets: [PinnedBucket] = [],
         savedPacketCount: Int = 0
     ) -> [PacketSourceListItem] {
@@ -942,6 +1171,66 @@ enum PacketSourceListTreeBuilder {
                 )
             )
         }
+        let importedFileItems = importedFileBuckets.map { bucket in
+            let appChildren = bucket.orderedAppBuckets.map { appBucket in
+                PacketSourceListItem(
+                    id: "file:\(bucket.file.id.rawValue):app:\(appBucket.identity.key.rawValue)",
+                    title: appBucket.identity.displayName,
+                    systemImageName: "app",
+                    iconFilePath: appBucket.identity.iconFilePath,
+                    count: appBucket.packetCount,
+                    kind: .app,
+                    selection: .fileApp(bucket.file.id, appBucket.identity.key),
+                    children: makeDomainItems(
+                        domainBuckets: appBucket.orderedDomainBuckets,
+                        ipAddressBuckets: appBucket.orderedIPAddressBuckets,
+                        idPrefix: "file:\(bucket.file.id.rawValue):app:\(appBucket.identity.key.rawValue)",
+                        domainSelection: { .fileAppDomain(bucket.file.id, appBucket.identity.key, $0) },
+                        ipAddressSelection: { .fileAppIPAddress(bucket.file.id, appBucket.identity.key, $0) }
+                    )
+                )
+            }
+            var children: [PacketSourceListItem] = []
+            if !appChildren.isEmpty {
+                children.append(PacketSourceListItem(
+                    id: "file:\(bucket.file.id.rawValue):apps",
+                    title: "Apps",
+                    systemImageName: "folder.fill",
+                    iconFilePath: nil,
+                    count: appChildren.reduce(0) { $0 + ($1.count ?? 0) },
+                    kind: .folder,
+                    selection: .fileApps(bucket.file.id),
+                    children: appChildren
+                ))
+            }
+            children.append(PacketSourceListItem(
+                id: "file:\(bucket.file.id.rawValue):domains",
+                title: "Domains",
+                systemImageName: "globe",
+                iconFilePath: nil,
+                count: bucket.orderedDomainBuckets.reduce(0) { $0 + $1.packetCount },
+                kind: .folder,
+                selection: .fileDomains(bucket.file.id),
+                children: makeDomainItems(
+                    domainBuckets: bucket.orderedDomainBuckets,
+                    ipAddressBuckets: bucket.orderedIPAddressBuckets,
+                    idPrefix: "file:\(bucket.file.id.rawValue)",
+                    domainSelection: { .fileDomain(bucket.file.id, $0) },
+                    ipAddressSelection: { .fileIPAddress(bucket.file.id, $0) }
+                )
+            ))
+
+            return PacketSourceListItem(
+                id: "file:\(bucket.file.id.rawValue)",
+                title: bucket.file.displayName,
+                systemImageName: "doc",
+                iconFilePath: nil,
+                count: bucket.packetCount,
+                kind: .folder,
+                selection: .file(bucket.file.id),
+                children: children
+            )
+        }
 
         return [
             PacketSourceListItem(
@@ -974,6 +1263,16 @@ enum PacketSourceListTreeBuilder {
                         children: []
                     ),
                 ]
+            ),
+            PacketSourceListItem(
+                id: filesGroupID,
+                title: "Files",
+                systemImageName: nil,
+                iconFilePath: nil,
+                count: importedFileBuckets.reduce(0) { $0 + $1.packetCount },
+                kind: .group,
+                selection: nil,
+                children: importedFileItems
             ),
             PacketSourceListItem(
                 id: allGroupID,

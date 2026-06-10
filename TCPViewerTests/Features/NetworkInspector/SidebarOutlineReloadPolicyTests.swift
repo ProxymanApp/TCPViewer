@@ -175,6 +175,41 @@ struct SidebarOutlineReloadPolicyTests {
     }
 
     @MainActor
+    @Test func selectingImportedFileExpandsFilesGroupAndSelectsFileRow() async throws {
+        let fileID = ImportedCaptureFileID(rawValue: "/tmp/sidebar-import.pcapng")
+        let snapshot = snapshotWithImportedFile(fileID: fileID, displayName: "sidebar-import.pcapng")
+        let controller = SidebarViewController()
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: makeSnapshot(
+            sourceListSnapshot: snapshot,
+            selectedSelection: .allPackets,
+            packetMutation: .none
+        ))
+        controller.view.layoutSubtreeIfNeeded()
+
+        let outlineView = try #require(findOutlineScrollView(in: controller.view)?.documentView as? NSOutlineView)
+        let filesRow = try #require(row(withItemID: PacketSourceListTreeBuilder.filesGroupID, in: outlineView))
+        let filesItem = try #require(outlineView.item(atRow: filesRow))
+        let fileItemID = try #require(snapshot.item(for: .file(fileID))?.id)
+        outlineView.collapseItem(filesItem)
+        #expect(row(withItemID: fileItemID, in: outlineView) == nil)
+
+        controller.render(snapshot: makeSnapshot(
+            sourceListSnapshot: snapshot,
+            selectedSelection: .file(fileID),
+            packetMutation: .replace
+        ))
+        await Task.yield()
+        controller.view.layoutSubtreeIfNeeded()
+
+        let fileRow = try #require(row(withItemID: fileItemID, in: outlineView))
+        let updatedFilesRow = try #require(row(withItemID: PacketSourceListTreeBuilder.filesGroupID, in: outlineView))
+        let updatedFilesItem = try #require(outlineView.item(atRow: updatedFilesRow))
+        #expect(outlineView.isItemExpanded(updatedFilesItem))
+        #expect(outlineView.selectedRow == fileRow)
+    }
+
+    @MainActor
     @Test func deferredReloadPreservesSidebarScrollPositionAndSelection() async throws {
         let selectedKey = PacketSourceDomainKey(rawValue: "domain-32.example.com", isMissingDomain: false)
         let controller = SidebarViewController()
@@ -366,6 +401,20 @@ struct SidebarOutlineReloadPolicyTests {
         )
     }
 
+    private func snapshotWithImportedFile(fileID: ImportedCaptureFileID, displayName: String) -> PacketSourceListSnapshot {
+        let file = ImportedCaptureFile(
+            id: fileID,
+            url: URL(fileURLWithPath: fileID.rawValue),
+            displayName: displayName,
+            packetIDs: []
+        )
+        return PacketSourceListTreeBuilder.makeSnapshot(
+            appBuckets: [],
+            domainBuckets: [],
+            importedFileBuckets: [PacketSourceListTreeBuilder.ImportedFileBucket(file: file)]
+        )
+    }
+
     private func snapshotWithAppsAndDomains(appCount: Int, domainCount: Int) -> PacketSourceListSnapshot {
         PacketSourceListTreeBuilder.makeSnapshot(
             appBuckets: (0..<appCount).map { index in
@@ -485,6 +534,29 @@ struct SidebarOutlineReloadPolicyTests {
         return view.subviews.reduce(current) { result, subview in
             result + allSubviews(ofType: type, in: subview)
         }
+    }
+
+    private func row(withItemID itemID: String, in outlineView: NSOutlineView) -> Int? {
+        for row in 0..<outlineView.numberOfRows {
+            guard sourceListItem(at: row, in: outlineView)?.id == itemID else {
+                continue
+            }
+
+            return row
+        }
+
+        return nil
+    }
+
+    private func sourceListItem(at row: Int, in outlineView: NSOutlineView) -> PacketSourceListItem? {
+        guard let outlineItem = outlineView.item(atRow: row) else {
+            return nil
+        }
+
+        return Mirror(reflecting: outlineItem)
+            .children
+            .first { $0.label == "sourceItem" }?
+            .value as? PacketSourceListItem
     }
 }
 

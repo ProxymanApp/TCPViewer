@@ -11,6 +11,8 @@ import PcapPlusPlusCore
 import UniformTypeIdentifiers
 
 enum NetworkInspectorLayoutMetrics {
+    static let minimumSidebarThickness: CGFloat = 220
+    static let defaultSidebarThickness: CGFloat = 280
     static let minimumInspectorThickness: CGFloat = 100
     static let defaultInspectorThickness: CGFloat = 360
 }
@@ -222,7 +224,7 @@ private enum PacketTableContentBuilder {
                 malformedPacketCount += 1
             }
 
-            guard matches(packet, selection: input.signature.sourceListSelection, pinnedItems: input.signature.pinnedItems),
+            guard matches(packet, selection: input.signature.sourceListSelection, pinnedItems: input.signature.pinnedItems, ingestState: input.ingestState),
                   displayFilter.isEmpty || displayFilter.matches(packet),
                   quickFilterService.matches(packet, selection: input.signature.quickFilterSelection),
                   structuredFilterService.matches(packet, context: structuredFilterContext) else {
@@ -249,7 +251,7 @@ private enum PacketTableContentBuilder {
             return input.signature.savedRecords.map(\.packet)
         case .pinned, .pinnedItem, .pinnedItemDomain, .pinnedItemIPAddress:
             return input.ingestState.packets.filter {
-                matches($0, selection: input.signature.sourceListSelection, pinnedItems: input.signature.pinnedItems)
+                matches($0, selection: input.signature.sourceListSelection, pinnedItems: input.signature.pinnedItems, ingestState: input.ingestState)
             }
         default:
             return input.ingestState.packets
@@ -259,9 +261,10 @@ private enum PacketTableContentBuilder {
     static func matches(
         _ packet: PacketSummary,
         selection: PacketSourceListSelection,
-        pinnedItems: [PacketPin]
+        pinnedItems: [PacketPin],
+        ingestState: PacketIngestState
     ) -> Bool {
-        PacketSourceListPacketMatcher.matches(packet, selection: selection, pinnedItems: pinnedItems)
+        PacketSourceListPacketMatcher.matches(packet, selection: selection, pinnedItems: pinnedItems, ingestState: ingestState)
     }
 }
 
@@ -269,6 +272,8 @@ private extension PacketIngestMutation {
     func isAppendOnly(after packetCount: Int) -> Bool {
         switch self {
         case .append(let range):
+            return range.lowerBound >= packetCount
+        case .appendWithMetadataUpdates(let range, _):
             return range.lowerBound >= packetCount
         default:
             return false
@@ -544,7 +549,7 @@ private struct PacketTableContentCache {
                 malformedPacketCount += 1
             }
 
-            guard matches(packet, selection: sourceListSelection, pinnedItems: pinnedItems),
+            guard matches(packet, selection: sourceListSelection, pinnedItems: pinnedItems, ingestState: ingestState),
                   displayFilter.isEmpty || displayFilter.matches(packet),
                   quickFilterService.matches(packet, selection: quickFilterSelection),
                   structuredFilterService.matches(packet, context: structuredFilterContext) else {
@@ -769,7 +774,7 @@ private struct PacketTableContentCache {
             guard let packet = ingestState.packet(withID: packetID) else {
                 continue
             }
-            let isVisibleNow = matches(packet, selection: sourceListSelection, pinnedItems: pinnedItems) &&
+            let isVisibleNow = matches(packet, selection: sourceListSelection, pinnedItems: pinnedItems, ingestState: ingestState) &&
                 (displayFilter.isEmpty || displayFilter.matches(packet)) &&
                 quickFilterService.matches(packet, selection: quickFilterSelection) &&
                 structuredFilterService.matches(packet, context: structuredFilterContext)
@@ -846,7 +851,7 @@ private struct PacketTableContentCache {
         case .saved:
             return savedRecords.map(\.packet)
         case .pinned, .pinnedItem, .pinnedItemDomain, .pinnedItemIPAddress:
-            return ingestState.packets.filter { matches($0, selection: sourceListSelection, pinnedItems: pinnedItems) }
+            return ingestState.packets.filter { matches($0, selection: sourceListSelection, pinnedItems: pinnedItems, ingestState: ingestState) }
         default:
             return ingestState.packets
         }
@@ -855,9 +860,10 @@ private struct PacketTableContentCache {
     private func matches(
         _ packet: PacketSummary,
         selection: PacketSourceListSelection,
-        pinnedItems: [PacketPin]
+        pinnedItems: [PacketPin],
+        ingestState: PacketIngestState
     ) -> Bool {
-        PacketSourceListPacketMatcher.matches(packet, selection: selection, pinnedItems: pinnedItems)
+        PacketSourceListPacketMatcher.matches(packet, selection: selection, pinnedItems: pinnedItems, ingestState: ingestState)
     }
 }
 
@@ -1514,8 +1520,9 @@ final class NetworkInspectorViewModel {
             return try validatedExportPacketIDs(identifiers, requiresSavedBacking: true)
         default:
             let pins = pinService.pins()
+            let ingestState = controller.snapshot.packetIngestState
             return controller.snapshot.packetIngestState.packets.compactMap { packet in
-                PacketSourceListPacketMatcher.matches(packet, selection: selection, pinnedItems: pins) ? packet.id : nil
+                PacketSourceListPacketMatcher.matches(packet, selection: selection, pinnedItems: pins, ingestState: ingestState) ? packet.id : nil
             }
         }
     }
@@ -1525,10 +1532,30 @@ final class NetworkInspectorViewModel {
         return "TCPViewer-\(title)"
     }
 
+    private func importedFileSelection(for fileURLs: [URL]) -> PacketSourceListSelection {
+        let importedFiles = controller.snapshot.packetIngestState.importedFiles
+        var importedFilesByURL: [URL: ImportedCaptureFile] = [:]
+        for file in importedFiles {
+            importedFilesByURL[file.url] = file
+        }
+        let requestedURLs = fileURLs
+            .map(TCPViewerCaptureFileImportPolicy.standardizedFileURL)
+            .filter(TCPViewerCaptureFileImportPolicy.isSupportedCaptureFileURL)
+
+        for url in requestedURLs.reversed() {
+            if let file = importedFilesByURL[url] {
+                return .file(file.id)
+            }
+        }
+
+        return importedFiles.last.map { .file($0.id) } ?? .allPackets
+    }
+
     private func packetIDs(matching selection: PacketSourceListSelection) -> [PacketSummary.ID] {
         let pins = pinService.pins()
+        let ingestState = controller.snapshot.packetIngestState
         return controller.snapshot.packetIngestState.packets.compactMap { packet in
-            PacketSourceListPacketMatcher.matches(packet, selection: selection, pinnedItems: pins) ? packet.id : nil
+            PacketSourceListPacketMatcher.matches(packet, selection: selection, pinnedItems: pins, ingestState: ingestState) ? packet.id : nil
         }
     }
 
@@ -1594,9 +1621,23 @@ final class NetworkInspectorViewModel {
         }
     }
 
-    func presentOpenCapturePanel() {
-        controller.presentOpenCapturePanel()
+    func importDocuments(at fileURLs: [URL], completion: (() -> Void)? = nil) {
+        controller.importDocuments(at: fileURLs) { [weak self] in
+            self?.finishImportedDocuments(fileURLs: fileURLs, completion: completion)
+        }
+    }
+
+    func presentOpenCapturePanel(completion: (() -> Void)? = nil) {
+        controller.presentOpenCapturePanel { [weak self] fileURLs in
+            self?.finishImportedDocuments(fileURLs: fileURLs, completion: completion)
+        }
+    }
+
+    private func finishImportedDocuments(fileURLs: [URL], completion: (() -> Void)? = nil) {
+        workspaceMode = .packets
+        selectedSourceListSelection = importedFileSelection(for: fileURLs)
         rebuildSnapshot()
+        completion?()
     }
 
     func saveDocument(completion: (() -> Void)? = nil) {
@@ -1829,15 +1870,25 @@ final class NetworkInspectorViewModel {
         preferences.persistSidebarThickness(thickness)
     }
 
-    // Reject invalid saved widths so the root controller can keep AppKit's default when needed.
+    // Prefer saved widths, otherwise use the app default when the split view has enough room.
     func preferredSidebarThickness(for availableLength: CGFloat) -> CGFloat? {
-        guard availableLength.isFinite, availableLength > 0,
-              let thickness = preferences.sidebarThickness,
-              thickness.isFinite, thickness > 0, thickness < availableLength else {
+        guard availableLength.isFinite, availableLength > 0 else {
             return nil
         }
 
-        return thickness
+        if let thickness = preferences.sidebarThickness,
+           thickness.isFinite,
+           thickness > 0,
+           thickness < availableLength {
+            return thickness
+        }
+
+        let maximumThickness = availableLength - 1
+        guard maximumThickness > NetworkInspectorLayoutMetrics.minimumSidebarThickness else {
+            return nil
+        }
+
+        return min(NetworkInspectorLayoutMetrics.defaultSidebarThickness, maximumThickness)
     }
 
     // Expose the launch preference without adding sidebar layout state to the main snapshot.

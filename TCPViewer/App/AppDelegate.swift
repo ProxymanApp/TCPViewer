@@ -6,6 +6,7 @@
 //
 
 import Cocoa
+import PcapPlusPlusCore
 import Sparkle
 
 @main
@@ -54,11 +55,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         verifyLicenseIfNeededForForeground()
     }
 
-    #if DEBUG
     func application(_ sender: NSApplication, openFiles filenames: [String]) {
+        #if DEBUG
         let filteredFilenames = TCPViewerDebugLaunchArgumentFilter.filteredDocumentFilenames(filenames)
         guard filteredFilenames.count != filenames.count else {
-            openDebugDocuments(filenames, sender: sender)
+            importCaptureFiles(filenames, sender: sender)
             return
         }
 
@@ -67,10 +68,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             sender.reply(toOpenOrPrint: .success)
             openUntitledDocumentAfterIgnoringDebugLaunchFilesIfNeeded()
         } else {
-            openDebugDocuments(filteredFilenames, sender: sender)
+            importCaptureFiles(filteredFilenames, sender: sender)
         }
+        #else
+        importCaptureFiles(filenames, sender: sender)
+        #endif
     }
-    #endif
 
     func applicationWillTerminate(_ aNotification: Notification) {
     }
@@ -95,6 +98,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return prepareForTermination(sender)
     }
 
+    @IBAction func openDocument(_ sender: Any?) {
+        presentCaptureOpenPanel()
+    }
+
     private func prepareForTermination(_ sender: NSApplication) -> NSApplication.TerminateReply {
         isHandlingTermination = true
         TCPViewerWorkspaceController.prepareAllForApplicationTermination { [weak self] shouldTerminate in
@@ -105,31 +112,95 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return .terminateLater
     }
 
-    #if DEBUG
-    private func openDebugDocuments(_ filenames: [String], sender: NSApplication) {
+    private func importCaptureFiles(_ filenames: [String], sender: NSApplication) {
         guard !filenames.isEmpty else {
             sender.reply(toOpenOrPrint: .success)
             return
         }
 
-        var remainingFileCount = filenames.count
-        var didFail = false
-        for filename in filenames {
-            let url = URL(fileURLWithPath: filename)
-            NSDocumentController.shared.openDocument(withContentsOf: url, display: true) { _, _, error in
-                if let error {
-                    didFail = true
-                    NSDocumentController.shared.presentError(error)
-                }
+        let urls = filenames
+            .map { URL(fileURLWithPath: $0) }
+            .filter(TCPViewerCaptureFileImportPolicy.isSupportedCaptureFileURL)
 
-                remainingFileCount -= 1
-                if remainingFileCount == 0 {
-                    sender.reply(toOpenOrPrint: didFail ? .failure : .success)
-                }
-            }
+        guard !urls.isEmpty else {
+            sender.reply(toOpenOrPrint: .failure)
+            return
+        }
+
+        importCaptureURLs(urls) { success in
+            sender.reply(toOpenOrPrint: success ? .success : .failure)
         }
     }
 
+    // Presents the shared capture importer from the app-level File > Open action.
+    private func presentCaptureOpenPanel() {
+        let panel = NSOpenPanel()
+        TCPViewerCaptureFileImportPolicy.configureOpenPanel(panel)
+        guard panel.runModal() == .OK else {
+            return
+        }
+
+        importCaptureURLs(panel.urls)
+    }
+
+    // Imports captures into the current TCP Viewer window, creating one only when needed.
+    private func importCaptureURLs(_ urls: [URL], completion: ((Bool) -> Void)? = nil) {
+        let supportedURLs = urls.filter(TCPViewerCaptureFileImportPolicy.isSupportedCaptureFileURL)
+        guard !supportedURLs.isEmpty else {
+            completion?(false)
+            return
+        }
+
+        do {
+            let windowController = try frontmostOrNewTCPViewerWindowController()
+            focusWindowController(windowController)
+            windowController.rootViewController.importDocuments(at: supportedURLs) {
+                completion?(true)
+            }
+        } catch {
+            NSDocumentController.shared.presentError(error)
+            completion?(false)
+        }
+    }
+
+    private func frontmostOrNewTCPViewerWindowController() throws -> TCPViewerWindowController {
+        if let controller = frontmostTCPViewerWindowController() {
+            return controller
+        }
+
+        let document = try NSDocumentController.shared.openUntitledDocumentAndDisplay(true)
+        guard let controller = document.windowControllers.compactMap({ $0 as? TCPViewerWindowController }).first else {
+            throw TCPViewerCoreError(code: .offlineFileOpenFailed, message: "TCP Viewer could not create a window for imported capture files.")
+        }
+        return controller
+    }
+
+    // Finds an existing TCP Viewer document window before falling back to a new one.
+    private func frontmostTCPViewerWindowController() -> TCPViewerWindowController? {
+        if let controller = NSApp.orderedWindows.compactMap({ $0.windowController as? TCPViewerWindowController }).first {
+            return controller
+        }
+
+        for document in NSDocumentController.shared.documents {
+            if let controller = document.windowControllers.compactMap({ $0 as? TCPViewerWindowController }).first {
+                return controller
+            }
+        }
+
+        return NSApp.windows.compactMap { $0.windowController as? TCPViewerWindowController }.first
+    }
+
+    // Brings the import target window forward so newly imported files are immediately visible.
+    private func focusWindowController(_ controller: TCPViewerWindowController) {
+        controller.showWindow(nil)
+        if controller.window?.isMiniaturized == true {
+            controller.window?.deminiaturize(nil)
+        }
+        controller.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    #if DEBUG
     private func openUntitledDocumentAfterIgnoringDebugLaunchFilesIfNeeded() {
         guard shouldOpenUntitledDocumentAfterIgnoringDebugLaunchFiles else {
             return

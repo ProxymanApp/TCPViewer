@@ -784,6 +784,31 @@ extension PacketSummary {
             client: client ?? self.client
         )
     }
+
+    func tcpviewerRemapping(identifier: PacketSummary.ID, source: CaptureSource) -> PacketSummary {
+        PacketSummary(
+            id: identifier,
+            packetNumber: packetNumber,
+            timestamp: timestamp,
+            source: source,
+            interfaceID: interfaceID,
+            transportHint: transportHint,
+            protocolSummary: protocolSummary,
+            endpoints: endpoints,
+            originalLength: originalLength,
+            capturedLength: capturedLength,
+            streamID: streamID,
+            direction: direction,
+            tcpFlags: tcpFlags,
+            tcpPayloadLength: tcpPayloadLength,
+            infoSummary: infoSummary,
+            layers: layers,
+            decodeStatus: decodeStatus,
+            captureMetadata: captureMetadata,
+            sniDomainName: sniDomainName,
+            client: client
+        )
+    }
 }
 
 private extension PacketSummary {

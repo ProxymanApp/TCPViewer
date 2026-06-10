@@ -233,6 +233,30 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.totalPacketCount == 1)
     }
 
+    @Test func importingCaptureSelectsImportedFileSourceListItem() async throws {
+        let importURL = TCPViewerCaptureFileImportPolicy.standardizedFileURL(URL(fileURLWithPath: "/tmp/import-selection.pcapng"))
+        let packets = [makePacket(packetNumber: 1, source: .offline, transportHint: .udp)]
+        let document = InspectorFakeDocument(url: importURL, packets: packets)
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                document: document
+            )),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.importDocuments(at: [importURL])
+        await waitUntil {
+            viewModel.snapshot.base.documentState.phase == .loaded &&
+                viewModel.snapshot.base.packetIngestState.importedFiles.count == 1
+        }
+
+        let importedFile = try #require(viewModel.snapshot.base.packetIngestState.importedFiles.first)
+        #expect(viewModel.snapshot.selectedSourceListSelection == .file(importedFile.id))
+        #expect(viewModel.snapshot.sourceListSnapshot.item(for: .files) == nil)
+        #expect(viewModel.snapshot.sourceListSnapshot.item(for: .file(importedFile.id))?.title == "import-selection.pcapng")
+    }
+
     @Test func packetFormattingFilteringAndTableUpdatePlansAreStable() {
         let client = makeClient()
         let healthy = makePacket(
@@ -964,18 +988,20 @@ struct NetworkInspectorViewModelTests {
             userDefaults: defaults
         )
 
-        viewModel.rememberSidebarThickness(280)
+        #expect(viewModel.preferredSidebarThickness(for: 800) == 280)
+
+        viewModel.rememberSidebarThickness(340)
 
         let reloadedViewModel = NetworkInspectorViewModel(
             services: services,
             userDefaults: defaults
         )
 
-        #expect(reloadedViewModel.preferredSidebarThickness(for: 800) == 280)
+        #expect(reloadedViewModel.preferredSidebarThickness(for: 800) == 340)
 
         reloadedViewModel.rememberSidebarThickness(10_000)
 
-        #expect(reloadedViewModel.preferredSidebarThickness(for: 800) == nil)
+        #expect(reloadedViewModel.preferredSidebarThickness(for: 800) == 280)
     }
 
     @Test func inspectorThicknessPersistsAndFallsBackWhenInvalid() {

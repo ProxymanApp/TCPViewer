@@ -19,4 +19,19 @@ struct AppDelegateTerminationTests {
 
         #expect(reply == .terminateNow)
     }
+
+    @Test func fileOpenMenuRoutesToAppDelegateCaptureImport() throws {
+        let storyboardURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("TCPViewer")
+            .appendingPathComponent("Base.lproj")
+            .appendingPathComponent("Main.storyboard")
+        let storyboard = try String(contentsOf: storyboardURL, encoding: .utf8)
+
+        #expect(storyboard.contains(#"<customObject id="Voe-Tx-rLC" customClass="AppDelegate""#))
+        #expect(storyboard.contains(#"<action selector="openDocument:" target="Voe-Tx-rLC""#))
+        #expect(!storyboard.contains(#"<action selector="openDocument:" target="Ady-hI-5gd""#))
+    }
 }

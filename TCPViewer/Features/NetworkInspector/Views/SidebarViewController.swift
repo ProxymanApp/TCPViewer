@@ -281,9 +281,23 @@ final class SidebarViewController: NSViewController {
         }
     }
 
+    func revealSelectedImportedFileIfNeeded() {
+        guard viewModel.selectedSelection.isImportedFileSelection else {
+            return
+        }
+
+        expandedItemIDs.insert(PacketSourceListTreeBuilder.filesGroupID)
+        if let filesItem = viewModel.item(withID: PacketSourceListTreeBuilder.filesGroupID) {
+            outlineView.expandItem(filesItem)
+        }
+        syncSelection(scrollToSelection: true)
+    }
+
     private func apply(state: SidebarOutlineReloadState) {
         outlineReloadGeneration += 1
         let reloadGeneration = outlineReloadGeneration
+        let shouldRevealSelectedImportedFile = state.selectedSelection.isImportedFileSelection &&
+            appliedReloadState?.selectedSelection != state.selectedSelection
         normalizeOutlineScrollOriginIfNeeded()
         let shouldPreserveOutlineState = shouldPreserveOutlineState(for: state)
         let preservedOutlineState = shouldPreserveOutlineState ? captureOutlineState() : nil
@@ -294,6 +308,9 @@ final class SidebarViewController: NSViewController {
         isSyncingSelection = true
         viewModel.render(state: state)
         syncSearchField(state.filterText)
+        if shouldRevealSelectedImportedFile {
+            expandedItemIDs.insert(PacketSourceListTreeBuilder.filesGroupID)
+        }
         outlineView.reloadData()
         restoreExpandedItems(expandAll: !viewModel.filterText.isEmpty)
         if let preservedOutlineState {
@@ -560,7 +577,7 @@ final class SidebarViewController: NSViewController {
         return clampedOrigin
     }
 
-    private func syncSelection() {
+    private func syncSelection(scrollToSelection: Bool = false) {
         guard viewModel.selectedSelection != .allPackets,
               let selectedItem = viewModel.item(for: viewModel.selectedSelection) else {
             outlineView.deselectAll(nil)
@@ -569,13 +586,21 @@ final class SidebarViewController: NSViewController {
 
         let row = outlineView.row(forItem: selectedItem)
         if row >= 0 {
-            selectOutlineRows(IndexSet(integer: row))
+            selectOutlineRows(IndexSet(integer: row), scrollToSelection: scrollToSelection)
         } else {
             outlineView.deselectAll(nil)
         }
     }
 
-    private func selectOutlineRows(_ rows: IndexSet) {
+    private func selectOutlineRows(_ rows: IndexSet, scrollToSelection: Bool = false) {
+        guard !scrollToSelection else {
+            outlineView.selectRowIndexes(rows, byExtendingSelection: false)
+            if let firstRow = rows.first {
+                outlineView.scrollRowToVisible(firstRow)
+            }
+            return
+        }
+
         outlineView.suppressesProgrammaticScrollToSelection = true
         defer {
             outlineView.suppressesProgrammaticScrollToSelection = false

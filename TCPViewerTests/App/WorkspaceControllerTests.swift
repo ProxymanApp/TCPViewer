@@ -595,6 +595,127 @@ struct WindowControllerTests {
         await tearDown(controller)
     }
 
+    @Test func importingMultipleCaptureFilesDedupesAndRoutesInspectionAndExportToOriginalDocuments() async {
+        let firstURL = TCPViewerCaptureFileImportPolicy.standardizedFileURL(URL(fileURLWithPath: "/tmp/import-one.pcap"))
+        let secondURL = TCPViewerCaptureFileImportPolicy.standardizedFileURL(URL(fileURLWithPath: "/tmp/import-two.pcapng"))
+        let unsupportedURL = TCPViewerCaptureFileImportPolicy.standardizedFileURL(URL(fileURLWithPath: "/tmp/notes.txt"))
+        let firstPackets = [
+            makePacket(packetNumber: 1, source: .offline, transportHint: .udp),
+            makePacket(packetNumber: 2, source: .offline, transportHint: .tcp),
+        ]
+        let secondPackets = [
+            makePacket(packetNumber: 1, source: .offline, transportHint: .dns),
+            makePacket(packetNumber: 2, source: .offline, transportHint: .tls),
+        ]
+        let firstDocument = FakeOfflineDocument(
+            url: firstURL,
+            metadata: CaptureDocumentMetadata(format: .pcap),
+            openPlan: .completed(firstPackets),
+            inspections: Dictionary(uniqueKeysWithValues: firstPackets.map { ($0.id, makeInspection(for: $0)) })
+        )
+        let secondDocument = FakeOfflineDocument(
+            url: secondURL,
+            metadata: CaptureDocumentMetadata(format: .pcapng),
+            openPlan: .completed(secondPackets),
+            inspections: Dictionary(uniqueKeysWithValues: secondPackets.map { ($0.id, makeInspection(for: $0)) })
+        )
+        let fakeCore = FakeTCPViewerCore(
+            interfaceInventories: [[makeInterface(id: "en0", displayName: "Wi-Fi")]],
+            documentFactory: { url in
+                url == secondURL ? secondDocument : firstDocument
+            }
+        )
+        let controller = TCPViewerWorkspaceController(
+            services: TCPViewerServiceRegistry(core: fakeCore)
+        )
+
+        await controller.importDocuments(at: [firstURL, firstURL, unsupportedURL, secondURL])
+        await waitUntil {
+            controller.snapshot.documentState.phase == .loaded &&
+                controller.snapshot.packetIngestState.totalPacketCount == 4
+        }
+
+        let importedFiles = controller.snapshot.packetIngestState.importedFiles
+        let packets = controller.snapshot.packetIngestState.packets
+        #expect(fakeCore.openedDocumentURLs == [firstURL, secondURL])
+        #expect(importedFiles.map(\.displayName) == ["import-one.pcap", "import-two.pcapng"])
+        #expect(importedFiles.map(\.packetCount) == [2, 2])
+        #expect(packets.map(\.id) == [1, 2, 3, 4])
+        #expect(packets.map(\.packetNumber) == [1, 2, 1, 2])
+        #expect(controller.snapshot.documentState.fileURL == nil)
+
+        await controller.importDocuments(at: [firstURL])
+        #expect(fakeCore.openedDocumentURLs == [firstURL, secondURL])
+        #expect(controller.snapshot.packetIngestState.totalPacketCount == 4)
+
+        controller.selectPacket(3)
+        await waitUntil {
+            controller.snapshot.inspectionState.inspection?.packetID == 3
+        }
+        #expect(controller.snapshot.inspectionState.inspection?.packetNumber == 1)
+        #expect(controller.snapshot.inspectionState.inspection?.rawBytes == Data(repeating: 1, count: 64))
+
+        let sameFileExport = await controller.exportPackets(withIDs: [3, 4], to: URL(fileURLWithPath: "/tmp/import-two-export.pcapng"), format: .pcapng)
+        guard case .success = sameFileExport else {
+            Issue.record("Expected same-file imported export to succeed.")
+            return
+        }
+        #expect(secondDocument.exportRequests.first?.0 == [1, 2])
+        #expect(firstDocument.exportRequests.isEmpty)
+
+        let crossFileExport = await controller.exportPackets(withIDs: [1, 3], to: URL(fileURLWithPath: "/tmp/cross-file-export.pcapng"), format: .pcapng)
+        guard case .failure(let error as TCPViewerCoreError) = crossFileExport else {
+            Issue.record("Expected cross-file imported export to fail gracefully.")
+            return
+        }
+        #expect(error.code == .offlineFileSaveFailed)
+        #expect(error.message.contains("multiple imported files"))
+        #expect(firstDocument.exportRequests.isEmpty)
+        #expect(secondDocument.exportRequests.count == 1)
+
+        await tearDown(controller)
+    }
+
+    @Test func importingEmptyCaptureFileKeepsImportedFileStateAndDedupes() async {
+        let captureURL = TCPViewerCaptureFileImportPolicy.standardizedFileURL(URL(fileURLWithPath: "/tmp/empty-import.pcapng"))
+        let document = FakeOfflineDocument(
+            url: captureURL,
+            metadata: CaptureDocumentMetadata(format: .pcapng),
+            openPlan: .completed([])
+        )
+        let fakeCore = FakeTCPViewerCore(
+            interfaceInventories: [[makeInterface(id: "en0", displayName: "Wi-Fi")]],
+            documentFactory: { _ in document }
+        )
+        let controller = TCPViewerWorkspaceController(
+            services: TCPViewerServiceRegistry(core: fakeCore)
+        )
+
+        await controller.importDocuments(at: [captureURL])
+        await waitUntil {
+            controller.snapshot.documentState.phase == .loaded &&
+                controller.snapshot.packetIngestState.importedFiles.count == 1
+        }
+
+        let importedFile = controller.snapshot.packetIngestState.importedFiles.first
+        #expect(fakeCore.openedDocumentURLs == [captureURL])
+        #expect(controller.snapshot.packetIngestState.totalPacketCount == 0)
+        #expect(importedFile?.displayName == "empty-import.pcapng")
+        #expect(importedFile?.packetCount == 0)
+
+        await controller.importDocuments(at: [captureURL])
+        #expect(fakeCore.openedDocumentURLs == [captureURL])
+
+        await tearDown(controller)
+    }
+
+    @Test func captureFileImportPolicyAcceptsOnlyPcapAndPcapNgExtensions() {
+        #expect(TCPViewerCaptureFileImportPolicy.isSupportedCaptureFileURL(URL(fileURLWithPath: "/tmp/sample.pcap")))
+        #expect(TCPViewerCaptureFileImportPolicy.isSupportedCaptureFileURL(URL(fileURLWithPath: "/tmp/sample.PCAPNG")))
+        #expect(!TCPViewerCaptureFileImportPolicy.isSupportedCaptureFileURL(URL(fileURLWithPath: "/tmp/sample.txt")))
+        #expect(!TCPViewerCaptureFileImportPolicy.allowedContentTypes.isEmpty)
+    }
+
     @Test func exportPacketsPausesAndResumesRunningLiveCapture() async {
         let exportURL = URL(fileURLWithPath: "/tmp/live-export.pcapng")
         let packets = [
@@ -1386,6 +1507,7 @@ private final class FakeTCPViewerCore: TCPViewerCoreProviding, @unchecked Sendab
     private var interfaceCallCount = 0
 
     private(set) var liveSessionRequests: [(interfaceID: String, options: CaptureOptions)] = []
+    private(set) var openedDocumentURLs: [URL] = []
 
     init(
         interfaceInventories: [[CaptureInterfaceSummary]],
@@ -1448,6 +1570,7 @@ private final class FakeTCPViewerCore: TCPViewerCoreProviding, @unchecked Sendab
         at fileURL: URL,
         completion: @escaping TCPViewerCompletion<any OfflineCaptureDocumentProviding>
     ) {
+        openedDocumentURLs.append(fileURL)
         completion(.success(documentFactory(fileURL)))
     }
 

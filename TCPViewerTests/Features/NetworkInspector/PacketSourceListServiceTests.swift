@@ -17,9 +17,11 @@ struct PacketSourceListServiceTests {
         let service = PacketSourceListService()
         let snapshot = service.snapshot(for: .empty)
 
-        #expect(snapshot.roots.map(\.title) == ["Favorites", "All"])
+        #expect(snapshot.roots.map(\.title) == ["Favorites", "Files", "All"])
         #expect(snapshot.roots[0].children.map(\.title) == ["Pinned", "Saved"])
-        #expect(snapshot.roots[1].children.map(\.title) == ["Apps", "Domains"])
+        #expect(snapshot.roots[1].selection == nil)
+        #expect(snapshot.roots[1].children.isEmpty)
+        #expect(snapshot.roots[2].children.map(\.title) == ["Apps", "Domains"])
         #expect(snapshot.item(for: .apps)?.children.isEmpty == true)
         #expect(snapshot.item(for: .domains)?.children.isEmpty == true)
     }
@@ -103,6 +105,107 @@ struct PacketSourceListServiceTests {
         #expect(snapshot.item(for: .appDomain(chromeKey, .ipAddresses))?.count == 1)
         #expect(snapshot.item(for: .appDomain(chromeKey, .ipAddresses))?.children.map(\.title) == ["10.0.0.4", "10.0.0.3"])
         #expect(snapshot.item(for: .appIPAddress(chromeKey, ipKey))?.count == 1)
+    }
+
+    @Test func importedFilesCreateScopedFileAppDomainAndIPAddressNodes() throws {
+        let chrome = makeClient(displayName: "Chrome", bundleIdentifier: "com.google.Chrome")
+        let fileAID = ImportedCaptureFileID(rawValue: "/captures/a.pcap")
+        let fileBID = ImportedCaptureFileID(rawValue: "/captures/b.pcapng")
+        let fileAPackets = [
+            makePacket(packetNumber: 1, sniDomainName: "api.example.com", client: chrome),
+            makePacket(packetNumber: 2, sniDomainName: nil, client: chrome, sourceAddress: "10.0.0.3", destinationAddress: "10.0.0.4"),
+        ]
+        let fileBPackets = [
+            makePacket(packetNumber: 101, sniDomainName: "api.example.com", client: chrome),
+            makePacket(packetNumber: 102, sniDomainName: nil, sourceAddress: "10.0.0.5", destinationAddress: "10.0.0.6"),
+        ]
+        let fileA = ImportedCaptureFile(
+            id: fileAID,
+            url: URL(fileURLWithPath: fileAID.rawValue),
+            displayName: "a.pcap",
+            packetIDs: fileAPackets.map(\.id)
+        )
+        let fileB = ImportedCaptureFile(
+            id: fileBID,
+            url: URL(fileURLWithPath: fileBID.rawValue),
+            displayName: "b.pcapng",
+            packetIDs: fileBPackets.map(\.id)
+        )
+        var state = PacketIngestState.empty
+        state.appendImportedFile(fileA, packets: fileAPackets, originalPacketIDs: [1, 2])
+        state.appendImportedFile(fileB, packets: fileBPackets, originalPacketIDs: [1, 2])
+
+        let snapshot = PacketSourceListService().snapshot(for: state)
+        let chromeKey = PacketSourceClientKey(rawValue: "bundleIdentifier:com.google.Chrome")
+        let apiKey = domainKey("api.example.com")
+        let ipKey = PacketSourceIPAddressKey(rawValue: "10.0.0.4")
+        let fileAItem = try #require(snapshot.item(for: .file(fileAID)))
+        let filesGroup = try filesGroup(in: snapshot)
+
+        #expect(snapshot.item(for: .files) == nil)
+        #expect(filesGroup.count == 4)
+        #expect(filesGroup.selection == nil)
+        #expect(filesGroup.children.map(\.title) == ["a.pcap", "b.pcapng"])
+        #expect(fileAItem.count == 2)
+        #expect(fileAItem.children.map(\.title) == ["Apps", "Domains"])
+        #expect(snapshot.item(for: .fileApps(fileAID))?.count == 2)
+        #expect(snapshot.item(for: .fileApp(fileAID, chromeKey))?.count == 2)
+        #expect(snapshot.item(for: .fileAppDomain(fileAID, chromeKey, apiKey))?.count == 1)
+        #expect(snapshot.item(for: .fileAppIPAddress(fileAID, chromeKey, ipKey))?.count == 1)
+        #expect(snapshot.item(for: .fileDomains(fileAID))?.count == 2)
+        #expect(snapshot.item(for: .fileDomain(fileAID, apiKey))?.count == 1)
+        #expect(snapshot.item(for: .fileIPAddress(fileAID, ipKey))?.count == 1)
+
+        #expect(PacketSourceListPacketMatcher.matches(fileAPackets[0], selection: .file(fileAID), pinnedItems: [], ingestState: state))
+        #expect(!PacketSourceListPacketMatcher.matches(fileBPackets[0], selection: .file(fileAID), pinnedItems: [], ingestState: state))
+        #expect(PacketSourceListPacketMatcher.matches(fileAPackets[0], selection: .fileDomain(fileAID, apiKey), pinnedItems: [], ingestState: state))
+        #expect(!PacketSourceListPacketMatcher.matches(fileBPackets[0], selection: .fileDomain(fileAID, apiKey), pinnedItems: [], ingestState: state))
+        #expect(PacketSourceListPacketMatcher.matches(fileAPackets[1], selection: .fileIPAddress(fileAID, ipKey), pinnedItems: [], ingestState: state))
+    }
+
+    @Test func emptyImportedFilesRemainVisibleInFilesSection() throws {
+        let fileID = ImportedCaptureFileID(rawValue: "/captures/empty.pcapng")
+        let file = ImportedCaptureFile(
+            id: fileID,
+            url: URL(fileURLWithPath: fileID.rawValue),
+            displayName: "empty.pcapng",
+            packetIDs: []
+        )
+        var state = PacketIngestState.empty
+        state.appendImportedFile(file, packets: [], originalPacketIDs: [])
+
+        let snapshot = PacketSourceListService().snapshot(for: state)
+        let fileItem = try #require(snapshot.item(for: .file(fileID)))
+        let filesGroup = try filesGroup(in: snapshot)
+
+        #expect(filesGroup.children.map(\.title) == ["empty.pcapng"])
+        #expect(fileItem.count == 0)
+        #expect(fileItem.children.map(\.title) == ["Domains"])
+        #expect(snapshot.item(for: .fileApps(fileID)) == nil)
+        #expect(snapshot.item(for: .fileDomains(fileID))?.children.isEmpty == true)
+    }
+
+    @Test func importedFileHidesAppsFolderWhenNoPacketsHaveAppMetadata() throws {
+        let fileID = ImportedCaptureFileID(rawValue: "/captures/no-apps.pcapng")
+        let packets = [
+            makePacket(packetNumber: 1, sniDomainName: nil),
+            makePacket(packetNumber: 2, sniDomainName: "api.example.com"),
+        ]
+        let file = ImportedCaptureFile(
+            id: fileID,
+            url: URL(fileURLWithPath: fileID.rawValue),
+            displayName: "no-apps.pcapng",
+            packetIDs: packets.map(\.id)
+        )
+        var state = PacketIngestState.empty
+        state.appendImportedFile(file, packets: packets, originalPacketIDs: [1, 2])
+
+        let snapshot = PacketSourceListService().snapshot(for: state)
+        let fileItem = try #require(snapshot.item(for: .file(fileID)))
+
+        #expect(fileItem.children.map(\.title) == ["Domains"])
+        #expect(snapshot.item(for: .fileApps(fileID)) == nil)
+        #expect(snapshot.item(for: .fileDomains(fileID))?.count == 2)
     }
 
     @Test func deletionPolicyOnlyAllowsDeletableLeafItems() {
@@ -484,6 +587,10 @@ struct PacketSourceListServiceTests {
 
     private func domainKey(_ name: String) -> PacketSourceDomainKey {
         PacketSourceDomainKey(rawValue: name.lowercased(), isMissingDomain: false)
+    }
+
+    private func filesGroup(in snapshot: PacketSourceListSnapshot) throws -> PacketSourceListItem {
+        try #require(snapshot.firstItem { $0.id == PacketSourceListTreeBuilder.filesGroupID })
     }
 
     private func makeDomainPin(_ domain: String) -> PacketPin {
