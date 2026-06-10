@@ -561,6 +561,7 @@ final class PacketSourceListService {
 
         if packetLineageRevision == ingestState.packetLineageRevision,
            sourcePacketCount <= ingestState.packets.count {
+            syncImportedFileBuckets(with: ingestState.importedFiles)
             if didChangePinnedItems {
                 rebuildPinnedCountsFromAssignments()
             }
@@ -593,6 +594,7 @@ final class PacketSourceListService {
         importedFileOrder = []
         packetAssignmentsByID.removeAll(keepingCapacity: true)
         pinnedPacketCountsByID.removeAll(keepingCapacity: true)
+        syncImportedFileBuckets(with: ingestState.importedFiles)
         appendPackets(ingestState.packets, in: ingestState)
         return storeSnapshot(for: ingestState)
     }
@@ -607,6 +609,25 @@ final class PacketSourceListService {
             let assignment = makeAssignment(for: packet, in: ingestState)
             increment(for: assignment)
             packetAssignmentsByID[packet.id] = assignment
+        }
+    }
+
+    private func syncImportedFileBuckets(with importedFiles: [ImportedCaptureFile]) {
+        // File metadata owns visibility so empty imports still appear in the Files section.
+        let importedFileIDs = Set(importedFiles.map(\.id))
+        importedFileOrder.removeAll { !importedFileIDs.contains($0) }
+        importedFileBuckets = importedFileBuckets.filter { importedFileIDs.contains($0.key) }
+
+        var orderedIDs = Set(importedFileOrder)
+        for file in importedFiles {
+            if importedFileBuckets[file.id] == nil {
+                importedFileBuckets[file.id] = PacketSourceListTreeBuilder.ImportedFileBucket(file: file)
+            } else {
+                importedFileBuckets[file.id]?.file = file
+            }
+            if orderedIDs.insert(file.id).inserted {
+                importedFileOrder.append(file.id)
+            }
         }
     }
 
@@ -697,7 +718,7 @@ final class PacketSourceListService {
                 domainIdentity: assignment.domainIdentity,
                 ipAddressIdentities: assignment.ipAddressIdentities
             )
-            if bucket.packetCount <= 0 {
+            if bucket.packetCount <= 0 && importedFilesByID[fileID] == nil {
                 importedFileBuckets.removeValue(forKey: fileID)
                 importedFileOrder.removeAll { $0 == fileID }
             } else {
@@ -932,7 +953,7 @@ enum PacketSourceListTreeBuilder {
     }
 
     struct ImportedFileBucket: Equatable, Sendable {
-        let file: ImportedCaptureFile
+        var file: ImportedCaptureFile
         var packetCount = 0
         private var appBuckets: [PacketSourceClientKey: AppBucket] = [:]
         private var appOrder: [PacketSourceClientKey] = []

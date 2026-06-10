@@ -193,6 +193,28 @@ struct InspectorPipelineTests {
         }
     }
 
+    @Test func bigEndianPcapNgOpensWithSummariesRawBytesAndDetails() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let captureURL = directory.appendingPathComponent("big-endian.pcapng")
+        try writeBigEndianPCAPNG(to: captureURL, packets: [makeIPv4UDPPayloadPacket()])
+
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
+        let summaries = try await document.open()
+        let packet = try #require(summaries.first)
+
+        #expect(document.currentMetadata().format == .pcapng)
+        #expect(summaries.count == 1)
+        #expect(packet.packetNumber == 1)
+        #expect(packet.transportHint == .udp)
+        #expect(packet.endpoints.source.address == "192.168.0.1")
+
+        let inspection = try await document.inspectPacket(id: packet.id)
+        #expect(inspection.rawBytes == makeIPv4UDPPayloadPacket())
+        #expect(findNode(in: inspection.detailNodes, fieldName: "udp.length")?.byteRange == PacketByteRange(offset: 38, length: 2))
+    }
+
     @Test func bundledSanitizedSampleCapturesOpenWithExpectedPacketData() async throws {
         let fixtures: [(fileName: String, format: CaptureFileFormat)] = [
             ("tinyshield-sanitized-sample.pcap", .pcap),
@@ -264,6 +286,22 @@ struct InspectorPipelineTests {
         } catch let error as TCPViewerCoreError {
             #expect(error.code == .offlineFileOpenFailed)
             #expect(error.message.contains("not PCAP or PCAPNG"))
+        }
+    }
+
+    @Test func invalidPcapNgSectionHeaderFailsOfflineOpen() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let captureURL = directory.appendingPathComponent("truncated-section-header.pcapng")
+        try Data([0x0a, 0x0d, 0x0d, 0x0a]).write(to: captureURL)
+
+        do {
+            _ = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
+            Issue.record("Expected invalid PCAPNG section header to fail.")
+        } catch let error as TCPViewerCoreError {
+            #expect(error.code == .offlineFileOpenFailed)
+            #expect(error.message.contains("PCAPNG section header"))
         }
     }
 
@@ -987,6 +1025,31 @@ private func writePCAPNG(to url: URL, interfaces: [String], packets: [(packet: D
     try data.write(to: url)
 }
 
+private func writeBigEndianPCAPNG(to url: URL, packets: [Data]) throws {
+    var data = Data()
+
+    var sectionBody = Data()
+    sectionBody.appendBigEndian(UInt32(0x1a2b3c4d))
+    sectionBody.appendBigEndian(UInt16(1))
+    sectionBody.appendBigEndian(UInt16(0))
+    sectionBody.appendBigEndian(UInt64.max)
+    appendBigEndianPCAPNGBlock(type: 0x0a0d0d0a, body: sectionBody, to: &data)
+
+    var interfaceBody = Data()
+    interfaceBody.appendBigEndian(UInt16(1))
+    interfaceBody.appendBigEndian(UInt16(0))
+    interfaceBody.appendBigEndian(UInt32(65_535))
+    interfaceBody.appendBigEndian(UInt16(0))
+    interfaceBody.appendBigEndian(UInt16(0))
+    appendBigEndianPCAPNGBlock(type: 1, body: interfaceBody, to: &data)
+
+    for (index, packet) in packets.enumerated() {
+        try appendBigEndianPCAPNGEnhancedPacket(packet, index: index, to: &data)
+    }
+
+    try data.write(to: url)
+}
+
 private func writePCAPNGWithMalformedPacketBetweenValidPackets(to url: URL) throws {
     var data = Data()
 
@@ -1031,12 +1094,36 @@ private func appendPCAPNGEnhancedPacket(_ packet: Data, interfaceID: UInt32, ind
     appendPCAPNGBlock(type: 6, body: packetBody, to: &data)
 }
 
+private func appendBigEndianPCAPNGEnhancedPacket(_ packet: Data, index: Int, to data: inout Data) throws {
+    let packetLength = try UInt32(exactly: packet.count).unwrap()
+    let timestamp = UInt64(1_700_000_000 + index) * 1_000_000
+    var packetBody = Data()
+    packetBody.appendBigEndian(UInt32(0))
+    packetBody.appendBigEndian(UInt32(timestamp >> 32))
+    packetBody.appendBigEndian(UInt32(timestamp & 0xffff_ffff))
+    packetBody.appendBigEndian(packetLength)
+    packetBody.appendBigEndian(packetLength)
+    packetBody.append(packet)
+    packetBody.appendPCAPNGPadding(for: packet.count)
+    packetBody.appendBigEndian(UInt16(0))
+    packetBody.appendBigEndian(UInt16(0))
+    appendBigEndianPCAPNGBlock(type: 6, body: packetBody, to: &data)
+}
+
 private func appendPCAPNGBlock(type: UInt32, body: Data, to data: inout Data) {
     let totalLength = UInt32(12 + body.count)
     data.appendLittleEndian(type)
     data.appendLittleEndian(totalLength)
     data.append(body)
     data.appendLittleEndian(totalLength)
+}
+
+private func appendBigEndianPCAPNGBlock(type: UInt32, body: Data, to data: inout Data) {
+    let totalLength = UInt32(12 + body.count)
+    data.appendBigEndian(type)
+    data.appendBigEndian(totalLength)
+    data.append(body)
+    data.appendBigEndian(totalLength)
 }
 
 private func appendPCAPNGStringOption(code: UInt16, value: String, to data: inout Data) {

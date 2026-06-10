@@ -175,6 +175,10 @@ private struct PcapNGReader {
     let data: Data
 
     func read() throws -> NativeCaptureFile {
+        guard data.count >= 12 else {
+            throw NativeNSError(.fileReadFailed, "The PCAPNG section header is incomplete.")
+        }
+
         var offset = 0
         var section: UInt32 = 0
         var hasSection = false
@@ -188,6 +192,35 @@ private struct PcapNGReader {
 
         while offset + 12 <= data.count {
             let blockStart = offset
+            // Section headers define their own byte order, so parse them before using section endian state.
+            if isSectionHeaderBlock(at: blockStart) {
+                let sectionHeader: SectionHeaderBlock
+                do {
+                    sectionHeader = try readSectionHeaderBlock(at: blockStart)
+                } catch {
+                    if !hasSection {
+                        throw error
+                    }
+
+                    skippedPacketCount += 1
+                    partialLoadReason = "Stopped at an invalid PCAPNG section header."
+                    break
+                }
+
+                littleEndian = sectionHeader.littleEndian
+                if hasSection {
+                    section += 1
+                }
+                hasSection = true
+                nextInterfaceID = 0
+                offset = blockStart + sectionHeader.totalLength
+                continue
+            }
+
+            guard hasSection else {
+                throw NativeNSError(.fileReadFailed, "The PCAPNG file is missing a section header.")
+            }
+
             let blockType = readUInt32(at: offset, littleEndian: littleEndian) ?? 0
             let totalLength = Int(readUInt32(at: offset + 4, littleEndian: littleEndian) ?? 0)
             guard totalLength >= 12, blockStart + totalLength <= data.count else {
@@ -200,26 +233,7 @@ private struct PcapNGReader {
             let trailingLength = Int(readUInt32(at: bodyEnd, littleEndian: littleEndian) ?? 0)
             let hasValidTrailingLength = trailingLength == totalLength
 
-            if blockType == 0x0a0d0d0a {
-                guard hasValidTrailingLength, bodyStart + 4 <= bodyEnd else {
-                    skippedPacketCount += 1
-                    offset = blockStart + totalLength
-                    continue
-                }
-                let magic = Array(data[bodyStart..<(bodyStart + 4)])
-                if magic == [0x4d, 0x3c, 0x2b, 0x1a] {
-                    littleEndian = true
-                } else if magic == [0x1a, 0x2b, 0x3c, 0x4d] {
-                    littleEndian = false
-                } else {
-                    throw NativeNSError(.fileReadFailed, "The PCAPNG section has an invalid byte-order magic.")
-                }
-                if hasSection {
-                    section += 1
-                }
-                hasSection = true
-                nextInterfaceID = 0
-            } else if blockType == 1 {
+            if blockType == 1 {
                 guard hasValidTrailingLength, bodyStart + 8 <= bodyEnd else {
                     skippedPacketCount += 1
                     offset = blockStart + totalLength
@@ -314,6 +328,49 @@ private struct PcapNGReader {
             skippedPacketCount: skippedPacketCount,
             partialLoadReason: partialLoadReason
         )
+    }
+
+    private struct SectionHeaderBlock {
+        let totalLength: Int
+        let littleEndian: Bool
+    }
+
+    private func isSectionHeaderBlock(at offset: Int) -> Bool {
+        guard offset >= 0, offset + 4 <= data.count else {
+            return false
+        }
+
+        return data[offset..<(offset + 4)].elementsEqual([0x0a, 0x0d, 0x0d, 0x0a])
+    }
+
+    private func readSectionHeaderBlock(at offset: Int) throws -> SectionHeaderBlock {
+        guard offset + 12 <= data.count else {
+            throw NativeNSError(.fileReadFailed, "The PCAPNG section header is incomplete.")
+        }
+
+        let magic = Array(data[(offset + 8)..<(offset + 12)])
+        let littleEndian: Bool
+        switch magic {
+        case [0x4d, 0x3c, 0x2b, 0x1a]:
+            littleEndian = true
+        case [0x1a, 0x2b, 0x3c, 0x4d]:
+            littleEndian = false
+        default:
+            throw NativeNSError(.fileReadFailed, "The PCAPNG section has an invalid byte-order magic.")
+        }
+
+        let totalLength = Int(readUInt32(at: offset + 4, littleEndian: littleEndian) ?? 0)
+        guard totalLength >= 28, totalLength <= data.count - offset else {
+            throw NativeNSError(.fileReadFailed, "The PCAPNG section header has an invalid block length.")
+        }
+
+        let trailingLengthOffset = offset + totalLength - 4
+        let trailingLength = Int(readUInt32(at: trailingLengthOffset, littleEndian: littleEndian) ?? 0)
+        guard trailingLength == totalLength else {
+            throw NativeNSError(.fileReadFailed, "The PCAPNG section header has an invalid trailing length.")
+        }
+
+        return SectionHeaderBlock(totalLength: totalLength, littleEndian: littleEndian)
     }
 
     private func readOptions(offset: Int, end: Int, littleEndian: Bool) -> [UInt16: String] {

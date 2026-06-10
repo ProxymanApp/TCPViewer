@@ -144,7 +144,7 @@ struct PacketIngestState: Sendable, Equatable {
         metadataUpdates: [PacketMetadataUpdate] = [],
         message: String? = nil
     ) {
-        guard !batch.isEmpty, batch.count == originalPacketIDs.count else {
+        guard batch.count == originalPacketIDs.count else {
             lastMutation = .none
             return
         }
@@ -166,9 +166,14 @@ struct PacketIngestState: Sendable, Equatable {
         importedFiles.append(file)
         let updatedPacketIDs = applyMetadataUpdatesInPlace(metadataUpdates)
         packetRevision &+= 1
-        lastMutation = updatedPacketIDs.isEmpty
-            ? .append(startIndex..<packets.count)
-            : .appendWithMetadataUpdates(range: startIndex..<packets.count, updatedPacketIDs: updatedPacketIDs)
+        if batch.isEmpty {
+            packetLineageRevision &+= 1
+            lastMutation = .replace
+        } else {
+            lastMutation = updatedPacketIDs.isEmpty
+                ? .append(startIndex..<packets.count)
+                : .appendWithMetadataUpdates(range: startIndex..<packets.count, updatedPacketIDs: updatedPacketIDs)
+        }
         lastBatchCount = batch.count
         addCounters(for: batch)
         if let message {

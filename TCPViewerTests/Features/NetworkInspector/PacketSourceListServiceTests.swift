@@ -159,6 +159,27 @@ struct PacketSourceListServiceTests {
         #expect(PacketSourceListPacketMatcher.matches(fileAPackets[1], selection: .fileIPAddress(fileAID, ipKey), pinnedItems: [], ingestState: state))
     }
 
+    @Test func emptyImportedFilesRemainVisibleInFilesSection() throws {
+        let fileID = ImportedCaptureFileID(rawValue: "/captures/empty.pcapng")
+        let file = ImportedCaptureFile(
+            id: fileID,
+            url: URL(fileURLWithPath: fileID.rawValue),
+            displayName: "empty.pcapng",
+            packetIDs: []
+        )
+        var state = PacketIngestState.empty
+        state.appendImportedFile(file, packets: [], originalPacketIDs: [])
+
+        let snapshot = PacketSourceListService().snapshot(for: state)
+        let fileItem = try #require(snapshot.item(for: .file(fileID)))
+
+        #expect(snapshot.item(for: .files)?.children.map(\.title) == ["empty.pcapng"])
+        #expect(fileItem.count == 0)
+        #expect(fileItem.children.map(\.title) == ["Apps", "Domains"])
+        #expect(snapshot.item(for: .fileApps(fileID))?.children.isEmpty == true)
+        #expect(snapshot.item(for: .fileDomains(fileID))?.children.isEmpty == true)
+    }
+
     @Test func deletionPolicyOnlyAllowsDeletableLeafItems() {
         let client = makeClient(displayName: "Example", bundleIdentifier: "com.example.app")
         let pinID = PacketPinID(rawValue: "domain:api.example.com")

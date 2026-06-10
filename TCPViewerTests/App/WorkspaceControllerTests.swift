@@ -676,6 +676,39 @@ struct WindowControllerTests {
         await tearDown(controller)
     }
 
+    @Test func importingEmptyCaptureFileKeepsImportedFileStateAndDedupes() async {
+        let captureURL = TCPViewerCaptureFileImportPolicy.standardizedFileURL(URL(fileURLWithPath: "/tmp/empty-import.pcapng"))
+        let document = FakeOfflineDocument(
+            url: captureURL,
+            metadata: CaptureDocumentMetadata(format: .pcapng),
+            openPlan: .completed([])
+        )
+        let fakeCore = FakeTCPViewerCore(
+            interfaceInventories: [[makeInterface(id: "en0", displayName: "Wi-Fi")]],
+            documentFactory: { _ in document }
+        )
+        let controller = TCPViewerWorkspaceController(
+            services: TCPViewerServiceRegistry(core: fakeCore)
+        )
+
+        await controller.importDocuments(at: [captureURL])
+        await waitUntil {
+            controller.snapshot.documentState.phase == .loaded &&
+                controller.snapshot.packetIngestState.importedFiles.count == 1
+        }
+
+        let importedFile = controller.snapshot.packetIngestState.importedFiles.first
+        #expect(fakeCore.openedDocumentURLs == [captureURL])
+        #expect(controller.snapshot.packetIngestState.totalPacketCount == 0)
+        #expect(importedFile?.displayName == "empty-import.pcapng")
+        #expect(importedFile?.packetCount == 0)
+
+        await controller.importDocuments(at: [captureURL])
+        #expect(fakeCore.openedDocumentURLs == [captureURL])
+
+        await tearDown(controller)
+    }
+
     @Test func captureFileImportPolicyAcceptsOnlyPcapAndPcapNgExtensions() {
         #expect(TCPViewerCaptureFileImportPolicy.isSupportedCaptureFileURL(URL(fileURLWithPath: "/tmp/sample.pcap")))
         #expect(TCPViewerCaptureFileImportPolicy.isSupportedCaptureFileURL(URL(fileURLWithPath: "/tmp/sample.PCAPNG")))
