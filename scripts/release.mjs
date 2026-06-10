@@ -19,12 +19,12 @@ import { spawn } from "node:child_process";
 import prompts from "prompts";
 import {
   assertReleaseTitleReflectsChanges,
-  defaultDMGFileName,
   emptyPayloadSHA256,
   findReleaseNote,
   generateAppcastXML,
   makeGitHubReleaseTagName,
   makeBetaDMGFileName,
+  makeDMGFileName,
   makeR2ObjectURL,
   makeR2ObjectKey,
   makeR2StorageObjectKey,
@@ -67,9 +67,10 @@ async function main() {
   const dmgFileName = releaseType === "beta"
     ? makeBetaDMGFileName({
         version,
-        customName: args.betaName ?? await askBetaDMGCustomName(version)
+        buildNumber,
+        customName: args.betaName ?? await askBetaDMGCustomName(version, buildNumber)
       })
-    : defaultDMGFileName;
+    : makeDMGFileName({ version, buildNumber });
   const releaseObjectKey = makeR2ObjectKey({
     releaseType,
     version,
@@ -764,14 +765,14 @@ async function askReleaseType() {
   return requirePromptValue(response.releaseType, "Release type");
 }
 
-async function askBetaDMGCustomName(version) {
+async function askBetaDMGCustomName(version, buildNumber) {
   const response = await prompts({
     type: "text",
     name: "customName",
-    message: `Beta DMG custom name (tcpviewer_${version}_{custom_name}.dmg)`,
+    message: `Beta DMG custom name (tcpviewer_${version}_${buildNumber}_{custom_name}.dmg)`,
     validate: (value) => {
       try {
-        makeBetaDMGFileName({ version, customName: value });
+        makeBetaDMGFileName({ version, buildNumber, customName: value });
         return true;
       } catch (error) {
         return error.message;

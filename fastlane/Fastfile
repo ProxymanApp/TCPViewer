@@ -9,7 +9,6 @@ SCHEME_NAME = "TCPViewer"
 CONFIGURATION_NAME = "Release"
 APP_NAME = "TCP Viewer"
 APP_BUNDLE_NAME = "#{APP_NAME}.app"
-DMG_NAME = "tcpviewer.dmg"
 RELEASE_ROOT = File.expand_path(File.join(Dir.home, "Desktop", "tcpviewer-production"))
 REPO_ROOT = File.expand_path("..", __dir__)
 CREATE_DMG_BIN = File.join(REPO_ROOT, "node_modules", ".bin", "create-dmg")
@@ -38,7 +37,7 @@ def prepare_output_dir!(output_dir)
   FileUtils.mkdir_p(output_dir)
 end
 
-def release_paths(output_dir, dmg_name = DMG_NAME)
+def release_paths(output_dir, dmg_name)
   valid_dmg_name = dmg_name.end_with?(".dmg") &&
     dmg_name != ".dmg" &&
     !dmg_name.include?("/") &&
@@ -57,6 +56,10 @@ def release_paths(output_dir, dmg_name = DMG_NAME)
     dsym_zip_path: File.join(output_dir, "#{APP_NAME}.app.dSYM.zip"),
     dsym_path: File.join(archive_path, "dSYMs")
   }
+end
+
+def default_release_dmg_name(version, build_number)
+  "tcpviewer_#{version}_#{build_number}.dmg"
 end
 
 def create_dmg_binary!
@@ -259,7 +262,7 @@ def build_release_variant!(release_type, options)
   build_number = required_option!(options, :build_number)
   output_dir = File.expand_path(required_option!(options, :output_dir))
   dmg_name = options[:dmg_name].to_s.strip
-  dmg_name = DMG_NAME if dmg_name.empty?
+  dmg_name = default_release_dmg_name(version, build_number) if dmg_name.empty?
   paths = release_paths(output_dir, dmg_name)
 
   UI.message("Building TCP Viewer #{release_type} #{version} (#{build_number})")

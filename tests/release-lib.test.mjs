@@ -6,6 +6,7 @@ import {
   findReleaseNote,
   generateAppcastXML,
   makeBetaDMGFileName,
+  makeDMGFileName,
   makeGitHubReleaseTagName,
   makeR2ObjectURL,
   makeR2ObjectKey,
@@ -79,7 +80,7 @@ test("generates Sparkle appcast XML from structured notes", () => {
   const xml = generateAppcastXML({
     version: "1.2.0",
     buildNumber: "42",
-    downloadURL: "https://downloads.example.com/tcpviewer.dmg",
+    downloadURL: "https://downloads.example.com/tcpviewer_1.2.0_42.dmg",
     signature: {
       edSignature: "abc123",
       length: "12345"
@@ -109,25 +110,25 @@ test("builds R2 keys and public URLs", () => {
       version: "1.2.0",
       buildNumber: "42",
       timestamp: "20260510T120000Z",
-      fileName: "tcpviewer_1.2.0_qa.dmg"
+      fileName: "tcpviewer_1.2.0_42_qa.dmg"
     }),
-    "beta/tcpviewer_1.2.0_qa.dmg"
+    "beta/tcpviewer_1.2.0_42_qa.dmg"
   );
   assert.equal(
     makeR2ObjectKey({ releaseType: "production", version: "1.2.0", buildNumber: "42" }),
-    "production/1.2.0/42/tcpviewer.dmg"
+    "production/1.2.0/42/tcpviewer_1.2.0_42.dmg"
   );
   assert.equal(
-    publicR2URL("https://downloads.example.com/", "production/1.2.0/42/tcpviewer.dmg"),
-    "https://downloads.example.com/production/1.2.0/42/tcpviewer.dmg"
+    publicR2URL("https://downloads.example.com/", "production/1.2.0/42/tcpviewer_1.2.0_42.dmg"),
+    "https://downloads.example.com/production/1.2.0/42/tcpviewer_1.2.0_42.dmg"
   );
   assert.equal(
-    publicR2URL("https://downloads.example.com/release", "beta/tcpviewer.dmg"),
-    "https://downloads.example.com/release/beta/tcpviewer.dmg"
+    publicR2URL("https://downloads.example.com/release", "beta/tcpviewer_1.2.0_42_qa.dmg"),
+    "https://downloads.example.com/release/beta/tcpviewer_1.2.0_42_qa.dmg"
   );
   assert.equal(
-    makeR2StorageObjectKey("https://downloads.example.com/release", "beta/tcpviewer.dmg"),
-    "release/beta/tcpviewer.dmg"
+    makeR2StorageObjectKey("https://downloads.example.com/release", "beta/tcpviewer_1.2.0_42_qa.dmg"),
+    "release/beta/tcpviewer_1.2.0_42_qa.dmg"
   );
 });
 
@@ -152,20 +153,25 @@ test("signs direct R2 requests without exposing the secret key", () => {
   assert.ok(!headers.authorization.includes("example-private-value"));
 });
 
-test("builds beta DMG file names from a safe custom name", () => {
+test("builds versioned DMG file names", () => {
   assert.equal(
-    makeBetaDMGFileName({ version: "1.2.0", customName: "QA build" }),
-    "tcpviewer_1.2.0_QA_build.dmg"
+    makeDMGFileName({ version: "1.2.0", buildNumber: "42" }),
+    "tcpviewer_1.2.0_42.dmg"
+  );
+  assert.equal(
+    makeBetaDMGFileName({ version: "1.2.0", buildNumber: "42", customName: "QA build" }),
+    "tcpviewer_1.2.0_42_QA_build.dmg"
   );
   assert.equal(normalizeBetaDMGCustomName(" rc_1 "), "rc_1");
-  assert.throws(() => makeBetaDMGFileName({ version: "1.2.0", customName: "../secret" }), /custom name/i);
+  assert.throws(() => makeDMGFileName({ version: "1.2.0", buildNumber: "../42" }), /Build number/);
+  assert.throws(() => makeBetaDMGFileName({ version: "1.2.0", buildNumber: "42", customName: "../secret" }), /custom name/i);
   assert.throws(
     () => makeR2ObjectKey({
       releaseType: "beta",
       version: "1.2.0",
       buildNumber: "42",
       timestamp: "20260510T120000Z",
-      fileName: "../tcpviewer.dmg"
+      fileName: "../tcpviewer_1.2.0_42.dmg"
     }),
     /plain \.dmg file name/
   );

@@ -2,7 +2,6 @@ import { createHash, createHmac } from "node:crypto";
 
 export const minimumSystemVersion = "15.6";
 export const releaseDMGAppName = "tcpviewer";
-export const defaultDMGFileName = `${releaseDMGAppName}.dmg`;
 export const emptyPayloadSHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 const fileNameSegmentPattern = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
@@ -286,11 +285,18 @@ export function generateAppcastXML({
   ].join("\n");
 }
 
-export function makeBetaDMGFileName({ version, customName, appName = releaseDMGAppName }) {
+// Keep release artifacts self-describing across local output, R2, and GitHub uploads.
+export function makeDMGFileName({ version, buildNumber, appName = releaseDMGAppName }) {
   const fileAppName = normalizeFileNameSegment(appName, "App name");
   const fileVersion = normalizeFileNameSegment(version, "Version");
+  const fileBuildNumber = normalizeFileNameSegment(buildNumber, "Build number");
+  return `${fileAppName}_${fileVersion}_${fileBuildNumber}.dmg`;
+}
+
+export function makeBetaDMGFileName({ version, buildNumber, customName, appName = releaseDMGAppName }) {
+  const baseFileName = makeDMGFileName({ version, buildNumber, appName }).replace(/\.dmg$/, "");
   const fileCustomName = normalizeBetaDMGCustomName(customName);
-  return `${fileAppName}_${fileVersion}_${fileCustomName}.dmg`;
+  return `${baseFileName}_${fileCustomName}.dmg`;
 }
 
 export function normalizeBetaDMGCustomName(value) {
@@ -298,8 +304,8 @@ export function normalizeBetaDMGCustomName(value) {
   return normalizeFileNameSegment(normalized, "Beta DMG custom name");
 }
 
-export function makeR2ObjectKey({ releaseType, version, buildNumber, timestamp, fileName = defaultDMGFileName }) {
-  const safeFileName = validateDMGFileName(fileName);
+export function makeR2ObjectKey({ releaseType, version, buildNumber, timestamp, fileName }) {
+  const safeFileName = validateDMGFileName(fileName ?? makeDMGFileName({ version, buildNumber }));
 
   if (releaseType === "beta") {
     return `beta/${safeFileName}`;
