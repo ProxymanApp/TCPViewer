@@ -579,6 +579,19 @@ struct NetworkInspectorViewModelTests {
         #expect(!labels.contains("Stopped"))
     }
 
+    @Test func statusStripRendersProcessAndCapturedTrafficMetrics() {
+        let viewModel = StatusStripViewModel()
+        let metrics = TCPViewerStatusMetricsSnapshot(
+            memoryBytes: 323 * 1_024 * 1_024 + 1,
+            uploadBytesPerSecond: 1_025,
+            downloadBytesPerSecond: 0
+        )
+
+        viewModel.render(metrics: metrics)
+
+        #expect(viewModel.metricsText == "• 324 MB ↑ 2 KB/s ↓ 0 KB/s")
+    }
+
     @Test func packetRowsAreCachedAcrossNonPacketUpdates() async {
         let packet = makePacket(packetNumber: 1, source: .live, transportHint: .tcp)
         let liveSession = InspectorFakeLiveSession()

@@ -907,6 +907,11 @@ struct NetworkInspectorMemoryDebugSnapshot: Equatable {
 
 protocol NetworkInspectorViewModelDelegate: AnyObject {
     func networkInspectorViewModelDidChange(_ viewModel: NetworkInspectorViewModel)
+    func networkInspectorViewModelDidUpdateStatusMetrics(_ viewModel: NetworkInspectorViewModel)
+}
+
+extension NetworkInspectorViewModelDelegate {
+    func networkInspectorViewModelDidUpdateStatusMetrics(_ viewModel: NetworkInspectorViewModel) {}
 }
 
 final class NetworkInspectorViewModel {
@@ -917,6 +922,7 @@ final class NetworkInspectorViewModel {
             delegate?.networkInspectorViewModelDidChange(self)
         }
     }
+    private(set) var statusMetricsSnapshot: TCPViewerStatusMetricsSnapshot = .empty
 
     private let controller: TCPViewerWorkspaceController
     private let preferences: NetworkInspectorPreferences
@@ -928,6 +934,7 @@ final class NetworkInspectorViewModel {
     private let structuredFilterService: PacketStructuredFilterService
     private let structuredFilterStore: PacketStructuredFilterStore
     private let packetExportService: PacketExportService
+    private let statusMetricsService: TCPViewerStatusMetricsService
     private let packetTableFilterQueue = DispatchQueue(label: "com.proxyman.TCPViewer.packet-table-filter")
     private let packetTableAsyncRebuildThreshold: Int
     private let packetTableFilterBuildHook: (@Sendable () -> Void)?
@@ -972,6 +979,7 @@ final class NetworkInspectorViewModel {
         customFilterService: PacketCustomFilterService = PacketCustomFilterService(),
         structuredFilterService: PacketStructuredFilterService = PacketStructuredFilterService(),
         packetExportService: PacketExportService? = nil,
+        statusMetricsService: TCPViewerStatusMetricsService = TCPViewerStatusMetricsService(),
         packetTableAsyncRebuildThreshold: Int = 5_000,
         packetTableFilterBuildHook: (@Sendable () -> Void)? = nil
     ) {
@@ -988,6 +996,7 @@ final class NetworkInspectorViewModel {
         self.structuredFilterService = structuredFilterService
         self.structuredFilterStore = PacketStructuredFilterStore(defaults: userDefaults)
         self.packetExportService = packetExportService ?? PacketExportService(defaults: userDefaults)
+        self.statusMetricsService = statusMetricsService
         self.packetTableAsyncRebuildThreshold = max(1, packetTableAsyncRebuildThreshold)
         self.packetTableFilterBuildHook = packetTableFilterBuildHook
         self.inspectorPlacement = preferences.inspectorPlacement
@@ -1043,6 +1052,11 @@ final class NetworkInspectorViewModel {
         )
 
         controller.delegate = self
+        self.statusMetricsSnapshot = statusMetricsService.snapshot
+        self.statusMetricsService.snapshotHandler = { [weak self] metrics in
+            self?.applyStatusMetricsSnapshot(metrics)
+        }
+        self.statusMetricsService.start()
     }
 
     func performInitialLoadIfNeeded(completion: (() -> Void)? = nil) {
@@ -2173,9 +2187,24 @@ final class NetworkInspectorViewModel {
         rebuildGeneration += 1
     }
 
+    private func applyStatusMetricsSnapshot(_ metrics: TCPViewerStatusMetricsSnapshot) {
+        guard statusMetricsSnapshot != metrics else {
+            return
+        }
+
+        statusMetricsSnapshot = metrics
+        delegate?.networkInspectorViewModelDidUpdateStatusMetrics(self)
+    }
+
+    private func recordStatusMetrics(from ingestState: PacketIngestState) {
+        statusMetricsService.recordPacketIngestState(ingestState)
+        statusMetricsSnapshot = statusMetricsService.snapshot
+    }
+
     deinit {
         pendingRebuildWorkItem?.cancel()
         activePacketTableFilterJob?.cancellationToken.cancel()
+        statusMetricsService.stop()
     }
 
     #if DEBUG
@@ -2253,6 +2282,7 @@ final class NetworkInspectorViewModel {
 
 extension NetworkInspectorViewModel: TCPViewerWorkspaceControllerDelegate {
     func tcpViewerWorkspaceControllerDidChange(_ controller: TCPViewerWorkspaceController) {
+        recordStatusMetrics(from: controller.snapshot.packetIngestState)
         scheduleCoalescedRebuild()
     }
 }

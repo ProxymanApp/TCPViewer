@@ -367,7 +367,7 @@ final class TCPViewerRootViewController: NSViewController {
         sidebarViewController.render(snapshot: snapshot)
         workspaceViewController.render(snapshot: snapshot)
         inspectorViewController.render(snapshot: snapshot)
-        statusStripViewController.render(snapshot: snapshot)
+        statusStripViewController.render(snapshot: snapshot, metrics: viewModel.statusMetricsSnapshot)
         applyInspectorLayout(snapshot)
         delegate?.tcpviewerRootViewControllerDidChangeToolbarState(self)
 
@@ -1021,6 +1021,10 @@ extension TCPViewerRootViewController {
 extension TCPViewerRootViewController: NetworkInspectorViewModelDelegate {
     func networkInspectorViewModelDidChange(_ viewModel: NetworkInspectorViewModel) {
         render()
+    }
+
+    func networkInspectorViewModelDidUpdateStatusMetrics(_ viewModel: NetworkInspectorViewModel) {
+        statusStripViewController.render(metrics: viewModel.statusMetricsSnapshot)
     }
 }
 
