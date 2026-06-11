@@ -1057,6 +1057,7 @@ final class NetworkInspectorViewModel {
             self?.applyStatusMetricsSnapshot(metrics)
         }
         self.statusMetricsService.start()
+        syncStatusMetricsMonitoring(from: controller.snapshot)
     }
 
     func performInitialLoadIfNeeded(completion: (() -> Void)? = nil) {
@@ -2196,8 +2197,39 @@ final class NetworkInspectorViewModel {
         delegate?.networkInspectorViewModelDidUpdateStatusMetrics(self)
     }
 
-    private func recordStatusMetrics(from ingestState: PacketIngestState) {
-        statusMetricsService.recordPacketIngestState(ingestState)
+    private func syncStatusMetricsMonitoring(from base: TCPViewerWindowSnapshot) {
+        let target = monitoredStatusMetricsTarget(for: base)
+        let metrics = statusMetricsService.updateMonitoring(
+            interfaceID: target?.interfaceID,
+            localAddresses: target?.localAddresses ?? [],
+            baselineIngestState: base.packetIngestState
+        )
+        applyStatusMetricsSnapshot(metrics)
+    }
+
+    private func monitoredStatusMetricsTarget(for base: TCPViewerWindowSnapshot) -> (interfaceID: String, localAddresses: Set<String>)? {
+        guard base.sessionState.phase == .running,
+              base.packetIngestState.source == .live,
+              let interface = base.sessionState.selectedInterface else {
+            return nil
+        }
+
+        let localAddresses = interface.addresses.reduce(into: Set<String>()) { result, address in
+            switch address.family {
+            case .ipv4, .ipv6:
+                result.insert(address.value)
+            case .linkLayer, .unknown:
+                break
+            @unknown default:
+                break
+            }
+        }
+        return (interface.id, localAddresses)
+    }
+
+    private func recordStatusMetrics(from base: TCPViewerWindowSnapshot) {
+        syncStatusMetricsMonitoring(from: base)
+        statusMetricsService.recordPacketIngestState(base.packetIngestState)
         statusMetricsSnapshot = statusMetricsService.snapshot
     }
 
@@ -2282,7 +2314,7 @@ final class NetworkInspectorViewModel {
 
 extension NetworkInspectorViewModel: TCPViewerWorkspaceControllerDelegate {
     func tcpViewerWorkspaceControllerDidChange(_ controller: TCPViewerWorkspaceController) {
-        recordStatusMetrics(from: controller.snapshot.packetIngestState)
+        recordStatusMetrics(from: controller.snapshot)
         scheduleCoalescedRebuild()
     }
 }

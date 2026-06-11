@@ -86,6 +86,8 @@ final class TCPViewerStatusMetricsService {
         var pendingTraffic = TCPViewerCapturedTrafficSample.zero
         var pendingDirectionalPacketIDs: Set<PacketSummary.ID> = []
         var pendingDirectionalPacketIDsByStreamID: [UInt32: [PacketSummary.ID]] = [:]
+        var monitoredInterfaceID: String?
+        var monitoredLocalAddresses: Set<String> = []
         var latestSnapshot = TCPViewerStatusMetricsSnapshot.empty
         var lastSampleDate: Date?
         var observedPacketRevision: UInt64 = 0
@@ -127,6 +129,47 @@ final class TCPViewerStatusMetricsService {
         state.read(\.latestSnapshot)
     }
 
+    var isMonitoring: Bool {
+        state.read { $0.monitoredInterfaceID != nil }
+    }
+
+    var isSampling: Bool {
+        timer != nil
+    }
+
+    // Enable or disable network counters from the current recording state and interface.
+    @discardableResult
+    func updateMonitoring(
+        interfaceID: String?,
+        localAddresses: Set<String> = [],
+        baselineIngestState: PacketIngestState,
+        startsTimer: Bool = true
+    ) -> TCPViewerStatusMetricsSnapshot {
+        let trimmedInterfaceID = interfaceID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedInterfaceID = trimmedInterfaceID?.isEmpty == false ? trimmedInterfaceID : nil
+        let normalizedLocalAddresses = Set(localAddresses.compactMap(Self.normalizedAddress))
+
+        let nextSnapshot = state.write { state -> TCPViewerStatusMetricsSnapshot in
+            guard state.monitoredInterfaceID != normalizedInterfaceID ||
+                state.monitoredLocalAddresses != normalizedLocalAddresses else {
+                return state.latestSnapshot
+            }
+
+            state.monitoredInterfaceID = normalizedInterfaceID
+            state.monitoredLocalAddresses = normalizedInterfaceID == nil ? [] : normalizedLocalAddresses
+            resetTraffic(in: &state)
+            state.observedPacketRevision = baselineIngestState.packetRevision
+            state.observedPacketLineageRevision = baselineIngestState.packetLineageRevision
+            return state.latestSnapshot
+        }
+
+        if startsTimer {
+            start()
+        }
+
+        return nextSnapshot
+    }
+
     // Start the lightweight timer and publish an immediate baseline sample.
     func start() {
         guard timer == nil else {
@@ -157,6 +200,11 @@ final class TCPViewerStatusMetricsService {
     // Accumulate only new live append ranges from the ingest state.
     func recordPacketIngestState(_ ingestState: PacketIngestState) {
         state.write { state in
+            guard let monitoredInterfaceID = state.monitoredInterfaceID else {
+                return
+            }
+            let monitoredLocalAddresses = state.monitoredLocalAddresses
+
             if ingestState.packetLineageRevision != state.observedPacketLineageRevision {
                 resetTraffic(in: &state)
             }
@@ -178,7 +226,12 @@ final class TCPViewerStatusMetricsService {
                     return
                 }
 
-                let sample = Self.trafficSample(for: ingestState.packets[range], state: &state)
+                let sample = Self.trafficSample(
+                    for: ingestState.packets[range],
+                    monitoredInterfaceID: monitoredInterfaceID,
+                    monitoredLocalAddresses: monitoredLocalAddresses,
+                    state: &state
+                )
                 state.pendingTraffic = state.pendingTraffic.adding(sample)
             case .appendWithMetadataUpdates(let range, let updatedPacketIDs):
                 guard range.lowerBound >= 0,
@@ -186,10 +239,17 @@ final class TCPViewerStatusMetricsService {
                     return
                 }
 
-                let appendedSample = Self.trafficSample(for: ingestState.packets[range], state: &state)
+                let appendedSample = Self.trafficSample(
+                    for: ingestState.packets[range],
+                    monitoredInterfaceID: monitoredInterfaceID,
+                    monitoredLocalAddresses: monitoredLocalAddresses,
+                    state: &state
+                )
                 let updatedSample = Self.trafficSample(
                     forUpdatedPacketIDs: updatedPacketIDs,
                     ingestState: ingestState,
+                    monitoredInterfaceID: monitoredInterfaceID,
+                    monitoredLocalAddresses: monitoredLocalAddresses,
                     state: &state
                 )
                 let sample = appendedSample.adding(updatedSample)
@@ -200,6 +260,8 @@ final class TCPViewerStatusMetricsService {
                 let sample = Self.trafficSample(
                     forUpdatedPacketIDs: packetIDs,
                     ingestState: ingestState,
+                    monitoredInterfaceID: monitoredInterfaceID,
+                    monitoredLocalAddresses: monitoredLocalAddresses,
                     state: &state
                 )
                 state.pendingTraffic = state.pendingTraffic.adding(sample)
@@ -224,8 +286,9 @@ final class TCPViewerStatusMetricsService {
         let nextSnapshot = state.write { state -> TCPViewerStatusMetricsSnapshot in
             let previousDate = state.lastSampleDate
             let elapsed = previousDate.map { now.timeIntervalSince($0) } ?? 0
-            let uploadBytesPerSecond = Self.bytesPerSecond(state.pendingTraffic.uploadBytes, elapsed: elapsed)
-            let downloadBytesPerSecond = Self.bytesPerSecond(state.pendingTraffic.downloadBytes, elapsed: elapsed)
+            let isMonitoring = state.monitoredInterfaceID != nil
+            let uploadBytesPerSecond = isMonitoring ? Self.bytesPerSecond(state.pendingTraffic.uploadBytes, elapsed: elapsed) : 0
+            let downloadBytesPerSecond = isMonitoring ? Self.bytesPerSecond(state.pendingTraffic.downloadBytes, elapsed: elapsed) : 0
             let snapshot = TCPViewerStatusMetricsSnapshot(
                 memoryBytes: memoryBytes ?? state.latestSnapshot.memoryBytes,
                 uploadBytesPerSecond: uploadBytesPerSecond,
@@ -261,10 +324,19 @@ final class TCPViewerStatusMetricsService {
     }
 
     // Convert an appended packet slice into directional byte counts.
-    private static func trafficSample(for packets: ArraySlice<PacketSummary>, state: inout State) -> TCPViewerCapturedTrafficSample {
+    private static func trafficSample(
+        for packets: ArraySlice<PacketSummary>,
+        monitoredInterfaceID: String,
+        monitoredLocalAddresses: Set<String>,
+        state: inout State
+    ) -> TCPViewerCapturedTrafficSample {
         packets.reduce(into: TCPViewerCapturedTrafficSample.zero) { sample, packet in
+            guard packetMatchesMonitoredInterface(packet, interfaceID: monitoredInterfaceID) else {
+                return
+            }
+
             let byteCount = UInt64(max(packet.originalLength, 0))
-            switch packet.direction {
+            switch trafficDirection(for: packet, localAddresses: monitoredLocalAddresses) {
             case .outbound:
                 removePendingDirectionalPacket(packet, state: &state)
                 sample = sample.adding(TCPViewerCapturedTrafficSample(uploadBytes: byteCount, downloadBytes: 0))
@@ -286,16 +358,19 @@ final class TCPViewerStatusMetricsService {
     private static func trafficSample(
         forUpdatedPacketIDs packetIDs: [PacketSummary.ID],
         ingestState: PacketIngestState,
+        monitoredInterfaceID: String,
+        monitoredLocalAddresses: Set<String>,
         state: inout State
     ) -> TCPViewerCapturedTrafficSample {
         packetIDs.reduce(into: TCPViewerCapturedTrafficSample.zero) { sample, packetID in
             guard state.pendingDirectionalPacketIDs.contains(packetID),
-                  let packet = ingestState.packet(withID: packetID) else {
+                  let packet = ingestState.packet(withID: packetID),
+                  packetMatchesMonitoredInterface(packet, interfaceID: monitoredInterfaceID) else {
                 return
             }
 
             let byteCount = UInt64(max(packet.originalLength, 0))
-            switch packet.direction {
+            switch trafficDirection(for: packet, localAddresses: monitoredLocalAddresses) {
             case .outbound:
                 removePendingDirectionalPacket(packet, state: &state)
                 sample = sample.adding(TCPViewerCapturedTrafficSample(uploadBytes: byteCount, downloadBytes: 0))
@@ -318,6 +393,51 @@ final class TCPViewerStatusMetricsService {
         }
 
         return UInt64(ceil(Double(bytes) / elapsed))
+    }
+
+    private static func packetMatchesMonitoredInterface(_ packet: PacketSummary, interfaceID: String) -> Bool {
+        packet.interfaceID == interfaceID || packet.captureMetadata.interfaceName == interfaceID
+    }
+
+    private static func trafficDirection(for packet: PacketSummary, localAddresses: Set<String>) -> PacketDirection? {
+        endpointTrafficDirection(for: packet, localAddresses: localAddresses) ?? packet.direction
+    }
+
+    private static func endpointTrafficDirection(for packet: PacketSummary, localAddresses: Set<String>) -> PacketDirection? {
+        guard !localAddresses.isEmpty else {
+            return nil
+        }
+
+        let sourceIsLocal = normalizedAddress(packet.endpoints.source.address).map(localAddresses.contains) ?? false
+        let destinationIsLocal = normalizedAddress(packet.endpoints.destination.address).map(localAddresses.contains) ?? false
+
+        switch (sourceIsLocal, destinationIsLocal) {
+        case (true, false):
+            return .outbound
+        case (false, true):
+            return .inbound
+        case (true, true):
+            return .local
+        case (false, false):
+            return nil
+        }
+    }
+
+    private static func normalizedAddress(_ address: String?) -> String? {
+        guard var value = address?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else {
+            return nil
+        }
+
+        if value.first == "[", let closingIndex = value.firstIndex(of: "]") {
+            value = String(value[value.index(after: value.startIndex)..<closingIndex])
+        }
+
+        if let zoneIndex = value.firstIndex(of: "%") {
+            value = String(value[..<zoneIndex])
+        }
+
+        return value.lowercased()
     }
 
     private static func appendPendingDirectionalPacketIfNeeded(_ packet: PacketSummary, state: inout State) {
