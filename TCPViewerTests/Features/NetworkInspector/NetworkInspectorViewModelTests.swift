@@ -158,6 +158,60 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.packetRows.map(\.id).contains(stalePacket.id) == false)
     }
 
+    @Test func statusMetricsMonitoringRunsOnlyWhileLiveCaptureIsRunning() async {
+        let liveSession = InspectorFakeLiveSession()
+        let metricsService = TCPViewerStatusMetricsService(
+            timerInterval: 60,
+            memorySampler: { 323 * 1_024 * 1_024 },
+            callbackQueue: .main
+        )
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                liveSession: liveSession
+            )),
+            userDefaults: isolatedDefaults(),
+            statusMetricsService: metricsService
+        )
+
+        #expect(metricsService.isSampling)
+        #expect(!metricsService.isMonitoring)
+        await viewModel.performInitialLoadIfNeeded()
+        #expect(metricsService.isSampling)
+        #expect(!metricsService.isMonitoring)
+
+        await viewModel.toggleLiveCapture()
+        #expect(metricsService.isSampling)
+        #expect(!metricsService.isMonitoring)
+
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        await waitUntil {
+            viewModel.snapshot.base.sessionState.phase == .running &&
+                metricsService.isMonitoring
+        }
+
+        liveSession.send(.liveStateChanged(phase: .paused, message: "Capture paused."))
+        await waitUntil {
+            viewModel.snapshot.base.sessionState.phase == .paused &&
+                metricsService.isSampling &&
+                !metricsService.isMonitoring
+        }
+
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture resumed."))
+        await waitUntil {
+            viewModel.snapshot.base.sessionState.phase == .running &&
+                metricsService.isMonitoring
+        }
+
+        viewModel.stopLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .stopped, message: "Live capture stopped."))
+        await waitUntil {
+            viewModel.snapshot.base.sessionState.phase == .stopped &&
+                metricsService.isSampling &&
+                !metricsService.isMonitoring
+        }
+    }
+
     @Test func offlineOpenSaveAndSaveAsFlowThroughCoreDocument() async {
         let openURL = URL(fileURLWithPath: "/tmp/inspector-fixture.pcapng")
         let saveURL = URL(fileURLWithPath: "/tmp/inspector-export.pcap")
@@ -577,6 +631,19 @@ struct NetworkInspectorViewModelTests {
         let labels = allSubviews(ofType: NSTextField.self, in: controller.view).map(\.stringValue)
         #expect(labels.contains("0 packets"))
         #expect(!labels.contains("Stopped"))
+    }
+
+    @Test func statusStripRendersProcessAndCapturedTrafficMetrics() {
+        let viewModel = StatusStripViewModel()
+        let metrics = TCPViewerStatusMetricsSnapshot(
+            memoryBytes: 323 * 1_024 * 1_024 + 1,
+            uploadBytesPerSecond: 1_025,
+            downloadBytesPerSecond: 0
+        )
+
+        viewModel.render(metrics: metrics)
+
+        #expect(viewModel.metricsText == "• 324 MB ↑ 2 KB/s ↓ 0 KB/s")
     }
 
     @Test func packetRowsAreCachedAcrossNonPacketUpdates() async {
