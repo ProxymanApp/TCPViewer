@@ -84,6 +84,8 @@ final class TCPViewerStatusMetricsService {
 
     private struct State {
         var pendingTraffic = TCPViewerCapturedTrafficSample.zero
+        var pendingDirectionalPacketIDs: Set<PacketSummary.ID> = []
+        var pendingDirectionalPacketIDsByStreamID: [UInt32: [PacketSummary.ID]] = [:]
         var latestSnapshot = TCPViewerStatusMetricsSnapshot.empty
         var lastSampleDate: Date?
         var observedPacketRevision: UInt64 = 0
@@ -99,6 +101,9 @@ final class TCPViewerStatusMetricsService {
     private let callbackQueue: DispatchQueue
     private let state = Protected(State())
     private var timer: DispatchSourceTimer?
+
+    // Mirror the metadata backfill cap so delayed direction bookkeeping stays bounded per flow.
+    private static let maxPendingDirectionalPacketIDsPerStream = 128
 
     init(
         timerInterval: TimeInterval = 2,
@@ -167,17 +172,38 @@ final class TCPViewerStatusMetricsService {
             }
 
             switch ingestState.lastMutation {
-            case .append(let range), .appendWithMetadataUpdates(let range, _):
+            case .append(let range):
                 guard range.lowerBound >= 0,
                       range.upperBound <= ingestState.packets.count else {
                     return
                 }
 
-                let sample = Self.trafficSample(for: ingestState.packets[range])
+                let sample = Self.trafficSample(for: ingestState.packets[range], state: &state)
+                state.pendingTraffic = state.pendingTraffic.adding(sample)
+            case .appendWithMetadataUpdates(let range, let updatedPacketIDs):
+                guard range.lowerBound >= 0,
+                      range.upperBound <= ingestState.packets.count else {
+                    return
+                }
+
+                let appendedSample = Self.trafficSample(for: ingestState.packets[range], state: &state)
+                let updatedSample = Self.trafficSample(
+                    forUpdatedPacketIDs: updatedPacketIDs,
+                    ingestState: ingestState,
+                    state: &state
+                )
+                let sample = appendedSample.adding(updatedSample)
                 state.pendingTraffic = state.pendingTraffic.adding(sample)
             case .reset, .replace:
                 resetTraffic(in: &state)
-            case .none, .metadataUpdate:
+            case .metadataUpdate(let packetIDs):
+                let sample = Self.trafficSample(
+                    forUpdatedPacketIDs: packetIDs,
+                    ingestState: ingestState,
+                    state: &state
+                )
+                state.pendingTraffic = state.pendingTraffic.adding(sample)
+            case .none:
                 break
             }
         }
@@ -235,15 +261,50 @@ final class TCPViewerStatusMetricsService {
     }
 
     // Convert an appended packet slice into directional byte counts.
-    private static func trafficSample(for packets: ArraySlice<PacketSummary>) -> TCPViewerCapturedTrafficSample {
+    private static func trafficSample(for packets: ArraySlice<PacketSummary>, state: inout State) -> TCPViewerCapturedTrafficSample {
         packets.reduce(into: TCPViewerCapturedTrafficSample.zero) { sample, packet in
             let byteCount = UInt64(max(packet.originalLength, 0))
             switch packet.direction {
             case .outbound:
+                removePendingDirectionalPacket(packet, state: &state)
                 sample = sample.adding(TCPViewerCapturedTrafficSample(uploadBytes: byteCount, downloadBytes: 0))
             case .inbound:
+                removePendingDirectionalPacket(packet, state: &state)
                 sample = sample.adding(TCPViewerCapturedTrafficSample(uploadBytes: 0, downloadBytes: byteCount))
-            case .local, .unknown, nil:
+            case .local:
+                removePendingDirectionalPacket(packet, state: &state)
+            case .unknown, nil:
+                appendPendingDirectionalPacketIfNeeded(packet, state: &state)
+                break
+            @unknown default:
+                break
+            }
+        }
+    }
+
+    // Count packets whose direction arrived after append, without recounting already handled packets.
+    private static func trafficSample(
+        forUpdatedPacketIDs packetIDs: [PacketSummary.ID],
+        ingestState: PacketIngestState,
+        state: inout State
+    ) -> TCPViewerCapturedTrafficSample {
+        packetIDs.reduce(into: TCPViewerCapturedTrafficSample.zero) { sample, packetID in
+            guard state.pendingDirectionalPacketIDs.contains(packetID),
+                  let packet = ingestState.packet(withID: packetID) else {
+                return
+            }
+
+            let byteCount = UInt64(max(packet.originalLength, 0))
+            switch packet.direction {
+            case .outbound:
+                removePendingDirectionalPacket(packet, state: &state)
+                sample = sample.adding(TCPViewerCapturedTrafficSample(uploadBytes: byteCount, downloadBytes: 0))
+            case .inbound:
+                removePendingDirectionalPacket(packet, state: &state)
+                sample = sample.adding(TCPViewerCapturedTrafficSample(uploadBytes: 0, downloadBytes: byteCount))
+            case .local:
+                removePendingDirectionalPacket(packet, state: &state)
+            case .unknown, nil:
                 break
             @unknown default:
                 break
@@ -259,8 +320,44 @@ final class TCPViewerStatusMetricsService {
         return UInt64(ceil(Double(bytes) / elapsed))
     }
 
+    private static func appendPendingDirectionalPacketIfNeeded(_ packet: PacketSummary, state: inout State) {
+        guard packet.originalLength > 0,
+              let streamID = packet.streamID,
+              state.pendingDirectionalPacketIDs.insert(packet.id).inserted else {
+            return
+        }
+
+        var streamPacketIDs = state.pendingDirectionalPacketIDsByStreamID[streamID] ?? []
+        streamPacketIDs.append(packet.id)
+        if streamPacketIDs.count > maxPendingDirectionalPacketIDsPerStream {
+            let removedCount = streamPacketIDs.count - maxPendingDirectionalPacketIDsPerStream
+            for packetID in streamPacketIDs.prefix(removedCount) {
+                state.pendingDirectionalPacketIDs.remove(packetID)
+            }
+            streamPacketIDs.removeFirst(removedCount)
+        }
+        state.pendingDirectionalPacketIDsByStreamID[streamID] = streamPacketIDs
+    }
+
+    private static func removePendingDirectionalPacket(_ packet: PacketSummary, state: inout State) {
+        guard state.pendingDirectionalPacketIDs.remove(packet.id) != nil,
+              let streamID = packet.streamID,
+              var streamPacketIDs = state.pendingDirectionalPacketIDsByStreamID[streamID] else {
+            return
+        }
+
+        streamPacketIDs.removeAll { $0 == packet.id }
+        if streamPacketIDs.isEmpty {
+            state.pendingDirectionalPacketIDsByStreamID.removeValue(forKey: streamID)
+        } else {
+            state.pendingDirectionalPacketIDsByStreamID[streamID] = streamPacketIDs
+        }
+    }
+
     private func resetTraffic(in state: inout State) {
         state.pendingTraffic = .zero
+        state.pendingDirectionalPacketIDs.removeAll(keepingCapacity: false)
+        state.pendingDirectionalPacketIDsByStreamID.removeAll(keepingCapacity: false)
         state.latestSnapshot = TCPViewerStatusMetricsSnapshot(
             memoryBytes: state.latestSnapshot.memoryBytes,
             uploadBytesPerSecond: 0,

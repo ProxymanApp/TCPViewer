@@ -45,6 +45,86 @@ struct TCPViewerStatusMetricsServiceTests {
         #expect(snapshot.downloadBytesPerSecond == 0)
     }
 
+    @Test func metadataDirectionBackfillCountsPreviouslyUncountedPacket() {
+        let clock = ManualClock()
+        let service = makeService(clock: clock)
+        service.sampleNow(notifiesHandler: false)
+        var ingestState = liveIngestState([
+            makePacket(packetNumber: 1, direction: nil, originalLength: 200),
+        ])
+
+        service.recordPacketIngestState(ingestState)
+        ingestState.applyMetadataUpdates([
+            PacketMetadataUpdate(
+                packetIDs: [1],
+                sniDomainName: nil,
+                client: nil,
+                direction: .outbound
+            ),
+        ])
+        service.recordPacketIngestState(ingestState)
+        service.recordPacketIngestState(ingestState)
+        clock.advance(by: 2)
+        let snapshot = service.sampleNow(notifiesHandler: false)
+
+        #expect(snapshot.uploadBytesPerSecond == 100)
+        #expect(snapshot.downloadBytesPerSecond == 0)
+    }
+
+    @Test func appendWithMetadataUpdatesCountsAppendedPacketsAndDirectionBackfills() {
+        let clock = ManualClock()
+        let service = makeService(clock: clock)
+        service.sampleNow(notifiesHandler: false)
+        var ingestState = liveIngestState([
+            makePacket(packetNumber: 1, direction: nil, originalLength: 200),
+        ])
+
+        service.recordPacketIngestState(ingestState)
+        ingestState.appendAndApplyMetadataUpdates(
+            [makePacket(packetNumber: 2, direction: .inbound, originalLength: 80)],
+            metadataUpdates: [
+                PacketMetadataUpdate(
+                    packetIDs: [1],
+                    sniDomainName: nil,
+                    client: nil,
+                    direction: .outbound
+                ),
+            ],
+            source: .live
+        )
+        service.recordPacketIngestState(ingestState)
+        clock.advance(by: 2)
+        let snapshot = service.sampleNow(notifiesHandler: false)
+
+        #expect(snapshot.uploadBytesPerSecond == 100)
+        #expect(snapshot.downloadBytesPerSecond == 40)
+    }
+
+    @Test func metadataUpdateDoesNotDoubleCountPacketsAlreadyCountedOnAppend() {
+        let clock = ManualClock()
+        let service = makeService(clock: clock)
+        service.sampleNow(notifiesHandler: false)
+        var ingestState = liveIngestState([
+            makePacket(packetNumber: 1, direction: .outbound, originalLength: 200),
+        ])
+
+        service.recordPacketIngestState(ingestState)
+        ingestState.applyMetadataUpdates([
+            PacketMetadataUpdate(
+                packetIDs: [1],
+                sniDomainName: "example.com",
+                client: nil,
+                direction: .outbound
+            ),
+        ])
+        service.recordPacketIngestState(ingestState)
+        clock.advance(by: 2)
+        let snapshot = service.sampleNow(notifiesHandler: false)
+
+        #expect(snapshot.uploadBytesPerSecond == 100)
+        #expect(snapshot.downloadBytesPerSecond == 0)
+    }
+
     @Test func resetClearsPendingNetworkSpeed() {
         let clock = ManualClock()
         let service = makeService(clock: clock)
