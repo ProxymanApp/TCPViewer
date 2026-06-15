@@ -109,7 +109,10 @@ final class PacketQuickFilterViewController: NSTitlebarAccessoryViewController {
 
     func render(snapshot: NetworkInspectorSnapshot) {
         ensureButtons(for: snapshot.quickFilterItems, customItems: snapshot.customFilterItems)
-        customItemsByID = Dictionary(uniqueKeysWithValues: snapshot.customFilterItems.map { ($0.id, $0) })
+        customItemsByID = [:]
+        for item in snapshot.customFilterItems {
+            customItemsByID[item.id] = item
+        }
         for item in snapshot.quickFilterItems {
             guard let button = buttons[item.id] else {
                 continue

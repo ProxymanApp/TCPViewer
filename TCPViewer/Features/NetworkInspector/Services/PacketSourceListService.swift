@@ -316,7 +316,7 @@ enum PacketSourceListDeletionPolicy {
 }
 
 enum PacketSourceListClassifier {
-    static func clientIdentity(for packet: PacketSummary) -> PacketSourceClientIdentity? {
+    static func clientIdentity(for packet: PacketSummary, iconFilePathOverride: String? = nil) -> PacketSourceClientIdentity? {
         guard let client = packet.client else {
             return nil
         }
@@ -351,7 +351,7 @@ enum PacketSourceListClassifier {
         return PacketSourceClientIdentity(
             key: PacketSourceClientKey(rawValue: "\(keyPrefix):\(identityValue)"),
             displayName: displayName,
-            iconFilePath: PacketClientIconPathResolver.iconFilePath(for: client)
+            iconFilePath: iconFilePathOverride ?? PacketClientIconPathResolver.iconFilePath(for: client)
         )
     }
 
@@ -567,7 +567,10 @@ final class PacketSourceListService {
 
         self.pinnedItems = pinnedItems
         self.savedPacketCount = savedPacketCount
-        importedFilesByID = Dictionary(uniqueKeysWithValues: ingestState.importedFiles.map { ($0.id, $0) })
+        importedFilesByID = [:]
+        for file in ingestState.importedFiles where importedFilesByID[file.id] == nil {
+            importedFilesByID[file.id] = file
+        }
 
         if packetLineageRevision == ingestState.packetLineageRevision,
            sourcePacketCount <= ingestState.packets.count {
@@ -644,7 +647,10 @@ final class PacketSourceListService {
     private func makeAssignment(for packet: PacketSummary, in ingestState: PacketIngestState) -> PacketBucketAssignment {
         PacketBucketAssignment(
             fileID: ingestState.importedPacketReference(for: packet.id)?.fileID,
-            appIdentity: PacketSourceListClassifier.clientIdentity(for: packet),
+            appIdentity: PacketSourceListClassifier.clientIdentity(
+                for: packet,
+                iconFilePathOverride: ingestState.tcpviewSessionClientIconFilePath(for: packet.client)
+            ),
             domainIdentity: PacketSourceListClassifier.domainIdentity(for: packet),
             ipAddressIdentities: PacketSourceListClassifier.ipAddressIdentities(for: packet),
             pinIPAddresses: Self.pinIPAddresses(for: packet)

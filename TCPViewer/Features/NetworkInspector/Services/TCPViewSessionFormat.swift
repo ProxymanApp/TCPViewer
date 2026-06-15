@@ -104,6 +104,26 @@ struct TCPViewSessionAnnotations: Codable, Equatable {
     let annotations: [TCPViewSessionPacketAnnotation]
 }
 
+struct TCPViewSessionImportReport: Sendable, Equatable {
+    let importedFlowCount: Int
+    let failedFlowCount: Int
+
+    var hasFailedFlows: Bool {
+        failedFlowCount > 0
+    }
+
+    func addingFailedFlows(_ count: Int) -> TCPViewSessionImportReport {
+        guard count > 0 else {
+            return self
+        }
+
+        return TCPViewSessionImportReport(
+            importedFlowCount: max(0, importedFlowCount - count),
+            failedFlowCount: failedFlowCount + count
+        )
+    }
+}
+
 struct TCPViewSessionImportedFileRecord: Codable, Equatable {
     let fileID: String
     let urlPath: String
@@ -322,7 +342,12 @@ struct TCPViewSessionState: Codable, Equatable {
     }
 
     var importedPacketReferenceByID: [PacketSummary.ID: ImportedPacketReference] {
-        Dictionary(uniqueKeysWithValues: importedPacketReferences.map { $0.importedPacketReference() })
+        var references: [PacketSummary.ID: ImportedPacketReference] = [:]
+        for record in importedPacketReferences where references[record.packetID] == nil {
+            let reference = record.importedPacketReference()
+            references[reference.0] = reference.1
+        }
+        return references
     }
 }
 
@@ -421,7 +446,10 @@ enum TCPViewSessionClientStoreBuilder {
     }
 
     static func rehydratePackets(records: [TCPViewSessionPacketRecord], clients: TCPViewSessionClientStore) -> [PacketSummary] {
-        let clientsByID = Dictionary(uniqueKeysWithValues: clients.clients.map { ($0.id, $0.client) })
+        var clientsByID: [String: PacketClient] = [:]
+        for record in clients.clients where clientsByID[record.id] == nil {
+            clientsByID[record.id] = record.client
+        }
         return records
             .sorted { $0.captureOrdinal < $1.captureOrdinal }
             .map { record in
@@ -452,6 +480,17 @@ enum TCPViewSessionClientStoreBuilder {
             hash &*= 0x100000001b3
         }
         return String(format: "%016llx", hash)
+    }
+}
+
+extension PacketIngestState {
+    func tcpviewSessionClientIconFilePath(for client: PacketClient?) -> String? {
+        guard let client else {
+            return nil
+        }
+
+        let clientID = TCPViewSessionClientStoreBuilder.stableClientID(for: client)
+        return sessionClientIconFilePathByClientID[clientID]
     }
 }
 

@@ -232,7 +232,10 @@ private enum PacketTableContentBuilder {
             }
 
             let rowIndex = store.rows.count
-            store.rows.append(rowTimingState.row(for: packet))
+            store.rows.append(rowTimingState.row(
+                for: packet,
+                clientIconFilePath: clientIconFilePath(for: packet, in: input.ingestState)
+            ))
             store.rowIDs.append(packet.id)
             store.visiblePacketRowIndexByID[packet.id] = rowIndex
         }
@@ -243,6 +246,10 @@ private enum PacketTableContentBuilder {
             malformedPacketCount: malformedPacketCount,
             rowTimingState: rowTimingState
         )
+    }
+
+    private static func clientIconFilePath(for packet: PacketSummary, in ingestState: PacketIngestState) -> String? {
+        ingestState.tcpviewSessionClientIconFilePath(for: packet.client)
     }
 
     private static func packets(from input: PacketTableBuildInput) -> [PacketSummary] {
@@ -557,7 +564,10 @@ private struct PacketTableContentCache {
             }
 
             let rowIndex = store.rows.count
-            store.rows.append(rowTimingState.row(for: packet))
+            store.rows.append(rowTimingState.row(
+                for: packet,
+                clientIconFilePath: clientIconFilePath(for: packet, in: ingestState)
+            ))
             store.rowIDs.append(packet.id)
             store.visiblePacketRowIndexByID[packet.id] = rowIndex
         }
@@ -785,7 +795,10 @@ private struct PacketTableContentCache {
             guard isVisibleNow, let rowIndex = store.visiblePacketRowIndexByID[packetID] else {
                 continue
             }
-            store.rows[rowIndex] = rowTimingState.row(for: packet)
+            store.rows[rowIndex] = rowTimingState.row(
+                for: packet,
+                clientIconFilePath: clientIconFilePath(for: packet, in: ingestState)
+            )
             reloadIndexes.insert(rowIndex)
         }
 
@@ -855,6 +868,10 @@ private struct PacketTableContentCache {
         default:
             return ingestState.packets
         }
+    }
+
+    private func clientIconFilePath(for packet: PacketSummary, in ingestState: PacketIngestState) -> String? {
+        ingestState.tcpviewSessionClientIconFilePath(for: packet.client)
     }
 
     private func matches(
@@ -941,6 +958,7 @@ final class NetworkInspectorViewModel {
     private var packetTableFilterGeneration = 0
     private var isPacketTableFiltering = false
     private var selectsFirstVisiblePacketAfterFiltering = false
+    private var pendingSessionImportReport: TCPViewSessionImportReport?
 
     // Trailing-edge debounce for delegate-driven rebuilds. Live ingest fires the controller delegate
     // up to ~10 Hz; coalescing to ~12 Hz keeps the UI feeling live without burning CPU on redundant
@@ -1081,6 +1099,17 @@ final class NetworkInspectorViewModel {
 
     var networkHelperToolSnapshot: TCPViewerNetworkHelperToolSnapshot {
         controller.networkHelperToolSnapshot
+    }
+
+    func consumeSessionImportReportWithFailures() -> TCPViewSessionImportReport? {
+        guard let report = pendingSessionImportReport,
+              report.hasFailedFlows else {
+            pendingSessionImportReport = nil
+            return nil
+        }
+
+        pendingSessionImportReport = nil
+        return report
     }
 
     func dismissNetworkHelperOnboarding() {
@@ -1537,7 +1566,10 @@ final class NetworkInspectorViewModel {
         _ identifiers: [PacketSummary.ID],
         requiresSavedBacking: Bool
     ) throws -> [PacketSummary.ID] {
-        let activePacketsByID = Dictionary(uniqueKeysWithValues: controller.snapshot.packetIngestState.packets.map { ($0.id, $0) })
+        var activePacketsByID: [PacketSummary.ID: PacketSummary] = [:]
+        for packet in controller.snapshot.packetIngestState.packets where activePacketsByID[packet.id] == nil {
+            activePacketsByID[packet.id] = packet
+        }
         let missingActiveIDs = identifiers.filter { activePacketsByID[$0] == nil }
         guard missingActiveIDs.isEmpty else {
             throw TCPViewerCoreError(code: .offlineFileSaveFailed, message: "Some selected packets are no longer available in the active capture.")
@@ -1551,7 +1583,10 @@ final class NetworkInspectorViewModel {
             throw TCPViewerCoreError(code: .offlineFileSaveFailed, message: "Saved packets from another session cannot be exported because their raw bytes are not available.")
         }
 
-        let savedRecordsByPacketID = Dictionary(uniqueKeysWithValues: savedPacketService.records().map { ($0.packet.id, $0) })
+        var savedRecordsByPacketID: [PacketSummary.ID: SavedPacketRecord] = [:]
+        for record in savedPacketService.records() where savedRecordsByPacketID[record.packet.id] == nil {
+            savedRecordsByPacketID[record.packet.id] = record
+        }
         for identifier in identifiers {
             guard let record = savedRecordsByPacketID[identifier],
                   record.backingIdentity == activeBackingIdentity,
@@ -1676,7 +1711,9 @@ final class NetworkInspectorViewModel {
 
             if let sessionState = self.controller.currentDocumentSessionState {
                 self.applySessionDocumentState(sessionState)
+                self.pendingSessionImportReport = self.controller.currentDocumentSessionImportReport
             } else {
+                self.pendingSessionImportReport = nil
                 self.restorePersistentDocumentState()
                 self.workspaceMode = .packets
                 self.selectedSidebar = .liveCapture
@@ -1696,9 +1733,11 @@ final class NetworkInspectorViewModel {
 
             if let sessionState = self.controller.currentDocumentSessionState {
                 self.applySessionDocumentState(sessionState)
+                self.pendingSessionImportReport = self.controller.currentDocumentSessionImportReport
                 self.rebuildSnapshot()
                 completion?()
             } else {
+                self.pendingSessionImportReport = nil
                 self.restorePersistentDocumentState()
                 self.finishImportedDocuments(fileURLs: fileURLs, completion: completion)
             }

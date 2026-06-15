@@ -256,6 +256,234 @@ struct TCPViewSessionFormatTests {
         }
     }
 
+    @Test func importDeduplicatesClientStoreWithoutDroppingValidFlows() throws {
+        let directory = try Self.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let packet = Self.makePacket(id: 1, packetNumber: 1, client: Self.client)
+        let clientID = TCPViewSessionClientStoreBuilder.stableClientID(for: Self.client)
+        let sessionURL = try Self.writeSessionPackage(
+            in: directory,
+            packetRecords: [
+                TCPViewSessionPacketRecord(
+                    packetID: packet.id,
+                    captureOrdinal: 0,
+                    clientID: clientID,
+                    packet: packet.tcpviewSessionPacketWithoutClient()
+                ),
+            ],
+            clients: TCPViewSessionClientStore(clients: [
+                TCPViewSessionClientRecord(id: clientID, client: Self.client, iconID: nil),
+                TCPViewSessionClientRecord(id: clientID, client: Self.client, iconID: nil),
+            ]),
+            state: Self.makeSnapshot(packets: [packet]).state
+        )
+
+        let contents = try TCPViewSessionImportService().loadPackage(at: sessionURL)
+        defer { try? FileManager.default.removeItem(at: contents.extractionDirectoryURL) }
+
+        #expect(contents.clientStore.clients.count == 1)
+        #expect(contents.packets.map(\.id) == [packet.id])
+        #expect(contents.packets.first?.client == Self.client)
+        #expect(contents.importReport == TCPViewSessionImportReport(importedFlowCount: 1, failedFlowCount: 0))
+    }
+
+    @Test func importSkipsMalformedPacketRowsAndReportsFailures() throws {
+        let directory = try Self.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let firstPacket = Self.makePacket(id: 1, packetNumber: 1, client: nil)
+        let secondPacket = Self.makePacket(id: 2, packetNumber: 2, client: nil)
+        let thirdPacket = Self.makePacket(id: 3, packetNumber: 3, client: nil)
+        let sessionURL = try Self.writeSessionPackage(
+            in: directory,
+            packetRecords: [
+                TCPViewSessionPacketRecord(packetID: firstPacket.id, captureOrdinal: 0, clientID: nil, packet: firstPacket),
+                TCPViewSessionPacketRecord(packetID: secondPacket.id, captureOrdinal: 0, clientID: nil, packet: secondPacket),
+                TCPViewSessionPacketRecord(packetID: 99, captureOrdinal: 1, clientID: nil, packet: firstPacket),
+                TCPViewSessionPacketRecord(packetID: thirdPacket.id, captureOrdinal: 4, clientID: nil, packet: thirdPacket),
+            ],
+            clients: TCPViewSessionClientStore(clients: []),
+            state: Self.makeSnapshot(packets: [firstPacket, secondPacket, thirdPacket]).state,
+            additionalPacketSidecarLines: [Data("{bad-json}".utf8)]
+        )
+
+        let contents = try TCPViewSessionImportService().loadPackage(at: sessionURL)
+        defer { try? FileManager.default.removeItem(at: contents.extractionDirectoryURL) }
+
+        #expect(contents.packetRecords.map(\.packetID) == [firstPacket.id])
+        #expect(contents.packets.map(\.id) == [firstPacket.id])
+        #expect(contents.importReport == TCPViewSessionImportReport(importedFlowCount: 1, failedFlowCount: 4))
+    }
+
+    @Test func importSanitizesStateReferencesForSkippedFlows() throws {
+        let directory = try Self.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let importedPacket = Self.makePacket(id: 1, packetNumber: 1, client: nil)
+        let skippedPacket = Self.makePacket(id: 2, packetNumber: 2, client: nil)
+        let fileID = ImportedCaptureFileID(rawValue: "file-a")
+        let importedFile = ImportedCaptureFile(
+            id: fileID,
+            url: URL(fileURLWithPath: "/tmp/source-a.pcapng"),
+            displayName: "source-a.pcapng",
+            packetIDs: [importedPacket.id, skippedPacket.id]
+        )
+        let state = Self.makeState(
+            packets: [importedPacket, skippedPacket],
+            importedFiles: [importedFile],
+            importedPacketReferences: [
+                TCPViewSessionImportedPacketReferenceRecord(
+                    packetID: importedPacket.id,
+                    reference: ImportedPacketReference(fileID: fileID, originalPacketID: 1)
+                ),
+                TCPViewSessionImportedPacketReferenceRecord(
+                    packetID: skippedPacket.id,
+                    reference: ImportedPacketReference(fileID: fileID, originalPacketID: 2)
+                ),
+            ],
+            savedPackets: [
+                SavedPacketRecord(id: "saved-imported", savedAt: Self.fixedDate, backingIdentity: "backing-a", packet: importedPacket),
+                SavedPacketRecord(id: "saved-skipped", savedAt: Self.fixedDate, backingIdentity: "backing-a", packet: skippedPacket),
+            ],
+            selectedPacketID: skippedPacket.id
+        )
+        let sessionURL = try Self.writeSessionPackage(
+            in: directory,
+            packetRecords: [
+                TCPViewSessionPacketRecord(packetID: importedPacket.id, captureOrdinal: 0, clientID: nil, packet: importedPacket),
+                TCPViewSessionPacketRecord(packetID: skippedPacket.id, captureOrdinal: 0, clientID: nil, packet: skippedPacket),
+            ],
+            clients: TCPViewSessionClientStore(clients: []),
+            state: state
+        )
+
+        let contents = try TCPViewSessionImportService().loadPackage(at: sessionURL)
+        defer { try? FileManager.default.removeItem(at: contents.extractionDirectoryURL) }
+
+        #expect(contents.packets.map(\.id) == [importedPacket.id])
+        #expect(contents.state.importedFiles.first?.packetIDs == [importedPacket.id])
+        #expect(contents.state.importedPacketReferences.map(\.packetID) == [importedPacket.id])
+        #expect(contents.state.savedPackets.map(\.packet.id) == [importedPacket.id])
+        #expect(contents.state.selectedPacketID == nil)
+        #expect(contents.importReport == TCPViewSessionImportReport(importedFlowCount: 1, failedFlowCount: 1))
+    }
+
+    @Test func importedClientIconsFeedDocumentLocalTableAndSourceListModels() throws {
+        let directory = try Self.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let packet = Self.makePacket(id: 1, packetNumber: 1, client: Self.client)
+        let clientID = TCPViewSessionClientStoreBuilder.stableClientID(for: Self.client)
+        let iconID = TCPViewSessionClientStoreBuilder.stableIconID(for: "/Applications/Sample.app")
+        let sessionURL = try Self.writeSessionPackage(
+            in: directory,
+            packetRecords: [
+                TCPViewSessionPacketRecord(
+                    packetID: packet.id,
+                    captureOrdinal: 0,
+                    clientID: clientID,
+                    packet: packet.tcpviewSessionPacketWithoutClient()
+                ),
+            ],
+            clients: TCPViewSessionClientStore(clients: [
+                TCPViewSessionClientRecord(id: clientID, client: Self.client, iconID: iconID),
+            ]),
+            state: Self.makeSnapshot(packets: [packet]).state,
+            icons: [iconID: Data([0x89, 0x50, 0x4E, 0x47])]
+        )
+
+        let contents = try TCPViewSessionImportService().loadPackage(at: sessionURL)
+        defer { try? FileManager.default.removeItem(at: contents.extractionDirectoryURL) }
+        var ingestState = PacketIngestState.empty
+        ingestState.replaceSession(
+            with: contents.packets,
+            importedFiles: [],
+            importedPacketReferenceByID: [:],
+            clientIconFilePathByClientID: contents.clientIconFilePathByClientID,
+            source: .offline
+        )
+        let importedIconPath = contents.clientIconFilePathByClientID[clientID]
+        let tableRow = PacketTableRow(
+            packet: contents.packets[0],
+            previousVisiblePacketTimestamp: nil,
+            previousVisibleStreamPacketTimestamp: nil,
+            clientIconFilePath: ingestState.tcpviewSessionClientIconFilePath(for: contents.packets[0].client)
+        )
+        let sourceListSnapshot = PacketSourceListService().snapshot(for: ingestState)
+        let appItem = sourceListSnapshot.firstItem { item in
+            item.kind == .app && item.title == Self.client.displayName
+        }
+
+        #expect(importedIconPath != nil)
+        #expect(tableRow.clientIconFilePath == importedIconPath)
+        #expect(appItem?.iconFilePath == importedIconPath)
+    }
+
+    @Test func offlineSessionDocumentMapsPacketsByCaptureOrdinalAfterSkippedRows() throws {
+        let directory = try Self.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let sessionPacket = Self.makePacket(id: 1, packetNumber: 1, client: nil)
+        let innerFirstPacket = Self.makePacket(id: 100, packetNumber: 100, client: nil)
+        let innerSecondPacket = Self.makePacket(id: 101, packetNumber: 101, client: nil)
+        let record = TCPViewSessionPacketRecord(
+            packetID: sessionPacket.id,
+            captureOrdinal: 1,
+            clientID: nil,
+            packet: sessionPacket
+        )
+        let contents = TCPViewSessionPackageContents(
+            sourceURL: directory.appendingPathComponent("sample.tcpviewsession"),
+            extractionDirectoryURL: directory,
+            packageDirectoryURL: directory.appendingPathComponent(TCPViewSessionFormat.packageDirectoryName, isDirectory: true),
+            captureFileURL: directory.appendingPathComponent(TCPViewSessionFormat.capturePath),
+            manifest: TCPViewSessionManifest(
+                createdAt: Self.fixedDate,
+                applicationName: "TCPViewer",
+                applicationVersion: "1.0",
+                applicationBuild: "1",
+                packetCount: 2
+            ),
+            packetRecords: [record],
+            clientStore: TCPViewSessionClientStore(clients: []),
+            annotations: TCPViewSessionAnnotations(annotations: []),
+            state: Self.makeSnapshot(packets: [sessionPacket]).state,
+            packets: [sessionPacket],
+            clientIconFilePathByClientID: [:],
+            importReport: TCPViewSessionImportReport(importedFlowCount: 1, failedFlowCount: 1)
+        )
+        let innerDocument = SessionImportFakeOfflineDocument(
+            url: contents.captureFileURL,
+            packets: [innerFirstPacket, innerSecondPacket],
+            inspections: [
+                innerSecondPacket.id: Self.makeInspection(for: innerSecondPacket),
+            ]
+        )
+        let document = TCPViewSessionOfflineDocument(
+            contents: contents,
+            core: SessionImportFakeCore(document: innerDocument)
+        )
+        let exportURL = directory.appendingPathComponent("export.pcapng")
+
+        let openedPackets = try Self.waitForResult { completion in
+            document.open(completion: completion)
+        }
+        let inspection = try Self.waitForResult { completion in
+            document.inspectPacket(id: sessionPacket.id, completion: completion)
+        }
+        try Self.waitForVoid { completion in
+            document.exportPackets(withIDs: [sessionPacket.id], to: exportURL, format: .pcapng, completion: completion)
+        }
+
+        #expect(openedPackets.map(\.id) == [sessionPacket.id])
+        #expect(document.packetSummaries().map(\.id) == [sessionPacket.id])
+        #expect(inspection.packetID == sessionPacket.id)
+        #expect(inspection.rawBytes == Data(repeating: UInt8(innerSecondPacket.packetNumber), count: 64))
+        #expect(innerDocument.exportRequests.first?.0 == [innerSecondPacket.id])
+        #expect(document.importReport == TCPViewSessionImportReport(importedFlowCount: 1, failedFlowCount: 1))
+    }
+
     @Test func documentScopedServicesDoNotMutatePersistentStorage() throws {
         let directory = try Self.temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -382,6 +610,43 @@ struct TCPViewSessionFormatTests {
         )
     }
 
+    private static func makeState(
+        packets: [PacketSummary],
+        importedFiles: [ImportedCaptureFile],
+        importedPacketReferences: [TCPViewSessionImportedPacketReferenceRecord],
+        savedPackets: [SavedPacketRecord] = [],
+        selectedPacketID: PacketSummary.ID? = nil
+    ) -> TCPViewSessionState {
+        TCPViewSessionState(
+            source: CaptureSource.offline.rawValue,
+            backingIdentity: "backing-a",
+            importedFiles: importedFiles.map(TCPViewSessionImportedFileRecord.init),
+            importedPacketReferences: importedPacketReferences,
+            pins: [],
+            savedPackets: savedPackets,
+            customFilters: [],
+            quickFilterSelection: .all,
+            structuredFilterGroup: .default,
+            displayFilterText: "",
+            sourceListFilterText: "",
+            selectedPacketID: selectedPacketID,
+            selectedSourceListSelection: TCPViewSessionSourceListSelectionRecord(selection: .allPackets),
+            workspaceMode: NetworkInspectorWorkspaceMode.packets.rawValue,
+            inspectorTab: PacketInspectorTab.summary.rawValue,
+            inspectorPlacement: NetworkInspectorPlacement.trailing.rawValue,
+            isInspectorVisible: true,
+            isStructuredFilterVisible: false,
+            tableColumnLayout: nil,
+            importedFileProvenance: importedFiles.isEmpty ? nil : "Imported capture grouping is preserved for TCPViewer source-list reconstruction.",
+            sourceMetadata: TCPViewSessionSourceMetadata(
+                fileName: "source.pcapng",
+                filePath: "/tmp/source.pcapng",
+                format: "pcapng",
+                packetCount: packets.count
+            )
+        )
+    }
+
     private static func makePacket(
         id: UInt64,
         packetNumber: UInt64,
@@ -412,6 +677,49 @@ struct TCPViewSessionFormatTests {
             sniDomainName: "example.com",
             client: client
         )
+    }
+
+    private static func makeInspection(for packet: PacketSummary) -> PacketInspection {
+        PacketInspection(
+            packetID: packet.id,
+            packetNumber: packet.packetNumber,
+            rawBytes: Data(repeating: UInt8(packet.packetNumber), count: 64),
+            detailNodes: [
+                PacketDetailNode(
+                    id: "frame",
+                    name: "Frame",
+                    value: "Packet \(packet.packetNumber)",
+                    kind: .layer
+                ),
+            ],
+            decodeStatus: packet.decodeStatus
+        )
+    }
+
+    private static func waitForResult<Value>(
+        _ body: (@escaping TCPViewerCompletion<Value>) -> Void
+    ) throws -> Value {
+        let semaphore = DispatchSemaphore(value: 0)
+        var capturedResult: Result<Value, Error>?
+        body { result in
+            capturedResult = result
+            semaphore.signal()
+        }
+        semaphore.wait()
+        return try capturedResult!.get()
+    }
+
+    private static func waitForVoid(
+        _ body: (@escaping TCPViewerVoidCompletion) -> Void
+    ) throws {
+        let semaphore = DispatchSemaphore(value: 0)
+        var capturedResult: Result<Void, Error>?
+        body { result in
+            capturedResult = result
+            semaphore.signal()
+        }
+        semaphore.wait()
+        try capturedResult!.get()
     }
 
     private static func encode<Value: Encodable>(_ value: Value) throws -> Data {
@@ -445,6 +753,51 @@ struct TCPViewSessionFormatTests {
         ].allSatisfy { FileManager.default.fileExists(atPath: packageURL.appendingPathComponent($0).path) }
     }
 
+    private static func writeSessionPackage(
+        in directory: URL,
+        packetRecords: [TCPViewSessionPacketRecord],
+        clients: TCPViewSessionClientStore,
+        state: TCPViewSessionState,
+        annotations: TCPViewSessionAnnotations = TCPViewSessionAnnotations(annotations: []),
+        icons: [String: Data] = [:],
+        additionalPacketSidecarLines: [Data] = [],
+        manifestPacketCount: Int? = nil
+    ) throws -> URL {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let packageURL = directory.appendingPathComponent(TCPViewSessionFormat.packageDirectoryName, isDirectory: true)
+        let iconsURL = packageURL.appendingPathComponent(TCPViewSessionFormat.iconsDirectoryPath, isDirectory: true)
+        try FileManager.default.createDirectory(at: iconsURL, withIntermediateDirectories: true)
+        try Data("pcapng-placeholder".utf8).write(to: packageURL.appendingPathComponent(TCPViewSessionFormat.capturePath))
+
+        var packetSidecarData = Data()
+        for record in packetRecords {
+            packetSidecarData.append(try Self.encode(record))
+            packetSidecarData.append(0x0A)
+        }
+        for line in additionalPacketSidecarLines {
+            packetSidecarData.append(line)
+            packetSidecarData.append(0x0A)
+        }
+        try packetSidecarData.write(to: packageURL.appendingPathComponent(TCPViewSessionFormat.packetsPath))
+        try Self.encode(clients).write(to: packageURL.appendingPathComponent(TCPViewSessionFormat.clientsPath))
+        try Self.encode(annotations).write(to: packageURL.appendingPathComponent(TCPViewSessionFormat.annotationsPath))
+        try Self.encode(state).write(to: packageURL.appendingPathComponent(TCPViewSessionFormat.statePath))
+        try Self.encode(TCPViewSessionManifest(
+            createdAt: fixedDate,
+            applicationName: "TCPViewer",
+            applicationVersion: "1.0",
+            applicationBuild: "1",
+            packetCount: manifestPacketCount ?? packetRecords.count
+        )).write(to: packageURL.appendingPathComponent(TCPViewSessionFormat.manifestPath))
+        for (iconID, data) in icons {
+            try data.write(to: iconsURL.appendingPathComponent("\(iconID).png"))
+        }
+
+        let sessionURL = directory.appendingPathComponent("sample-\(UUID().uuidString).tcpviewsession")
+        try Self.zipKeepingParent(packageURL, to: sessionURL)
+        return sessionURL
+    }
+
     private static func zipKeepingParent(_ packageURL: URL, to destinationURL: URL) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
@@ -452,5 +805,125 @@ struct TCPViewSessionFormatTests {
         try process.run()
         process.waitUntilExit()
         #expect(process.terminationStatus == 0)
+    }
+}
+
+private final class SessionImportFakeCore: TCPViewerCoreProviding, @unchecked Sendable {
+    private let document: any OfflineCaptureDocumentProviding
+
+    init(document: any OfflineCaptureDocumentProviding) {
+        self.document = document
+    }
+
+    func listInterfaces(completion: @escaping TCPViewerCompletion<[CaptureInterfaceSummary]>) {
+        completion(.success([]))
+    }
+
+    func validateCaptureFilter(_ expression: String, completion: @escaping (CaptureFilterValidation) -> Void) {
+        completion(CaptureFilterValidation(disposition: .valid, normalizedExpression: expression))
+    }
+
+    func validateCaptureOptions(_ options: CaptureOptions, for interface: CaptureInterfaceSummary?) throws -> CaptureOptions {
+        options
+    }
+
+    func makeLiveCaptureSession(
+        interfaceID: String,
+        options: CaptureOptions,
+        completion: @escaping TCPViewerCompletion<any LiveCaptureSessionProviding>
+    ) {
+        completion(.failure(TCPViewerCoreError(code: .integrationMisconfigured, message: "Live capture is not used by this test.")))
+    }
+
+    func supportedOfflineFormats() -> [CaptureFileFormat] {
+        CaptureFileFormat.allCases
+    }
+
+    func openOfflineCaptureDocument(
+        at fileURL: URL,
+        completion: @escaping TCPViewerCompletion<any OfflineCaptureDocumentProviding>
+    ) {
+        completion(.success(document))
+    }
+
+    func loadPacketSummaries(from fileURL: URL, completion: @escaping TCPViewerCompletion<[PacketSummary]>) {
+        completion(.success(document.packetSummaries()))
+    }
+}
+
+private final class SessionImportFakeOfflineDocument: OfflineCaptureDocumentProviding, @unchecked Sendable {
+    var eventHandler: PacketIngestEventHandler?
+
+    private let url: URL
+    private let packets: [PacketSummary]
+    private let inspections: [PacketSummary.ID: PacketInspection]
+    private(set) var exportRequests: [([PacketSummary.ID], URL, CaptureFileFormat)] = []
+
+    init(
+        url: URL,
+        packets: [PacketSummary],
+        inspections: [PacketSummary.ID: PacketInspection]
+    ) {
+        self.url = url
+        self.packets = packets
+        self.inspections = inspections
+    }
+
+    func open(completion: @escaping TCPViewerCompletion<[PacketSummary]>) {
+        completion(.success(packets))
+    }
+
+    func reopen(completion: @escaping TCPViewerCompletion<[PacketSummary]>) {
+        completion(.success(packets))
+    }
+
+    func cancelLoading(completion: (() -> Void)?) {
+        completion?()
+    }
+
+    func inspectPacket(id: PacketSummary.ID, completion: @escaping TCPViewerCompletion<PacketInspection>) {
+        guard let inspection = inspections[id] else {
+            completion(.failure(TCPViewerCoreError(code: .offlineFileOpenFailed, message: "Missing test inspection.")))
+            return
+        }
+
+        completion(.success(inspection))
+    }
+
+    func save(completion: @escaping TCPViewerVoidCompletion) {
+        completion(.success(()))
+    }
+
+    func save(to url: URL, format: CaptureFileFormat, completion: @escaping TCPViewerVoidCompletion) {
+        completion(.success(()))
+    }
+
+    func exportPackets(
+        withIDs identifiers: [PacketSummary.ID],
+        to url: URL,
+        format: CaptureFileFormat,
+        progress: PacketExportProgressHandler?,
+        shouldCancel: PacketExportCancellationCheck?,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        exportRequests.append((identifiers, url, format))
+        progress?(PacketExportProgress(exportedPacketCount: identifiers.count, totalPacketCount: identifiers.count))
+        completion(.success(()))
+    }
+
+    func currentURL() -> URL {
+        url
+    }
+
+    func currentMetadata() -> CaptureDocumentMetadata {
+        CaptureDocumentMetadata(format: .pcapng, captureApplication: "TCPViewerTests")
+    }
+
+    func packetSummaries() -> [PacketSummary] {
+        packets
+    }
+
+    func loadProgress() -> PacketLoadProgress {
+        PacketLoadProgress(phase: .completed, loadedPacketCount: packets.count, message: "Loaded test packets.")
     }
 }

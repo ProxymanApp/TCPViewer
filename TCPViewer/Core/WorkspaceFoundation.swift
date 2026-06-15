@@ -47,6 +47,7 @@ struct PacketIngestState: Sendable, Equatable {
     var packetIndexByID: [PacketSummary.ID: Int]
     var importedFiles: [ImportedCaptureFile]
     var importedPacketReferenceByID: [PacketSummary.ID: ImportedPacketReference]
+    var sessionClientIconFilePathByClientID: [String: String]
     var packetRevision: UInt64
     var packetLineageRevision: UInt64
     var lastMutation: PacketIngestMutation
@@ -62,6 +63,7 @@ struct PacketIngestState: Sendable, Equatable {
         packetIndexByID: [:],
         importedFiles: [],
         importedPacketReferenceByID: [:],
+        sessionClientIconFilePathByClientID: [:],
         packetRevision: 0,
         packetLineageRevision: 0,
         lastMutation: .none,
@@ -100,6 +102,7 @@ struct PacketIngestState: Sendable, Equatable {
         packetIndexByID = [:]
         importedFiles = []
         importedPacketReferenceByID = [:]
+        sessionClientIconFilePathByClientID = [:]
         packetRevision &+= 1
         packetLineageRevision &+= 1
         lastMutation = .reset
@@ -127,6 +130,7 @@ struct PacketIngestState: Sendable, Equatable {
         rebuildPacketIndex()
         importedFiles = []
         importedPacketReferenceByID = [:]
+        sessionClientIconFilePathByClientID = [:]
         packetRevision &+= 1
         packetLineageRevision &+= 1
         lastMutation = .replace
@@ -141,12 +145,14 @@ struct PacketIngestState: Sendable, Equatable {
         with batch: [PacketSummary],
         importedFiles: [ImportedCaptureFile],
         importedPacketReferenceByID: [PacketSummary.ID: ImportedPacketReference],
+        clientIconFilePathByClientID: [String: String],
         source: CaptureSource,
         message: String? = nil
     ) {
         replace(with: batch, source: source, message: message)
         self.importedFiles = importedFiles
         self.importedPacketReferenceByID = importedPacketReferenceByID
+        self.sessionClientIconFilePathByClientID = clientIconFilePathByClientID
     }
 
     mutating func appendImportedFile(
@@ -915,6 +921,7 @@ final class TCPViewerWorkspaceController {
     private var document: (any OfflineCaptureDocumentProviding)?
     private var importedDocumentsByFileID: [ImportedCaptureFileID: any OfflineCaptureDocumentProviding] = [:]
     private(set) var currentDocumentSessionState: TCPViewSessionState?
+    private(set) var currentDocumentSessionImportReport: TCPViewSessionImportReport?
     private var documentEventGeneration = 0
     private var inspectionGeneration = 0
     private var filterValidationGeneration = 0
@@ -1390,6 +1397,7 @@ final class TCPViewerWorkspaceController {
 
                 self.releaseDocumentContext()
                 self.currentDocumentSessionState = nil
+                self.currentDocumentSessionImportReport = nil
                 self.importedDocumentsByFileID.removeAll(keepingCapacity: false)
                 self.resetInspectionState()
                 self.snapshot.selectedPacketID = nil
@@ -1473,6 +1481,7 @@ final class TCPViewerWorkspaceController {
 
                 self.releaseDocumentContext()
                 self.currentDocumentSessionState = nil
+                self.currentDocumentSessionImportReport = nil
                 self.importedDocumentsByFileID.removeAll(keepingCapacity: false)
                 self.resetInspectionState()
                 self.snapshot.selectedPacketID = nil
@@ -1512,6 +1521,7 @@ final class TCPViewerWorkspaceController {
                             let document = TCPViewSessionOfflineDocument(contents: contents, core: self.services.core)
                             self.document = document
                             self.currentDocumentSessionState = contents.state
+                            self.currentDocumentSessionImportReport = contents.importReport
                             self.observeDocumentEvents(document)
                             document.open { [weak self] result in
                                 DispatchQueue.main.async {
@@ -1522,6 +1532,8 @@ final class TCPViewerWorkspaceController {
 
                                     switch result {
                                     case .success:
+                                        self.currentDocumentSessionState = document.state
+                                        self.currentDocumentSessionImportReport = document.importReport
                                         self.refreshDocumentSnapshotFromHandle(
                                             document,
                                             phase: .loaded,
@@ -1529,6 +1541,7 @@ final class TCPViewerWorkspaceController {
                                         )
                                     case .failure(let error):
                                         self.currentDocumentSessionState = nil
+                                        self.currentDocumentSessionImportReport = nil
                                         self.handleDocumentLoadFailure(error, document: document)
                                     }
                                     completion?()
@@ -1536,6 +1549,7 @@ final class TCPViewerWorkspaceController {
                             }
                         case .failure(let error):
                             self.currentDocumentSessionState = nil
+                            self.currentDocumentSessionImportReport = nil
                             self.handleDocumentLoadFailure(error, document: nil)
                             completion?()
                         }
@@ -1592,6 +1606,7 @@ final class TCPViewerWorkspaceController {
                 if replacingCurrent || self.snapshot.packetIngestState.source != .offline {
                     self.releaseDocumentContext()
                     self.currentDocumentSessionState = nil
+                    self.currentDocumentSessionImportReport = nil
                     self.importedDocumentsByFileID.removeAll(keepingCapacity: false)
                     self.services.packetMetadataEnricher.reset()
                     self.snapshot.packetIngestState.reset(source: .offline, message: "Opening \(requestedURLs.first?.lastPathComponent ?? "capture")...")
@@ -2978,14 +2993,18 @@ final class TCPViewerWorkspaceController {
         if packets.isEmpty {
             snapshot.packetIngestState.reset(source: .offline, message: resolvedMessage)
         } else if let sessionDocument = document as? TCPViewSessionOfflineDocument {
+            currentDocumentSessionState = sessionDocument.state
+            currentDocumentSessionImportReport = sessionDocument.importReport
             snapshot.packetIngestState.replaceSession(
                 with: packets,
                 importedFiles: sessionDocument.importedFiles,
                 importedPacketReferenceByID: sessionDocument.importedPacketReferenceByID,
+                clientIconFilePathByClientID: sessionDocument.clientIconFilePathByClientID,
                 source: .offline,
                 message: resolvedMessage
             )
         } else {
+            currentDocumentSessionImportReport = nil
             snapshot.packetIngestState.replace(with: packets, source: .offline, message: resolvedMessage)
         }
 
@@ -3297,6 +3316,7 @@ final class TCPViewerWorkspaceController {
         let currentDocument = document
         let importedDocuments = importedDocumentsExcluding(currentDocument)
         document = nil
+        currentDocumentSessionImportReport = nil
         importedDocumentsByFileID.removeAll(keepingCapacity: false)
         backgroundCoordinator.cancelAll()
         currentDocument?.cancelLoading(completion: nil)
@@ -3314,6 +3334,7 @@ final class TCPViewerWorkspaceController {
         inspectionGeneration += 1
         document = nil
         currentDocumentSessionState = nil
+        currentDocumentSessionImportReport = nil
         importedDocumentsByFileID.removeAll(keepingCapacity: false)
         backgroundCoordinator.endOperation("document-events")
         currentDocument?.cancelLoading(completion: nil)

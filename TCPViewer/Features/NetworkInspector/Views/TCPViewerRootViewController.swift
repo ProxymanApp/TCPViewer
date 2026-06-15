@@ -148,6 +148,7 @@ final class TCPViewerRootViewController: NSViewController {
         guard !TCPViewerCaptureFileImportPolicy.isSessionFileURL(url) else {
             viewModel.openDocument(at: url) { [weak self] in
                 self?.sidebarViewController.revealSelectedImportedFileIfNeeded()
+                self?.presentSessionImportReportIfNeeded()
             }
             return
         }
@@ -158,6 +159,7 @@ final class TCPViewerRootViewController: NSViewController {
     func importDocuments(at urls: [URL], completion: (() -> Void)? = nil) {
         viewModel.importDocuments(at: urls) { [weak self] in
             self?.sidebarViewController.revealSelectedImportedFileIfNeeded()
+            self?.presentSessionImportReportIfNeeded()
             completion?()
         }
     }
@@ -1151,6 +1153,28 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
         } else {
             alert.runModal()
         }
+    }
+
+    private func presentSessionImportReportIfNeeded() {
+        guard let report = viewModel.consumeSessionImportReportWithFailures() else {
+            return
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "Session Imported with Skipped Flows"
+        let reason = report.failedFlowCount == 1 ? "it was malformed" : "they were malformed"
+        alert.informativeText = "Imported \(Self.flowCountText(report.importedFlowCount)). Skipped \(Self.flowCountText(report.failedFlowCount)) because \(reason)."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        if let window = view.window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
+    }
+
+    private static func flowCountText(_ count: Int) -> String {
+        "\(count) flow\(count == 1 ? "" : "s")"
     }
 }
 
