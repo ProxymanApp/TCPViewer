@@ -633,7 +633,7 @@ final class PacketInspectorViewController: NSViewController {
     private let outlineViewController = NSViewController()
     private let stackView = NSStackView()
     private let detailContainerView = NSView()
-    private let filterBarView = NSView()
+    private let filterBarView = TCPViewerDynamicBackgroundView(backgroundColor: .controlBackgroundColor)
     private let filterSearchField = NSSearchField()
     private let scrollView = NSScrollView()
     private let outlineView = PacketInspectorOutlineView()
@@ -661,9 +661,7 @@ final class PacketInspectorViewController: NSViewController {
     }
 
     override func loadView() {
-        view = NSView()
-        view.wantsLayer = true
-        view.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        view = TCPViewerDynamicBackgroundView(backgroundColor: .controlBackgroundColor)
         setupFilterBar()
         setupOutlineView()
         setupLayout()
@@ -817,8 +815,6 @@ final class PacketInspectorViewController: NSViewController {
 
     private func setupFilterBar() {
         filterBarView.translatesAutoresizingMaskIntoConstraints = false
-        filterBarView.wantsLayer = true
-        filterBarView.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
 
         filterSearchField.placeholderString = "Filter key or value"
         filterSearchField.sendsSearchStringImmediately = true
