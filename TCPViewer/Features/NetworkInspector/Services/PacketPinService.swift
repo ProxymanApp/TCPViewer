@@ -75,6 +75,7 @@ final class PacketPinService {
     private let userDataDirectory: TCPViewerUserDataDirectory
     private let usesUserDataDirectoryStorage: Bool
     private var cachedPins: [PacketPin]
+    private var isDocumentScoped = false
 
     init(
         storageURL: URL? = nil,
@@ -90,6 +91,16 @@ final class PacketPinService {
 
     func pins() -> [PacketPin] {
         cachedPins
+    }
+
+    func useDocumentPins(_ pins: [PacketPin]) {
+        isDocumentScoped = true
+        cachedPins = pins
+    }
+
+    func reloadPersistentPins() {
+        isDocumentScoped = false
+        cachedPins = (try? Self.loadPins(from: storageURL, fileManager: fileManager)) ?? []
     }
 
     func deletePin(id: PacketPinID) throws {
@@ -246,6 +257,10 @@ final class PacketPinService {
     }
 
     private func persist() throws {
+        guard !isDocumentScoped else {
+            return
+        }
+
         if usesUserDataDirectoryStorage {
             try userDataDirectory.createSettingsDirectoryIfNeeded()
         } else {

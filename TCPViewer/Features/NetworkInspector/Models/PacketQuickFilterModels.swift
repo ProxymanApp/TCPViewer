@@ -8,7 +8,7 @@
 import Foundation
 import PcapPlusPlusCore
 
-enum PacketQuickFilterID: String, CaseIterable, Identifiable, Sendable, Hashable {
+enum PacketQuickFilterID: String, CaseIterable, Codable, Identifiable, Sendable, Hashable {
     case all
     case tcp
     case udp
@@ -85,7 +85,7 @@ struct PacketCustomFilterItem: Identifiable, Equatable, Sendable {
     let isSelected: Bool
 }
 
-struct PacketQuickFilterSelection: Equatable, Sendable, Hashable {
+struct PacketQuickFilterSelection: Codable, Equatable, Sendable, Hashable {
     let selectedIDs: Set<PacketQuickFilterID>
 
     static let all = PacketQuickFilterSelection(selectedIDs: [.all])
@@ -150,6 +150,10 @@ final class PacketQuickFilterService {
     func reset() -> PacketQuickFilterSelection {
         selection = .all
         return selection
+    }
+
+    func apply(_ selection: PacketQuickFilterSelection) {
+        self.selection = selection
     }
 
     func matches(_ packet: PacketSummary, selection: PacketQuickFilterSelection? = nil) -> Bool {

@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		BA4D26BD2F9A2F770070BE17 /* PcapPlusPlusCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BA4D26B42F9A2F760070BE17 /* PcapPlusPlusCore.framework */; };
+		BA9F00012FBF00000070BE17 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = BA9F00032FBF00000070BE17 /* ZIPFoundation */; };
 		BA5E00012FA800000070BE17 /* Sentry in Frameworks */ = {isa = PBXBuildFile; productRef = BA5E00032FA800000070BE17 /* Sentry */; };
 		BAPM00012F9D00000070BE17 /* PcapPlusPlusCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BA4D26B42F9A2F760070BE17 /* PcapPlusPlusCore.framework */; };
 		BAPM00022F9D00000070BE17 /* HexFiend.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BA7A10022F9B00000070BE17 /* HexFiend.framework */; };
@@ -183,6 +184,7 @@
 				BAPM00022F9D00000070BE17 /* HexFiend.framework in Frameworks */,
 				D0C6D1832B761CD2FBBD11A7 /* Sparkle in Frameworks */,
 				BA5E00012FA800000070BE17 /* Sentry in Frameworks */,
+				BA9F00012FBF00000070BE17 /* ZIPFoundation in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -350,6 +352,7 @@
 			packageProductDependencies = (
 				24AFD2DE681080973988FA47 /* Sparkle */,
 				BA5E00032FA800000070BE17 /* Sentry */,
+				BA9F00032FBF00000070BE17 /* ZIPFoundation */,
 			);
 			productName = TCPViewer;
 			productReference = BAAE975D2F9B815F00C52A7C /* TCP Viewer.app */;
@@ -438,6 +441,7 @@
 			packageReferences = (
 				47F2E4C3668133A54F097208 /* XCRemoteSwiftPackageReference "Sparkle" */,
 				BA5E00022FA800000070BE17 /* XCRemoteSwiftPackageReference "sentry-cocoa" */,
+				BA9F00022FBF00000070BE17 /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = BA4D26862F9A2F490070BE17 /* Products */;
@@ -1295,6 +1299,14 @@
 				minimumVersion = 9.14.0;
 			};
 		};
+		BA9F00022FBF00000070BE17 /* XCRemoteSwiftPackageReference "ZIPFoundation" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/weichsel/ZIPFoundation.git";
+			requirement = {
+				kind = exactVersion;
+				version = 0.9.20;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -1307,6 +1319,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = BA5E00022FA800000070BE17 /* XCRemoteSwiftPackageReference "sentry-cocoa" */;
 			productName = Sentry;
+		};
+		BA9F00032FBF00000070BE17 /* ZIPFoundation */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = BA9F00022FBF00000070BE17 /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
+			productName = ZIPFoundation;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

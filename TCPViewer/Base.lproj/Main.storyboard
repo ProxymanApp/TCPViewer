@@ -88,6 +88,11 @@
                                                 <action selector="performClose:" target="Ady-hI-5gd" id="HmO-Ls-i7Q"/>
                                             </connections>
                                         </menuItem>
+                                        <menuItem title="Export to File…" id="TVS-Ex-port">
+                                            <connections>
+                                                <action selector="exportSessionToFile:" target="Ady-hI-5gd" id="TVS-Ex-act"/>
+                                            </connections>
+                                        </menuItem>
                                         <menuItem title="Export as pcap…" id="Uhd-yL-4gJ">
                                             <connections>
                                                 <action selector="exportSessionAsPcap:" target="Ady-hI-5gd" id="3aM-NQ-vF8"/>

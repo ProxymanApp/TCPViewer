@@ -145,6 +145,13 @@ final class TCPViewerRootViewController: NSViewController {
     }
 
     func openDocument(at url: URL) {
+        guard !TCPViewerCaptureFileImportPolicy.isSessionFileURL(url) else {
+            viewModel.openDocument(at: url) { [weak self] in
+                self?.sidebarViewController.revealSelectedImportedFileIfNeeded()
+            }
+            return
+        }
+
         importDocuments(at: [url])
     }
 
@@ -173,6 +180,10 @@ final class TCPViewerRootViewController: NSViewController {
 
     func exportSession(format: CaptureFileFormat) {
         viewModel.presentSessionExportPanel(format: format, attachedTo: view.window)
+    }
+
+    func exportTCPViewSession() {
+        viewModel.presentTCPViewSessionExportPanel(attachedTo: view.window)
     }
 
     func cancelDocumentLoading() {

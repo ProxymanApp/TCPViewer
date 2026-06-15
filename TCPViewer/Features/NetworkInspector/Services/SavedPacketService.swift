@@ -21,6 +21,7 @@ final class SavedPacketService {
     private let userDataDirectory: TCPViewerUserDataDirectory
     private let usesUserDataDirectoryStorage: Bool
     private var cachedRecords: [SavedPacketRecord]
+    private var isDocumentScoped = false
 
     init(
         storageURL: URL? = nil,
@@ -36,6 +37,16 @@ final class SavedPacketService {
 
     func records() -> [SavedPacketRecord] {
         cachedRecords
+    }
+
+    func useDocumentRecords(_ records: [SavedPacketRecord]) {
+        isDocumentScoped = true
+        cachedRecords = records
+    }
+
+    func reloadPersistentRecords() {
+        isDocumentScoped = false
+        cachedRecords = (try? Self.loadRecords(from: storageURL, fileManager: fileManager)) ?? []
     }
 
     func packets() -> [PacketSummary] {
@@ -77,6 +88,10 @@ final class SavedPacketService {
     }
 
     private func persist() throws {
+        guard !isDocumentScoped else {
+            return
+        }
+
         if usesUserDataDirectoryStorage {
             try userDataDirectory.createSettingsDirectoryIfNeeded()
         } else {

@@ -29,16 +29,25 @@ final class PacketExportCancellationToken: @unchecked Sendable {
 
 final class PacketExportProgressSheetController: NSViewController {
     private let fileName: String
+    private let progressTitle: String
+    private let unitLabel: String
     private let cancelHandler: () -> Void
-    private let titleLabel = NSTextField(labelWithString: "Exporting Packets")
+    private let titleLabel = NSTextField(labelWithString: "")
     private let detailLabel = NSTextField(labelWithString: "")
     private let percentLabel = NSTextField(labelWithString: "0%")
     private let progressIndicator = NSProgressIndicator()
     private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
     private var sheetWindow: NSWindow?
 
-    init(fileName: String, cancelHandler: @escaping () -> Void) {
+    init(
+        fileName: String,
+        progressTitle: String = "Exporting Packets",
+        unitLabel: String = "packets",
+        cancelHandler: @escaping () -> Void
+    ) {
         self.fileName = fileName
+        self.progressTitle = progressTitle
+        self.unitLabel = unitLabel
         self.cancelHandler = cancelHandler
         super.init(nibName: nil, bundle: nil)
     }
@@ -49,6 +58,7 @@ final class PacketExportProgressSheetController: NSViewController {
     }
 
     override func loadView() {
+        titleLabel.stringValue = progressTitle
         titleLabel.font = .systemFont(ofSize: NSFont.systemFontSize + 2, weight: .semibold)
         detailLabel.stringValue = "Preparing \(fileName)..."
         detailLabel.textColor = .secondaryLabelColor
@@ -102,7 +112,7 @@ final class PacketExportProgressSheetController: NSViewController {
         progressIndicator.doubleValue = progress.fractionCompleted
         let percent = Int((progress.fractionCompleted * 100).rounded())
         percentLabel.stringValue = "\(percent)%"
-        detailLabel.stringValue = "Exported \(progress.exportedPacketCount) of \(progress.totalPacketCount) packets to \(fileName)."
+        detailLabel.stringValue = "Exported \(progress.exportedPacketCount) of \(progress.totalPacketCount) \(unitLabel) to \(fileName)."
     }
 
     func dismiss() {
@@ -143,6 +153,10 @@ final class PacketExportService {
         "\(sanitizedScopeName(scopeName))-\(Self.timestampFormatter.string(from: now())).\(format.rawValue)"
     }
 
+    func defaultSessionFileName(scopeName: String) -> String {
+        "\(sanitizedScopeName(scopeName))-\(Self.timestampFormatter.string(from: now())).\(TCPViewSessionFormat.fileExtension)"
+    }
+
     func lastDirectoryURL() -> URL? {
         guard let path = defaults.string(forKey: Key.lastDirectoryPath),
               !path.isEmpty else {
@@ -171,8 +185,34 @@ final class PacketExportService {
         return PacketExportDestination(url: url, format: format)
     }
 
-    func showProgressSheet(attachedTo window: NSWindow?, fileName: String, cancelHandler: @escaping () -> Void) -> PacketExportProgressSheetController {
-        let controller = PacketExportProgressSheetController(fileName: fileName, cancelHandler: cancelHandler)
+    func chooseTCPViewSessionDestination(scopeName: String) -> URL? {
+        let panel = NSSavePanel()
+        panel.title = "Export TCPViewer Session"
+        panel.nameFieldStringValue = defaultSessionFileName(scopeName: scopeName)
+        panel.directoryURL = lastDirectoryURL()
+        panel.allowedContentTypes = [UTType(filenameExtension: TCPViewSessionFormat.fileExtension)].compactMap { $0 }
+        panel.canCreateDirectories = true
+
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return nil
+        }
+
+        return url
+    }
+
+    func showProgressSheet(
+        attachedTo window: NSWindow?,
+        fileName: String,
+        progressTitle: String = "Exporting Packets",
+        unitLabel: String = "packets",
+        cancelHandler: @escaping () -> Void
+    ) -> PacketExportProgressSheetController {
+        let controller = PacketExportProgressSheetController(
+            fileName: fileName,
+            progressTitle: progressTitle,
+            unitLabel: unitLabel,
+            cancelHandler: cancelHandler
+        )
         controller.show(attachedTo: window)
         return controller
     }

@@ -800,6 +800,120 @@ struct WindowControllerTests {
         await tearDown(controller)
     }
 
+    @Test func exportTCPViewSessionPausesAndResumesRunningLiveCapture() async {
+        let exportURL = URL(fileURLWithPath: "/tmp/live-session.tcpviewsession")
+        let packets = [
+            makePacket(packetNumber: 1, source: .live, transportHint: .tcp),
+            makePacket(packetNumber: 2, source: .live, transportHint: .udp),
+        ]
+        let liveSession = FakeLiveSession()
+        let exportWriter = FakeTCPViewSessionExportWriter()
+        let controller = TCPViewerWorkspaceController(
+            services: TCPViewerServiceRegistry(core: FakeTCPViewerCore(
+                interfaceInventories: [[makeInterface(id: "en0", displayName: "Wi-Fi")]],
+                liveSession: liveSession
+            ))
+        )
+
+        await controller.refreshInterfaces()
+        await controller.startLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        liveSession.send(.packetBatch(packets, disposition: .append))
+        await waitUntil {
+            controller.snapshot.sessionState.phase == .running &&
+                controller.snapshot.packetIngestState.totalPacketCount == packets.count
+        }
+
+        let result = await withCheckedContinuation { continuation in
+            controller.exportTCPViewSession(
+                snapshot: makeSessionSnapshot(packets: packets, source: .live),
+                to: exportURL,
+                exportService: exportWriter
+            ) { result in
+                continuation.resume(returning: result)
+            }
+        }
+
+        guard case .success = result else {
+            Issue.record("Expected TCPViewer session export to succeed.")
+            return
+        }
+        #expect(liveSession.pauseCount == 1)
+        #expect(liveSession.resumeCount == 1)
+        #expect(liveSession.exportRequests.first?.0 == packets.map(\.id))
+        #expect(liveSession.exportRequests.first?.2 == .pcapng)
+        #expect(exportWriter.requests.first?.snapshot.packets.map(\.id) == packets.map(\.id))
+        #expect(exportWriter.requests.first?.destinationURL == exportURL)
+
+        await tearDown(controller)
+    }
+
+    @Test func exportTCPViewSessionFlattensMultipleImportedFilesIntoOneCapture() async {
+        let firstURL = TCPViewerCaptureFileImportPolicy.standardizedFileURL(URL(fileURLWithPath: "/tmp/session-import-one.pcapng"))
+        let secondURL = TCPViewerCaptureFileImportPolicy.standardizedFileURL(URL(fileURLWithPath: "/tmp/session-import-two.pcapng"))
+        let destinationURL = URL(fileURLWithPath: "/tmp/imported-session.tcpviewsession")
+        let firstPackets = [
+            makePacket(packetNumber: 1, source: .offline, transportHint: .tcp),
+            makePacket(packetNumber: 2, source: .offline, transportHint: .udp),
+        ]
+        let secondPackets = [
+            makePacket(packetNumber: 1, source: .offline, transportHint: .dns),
+            makePacket(packetNumber: 2, source: .offline, transportHint: .tls),
+        ]
+        let firstDocument = FakeOfflineDocument(
+            url: firstURL,
+            metadata: CaptureDocumentMetadata(format: .pcapng),
+            openPlan: .completed(firstPackets)
+        )
+        let secondDocument = FakeOfflineDocument(
+            url: secondURL,
+            metadata: CaptureDocumentMetadata(format: .pcapng),
+            openPlan: .completed(secondPackets)
+        )
+        let exportWriter = FakeTCPViewSessionExportWriter()
+        let controller = TCPViewerWorkspaceController(
+            services: TCPViewerServiceRegistry(core: FakeTCPViewerCore(
+                interfaceInventories: [[makeInterface(id: "en0", displayName: "Wi-Fi")]],
+                documentFactory: { url in
+                    url == secondURL ? secondDocument : firstDocument
+                }
+            ))
+        )
+
+        await controller.importDocuments(at: [firstURL, secondURL])
+        await waitUntil {
+            controller.snapshot.documentState.phase == .loaded &&
+                controller.snapshot.packetIngestState.totalPacketCount == 4
+        }
+        let sessionPackets = controller.snapshot.packetIngestState.packets
+
+        let result = await withCheckedContinuation { continuation in
+            controller.exportTCPViewSession(
+                snapshot: makeSessionSnapshot(
+                    packets: sessionPackets,
+                    source: .offline,
+                    importedFiles: controller.snapshot.packetIngestState.importedFiles,
+                    importedPacketReferenceByID: controller.snapshot.packetIngestState.importedPacketReferenceByID
+                ),
+                to: destinationURL,
+                exportService: exportWriter
+            ) { result in
+                continuation.resume(returning: result)
+            }
+        }
+
+        guard case .success = result else {
+            Issue.record("Expected imported TCPViewer session export to succeed.")
+            return
+        }
+        #expect(firstDocument.exportRequests.map(\.0) == [[1, 2]])
+        #expect(secondDocument.exportRequests.map(\.0) == [[1, 2]])
+        #expect(exportWriter.requests.count == 1)
+        #expect(exportWriter.requests.first?.snapshot.packets.map(\.id) == sessionPackets.map(\.id))
+
+        await tearDown(controller)
+    }
+
     @Test func openingNewDocumentIgnoresEventsFromPreviousDocumentStream() async {
         let firstURL = URL(fileURLWithPath: "/tmp/first-stream.pcapng")
         let secondURL = URL(fileURLWithPath: "/tmp/second-stream.pcapng")
@@ -1343,6 +1457,42 @@ struct WindowControllerTests {
         )
     }
 
+    private func makeSessionSnapshot(
+        packets: [PacketSummary],
+        source: CaptureSource,
+        importedFiles: [ImportedCaptureFile] = [],
+        importedPacketReferenceByID: [PacketSummary.ID: ImportedPacketReference] = [:]
+    ) -> TCPViewSessionExportSnapshot {
+        TCPViewSessionExportSnapshot(
+            packets: packets,
+            source: source,
+            backingIdentity: "test-backing",
+            importedFiles: importedFiles,
+            importedPacketReferenceByID: importedPacketReferenceByID,
+            pins: [],
+            savedPackets: [],
+            customFilters: [],
+            quickFilterSelection: .all,
+            structuredFilterGroup: .default,
+            displayFilterText: "",
+            sourceListFilterText: "",
+            selectedPacketID: packets.first?.id,
+            selectedSourceListSelection: .allPackets,
+            workspaceMode: .packets,
+            inspectorTab: .detail,
+            inspectorPlacement: .trailing,
+            isInspectorVisible: true,
+            isStructuredFilterVisible: false,
+            tableColumnLayout: nil,
+            sourceMetadata: TCPViewSessionSourceMetadata(
+                fileName: "test.pcapng",
+                filePath: "/tmp/test.pcapng",
+                format: "pcapng",
+                packetCount: packets.count
+            )
+        )
+    }
+
     private func settleEventLoop() async {
         for _ in 0..<5 {
             await Task.yield()
@@ -1660,6 +1810,47 @@ private final class FakeLiveSession: LiveCaptureSessionProviding, @unchecked Sen
     }
 }
 
+private final class FakeTCPViewSessionExportWriter: TCPViewSessionExportWriting, @unchecked Sendable {
+    struct Request {
+        let snapshot: TCPViewSessionExportSnapshot
+        let captureFileURL: URL
+        let destinationURL: URL
+    }
+
+    private let lock = NSLock()
+    private var storedRequests: [Request] = []
+    var error: Error?
+
+    var requests: [Request] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedRequests
+    }
+
+    func writePackage(
+        snapshot: TCPViewSessionExportSnapshot,
+        captureFileURL: URL,
+        to destinationURL: URL,
+        progress: PacketExportProgressHandler?,
+        shouldCancel: PacketExportCancellationCheck?
+    ) throws {
+        if shouldCancel?() == true {
+            throw TCPViewerCoreError(code: .operationCancelled, message: "TCPViewer session export was cancelled.")
+        }
+        if let error {
+            throw error
+        }
+
+        progress?(PacketExportProgress(
+            exportedPacketCount: snapshot.packets.count + 6,
+            totalPacketCount: snapshot.packets.count + 6
+        ))
+        lock.lock()
+        storedRequests.append(Request(snapshot: snapshot, captureFileURL: captureFileURL, destinationURL: destinationURL))
+        lock.unlock()
+    }
+}
+
 private final class FakeOfflineDocument: OfflineCaptureDocumentProviding, @unchecked Sendable {
     struct LoadPlan {
         var batches: [[PacketSummary]]
@@ -1801,6 +1992,9 @@ private final class FakeOfflineDocument: OfflineCaptureDocumentProviding, @unche
 
         progress?(PacketExportProgress(exportedPacketCount: identifiers.count, totalPacketCount: identifiers.count))
         exportRequests.append((identifiers, url, format))
+        if url.path.contains("SessionCaptureParts") {
+            try? Data("pcapng-part-\(identifiers.map(String.init).joined(separator: ","))".utf8).write(to: url)
+        }
         completion(.success(()))
     }
 

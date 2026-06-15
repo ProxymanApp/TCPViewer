@@ -41,9 +41,13 @@ class Document: NSDocument {
         tcpviewerWindowController?.rootViewController.exportSession(format: .pcapng)
     }
 
+    @IBAction func exportSessionToFile(_ sender: Any?) {
+        tcpviewerWindowController?.rootViewController.exportTCPViewSession()
+    }
+
     override func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
-        case #selector(exportSessionAsPcap(_:)), #selector(exportSessionAsPcapng(_:)):
+        case #selector(exportSessionAsPcap(_:)), #selector(exportSessionAsPcapng(_:)), #selector(exportSessionToFile(_:)):
             return canExportSession
         default:
             return super.validateMenuItem(menuItem)
