@@ -19,6 +19,7 @@ final class StatusStripViewModel {
     private(set) var canCancelLoad = false
     private(set) var canClear = false
     private(set) var isStructuredFilterVisible = false
+    private(set) var metricsText = TCPViewerStatusMetricsFormatter.displayText(for: .empty)
 
     // Build the compact bottom strip controls from the current packet/capture snapshot.
     func render(snapshot: NetworkInspectorSnapshot) {
@@ -27,6 +28,11 @@ final class StatusStripViewModel {
         canCancelLoad = snapshot.base.loadState.canCancel
         canClear = snapshot.visiblePacketCount > 0 && !canCancelLoad
         isStructuredFilterVisible = snapshot.isStructuredFilterVisible
+    }
+
+    // Format the lightweight process and captured-traffic metrics for the strip.
+    func render(metrics: TCPViewerStatusMetricsSnapshot) {
+        metricsText = TCPViewerStatusMetricsFormatter.displayText(for: metrics)
     }
 }
 
@@ -38,6 +44,11 @@ final class StatusStripViewController: NSViewController {
     private let clearButton = NSButton(title: "Clear", target: nil, action: nil)
     private let filterButton = NSButton(title: "Filter", target: nil, action: nil)
     private let totalLabel = TCPViewerUI.label(
+        "",
+        font: .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
+        color: .secondaryLabelColor
+    )
+    private let metricsLabel = TCPViewerUI.label(
         "",
         font: .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
         color: .secondaryLabelColor
@@ -60,13 +71,20 @@ final class StatusStripViewController: NSViewController {
         filterButton.action = #selector(toggleStructuredFilter(_:))
     }
 
-    func render(snapshot: NetworkInspectorSnapshot) {
+    func render(snapshot: NetworkInspectorSnapshot, metrics: TCPViewerStatusMetricsSnapshot = .empty) {
         viewModel.render(snapshot: snapshot)
+        viewModel.render(metrics: metrics)
         cancelButton.isHidden = !viewModel.canCancelLoad
         clearButton.isHidden = viewModel.canCancelLoad
         clearButton.isEnabled = viewModel.canClear
         filterButton.state = viewModel.isStructuredFilterVisible ? .on : .off
         totalLabel.stringValue = viewModel.totalText
+        metricsLabel.stringValue = viewModel.metricsText
+    }
+
+    func render(metrics: TCPViewerStatusMetricsSnapshot) {
+        viewModel.render(metrics: metrics)
+        metricsLabel.stringValue = viewModel.metricsText
     }
 
     private func setupLayout() {
@@ -88,6 +106,11 @@ final class StatusStripViewController: NSViewController {
         totalLabel.alignment = .center
         totalLabel.translatesAutoresizingMaskIntoConstraints = false
 
+        metricsLabel.alignment = .right
+        metricsLabel.toolTip = "App memory and captured upload/download speed"
+        metricsLabel.translatesAutoresizingMaskIntoConstraints = false
+        metricsLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+
         let controlStack = NSStackView(views: [
             cancelButton,
             clearButton,
@@ -102,6 +125,10 @@ final class StatusStripViewController: NSViewController {
         view.addSubview(separator)
         view.addSubview(controlStack)
         view.addSubview(totalLabel)
+        view.addSubview(metricsLabel)
+
+        let totalCenterConstraint = totalLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor)
+        totalCenterConstraint.priority = .defaultHigh
 
         NSLayoutConstraint.activate([
             view.heightAnchor.constraint(equalToConstant: 33),
@@ -113,11 +140,15 @@ final class StatusStripViewController: NSViewController {
             controlStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 14),
             controlStack.centerYAnchor.constraint(equalTo: view.centerYAnchor),
 
-            totalLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             totalLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
             totalLabel.leadingAnchor.constraint(greaterThanOrEqualTo: controlStack.trailingAnchor, constant: 12),
-            totalLabel.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -14),
+            totalLabel.trailingAnchor.constraint(lessThanOrEqualTo: metricsLabel.leadingAnchor, constant: -12),
+
+            metricsLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -14),
+            metricsLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            metricsLabel.leadingAnchor.constraint(greaterThanOrEqualTo: controlStack.trailingAnchor, constant: 12),
         ])
+        totalCenterConstraint.isActive = true
     }
 
     @objc private func cancelLoad(_ sender: Any?) {
