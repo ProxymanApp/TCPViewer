@@ -58,6 +58,12 @@ private enum GeneratorError: Error, CustomStringConvertible {
     }
 }
 
+private struct RGBColor {
+    let red: Double
+    let green: Double
+    let blue: Double
+}
+
 private struct RGBAImage {
     let width: Int
     let height: Int
@@ -196,9 +202,14 @@ private func makeDarkIconImage(from image: RGBAImage) -> RGBAImage {
         enqueueIfBackground(x, y + 1)
     }
 
-    for index in 0..<pixelCount where visited[index] {
+    var backgroundMask = visited
+    expandBackgroundMask(&backgroundMask, in: image, iterations: 1)
+
+    for index in 0..<pixelCount where backgroundMask[index] {
         recolorBackgroundPixel(at: index, in: &result)
     }
+
+    removeLightMatte(from: &result, using: backgroundMask)
 
     return result
 }
@@ -219,22 +230,138 @@ private func isBackgroundCandidate(at index: Int, in image: RGBAImage) -> Bool {
     return alpha > 0.9 && (warmCream || whiteCorner)
 }
 
+private func expandBackgroundMask(_ mask: inout [Bool], in image: RGBAImage, iterations: Int) {
+    for _ in 0..<iterations {
+        var expandedMask = mask
+
+        for index in mask.indices where !mask[index] {
+            guard isMatteEdgeCandidate(at: index, in: image) else { continue }
+            if hasMaskedNeighbor(at: index, in: mask, width: image.width, height: image.height) {
+                expandedMask[index] = true
+            }
+        }
+
+        mask = expandedMask
+    }
+}
+
+private func isMatteEdgeCandidate(at index: Int, in image: RGBAImage) -> Bool {
+    let offset = index * 4
+    let red = Double(image.pixels[offset]) / 255.0
+    let green = Double(image.pixels[offset + 1]) / 255.0
+    let blue = Double(image.pixels[offset + 2]) / 255.0
+    let alpha = Double(image.pixels[offset + 3]) / 255.0
+    let maxChannel = max(red, green, blue)
+    let minChannel = min(red, green, blue)
+    let saturation = maxChannel == 0 ? 0 : (maxChannel - minChannel) / maxChannel
+    let warmth = red - blue
+
+    let brightNeutral = maxChannel > 0.50 && saturation < 0.24
+    let paleWarm = maxChannel > 0.42 && saturation < 0.32 && warmth > -0.03
+    return alpha > 0.9 && (brightNeutral || paleWarm)
+}
+
+private func hasMaskedNeighbor(at index: Int, in mask: [Bool], width: Int, height: Int) -> Bool {
+    let x = index % width
+    let y = index / width
+
+    for dy in -1...1 {
+        for dx in -1...1 where dx != 0 || dy != 0 {
+            let neighborX = x + dx
+            let neighborY = y + dy
+            guard neighborX >= 0, neighborX < width, neighborY >= 0, neighborY < height else { continue }
+            if mask[neighborY * width + neighborX] {
+                return true
+            }
+        }
+    }
+
+    return false
+}
+
+// The source art is flattened on a cream background, so edge pixels contain a light matte.
+private func removeLightMatte(from image: inout RGBAImage, using backgroundMask: [Bool]) {
+    let originalPixels = image.pixels
+
+    for index in backgroundMask.indices where !backgroundMask[index] {
+        let neighborCount = maskedNeighborCount(around: index, in: backgroundMask, width: image.width, height: image.height)
+        guard neighborCount > 0 else { continue }
+        guard isLightFringePixel(at: index, in: originalPixels) else { continue }
+
+        let x = index % image.width
+        let y = index / image.width
+        let color = darkBackgroundColor(x: x, y: y, width: image.width, height: image.height)
+        let amount = min(0.55, 0.18 + Double(neighborCount) * 0.055)
+        blendPixel(at: index, in: &image, toward: color, amount: amount)
+    }
+}
+
+private func maskedNeighborCount(around index: Int, in mask: [Bool], width: Int, height: Int) -> Int {
+    let x = index % width
+    let y = index / width
+    var count = 0
+
+    for dy in -2...2 {
+        for dx in -2...2 where dx != 0 || dy != 0 {
+            let neighborX = x + dx
+            let neighborY = y + dy
+            guard neighborX >= 0, neighborX < width, neighborY >= 0, neighborY < height else { continue }
+            if mask[neighborY * width + neighborX] {
+                count += 1
+            }
+        }
+    }
+
+    return count
+}
+
+private func isLightFringePixel(at index: Int, in pixels: [UInt8]) -> Bool {
+    let offset = index * 4
+    let red = Double(pixels[offset]) / 255.0
+    let green = Double(pixels[offset + 1]) / 255.0
+    let blue = Double(pixels[offset + 2]) / 255.0
+    let maxChannel = max(red, green, blue)
+    let minChannel = min(red, green, blue)
+    let saturation = maxChannel == 0 ? 0 : (maxChannel - minChannel) / maxChannel
+
+    return maxChannel > 0.62 && saturation < 0.28
+}
+
 private func recolorBackgroundPixel(at index: Int, in image: inout RGBAImage) {
     let x = index % image.width
     let y = index / image.width
     let offset = index * 4
-    let vertical = Double(y) / Double(max(1, image.height - 1))
-    let horizontal = Double(x) / Double(max(1, image.width - 1))
+    let color = darkBackgroundColor(x: x, y: y, width: image.width, height: image.height)
+
+    image.pixels[offset] = UInt8(clamping: Int(color.red))
+    image.pixels[offset + 1] = UInt8(clamping: Int(color.green))
+    image.pixels[offset + 2] = UInt8(clamping: Int(color.blue))
+    image.pixels[offset + 3] = 255
+}
+
+private func darkBackgroundColor(x: Int, y: Int, width: Int, height: Int) -> RGBColor {
+    let vertical = Double(y) / Double(max(1, height - 1))
+    let horizontal = Double(x) / Double(max(1, width - 1))
     let radial = distanceFromCenter(x: horizontal, y: vertical)
 
     let top = (red: 54.0, green: 72.0, blue: 78.0)
     let bottom = (red: 12.0, green: 24.0, blue: 29.0)
     let glow = max(0, 1 - radial * 1.55) * 18
 
-    image.pixels[offset] = UInt8(clamping: Int(top.red * (1 - vertical) + bottom.red * vertical + glow))
-    image.pixels[offset + 1] = UInt8(clamping: Int(top.green * (1 - vertical) + bottom.green * vertical + glow))
-    image.pixels[offset + 2] = UInt8(clamping: Int(top.blue * (1 - vertical) + bottom.blue * vertical + glow))
-    image.pixels[offset + 3] = 255
+    return RGBColor(
+        red: top.red * (1 - vertical) + bottom.red * vertical + glow,
+        green: top.green * (1 - vertical) + bottom.green * vertical + glow,
+        blue: top.blue * (1 - vertical) + bottom.blue * vertical + glow
+    )
+}
+
+private func blendPixel(at index: Int, in image: inout RGBAImage, toward color: RGBColor, amount: Double) {
+    let offset = index * 4
+    let inverseAmount = 1 - amount
+
+    image.pixels[offset] = UInt8(clamping: Int(Double(image.pixels[offset]) * inverseAmount + color.red * amount))
+    image.pixels[offset + 1] = UInt8(clamping: Int(Double(image.pixels[offset + 1]) * inverseAmount + color.green * amount))
+    image.pixels[offset + 2] = UInt8(clamping: Int(Double(image.pixels[offset + 2]) * inverseAmount + color.blue * amount))
 }
 
 private func distanceFromCenter(x: Double, y: Double) -> Double {
