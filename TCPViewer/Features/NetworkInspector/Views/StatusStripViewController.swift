@@ -55,9 +55,7 @@ final class StatusStripViewController: NSViewController {
     )
 
     override func loadView() {
-        view = NSView()
-        view.wantsLayer = true
-        view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        view = TCPViewerDynamicBackgroundView(backgroundColor: .windowBackgroundColor)
         setupLayout()
     }
 

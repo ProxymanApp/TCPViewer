@@ -315,7 +315,7 @@ final class TCPViewerRootViewController: NSViewController {
         contentSplitViewController.addSplitViewItem(inspectorItem)
         self.inspectorItem = inspectorItem
 
-        mainContainerViewController.view = NSView()
+        mainContainerViewController.view = TCPViewerDynamicBackgroundView(backgroundColor: .controlBackgroundColor)
         mainContainerViewController.addChild(contentSplitViewController)
         mainContainerViewController.addChild(statusStripViewController)
 

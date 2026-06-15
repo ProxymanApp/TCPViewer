@@ -7,6 +7,7 @@
 
 import Testing
 import Foundation
+import AppKit
 import PcapPlusPlusCore
 @testable import TCPViewer
 
@@ -42,11 +43,33 @@ struct TCPViewerTests {
         #expect(viewModel.snapshot.displayFilterText == "protocol:tcp")
     }
 
+    @Test func dynamicBackgroundViewUpdatesLayerColorForAppearanceChanges() throws {
+        let dynamicColor = NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? .black : .white
+        }
+        let view = TCPViewerDynamicBackgroundView(backgroundColor: dynamicColor)
+
+        view.appearance = NSAppearance(named: .aqua)
+        view.viewDidChangeEffectiveAppearance()
+        let lightBackground = try #require(view.layer?.backgroundColor)
+
+        view.appearance = NSAppearance(named: .darkAqua)
+        view.viewDidChangeEffectiveAppearance()
+        let darkBackground = try #require(view.layer?.backgroundColor)
+
+        #expect(try brightness(of: lightBackground) > brightness(of: darkBackground))
+    }
+
     private static func makeUserDefaults() -> UserDefaults {
         let suiteName = "TCPViewerTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
         return defaults
+    }
+
+    private func brightness(of color: CGColor) throws -> CGFloat {
+        let nsColor = try #require(NSColor(cgColor: color)?.usingColorSpace(.deviceRGB))
+        return nsColor.redComponent + nsColor.greenComponent + nsColor.blueComponent
     }
 }
 
