@@ -5,6 +5,7 @@
 //  Created by Proxyman LLC on 15/6/26.
 //
 
+import AppKit
 import Foundation
 import PcapPlusPlusCore
 import Testing
@@ -188,6 +189,42 @@ struct TCPViewSessionFormatTests {
         #expect(jsonl.split(separator: "\n").count == packets.count)
         #expect(Self.zipPackageContainsRequiredFiles(contents.packageDirectoryURL))
         #expect(progressValues == progressValues.sorted())
+    }
+
+    @Test func exportWritesCellSizedClientIcons() throws {
+        let directory = try Self.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let captureURL = directory.appendingPathComponent("capture-source.pcapng")
+        try Data("pcapng-placeholder".utf8).write(to: captureURL)
+        let destinationURL = directory.appendingPathComponent("icons.tcpviewsession")
+        let client = PacketClient(
+            pid: 1234,
+            name: "ls",
+            displayName: "ls",
+            executablePath: "/bin/ls"
+        )
+        let packet = Self.makePacket(id: 20, packetNumber: 1, client: client)
+        let exportService = TCPViewSessionExportService(now: { Self.fixedDate })
+
+        try exportService.writePackage(
+            snapshot: Self.makeSnapshot(packets: [packet]),
+            captureFileURL: captureURL,
+            to: destinationURL,
+            progress: nil,
+            shouldCancel: nil
+        )
+
+        let contents = try TCPViewSessionImportService().loadPackage(at: destinationURL)
+        defer { try? FileManager.default.removeItem(at: contents.extractionDirectoryURL) }
+        let clientID = TCPViewSessionClientStoreBuilder.stableClientID(for: client)
+        let iconPath = try #require(contents.clientIconFilePathByClientID[clientID])
+        let iconData = try Data(contentsOf: URL(fileURLWithPath: iconPath))
+        let iconRep = try #require(NSBitmapImageRep(data: iconData))
+
+        #expect(iconRep.pixelsWide == 128)
+        #expect(iconRep.pixelsHigh == 128)
+        #expect(iconData.count < 200_000)
     }
 
     @Test func cancellationLeavesExistingDestinationUntouched() throws {

@@ -1238,7 +1238,7 @@ enum PacketSourceListTreeBuilder {
             )
         }
 
-        return [
+        var roots = [
             PacketSourceListItem(
                 id: favoritesGroupID,
                 title: "Favorites",
@@ -1269,8 +1269,11 @@ enum PacketSourceListTreeBuilder {
                         children: []
                     ),
                 ]
-            ),
-            PacketSourceListItem(
+            )
+        ]
+
+        if !importedFileItems.isEmpty {
+            roots.append(PacketSourceListItem(
                 id: filesGroupID,
                 title: "Files",
                 systemImageName: nil,
@@ -1279,39 +1282,42 @@ enum PacketSourceListTreeBuilder {
                 kind: .group,
                 selection: nil,
                 children: importedFileItems
-            ),
-            PacketSourceListItem(
-                id: allGroupID,
-                title: "All",
-                systemImageName: nil,
-                iconFilePath: nil,
-                count: nil,
-                kind: .group,
-                selection: nil,
-                children: [
-                    PacketSourceListItem(
-                        id: appsFolderID,
-                        title: "Apps",
-                        systemImageName: "folder.fill",
-                        iconFilePath: nil,
-                        count: appBuckets.reduce(0) { $0 + $1.packetCount },
-                        kind: .folder,
-                        selection: .apps,
-                        children: appItems
-                    ),
-                    PacketSourceListItem(
-                        id: domainsFolderID,
-                        title: "Domains",
-                        systemImageName: "globe",
-                        iconFilePath: nil,
-                        count: domainBuckets.reduce(0) { $0 + $1.packetCount },
-                        kind: .folder,
-                        selection: .domains,
-                        children: domainItems
-                    ),
-                ]
-            ),
-        ]
+            ))
+        }
+
+        roots.append(PacketSourceListItem(
+            id: allGroupID,
+            title: "All",
+            systemImageName: nil,
+            iconFilePath: nil,
+            count: nil,
+            kind: .group,
+            selection: nil,
+            children: [
+                PacketSourceListItem(
+                    id: appsFolderID,
+                    title: "Apps",
+                    systemImageName: "folder.fill",
+                    iconFilePath: nil,
+                    count: appBuckets.reduce(0) { $0 + $1.packetCount },
+                    kind: .folder,
+                    selection: .apps,
+                    children: appItems
+                ),
+                PacketSourceListItem(
+                    id: domainsFolderID,
+                    title: "Domains",
+                    systemImageName: "globe",
+                    iconFilePath: nil,
+                    count: domainBuckets.reduce(0) { $0 + $1.packetCount },
+                    kind: .folder,
+                    selection: .domains,
+                    children: domainItems
+                ),
+            ]
+        ))
+
+        return roots
     }
 
     private static func makeDomainItems(

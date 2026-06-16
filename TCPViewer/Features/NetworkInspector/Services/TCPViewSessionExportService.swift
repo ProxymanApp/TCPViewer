@@ -10,6 +10,10 @@ import Foundation
 import PcapPlusPlusCore
 import ZIPFoundation
 
+private enum TCPViewSessionIconExport {
+    static let pixelSize = 128
+}
+
 protocol TCPViewSessionExportWriting: AnyObject {
     func writePackage(
         snapshot: TCPViewSessionExportSnapshot,
@@ -228,11 +232,36 @@ final class TCPViewSessionExportService: TCPViewSessionExportWriting {
     }
 
     private func writePNGIcon(forFile path: String, to url: URL) throws {
+        let pixelSize = TCPViewSessionIconExport.pixelSize
+        let canvasSize = NSSize(width: pixelSize, height: pixelSize)
         let icon = NSWorkspace.shared.icon(forFile: path)
-        icon.size = NSSize(width: 64, height: 64)
-        guard let tiffData = icon.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiffData),
-              let pngData = bitmap.representation(using: .png, properties: [:]) else {
+        icon.size = canvasSize
+        guard let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: pixelSize,
+            pixelsHigh: pixelSize,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else {
+            return
+        }
+
+        bitmap.size = canvasSize
+        // Draw into a fixed-size bitmap because NSImage TIFF data may keep 1024px app icon reps.
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+        NSGraphicsContext.current?.imageInterpolation = .high
+        NSColor.clear.setFill()
+        NSRect(origin: .zero, size: canvasSize).fill()
+        icon.draw(in: NSRect(origin: .zero, size: canvasSize), from: .zero, operation: .sourceOver, fraction: 1.0)
+        NSGraphicsContext.restoreGraphicsState()
+
+        guard let pngData = bitmap.representation(using: .png, properties: [:]) else {
             return
         }
 
