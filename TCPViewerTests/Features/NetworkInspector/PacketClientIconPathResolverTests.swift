@@ -63,6 +63,23 @@ struct PacketClientIconPathResolverTests {
         #expect(PacketClientIconCache.normalizedIconPath(" /Applications/Example.app ") == "/Applications/Example.app")
     }
 
+    @Test func iconCacheLoadsImageSidecarsAsTheirBitmapContents() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let iconURL = directory.appendingPathComponent("client-icon.png")
+        try Self.redPNGData().write(to: iconURL)
+        let image = try #require(PacketClientIconCache().image(forPath: iconURL.path))
+        let tiffData = try #require(image.tiffRepresentation)
+        let bitmap = try #require(NSBitmapImageRep(data: tiffData))
+        let sampledColor = try #require(bitmap.colorAt(x: 0, y: 0)?.usingColorSpace(.deviceRGB))
+
+        #expect(sampledColor.redComponent > 0.8)
+        #expect(sampledColor.greenComponent < 0.2)
+        #expect(sampledColor.blueComponent < 0.2)
+    }
+
     @Test func packetClientCellCopyKeepsConfiguredSwiftState() throws {
         let suiteName = "PacketClientCellCopy-\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))
@@ -91,5 +108,28 @@ struct PacketClientIconPathResolverTests {
         )
 
         #expect(PacketClientIconPathResolver.iconFilePath(for: client) == "/Applications/Example.app")
+    }
+
+    private static func redPNGData() throws -> Data {
+        let bitmap = try #require(NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 2,
+            pixelsHigh: 2,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ))
+
+        for y in 0..<2 {
+            for x in 0..<2 {
+                bitmap.setColor(NSColor(calibratedRed: 1, green: 0, blue: 0, alpha: 1), atX: x, y: y)
+            }
+        }
+
+        return try #require(bitmap.representation(using: .png, properties: [:]))
     }
 }
