@@ -420,9 +420,7 @@ final class PacketStructuredFilterViewController: NSViewController {
     }
 
     override func loadView() {
-        view = NSView()
-        view.wantsLayer = true
-        view.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        view = TCPViewerDynamicBackgroundView(backgroundColor: .controlBackgroundColor)
         setupLayout()
         rebuildRows()
     }

@@ -7,6 +7,43 @@
 
 import AppKit
 
+final class TCPViewerDynamicBackgroundView: NSView {
+    var backgroundColor: NSColor {
+        didSet {
+            updateLayerBackgroundColor()
+        }
+    }
+
+    init(backgroundColor: NSColor) {
+        self.backgroundColor = backgroundColor
+        super.init(frame: .zero)
+        wantsLayer = true
+        updateLayerBackgroundColor()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updateLayerBackgroundColor()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateLayerBackgroundColor()
+    }
+
+    private func updateLayerBackgroundColor() {
+        // Resolve dynamic NSColor values against this view's current light/dark appearance.
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = backgroundColor.cgColor
+        }
+    }
+}
+
 enum TCPViewerUI {
     enum PlaceholderPlacement {
         case center

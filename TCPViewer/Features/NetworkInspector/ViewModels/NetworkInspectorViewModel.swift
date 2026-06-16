@@ -924,6 +924,11 @@ struct NetworkInspectorMemoryDebugSnapshot: Equatable {
 
 protocol NetworkInspectorViewModelDelegate: AnyObject {
     func networkInspectorViewModelDidChange(_ viewModel: NetworkInspectorViewModel)
+    func networkInspectorViewModelDidUpdateStatusMetrics(_ viewModel: NetworkInspectorViewModel)
+}
+
+extension NetworkInspectorViewModelDelegate {
+    func networkInspectorViewModelDidUpdateStatusMetrics(_ viewModel: NetworkInspectorViewModel) {}
 }
 
 final class NetworkInspectorViewModel {
@@ -934,6 +939,7 @@ final class NetworkInspectorViewModel {
             delegate?.networkInspectorViewModelDidChange(self)
         }
     }
+    private(set) var statusMetricsSnapshot: TCPViewerStatusMetricsSnapshot = .empty
 
     private let controller: TCPViewerWorkspaceController
     private let preferences: NetworkInspectorPreferences
@@ -947,6 +953,7 @@ final class NetworkInspectorViewModel {
     private let packetExportService: PacketExportService
     private let tcpViewSessionExportService: any TCPViewSessionExportWriting
     private let packetTableColumnLayoutStore: PacketTableColumnLayoutStore
+    private let statusMetricsService: TCPViewerStatusMetricsService
     private let packetTableFilterQueue = DispatchQueue(label: "com.proxyman.TCPViewer.packet-table-filter")
     private let packetTableAsyncRebuildThreshold: Int
     private let packetTableFilterBuildHook: (@Sendable () -> Void)?
@@ -994,6 +1001,7 @@ final class NetworkInspectorViewModel {
         structuredFilterService: PacketStructuredFilterService = PacketStructuredFilterService(),
         packetExportService: PacketExportService? = nil,
         tcpViewSessionExportService: (any TCPViewSessionExportWriting)? = nil,
+        statusMetricsService: TCPViewerStatusMetricsService = TCPViewerStatusMetricsService(),
         packetTableAsyncRebuildThreshold: Int = 5_000,
         packetTableFilterBuildHook: (@Sendable () -> Void)? = nil
     ) {
@@ -1012,6 +1020,7 @@ final class NetworkInspectorViewModel {
         self.packetExportService = packetExportService ?? PacketExportService(defaults: userDefaults)
         self.tcpViewSessionExportService = tcpViewSessionExportService ?? TCPViewSessionExportService()
         self.packetTableColumnLayoutStore = PacketTableColumnLayoutStore(defaults: userDefaults)
+        self.statusMetricsService = statusMetricsService
         self.packetTableAsyncRebuildThreshold = max(1, packetTableAsyncRebuildThreshold)
         self.packetTableFilterBuildHook = packetTableFilterBuildHook
         self.inspectorPlacement = preferences.inspectorPlacement
@@ -1067,6 +1076,12 @@ final class NetworkInspectorViewModel {
         )
 
         controller.delegate = self
+        self.statusMetricsSnapshot = statusMetricsService.snapshot
+        self.statusMetricsService.snapshotHandler = { [weak self] metrics in
+            self?.applyStatusMetricsSnapshot(metrics)
+        }
+        self.statusMetricsService.start()
+        syncStatusMetricsMonitoring(from: controller.snapshot)
     }
 
     func performInitialLoadIfNeeded(completion: (() -> Void)? = nil) {
@@ -2418,9 +2433,55 @@ final class NetworkInspectorViewModel {
         rebuildGeneration += 1
     }
 
+    private func applyStatusMetricsSnapshot(_ metrics: TCPViewerStatusMetricsSnapshot) {
+        guard statusMetricsSnapshot != metrics else {
+            return
+        }
+
+        statusMetricsSnapshot = metrics
+        delegate?.networkInspectorViewModelDidUpdateStatusMetrics(self)
+    }
+
+    private func syncStatusMetricsMonitoring(from base: TCPViewerWindowSnapshot) {
+        let target = monitoredStatusMetricsTarget(for: base)
+        let metrics = statusMetricsService.updateMonitoring(
+            interfaceID: target?.interfaceID,
+            localAddresses: target?.localAddresses ?? [],
+            baselineIngestState: base.packetIngestState
+        )
+        applyStatusMetricsSnapshot(metrics)
+    }
+
+    private func monitoredStatusMetricsTarget(for base: TCPViewerWindowSnapshot) -> (interfaceID: String, localAddresses: Set<String>)? {
+        guard base.sessionState.phase == .running,
+              base.packetIngestState.source == .live,
+              let interface = base.sessionState.selectedInterface else {
+            return nil
+        }
+
+        let localAddresses = interface.addresses.reduce(into: Set<String>()) { result, address in
+            switch address.family {
+            case .ipv4, .ipv6:
+                result.insert(address.value)
+            case .linkLayer, .unknown:
+                break
+            @unknown default:
+                break
+            }
+        }
+        return (interface.id, localAddresses)
+    }
+
+    private func recordStatusMetrics(from base: TCPViewerWindowSnapshot) {
+        syncStatusMetricsMonitoring(from: base)
+        statusMetricsService.recordPacketIngestState(base.packetIngestState)
+        statusMetricsSnapshot = statusMetricsService.snapshot
+    }
+
     deinit {
         pendingRebuildWorkItem?.cancel()
         activePacketTableFilterJob?.cancellationToken.cancel()
+        statusMetricsService.stop()
     }
 
     #if DEBUG
@@ -2498,6 +2559,7 @@ final class NetworkInspectorViewModel {
 
 extension NetworkInspectorViewModel: TCPViewerWorkspaceControllerDelegate {
     func tcpViewerWorkspaceControllerDidChange(_ controller: TCPViewerWorkspaceController) {
+        recordStatusMetrics(from: controller.snapshot)
         scheduleCoalescedRebuild()
     }
 }
