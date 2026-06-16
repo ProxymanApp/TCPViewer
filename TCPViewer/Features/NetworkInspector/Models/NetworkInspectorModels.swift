@@ -194,7 +194,8 @@ struct PacketTableRow: Identifiable, Sendable, Hashable {
     init(
         packet: PacketSummary,
         previousVisiblePacketTimestamp: Date?,
-        previousVisibleStreamPacketTimestamp: Date?
+        previousVisibleStreamPacketTimestamp: Date?,
+        clientIconFilePath: String? = nil
     ) {
         // Passthrough strings keep native-layer / Foundation backing; copy them into Swift-owned
         // buffers so a row never depends on an NSString whose lifetime is owned elsewhere.
@@ -202,7 +203,7 @@ struct PacketTableRow: Identifiable, Sendable, Hashable {
         self.sourceAddress = packet.endpoints.source.address?.tcpviewerNativeCopy
         self.destinationAddress = packet.endpoints.destination.address?.tcpviewerNativeCopy
         self.sniDomainName = packet.sniDomainName?.tcpviewerNativeCopy
-        self.clientIconFilePath = PacketClientIconPathResolver.iconFilePath(for: packet.client)?.tcpviewerNativeCopy
+        self.clientIconFilePath = (clientIconFilePath ?? PacketClientIconPathResolver.iconFilePath(for: packet.client))?.tcpviewerNativeCopy
         self.hasClient = packet.client != nil
         self.timestamp = packet.timestamp
         self.streamID = packet.streamID
@@ -317,12 +318,13 @@ struct PacketTableRowTimingState: Sendable, Hashable {
     private var previousVisibleStreamPacketTimestampByID: [UInt32: Date] = [:]
 
     // Build a row with deltas from the previous visible packet and stream packet.
-    mutating func row(for packet: PacketSummary) -> PacketTableRow {
+    mutating func row(for packet: PacketSummary, clientIconFilePath: String? = nil) -> PacketTableRow {
         let streamTimestamp = packet.streamID.flatMap { previousVisibleStreamPacketTimestampByID[$0] }
         let row = PacketTableRow(
             packet: packet,
             previousVisiblePacketTimestamp: previousVisiblePacketTimestamp,
-            previousVisibleStreamPacketTimestamp: streamTimestamp
+            previousVisibleStreamPacketTimestamp: streamTimestamp,
+            clientIconFilePath: clientIconFilePath
         )
         previousVisiblePacketTimestamp = packet.timestamp
         if let streamID = packet.streamID {

@@ -231,6 +231,11 @@ extension TCPViewerWindowController: TCPViewerToolbarDataSourceDelegate {
         rootViewController.clearAllPackets()
     }
 
+    func tcpviewerToolbarDataSourceDidRequestExportSession(_ dataSource: TCPViewerToolbarDataSource) {
+        // Reuse the root export flow so panel, progress, and error handling stay in one place.
+        rootViewController.exportTCPViewSession()
+    }
+
     func tcpviewerToolbarDataSource(_ dataSource: TCPViewerToolbarDataSource, didRequestExport format: CaptureFileFormat) {
         rootViewController.exportSession(format: format)
     }

@@ -13,15 +13,14 @@ import PcapPlusPlusCore
 @Suite(.serialized)
 struct PacketSourceListServiceTests {
 
-    @Test func emptyTreeHasFavoriteAndAllFolders() {
+    @Test func emptyTreeHidesFilesGroupUntilFilesAreImported() {
         let service = PacketSourceListService()
         let snapshot = service.snapshot(for: .empty)
 
-        #expect(snapshot.roots.map(\.title) == ["Favorites", "Files", "All"])
+        #expect(snapshot.roots.map(\.title) == ["Favorites", "All"])
         #expect(snapshot.roots[0].children.map(\.title) == ["Pinned", "Saved"])
-        #expect(snapshot.roots[1].selection == nil)
-        #expect(snapshot.roots[1].children.isEmpty)
-        #expect(snapshot.roots[2].children.map(\.title) == ["Apps", "Domains"])
+        #expect(snapshot.firstItem { $0.id == PacketSourceListTreeBuilder.filesGroupID } == nil)
+        #expect(snapshot.roots[1].children.map(\.title) == ["Apps", "Domains"])
         #expect(snapshot.item(for: .apps)?.children.isEmpty == true)
         #expect(snapshot.item(for: .domains)?.children.isEmpty == true)
     }

@@ -37,6 +37,7 @@ final class PacketCustomFilterService {
     private let userDataDirectory: TCPViewerUserDataDirectory
     private let usesUserDataDirectoryStorage: Bool
     private var cachedFilters: [PacketCustomFilter]
+    private var isDocumentScoped = false
 
     init(
         storageURL: URL? = nil,
@@ -53,6 +54,16 @@ final class PacketCustomFilterService {
     // Return cached filters in saved order for stable titlebar rendering.
     func filters() -> [PacketCustomFilter] {
         cachedFilters
+    }
+
+    func useDocumentFilters(_ filters: [PacketCustomFilter]) {
+        isDocumentScoped = true
+        cachedFilters = filters
+    }
+
+    func reloadPersistentFilters() {
+        isDocumentScoped = false
+        cachedFilters = (try? Self.loadFilters(from: storageURL, fileManager: fileManager)) ?? []
     }
 
     // Look up a saved filter by stable identifier for quick button actions.
@@ -169,6 +180,10 @@ final class PacketCustomFilterService {
     }
 
     private func persist() throws {
+        guard !isDocumentScoped else {
+            return
+        }
+
         if usesUserDataDirectoryStorage {
             try userDataDirectory.createSettingsDirectoryIfNeeded()
         } else {

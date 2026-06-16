@@ -1091,8 +1091,7 @@ private final class SidebarIconCache {
                 return cachedImage
             }
 
-            let image = NSWorkspace.shared.icon(forFile: iconFilePath)
-            image.size = NSSize(width: 16, height: 16)
+            let image = PacketClientIconImageLoader.image(forNormalizedPath: iconFilePath)
             imagesByKey[key] = image
             return image
         }

@@ -8,6 +8,24 @@
 import AppKit
 import PcapPlusPlusCore
 
+enum PacketClientIconImageLoader {
+    private static let renderedIconSize = NSSize(width: 16, height: 16)
+    private static let imageFileExtensions: Set<String> = ["icns", "jpeg", "jpg", "png", "tif", "tiff"]
+
+    static func image(forNormalizedPath path: String) -> NSImage {
+        let image: NSImage
+        if imageFileExtensions.contains(URL(fileURLWithPath: path).pathExtension.lowercased()),
+           let sidecarImage = NSImage(contentsOfFile: path) {
+            image = sidecarImage
+        } else {
+            image = NSWorkspace.shared.icon(forFile: path)
+        }
+
+        image.size = renderedIconSize
+        return image
+    }
+}
+
 final class PacketClientIconCache {
     private var imagesByKey: [String: NSImage] = [:]
 
@@ -25,8 +43,7 @@ final class PacketClientIconCache {
             return image
         }
 
-        let image = NSWorkspace.shared.icon(forFile: path)
-        image.size = NSSize(width: 16, height: 16)
+        let image = PacketClientIconImageLoader.image(forNormalizedPath: path)
         imagesByKey[path] = image
         return image
     }

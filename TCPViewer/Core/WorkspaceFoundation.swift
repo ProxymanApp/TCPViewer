@@ -47,6 +47,7 @@ struct PacketIngestState: Sendable, Equatable {
     var packetIndexByID: [PacketSummary.ID: Int]
     var importedFiles: [ImportedCaptureFile]
     var importedPacketReferenceByID: [PacketSummary.ID: ImportedPacketReference]
+    var sessionClientIconFilePathByClientID: [String: String]
     var packetRevision: UInt64
     var packetLineageRevision: UInt64
     var lastMutation: PacketIngestMutation
@@ -62,6 +63,7 @@ struct PacketIngestState: Sendable, Equatable {
         packetIndexByID: [:],
         importedFiles: [],
         importedPacketReferenceByID: [:],
+        sessionClientIconFilePathByClientID: [:],
         packetRevision: 0,
         packetLineageRevision: 0,
         lastMutation: .none,
@@ -100,6 +102,7 @@ struct PacketIngestState: Sendable, Equatable {
         packetIndexByID = [:]
         importedFiles = []
         importedPacketReferenceByID = [:]
+        sessionClientIconFilePathByClientID = [:]
         packetRevision &+= 1
         packetLineageRevision &+= 1
         lastMutation = .reset
@@ -127,6 +130,7 @@ struct PacketIngestState: Sendable, Equatable {
         rebuildPacketIndex()
         importedFiles = []
         importedPacketReferenceByID = [:]
+        sessionClientIconFilePathByClientID = [:]
         packetRevision &+= 1
         packetLineageRevision &+= 1
         lastMutation = .replace
@@ -135,6 +139,20 @@ struct PacketIngestState: Sendable, Equatable {
         if let message {
             statusMessage = message
         }
+    }
+
+    mutating func replaceSession(
+        with batch: [PacketSummary],
+        importedFiles: [ImportedCaptureFile],
+        importedPacketReferenceByID: [PacketSummary.ID: ImportedPacketReference],
+        clientIconFilePathByClientID: [String: String],
+        source: CaptureSource,
+        message: String? = nil
+    ) {
+        replace(with: batch, source: source, message: message)
+        self.importedFiles = importedFiles
+        self.importedPacketReferenceByID = importedPacketReferenceByID
+        self.sessionClientIconFilePathByClientID = clientIconFilePathByClientID
     }
 
     mutating func appendImportedFile(
@@ -544,6 +562,7 @@ struct TCPViewerWindowSnapshot: Sendable, Equatable {
     var inspectionState: PacketInspectionState
     var navigationState: PacketNavigationState
     var loadState: PacketLoadState
+    var sessionImportState: TCPViewSessionImportState
 
     static let foundation = TCPViewerWindowSnapshot(
         accessState: .unknown,
@@ -553,7 +572,8 @@ struct TCPViewerWindowSnapshot: Sendable, Equatable {
         filterState: .empty,
         inspectionState: .empty,
         navigationState: .empty,
-        loadState: .idle
+        loadState: .idle,
+        sessionImportState: .idle
     )
 
     var selectedPacketID: PacketSummary.ID? {
@@ -641,6 +661,37 @@ struct PacketLoadState: Sendable, Equatable {
     }
 }
 
+struct TCPViewSessionImportState: Sendable, Equatable {
+    enum Phase: String, Sendable {
+        case idle
+        case loading
+        case cancelling
+        case failed
+    }
+
+    var phase: Phase
+    var fileURL: URL?
+    var loadedPacketCount: Int
+    var message: String
+    var lastError: TCPViewerCoreError?
+
+    static let idle = TCPViewSessionImportState(
+        phase: .idle,
+        fileURL: nil,
+        loadedPacketCount: 0,
+        message: "",
+        lastError: nil
+    )
+
+    var isPresented: Bool {
+        phase != .idle
+    }
+
+    var canCancel: Bool {
+        phase == .loading
+    }
+}
+
 final class TCPViewerBackgroundCoordinator {
     private var activeOperations: Set<String> = []
 
@@ -695,7 +746,9 @@ struct TCPViewerServiceRegistry {
 }
 
 enum TCPViewerCaptureFileImportPolicy {
-    static let allowedFilenameExtensions: Set<String> = ["pcap", "pcapng"]
+    static let captureFilenameExtensions: Set<String> = ["pcap", "pcapng"]
+    static let sessionFilenameExtension = TCPViewSessionFormat.fileExtension
+    static let allowedFilenameExtensions: Set<String> = captureFilenameExtensions.union([sessionFilenameExtension])
 
     static var allowedContentTypes: [UTType] {
         allowedFilenameExtensions.compactMap { UTType(filenameExtension: $0) }
@@ -707,12 +760,16 @@ enum TCPViewerCaptureFileImportPolicy {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = true
         panel.title = "Open Capture File"
-        panel.message = "Choose a pcap or pcapng file to inspect."
+        panel.message = "Choose a pcap, pcapng, or TCPViewer session file to inspect."
         panel.allowedContentTypes = allowedContentTypes
     }
 
     static func isSupportedCaptureFileURL(_ url: URL) -> Bool {
         allowedFilenameExtensions.contains(url.pathExtension.lowercased())
+    }
+
+    static func isSessionFileURL(_ url: URL) -> Bool {
+        url.pathExtension.lowercased() == sessionFilenameExtension
     }
 
     static func standardizedFileURL(_ url: URL) -> URL {
@@ -865,6 +922,11 @@ struct TCPViewerWorkspaceMemoryDebugSnapshot: Equatable {
 #endif
 
 final class TCPViewerWorkspaceController {
+    private struct ImportedSessionCaptureExportGroup {
+        let fileID: ImportedCaptureFileID
+        var originalPacketIDs: [PacketSummary.ID]
+    }
+
     weak var delegate: TCPViewerWorkspaceControllerDelegate?
 
     private(set) var snapshot: TCPViewerWindowSnapshot {
@@ -880,6 +942,7 @@ final class TCPViewerWorkspaceController {
 
     let services: TCPViewerServiceRegistry
     private let backgroundCoordinator: TCPViewerBackgroundCoordinator
+    private let sessionPackageQueue = DispatchQueue(label: "com.proxyman.tcpviewer.session-package", qos: .userInitiated)
     private let preferences: TCPViewerPreferences
     private let interfaceHistoryStore: InterfaceSelectionHistoryStore
     private let activeInterfaceIDProvider: () -> String?
@@ -889,8 +952,14 @@ final class TCPViewerWorkspaceController {
     private var liveSessionConfiguration: LiveSessionConfiguration?
     private var liveEventGeneration = 0
     private var document: (any OfflineCaptureDocumentProviding)?
+    private var pendingSessionImportDocument: (any OfflineCaptureDocumentProviding)?
     private var importedDocumentsByFileID: [ImportedCaptureFileID: any OfflineCaptureDocumentProviding] = [:]
+    private(set) var currentDocumentSessionState: TCPViewSessionState?
+    private(set) var currentDocumentSessionImportReport: TCPViewSessionImportReport?
+    private(set) var lastSessionImportSucceeded = false
     private var documentEventGeneration = 0
+    private var sessionImportGeneration = 0
+    private var pendingSessionImportCompletion: (() -> Void)?
     private var inspectionGeneration = 0
     private var filterValidationGeneration = 0
     private var snapshotUpdateDepth = 0
@@ -1341,6 +1410,12 @@ final class TCPViewerWorkspaceController {
     }
 
     func openDocument(at fileURL: URL, completion: (() -> Void)? = nil) {
+        let standardizedURL = TCPViewerCaptureFileImportPolicy.standardizedFileURL(fileURL)
+        guard !TCPViewerCaptureFileImportPolicy.isSessionFileURL(standardizedURL) else {
+            openSessionDocument(at: standardizedURL, completion: completion)
+            return
+        }
+
         stopLiveCaptureIfNeeded { [weak self] stopResult in
             DispatchQueue.main.async {
                 guard let self else {
@@ -1358,30 +1433,33 @@ final class TCPViewerWorkspaceController {
                 }
 
                 self.releaseDocumentContext()
+                self.currentDocumentSessionState = nil
+                self.currentDocumentSessionImportReport = nil
+                self.lastSessionImportSucceeded = false
                 self.importedDocumentsByFileID.removeAll(keepingCapacity: false)
                 self.resetInspectionState()
                 self.snapshot.selectedPacketID = nil
                 self.snapshot.documentState = CaptureDocumentState(
                     phase: .opening,
-                    fileURL: fileURL,
+                    fileURL: standardizedURL,
                     format: nil,
                     metadata: nil,
                     packetCount: 0,
                     isDirty: false,
                     isPartialResult: false,
-                    statusMessage: "Opening \(fileURL.lastPathComponent)...",
+                    statusMessage: "Opening \(standardizedURL.lastPathComponent)...",
                     lastError: nil
                 )
                 self.services.packetMetadataEnricher.reset()
-                self.snapshot.packetIngestState.reset(source: .offline, message: "Opening \(fileURL.lastPathComponent)...")
-                self.synchronizeVisiblePackets(message: "Opening \(fileURL.lastPathComponent)...")
+                self.snapshot.packetIngestState.reset(source: .offline, message: "Opening \(standardizedURL.lastPathComponent)...")
+                self.synchronizeVisiblePackets(message: "Opening \(standardizedURL.lastPathComponent)...")
                 self.snapshot.loadState.progress = PacketLoadProgress(
                     phase: .loading,
                     loadedPacketCount: 0,
-                    message: "Opening \(fileURL.lastPathComponent)..."
+                    message: "Opening \(standardizedURL.lastPathComponent)..."
                 )
 
-                self.services.core.openOfflineCaptureDocument(at: fileURL) { [weak self] result in
+                self.services.core.openOfflineCaptureDocument(at: standardizedURL) { [weak self] result in
                     DispatchQueue.main.async {
                         guard let self else {
                             completion?()
@@ -1404,7 +1482,7 @@ final class TCPViewerWorkspaceController {
                                         self.refreshDocumentSnapshotFromHandle(
                                             document,
                                             phase: .loaded,
-                                            message: "Loaded \(self.snapshot.packetIngestState.totalPacketCount) packets from \(fileURL.lastPathComponent)."
+                                            message: "Loaded \(self.snapshot.packetIngestState.totalPacketCount) packets from \(standardizedURL.lastPathComponent)."
                                         )
                                     case .failure(let error):
                                         self.handleDocumentLoadFailure(error, document: document)
@@ -1422,6 +1500,187 @@ final class TCPViewerWorkspaceController {
         }
     }
 
+    private func openSessionDocument(at fileURL: URL, completion: (() -> Void)? = nil) {
+        stopLiveCaptureIfNeeded { [weak self] stopResult in
+            DispatchQueue.main.async {
+                guard let self else {
+                    completion?()
+                    return
+                }
+
+                if case .failure(let error) = stopResult {
+                    let tcpviewerError = self.tcpviewerError(from: error, defaultCode: .liveSessionControlFailed)
+                    self.snapshot.sessionState.phase = .failed
+                    self.snapshot.sessionState.lastError = tcpviewerError
+                    self.snapshot.sessionState.statusMessage = tcpviewerError.message
+                    completion?()
+                    return
+                }
+
+                self.beginSessionImport(at: fileURL, completion: completion)
+            }
+        }
+    }
+
+    private func beginSessionImport(at fileURL: URL, completion: (() -> Void)? = nil) {
+        // Keep session-file import in sheet state until the backing document is fully open.
+        sessionImportGeneration += 1
+        pendingSessionImportDocument?.cancelLoading(completion: nil)
+        pendingSessionImportDocument = nil
+        finishPendingSessionImportCompletion()
+        let generation = sessionImportGeneration
+        pendingSessionImportCompletion = completion
+        lastSessionImportSucceeded = false
+        snapshot.sessionImportState = TCPViewSessionImportState(
+            phase: .loading,
+            fileURL: fileURL,
+            loadedPacketCount: 0,
+            message: "Importing \(fileURL.lastPathComponent)...",
+            lastError: nil
+        )
+
+        let importService = TCPViewSessionImportService()
+        sessionPackageQueue.async { [weak self] in
+            let loadResult = Result {
+                try importService.loadPackage(at: fileURL)
+            }
+            DispatchQueue.main.async {
+                self?.completeSessionPackageLoad(loadResult, fileURL: fileURL, generation: generation)
+            }
+        }
+    }
+
+    private func completeSessionPackageLoad(
+        _ result: Result<TCPViewSessionPackageContents, Error>,
+        fileURL: URL,
+        generation: Int
+    ) {
+        // Drop stale package results after cancellation or a newer session import.
+        guard isCurrentSessionImport(generation) else {
+            if case .success(let contents) = result {
+                try? FileManager.default.removeItem(at: contents.extractionDirectoryURL)
+            }
+            return
+        }
+
+        switch result {
+        case .success(let contents):
+            openLoadedSessionPackage(contents, fileURL: fileURL, generation: generation)
+        case .failure(let error):
+            failSessionImport(error, fileURL: fileURL, generation: generation)
+        }
+    }
+
+    private func openLoadedSessionPackage(
+        _ contents: TCPViewSessionPackageContents,
+        fileURL: URL,
+        generation: Int
+    ) {
+        guard isCurrentSessionImport(generation) else {
+            try? FileManager.default.removeItem(at: contents.extractionDirectoryURL)
+            return
+        }
+
+        let document = TCPViewSessionOfflineDocument(contents: contents, core: services.core)
+        pendingSessionImportDocument = document
+        snapshot.sessionImportState.message = "Reading \(fileURL.lastPathComponent)..."
+        document.eventHandler = { [weak self] result in
+            DispatchQueue.main.async {
+                self?.applyPendingSessionImportEvent(result, generation: generation)
+            }
+        }
+        document.open { [weak self, weak document] result in
+            DispatchQueue.main.async {
+                guard let self, let document else {
+                    return
+                }
+                self.finishSessionImportOpen(result, document: document, fileURL: fileURL, generation: generation)
+            }
+        }
+    }
+
+    private func applyPendingSessionImportEvent(_ result: Result<PacketIngestEvent, Error>, generation: Int) {
+        guard isCurrentSessionImport(generation) else {
+            return
+        }
+
+        switch result {
+        case .success(.loadProgressChanged(let progress)):
+            snapshot.sessionImportState.loadedPacketCount = progress.loadedPacketCount
+            if !progress.message.isEmpty {
+                snapshot.sessionImportState.message = progress.message
+            }
+        case .failure(let error):
+            failSessionImport(error, fileURL: snapshot.sessionImportState.fileURL, generation: generation)
+        default:
+            break
+        }
+    }
+
+    private func finishSessionImportOpen(
+        _ result: Result<[PacketSummary], Error>,
+        document: TCPViewSessionOfflineDocument,
+        fileURL: URL,
+        generation: Int
+    ) {
+        // Commit the imported session atomically so the existing workspace stays visible while loading.
+        guard isCurrentSessionImport(generation) else {
+            return
+        }
+
+        pendingSessionImportDocument = nil
+        switch result {
+        case .success:
+            batchSnapshotUpdates {
+                self.releaseDocumentContext()
+                self.services.packetMetadataEnricher.reset()
+                self.resetInspectionState()
+                self.snapshot.selectedPacketID = nil
+                self.document = document
+                self.currentDocumentSessionState = document.state
+                self.currentDocumentSessionImportReport = document.importReport
+                self.lastSessionImportSucceeded = true
+                self.observeDocumentEvents(document)
+                self.refreshDocumentSnapshotFromHandle(
+                    document,
+                    phase: .loaded,
+                    message: "Loaded \(document.packetSummaries().count) packets from \(fileURL.lastPathComponent)."
+                )
+                self.snapshot.sessionImportState = .idle
+            }
+            finishPendingSessionImportCompletion()
+        case .failure(let error):
+            failSessionImport(error, fileURL: fileURL, generation: generation)
+        }
+    }
+
+    private func isCurrentSessionImport(_ generation: Int) -> Bool {
+        generation == sessionImportGeneration && snapshot.sessionImportState.isPresented
+    }
+
+    private func failSessionImport(_ error: Error, fileURL: URL?, generation: Int) {
+        guard isCurrentSessionImport(generation) else {
+            return
+        }
+
+        let tcpviewerError = tcpviewerError(from: error, defaultCode: .offlineFileOpenFailed)
+        if tcpviewerError.code == .operationCancelled {
+            finishSessionImportCancellation(generation: generation, completion: nil)
+            return
+        }
+
+        pendingSessionImportDocument = nil
+        lastSessionImportSucceeded = false
+        snapshot.sessionImportState = TCPViewSessionImportState(
+            phase: .failed,
+            fileURL: fileURL,
+            loadedPacketCount: snapshot.sessionImportState.loadedPacketCount,
+            message: tcpviewerError.message,
+            lastError: tcpviewerError
+        )
+        finishPendingSessionImportCompletion()
+    }
+
     func importDocuments(at fileURLs: [URL], completion: (() -> Void)? = nil) {
         openDocuments(at: fileURLs, replacingCurrent: false, completion: completion)
     }
@@ -1433,6 +1692,24 @@ final class TCPViewerWorkspaceController {
             return
         }
 
+        let sessionURLs = requestedURLs.filter(TCPViewerCaptureFileImportPolicy.isSessionFileURL)
+        if !sessionURLs.isEmpty {
+            guard requestedURLs.count == 1, let sessionURL = sessionURLs.first else {
+                let error = TCPViewerCoreError(
+                    code: .offlineFileOpenFailed,
+                    message: "Open one TCPViewer session at a time. Sessions cannot be merged with other capture files."
+                )
+                snapshot.documentState.lastError = error
+                snapshot.documentState.statusMessage = error.message
+                completion?()
+                return
+            }
+
+            openSessionDocument(at: sessionURL, completion: completion)
+            return
+        }
+
+        lastSessionImportSucceeded = false
         stopLiveCaptureIfNeeded { [weak self] stopResult in
             DispatchQueue.main.async {
                 guard let self else {
@@ -1451,6 +1728,9 @@ final class TCPViewerWorkspaceController {
 
                 if replacingCurrent || self.snapshot.packetIngestState.source != .offline {
                     self.releaseDocumentContext()
+                    self.currentDocumentSessionState = nil
+                    self.currentDocumentSessionImportReport = nil
+                    self.lastSessionImportSucceeded = false
                     self.importedDocumentsByFileID.removeAll(keepingCapacity: false)
                     self.services.packetMetadataEnricher.reset()
                     self.snapshot.packetIngestState.reset(source: .offline, message: "Opening \(requestedURLs.first?.lastPathComponent ?? "capture")...")
@@ -1604,6 +1884,388 @@ final class TCPViewerWorkspaceController {
         }
     }
 
+    func exportTCPViewSession(
+        snapshot exportSnapshot: TCPViewSessionExportSnapshot,
+        to url: URL,
+        exportService: any TCPViewSessionExportWriting,
+        progress: PacketExportProgressHandler? = nil,
+        shouldCancel: PacketExportCancellationCheck? = nil,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        let identifiers = exportSnapshot.packets.map(\.id)
+        guard !identifiers.isEmpty else {
+            completion(.failure(TCPViewerCoreError(code: .offlineFileSaveFailed, message: "There are no packets to export.")))
+            return
+        }
+
+        let cancellationCheck = shouldCancel ?? { false }
+        guard !cancellationCheck() else {
+            completion(.failure(Self.exportCancelledError()))
+            return
+        }
+
+        let liveSessionToResume = exportSnapshot.source == .live ? liveSession : nil
+        let shouldResumeCapture = exportSnapshot.source == .live && snapshot.sessionState.phase == .running
+        let beginExport = { [weak self] in
+            self?.beginTCPViewSessionExport(
+                snapshot: exportSnapshot,
+                to: url,
+                exportService: exportService,
+                progress: progress,
+                cancellationCheck: cancellationCheck,
+                liveSessionToResume: liveSessionToResume,
+                shouldResumeCapture: shouldResumeCapture,
+                completion: completion
+            )
+        }
+
+        guard shouldResumeCapture else {
+            beginExport()
+            return
+        }
+
+        guard let liveSessionToResume else {
+            completion(.failure(TCPViewerCoreError(code: .offlineFileSaveFailed, message: "The live capture backing store is not available for export.")))
+            return
+        }
+
+        snapshot.sessionState.statusMessage = "Pausing capture for export..."
+        liveSessionToResume.pause { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else {
+                    completion(result)
+                    return
+                }
+
+                switch result {
+                case .success:
+                    beginExport()
+                case .failure(let error):
+                    let tcpviewerError = self.tcpviewerError(from: error, defaultCode: .liveSessionControlFailed)
+                    self.snapshot.sessionState.lastError = tcpviewerError
+                    self.snapshot.sessionState.statusMessage = tcpviewerError.message
+                    completion(.failure(tcpviewerError))
+                }
+            }
+        }
+    }
+
+    private func beginTCPViewSessionExport(
+        snapshot exportSnapshot: TCPViewSessionExportSnapshot,
+        to url: URL,
+        exportService: any TCPViewSessionExportWriting,
+        progress: PacketExportProgressHandler?,
+        cancellationCheck: @escaping PacketExportCancellationCheck,
+        liveSessionToResume: (any LiveCaptureSessionProviding)?,
+        shouldResumeCapture: Bool,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        let temporaryDirectoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TCPViewSessionCapture-\(UUID().uuidString)", isDirectory: true)
+        let captureURL = temporaryDirectoryURL.appendingPathComponent(TCPViewSessionFormat.capturePath)
+        do {
+            try FileManager.default.createDirectory(at: temporaryDirectoryURL, withIntermediateDirectories: true)
+        } catch {
+            completion(.failure(error))
+            return
+        }
+
+        let packageUnitCount = exportSnapshot.packets.count + 6
+        let combinedUnitCount = max(exportSnapshot.packets.count + packageUnitCount, 1)
+        let captureProgress: PacketExportProgressHandler = { packetProgress in
+            progress?(PacketExportProgress(
+                exportedPacketCount: min(packetProgress.exportedPacketCount, exportSnapshot.packets.count),
+                totalPacketCount: combinedUnitCount
+            ))
+        }
+        let packageProgress: PacketExportProgressHandler = { packetProgress in
+            progress?(PacketExportProgress(
+                exportedPacketCount: min(combinedUnitCount, exportSnapshot.packets.count + packetProgress.exportedPacketCount),
+                totalPacketCount: combinedUnitCount
+            ))
+        }
+
+        exportSessionCaptureFile(
+            snapshot: exportSnapshot,
+            to: captureURL,
+            progress: captureProgress,
+            shouldCancel: cancellationCheck
+        ) { [weak self] result in
+            guard let self else {
+                try? FileManager.default.removeItem(at: temporaryDirectoryURL)
+                completion(result)
+                return
+            }
+
+            switch result {
+            case .success:
+                self.sessionPackageQueue.async { [weak self] in
+                    let packageResult = Result {
+                        try exportService.writePackage(
+                            snapshot: exportSnapshot,
+                            captureFileURL: captureURL,
+                            to: url,
+                            progress: packageProgress,
+                            shouldCancel: cancellationCheck
+                        )
+                    }
+                    try? FileManager.default.removeItem(at: temporaryDirectoryURL)
+
+                    DispatchQueue.main.async {
+                        guard let self else {
+                            completion(packageResult)
+                            return
+                        }
+                        if let liveSessionToResume {
+                            self.resumeLiveSessionAfterSessionExportIfNeeded(
+                                liveSessionToResume,
+                                shouldResumeCapture: shouldResumeCapture,
+                                exportResult: packageResult,
+                                url: url,
+                                source: exportSnapshot.source,
+                                completion: completion
+                            )
+                        } else {
+                            self.completeSessionExport(packageResult, url: url, source: exportSnapshot.source, completion: completion)
+                        }
+                    }
+                }
+            case .failure:
+                try? FileManager.default.removeItem(at: temporaryDirectoryURL)
+                if let liveSessionToResume {
+                    self.resumeLiveSessionAfterSessionExportIfNeeded(
+                        liveSessionToResume,
+                        shouldResumeCapture: shouldResumeCapture,
+                        exportResult: result,
+                        url: url,
+                        source: exportSnapshot.source,
+                        completion: completion
+                    )
+                } else {
+                    completion(result)
+                }
+            }
+        }
+    }
+
+    // Export the raw packet backing for a session, flattening multi-file imports into one pcapng.
+    private func exportSessionCaptureFile(
+        snapshot exportSnapshot: TCPViewSessionExportSnapshot,
+        to captureURL: URL,
+        progress: PacketExportProgressHandler?,
+        shouldCancel: @escaping PacketExportCancellationCheck,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        if exportSnapshot.source == .live {
+            guard let liveSession else {
+                completion(.failure(TCPViewerCoreError(code: .offlineFileSaveFailed, message: "The live capture backing store is not available for export.")))
+                return
+            }
+
+            snapshot.sessionState.statusMessage = "Exporting \(captureURL.lastPathComponent)..."
+            liveSession.exportPackets(
+                withIDs: exportSnapshot.packets.map(\.id),
+                to: captureURL,
+                format: .pcapng,
+                progress: progress,
+                shouldCancel: shouldCancel
+            ) { result in
+                DispatchQueue.main.async {
+                    completion(result)
+                }
+            }
+            return
+        }
+
+        if !(document is TCPViewSessionOfflineDocument),
+           let groups = importedSessionCaptureExportGroups(for: exportSnapshot),
+           groups.count > 1 {
+            exportImportedSessionCaptureFile(
+                groups: groups,
+                to: captureURL,
+                totalPacketCount: exportSnapshot.packets.count,
+                progress: progress,
+                shouldCancel: shouldCancel,
+                completion: completion
+            )
+            return
+        }
+
+        exportPackets(
+            withIDs: exportSnapshot.packets.map(\.id),
+            to: captureURL,
+            format: .pcapng,
+            progress: progress,
+            shouldCancel: shouldCancel,
+            completion: completion
+        )
+    }
+
+    // Preserve session order while grouping adjacent imported packets by their original file.
+    private func importedSessionCaptureExportGroups(
+        for exportSnapshot: TCPViewSessionExportSnapshot
+    ) -> [ImportedSessionCaptureExportGroup]? {
+        guard !exportSnapshot.importedPacketReferenceByID.isEmpty else {
+            return nil
+        }
+
+        var groups: [ImportedSessionCaptureExportGroup] = []
+        for packet in exportSnapshot.packets {
+            guard let reference = exportSnapshot.importedPacketReferenceByID[packet.id] else {
+                return nil
+            }
+
+            if groups.last?.fileID == reference.fileID {
+                groups[groups.count - 1].originalPacketIDs.append(reference.originalPacketID)
+            } else {
+                groups.append(ImportedSessionCaptureExportGroup(
+                    fileID: reference.fileID,
+                    originalPacketIDs: [reference.originalPacketID]
+                ))
+            }
+        }
+
+        return groups
+    }
+
+    // Concatenate pcapng section files; each part remains a valid section in the final pcapng.
+    private func exportImportedSessionCaptureFile(
+        groups: [ImportedSessionCaptureExportGroup],
+        to captureURL: URL,
+        totalPacketCount: Int,
+        progress: PacketExportProgressHandler?,
+        shouldCancel: @escaping PacketExportCancellationCheck,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        guard !shouldCancel() else {
+            completion(.failure(Self.exportCancelledError()))
+            return
+        }
+        guard FileManager.default.createFile(atPath: captureURL.path, contents: nil) else {
+            completion(.failure(TCPViewerCoreError(
+                code: .offlineFileSaveFailed,
+                message: "Could not create the temporary session pcapng file."
+            )))
+            return
+        }
+
+        let partsDirectoryURL = captureURL.deletingLastPathComponent()
+            .appendingPathComponent("SessionCaptureParts-\(UUID().uuidString)", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: partsDirectoryURL, withIntermediateDirectories: true)
+        } catch {
+            completion(.failure(error))
+            return
+        }
+
+        exportImportedSessionCaptureGroup(
+            groups,
+            index: 0,
+            completedPacketCount: 0,
+            partsDirectoryURL: partsDirectoryURL,
+            captureURL: captureURL,
+            totalPacketCount: totalPacketCount,
+            progress: progress,
+            shouldCancel: shouldCancel,
+            completion: completion
+        )
+    }
+
+    private func exportImportedSessionCaptureGroup(
+        _ groups: [ImportedSessionCaptureExportGroup],
+        index: Int,
+        completedPacketCount: Int,
+        partsDirectoryURL: URL,
+        captureURL: URL,
+        totalPacketCount: Int,
+        progress: PacketExportProgressHandler?,
+        shouldCancel: @escaping PacketExportCancellationCheck,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        guard index < groups.count else {
+            try? FileManager.default.removeItem(at: partsDirectoryURL)
+            progress?(PacketExportProgress(exportedPacketCount: totalPacketCount, totalPacketCount: totalPacketCount))
+            completion(.success(()))
+            return
+        }
+        guard !shouldCancel() else {
+            try? FileManager.default.removeItem(at: partsDirectoryURL)
+            completion(.failure(Self.exportCancelledError()))
+            return
+        }
+
+        let group = groups[index]
+        guard let document = importedDocumentsByFileID[group.fileID] else {
+            try? FileManager.default.removeItem(at: partsDirectoryURL)
+            completion(.failure(TCPViewerCoreError(
+                code: .offlineFileSaveFailed,
+                message: "The imported capture backing for the TCPViewer session export is not available."
+            )))
+            return
+        }
+
+        let partURL = partsDirectoryURL.appendingPathComponent("part-\(index).pcapng")
+        let groupProgress: PacketExportProgressHandler = { packetProgress in
+            progress?(PacketExportProgress(
+                exportedPacketCount: min(totalPacketCount, completedPacketCount + packetProgress.exportedPacketCount),
+                totalPacketCount: totalPacketCount
+            ))
+        }
+        document.exportPackets(
+            withIDs: group.originalPacketIDs,
+            to: partURL,
+            format: .pcapng,
+            progress: groupProgress,
+            shouldCancel: shouldCancel
+        ) { [weak self] result in
+            guard let self else {
+                completion(result)
+                return
+            }
+
+            switch result {
+            case .success:
+                do {
+                    try self.appendFile(at: partURL, to: captureURL)
+                    try? FileManager.default.removeItem(at: partURL)
+                    self.exportImportedSessionCaptureGroup(
+                        groups,
+                        index: index + 1,
+                        completedPacketCount: completedPacketCount + group.originalPacketIDs.count,
+                        partsDirectoryURL: partsDirectoryURL,
+                        captureURL: captureURL,
+                        totalPacketCount: totalPacketCount,
+                        progress: progress,
+                        shouldCancel: shouldCancel,
+                        completion: completion
+                    )
+                } catch {
+                    try? FileManager.default.removeItem(at: partsDirectoryURL)
+                    completion(.failure(error))
+                }
+            case .failure:
+                try? FileManager.default.removeItem(at: partsDirectoryURL)
+                completion(result)
+            }
+        }
+    }
+
+    private func appendFile(at sourceURL: URL, to destinationURL: URL) throws {
+        let sourceHandle = try FileHandle(forReadingFrom: sourceURL)
+        defer { try? sourceHandle.close() }
+        let destinationHandle = try FileHandle(forWritingTo: destinationURL)
+        defer { try? destinationHandle.close() }
+
+        try destinationHandle.seekToEnd()
+        while true {
+            let data = try sourceHandle.read(upToCount: 1024 * 1024) ?? Data()
+            guard !data.isEmpty else {
+                break
+            }
+            try destinationHandle.write(contentsOf: data)
+        }
+    }
+
     func exportPackets(
         withIDs identifiers: [PacketSummary.ID],
         to url: URL,
@@ -1675,6 +2337,16 @@ final class TCPViewerWorkspaceController {
                 }
             }
         case .offline:
+            if let sessionDocument = document as? TCPViewSessionOfflineDocument {
+                snapshot.documentState.statusMessage = "Exporting \(url.lastPathComponent)..."
+                sessionDocument.exportPackets(withIDs: identifiers, to: url, format: format, progress: progress, shouldCancel: cancellationCheck) { [weak self] result in
+                    DispatchQueue.main.async {
+                        self?.completeOfflineExport(result, url: url, completion: completion)
+                    }
+                }
+                return
+            }
+
             let importedReferences = identifiers.compactMap { snapshot.packetIngestState.importedPacketReference(for: $0) }
             if importedReferences.count == identifiers.count, let fileID = importedReferences.first?.fileID {
                 guard importedReferences.allSatisfy({ $0.fileID == fileID }) else {
@@ -1788,6 +2460,77 @@ final class TCPViewerWorkspaceController {
         }
     }
 
+    private func resumeLiveSessionAfterSessionExportIfNeeded(
+        _ liveSession: any LiveCaptureSessionProviding,
+        shouldResumeCapture: Bool,
+        exportResult: Result<Void, Error>,
+        url: URL,
+        source: CaptureSource?,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        guard shouldResumeCapture else {
+            completeSessionExport(exportResult, url: url, source: source, completion: completion)
+            return
+        }
+
+        snapshot.sessionState.statusMessage = "Resuming capture..."
+        liveSession.resume { [weak self] resumeResult in
+            DispatchQueue.main.async {
+                guard let self else {
+                    completion(exportResult)
+                    return
+                }
+
+                switch (exportResult, resumeResult) {
+                case (.success, .success):
+                    self.completeSessionExport(.success(()), url: url, source: source, completion: completion)
+                case (.failure, .success):
+                    self.completeSessionExport(exportResult, url: url, source: source, completion: completion)
+                case (.success, .failure(let resumeError)):
+                    let tcpviewerError = self.tcpviewerError(from: resumeError, defaultCode: .liveSessionControlFailed)
+                    self.completeSessionExport(.failure(tcpviewerError), url: url, source: source, completion: completion)
+                case (.failure(let exportError), .failure):
+                    self.completeSessionExport(.failure(exportError), url: url, source: source, completion: completion)
+                }
+            }
+        }
+    }
+
+    private func completeSessionExport(
+        _ result: Result<Void, Error>,
+        url: URL,
+        source: CaptureSource?,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        switch result {
+        case .success:
+            switch source {
+            case .live:
+                snapshot.sessionState.lastError = nil
+                snapshot.sessionState.statusMessage = "Exported \(url.lastPathComponent)."
+            case .offline, nil:
+                snapshot.documentState.lastError = nil
+                snapshot.documentState.statusMessage = "Exported \(url.lastPathComponent)."
+            @unknown default:
+                break
+            }
+            completion(.success(()))
+        case .failure(let error):
+            let tcpviewerError = tcpviewerError(from: error, defaultCode: .offlineFileSaveFailed)
+            switch source {
+            case .live:
+                snapshot.sessionState.lastError = tcpviewerError
+                snapshot.sessionState.statusMessage = tcpviewerError.code == .operationCancelled ? "Export cancelled." : tcpviewerError.message
+            case .offline, nil:
+                snapshot.documentState.lastError = tcpviewerError
+                snapshot.documentState.statusMessage = tcpviewerError.message
+            @unknown default:
+                break
+            }
+            completion(.failure(tcpviewerError))
+        }
+    }
+
     func cancelDocumentLoading(completion: (() -> Void)? = nil) {
         let documents = Array(importedDocumentsByFileID.values)
         guard !documents.isEmpty else {
@@ -1808,6 +2551,65 @@ final class TCPViewerWorkspaceController {
                 }
             }
         }
+    }
+
+    func cancelSessionImport(completion: (() -> Void)? = nil) {
+        // Cancel sheet-owned import work without touching the current document state.
+        guard snapshot.sessionImportState.isPresented else {
+            completion?()
+            return
+        }
+
+        guard snapshot.sessionImportState.canCancel else {
+            dismissSessionImport()
+            completion?()
+            return
+        }
+
+        let generation = sessionImportGeneration
+        snapshot.sessionImportState.phase = .cancelling
+        snapshot.sessionImportState.message = "Cancelling \(snapshot.sessionImportState.fileURL?.lastPathComponent ?? "session import")..."
+
+        guard let pendingSessionImportDocument else {
+            finishSessionImportCancellation(generation: generation, completion: completion)
+            return
+        }
+
+        pendingSessionImportDocument.cancelLoading { [weak self] in
+            DispatchQueue.main.async {
+                self?.finishSessionImportCancellation(generation: generation, completion: completion)
+            }
+        }
+    }
+
+    func dismissSessionImport() {
+        guard snapshot.sessionImportState.phase == .failed else {
+            return
+        }
+
+        snapshot.sessionImportState = .idle
+    }
+
+    private func finishSessionImportCancellation(generation: Int, completion: (() -> Void)?) {
+        guard generation == sessionImportGeneration else {
+            completion?()
+            return
+        }
+
+        sessionImportGeneration += 1
+        pendingSessionImportDocument = nil
+        lastSessionImportSucceeded = false
+        snapshot.sessionImportState = .idle
+        let pendingCompletion = pendingSessionImportCompletion
+        pendingSessionImportCompletion = nil
+        completion?()
+        pendingCompletion?()
+    }
+
+    private func finishPendingSessionImportCompletion() {
+        let completion = pendingSessionImportCompletion
+        pendingSessionImportCompletion = nil
+        completion?()
     }
 
     func clearPackets() {
@@ -2373,7 +3175,20 @@ final class TCPViewerWorkspaceController {
         snapshot.loadState.progress = progress
         if packets.isEmpty {
             snapshot.packetIngestState.reset(source: .offline, message: resolvedMessage)
+        } else if let sessionDocument = document as? TCPViewSessionOfflineDocument {
+            currentDocumentSessionState = sessionDocument.state
+            currentDocumentSessionImportReport = sessionDocument.importReport
+            snapshot.packetIngestState.replaceSession(
+                with: packets,
+                importedFiles: sessionDocument.importedFiles,
+                importedPacketReferenceByID: sessionDocument.importedPacketReferenceByID,
+                clientIconFilePathByClientID: sessionDocument.clientIconFilePathByClientID,
+                source: .offline,
+                message: resolvedMessage
+            )
         } else {
+            currentDocumentSessionImportReport = nil
+            lastSessionImportSucceeded = false
             snapshot.packetIngestState.replace(with: packets, source: .offline, message: resolvedMessage)
         }
 
@@ -2672,12 +3487,19 @@ final class TCPViewerWorkspaceController {
     }
 
     private func cancelControllerTasks() {
+        let pendingImportDocument = pendingSessionImportDocument
         liveEventGeneration += 1
         documentEventGeneration += 1
+        sessionImportGeneration += 1
         inspectionGeneration += 1
         filterValidationGeneration += 1
         liveSession?.eventHandler = nil
         document?.eventHandler = nil
+        pendingSessionImportDocument?.eventHandler = nil
+        pendingSessionImportDocument = nil
+        pendingSessionImportCompletion = nil
+        lastSessionImportSucceeded = false
+        pendingImportDocument?.cancelLoading(completion: nil)
     }
 
     private func cancelBackgroundWorkForTermination(completion: @escaping () -> Void) {
@@ -2685,6 +3507,10 @@ final class TCPViewerWorkspaceController {
         let currentDocument = document
         let importedDocuments = importedDocumentsExcluding(currentDocument)
         document = nil
+        pendingSessionImportDocument = nil
+        snapshot.sessionImportState = .idle
+        currentDocumentSessionImportReport = nil
+        lastSessionImportSucceeded = false
         importedDocumentsByFileID.removeAll(keepingCapacity: false)
         backgroundCoordinator.cancelAll()
         currentDocument?.cancelLoading(completion: nil)
@@ -2701,6 +3527,9 @@ final class TCPViewerWorkspaceController {
         document?.eventHandler = nil
         inspectionGeneration += 1
         document = nil
+        currentDocumentSessionState = nil
+        currentDocumentSessionImportReport = nil
+        lastSessionImportSucceeded = false
         importedDocumentsByFileID.removeAll(keepingCapacity: false)
         backgroundCoordinator.endOperation("document-events")
         currentDocument?.cancelLoading(completion: nil)

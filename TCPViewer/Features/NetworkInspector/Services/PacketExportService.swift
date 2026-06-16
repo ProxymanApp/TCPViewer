@@ -27,18 +27,37 @@ final class PacketExportCancellationToken: @unchecked Sendable {
     }
 }
 
+private enum PacketExportProgressSheetLayout {
+    static let width: CGFloat = 680
+    static let horizontalPadding: CGFloat = 40
+    static let topPadding: CGFloat = 30
+    static let bottomPadding: CGFloat = 28
+    static let iconSize: CGFloat = 36
+}
+
 final class PacketExportProgressSheetController: NSViewController {
     private let fileName: String
+    private let progressTitle: String
+    private let unitLabel: String
     private let cancelHandler: () -> Void
-    private let titleLabel = NSTextField(labelWithString: "Exporting Packets")
+    private let iconView = NSImageView()
+    private let titleLabel = NSTextField(labelWithString: "")
     private let detailLabel = NSTextField(labelWithString: "")
+    private let fileNameLabel = NSTextField(labelWithString: "")
     private let percentLabel = NSTextField(labelWithString: "0%")
     private let progressIndicator = NSProgressIndicator()
     private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
     private var sheetWindow: NSWindow?
 
-    init(fileName: String, cancelHandler: @escaping () -> Void) {
+    init(
+        fileName: String,
+        progressTitle: String = "Exporting Packets",
+        unitLabel: String = "packets",
+        cancelHandler: @escaping () -> Void
+    ) {
         self.fileName = fileName
+        self.progressTitle = progressTitle
+        self.unitLabel = unitLabel
         self.cancelHandler = cancelHandler
         super.init(nibName: nil, bundle: nil)
     }
@@ -49,17 +68,36 @@ final class PacketExportProgressSheetController: NSViewController {
     }
 
     override func loadView() {
+        iconView.image = NSImage(systemSymbolName: "square.and.arrow.up", accessibilityDescription: "Export")
+        iconView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 28, weight: .semibold)
+        iconView.contentTintColor = .controlAccentColor
+        iconView.imageScaling = .scaleProportionallyUpOrDown
+
+        titleLabel.stringValue = progressTitle
         titleLabel.font = .systemFont(ofSize: NSFont.systemFontSize + 2, weight: .semibold)
-        detailLabel.stringValue = "Preparing \(fileName)..."
+        titleLabel.alignment = .center
+
+        detailLabel.stringValue = "Preparing export..."
         detailLabel.textColor = .secondaryLabelColor
+        detailLabel.alignment = .center
+
+        fileNameLabel.stringValue = fileName
+        fileNameLabel.textColor = .tertiaryLabelColor
+        fileNameLabel.alignment = .center
+        fileNameLabel.lineBreakMode = .byTruncatingMiddle
+        fileNameLabel.maximumNumberOfLines = 1
+        fileNameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
         percentLabel.alignment = .right
         percentLabel.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        percentLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         progressIndicator.isIndeterminate = false
         progressIndicator.minValue = 0
         progressIndicator.maxValue = 1
         progressIndicator.doubleValue = 0
         progressIndicator.controlSize = .regular
+        progressIndicator.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         cancelButton.target = self
         cancelButton.action = #selector(cancelExport(_:))
@@ -69,19 +107,35 @@ final class PacketExportProgressSheetController: NSViewController {
         let progressRow = NSStackView(views: [progressIndicator, percentLabel])
         progressRow.orientation = .horizontal
         progressRow.spacing = 12
-        progressIndicator.widthAnchor.constraint(greaterThanOrEqualToConstant: 280).isActive = true
+        progressRow.alignment = .centerY
         percentLabel.widthAnchor.constraint(equalToConstant: 48).isActive = true
 
-        let buttonRow = NSStackView(views: [cancelButton])
-        buttonRow.orientation = .horizontal
-        buttonRow.alignment = .trailing
-        buttonRow.distribution = .gravityAreas
-
-        let stackView = NSStackView(views: [titleLabel, detailLabel, progressRow, buttonRow])
+        let stackView = NSStackView(views: [iconView, titleLabel, detailLabel, fileNameLabel, progressRow, cancelButton])
         stackView.orientation = .vertical
-        stackView.spacing = 14
-        stackView.edgeInsets = NSEdgeInsets(top: 22, left: 24, bottom: 20, right: 24)
-        view = stackView
+        stackView.alignment = .centerX
+        stackView.spacing = 8
+        stackView.setCustomSpacing(12, after: iconView)
+        stackView.setCustomSpacing(16, after: fileNameLabel)
+        stackView.setCustomSpacing(20, after: progressRow)
+        stackView.translatesAutoresizingMaskIntoConstraints = false
+
+        let rootView = NSView()
+        rootView.addSubview(stackView)
+        view = rootView
+
+        // Keep the filename separate so long session names truncate instead of crowding the sheet edges.
+        NSLayoutConstraint.activate([
+            rootView.widthAnchor.constraint(equalToConstant: PacketExportProgressSheetLayout.width),
+            stackView.leadingAnchor.constraint(equalTo: rootView.leadingAnchor, constant: PacketExportProgressSheetLayout.horizontalPadding),
+            stackView.trailingAnchor.constraint(equalTo: rootView.trailingAnchor, constant: -PacketExportProgressSheetLayout.horizontalPadding),
+            stackView.topAnchor.constraint(equalTo: rootView.topAnchor, constant: PacketExportProgressSheetLayout.topPadding),
+            stackView.bottomAnchor.constraint(equalTo: rootView.bottomAnchor, constant: -PacketExportProgressSheetLayout.bottomPadding),
+            iconView.widthAnchor.constraint(equalToConstant: PacketExportProgressSheetLayout.iconSize),
+            iconView.heightAnchor.constraint(equalToConstant: PacketExportProgressSheetLayout.iconSize),
+            detailLabel.widthAnchor.constraint(equalTo: stackView.widthAnchor),
+            fileNameLabel.widthAnchor.constraint(equalTo: stackView.widthAnchor),
+            progressRow.widthAnchor.constraint(equalTo: stackView.widthAnchor),
+        ])
     }
 
     func show(attachedTo parentWindow: NSWindow?) {
@@ -102,7 +156,7 @@ final class PacketExportProgressSheetController: NSViewController {
         progressIndicator.doubleValue = progress.fractionCompleted
         let percent = Int((progress.fractionCompleted * 100).rounded())
         percentLabel.stringValue = "\(percent)%"
-        detailLabel.stringValue = "Exported \(progress.exportedPacketCount) of \(progress.totalPacketCount) packets to \(fileName)."
+        detailLabel.stringValue = "Exported \(progress.exportedPacketCount) of \(progress.totalPacketCount) \(unitLabel)"
     }
 
     func dismiss() {
@@ -143,6 +197,10 @@ final class PacketExportService {
         "\(sanitizedScopeName(scopeName))-\(Self.timestampFormatter.string(from: now())).\(format.rawValue)"
     }
 
+    func defaultSessionFileName(scopeName: String) -> String {
+        "\(sanitizedScopeName(scopeName))-\(Self.timestampFormatter.string(from: now())).\(TCPViewSessionFormat.fileExtension)"
+    }
+
     func lastDirectoryURL() -> URL? {
         guard let path = defaults.string(forKey: Key.lastDirectoryPath),
               !path.isEmpty else {
@@ -171,8 +229,34 @@ final class PacketExportService {
         return PacketExportDestination(url: url, format: format)
     }
 
-    func showProgressSheet(attachedTo window: NSWindow?, fileName: String, cancelHandler: @escaping () -> Void) -> PacketExportProgressSheetController {
-        let controller = PacketExportProgressSheetController(fileName: fileName, cancelHandler: cancelHandler)
+    func chooseTCPViewSessionDestination(scopeName: String) -> URL? {
+        let panel = NSSavePanel()
+        panel.title = "Export TCPViewer Session"
+        panel.nameFieldStringValue = defaultSessionFileName(scopeName: scopeName)
+        panel.directoryURL = lastDirectoryURL()
+        panel.allowedContentTypes = [UTType(filenameExtension: TCPViewSessionFormat.fileExtension)].compactMap { $0 }
+        panel.canCreateDirectories = true
+
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return nil
+        }
+
+        return url
+    }
+
+    func showProgressSheet(
+        attachedTo window: NSWindow?,
+        fileName: String,
+        progressTitle: String = "Exporting Packets",
+        unitLabel: String = "packets",
+        cancelHandler: @escaping () -> Void
+    ) -> PacketExportProgressSheetController {
+        let controller = PacketExportProgressSheetController(
+            fileName: fileName,
+            progressTitle: progressTitle,
+            unitLabel: unitLabel,
+            cancelHandler: cancelHandler
+        )
         controller.show(attachedTo: window)
         return controller
     }

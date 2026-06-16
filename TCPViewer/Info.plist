@@ -50,6 +50,20 @@
 			<key>NSDocumentClass</key>
 			<string>$(PRODUCT_MODULE_NAME).Document</string>
 		</dict>
+		<dict>
+			<key>CFBundleTypeIconFile</key>
+			<string>TCPViewSessionDocumentIcon.icns</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleTypeName</key>
+			<string>TCPViewer Session</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.proxyman.tcpviewer.session</string>
+			</array>
+			<key>NSDocumentClass</key>
+			<string>$(PRODUCT_MODULE_NAME).Document</string>
+		</dict>
 	</array>
 	<key>UTImportedTypeDeclarations</key>
 	<array>
@@ -84,6 +98,26 @@
 				<key>public.filename-extension</key>
 				<array>
 					<string>pcapng</string>
+				</array>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.zip-archive</string>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>TCPViewer Session</string>
+			<key>UTTypeIconFile</key>
+			<string>TCPViewSessionDocumentIcon.icns</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.proxyman.tcpviewer.session</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>tcpviewsession</string>
 				</array>
 			</dict>
 		</dict>

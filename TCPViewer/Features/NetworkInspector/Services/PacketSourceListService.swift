@@ -316,7 +316,7 @@ enum PacketSourceListDeletionPolicy {
 }
 
 enum PacketSourceListClassifier {
-    static func clientIdentity(for packet: PacketSummary) -> PacketSourceClientIdentity? {
+    static func clientIdentity(for packet: PacketSummary, iconFilePathOverride: String? = nil) -> PacketSourceClientIdentity? {
         guard let client = packet.client else {
             return nil
         }
@@ -351,7 +351,7 @@ enum PacketSourceListClassifier {
         return PacketSourceClientIdentity(
             key: PacketSourceClientKey(rawValue: "\(keyPrefix):\(identityValue)"),
             displayName: displayName,
-            iconFilePath: PacketClientIconPathResolver.iconFilePath(for: client)
+            iconFilePath: iconFilePathOverride ?? PacketClientIconPathResolver.iconFilePath(for: client)
         )
     }
 
@@ -567,7 +567,10 @@ final class PacketSourceListService {
 
         self.pinnedItems = pinnedItems
         self.savedPacketCount = savedPacketCount
-        importedFilesByID = Dictionary(uniqueKeysWithValues: ingestState.importedFiles.map { ($0.id, $0) })
+        importedFilesByID = [:]
+        for file in ingestState.importedFiles where importedFilesByID[file.id] == nil {
+            importedFilesByID[file.id] = file
+        }
 
         if packetLineageRevision == ingestState.packetLineageRevision,
            sourcePacketCount <= ingestState.packets.count {
@@ -644,7 +647,10 @@ final class PacketSourceListService {
     private func makeAssignment(for packet: PacketSummary, in ingestState: PacketIngestState) -> PacketBucketAssignment {
         PacketBucketAssignment(
             fileID: ingestState.importedPacketReference(for: packet.id)?.fileID,
-            appIdentity: PacketSourceListClassifier.clientIdentity(for: packet),
+            appIdentity: PacketSourceListClassifier.clientIdentity(
+                for: packet,
+                iconFilePathOverride: ingestState.tcpviewSessionClientIconFilePath(for: packet.client)
+            ),
             domainIdentity: PacketSourceListClassifier.domainIdentity(for: packet),
             ipAddressIdentities: PacketSourceListClassifier.ipAddressIdentities(for: packet),
             pinIPAddresses: Self.pinIPAddresses(for: packet)
@@ -1232,7 +1238,7 @@ enum PacketSourceListTreeBuilder {
             )
         }
 
-        return [
+        var roots = [
             PacketSourceListItem(
                 id: favoritesGroupID,
                 title: "Favorites",
@@ -1263,8 +1269,11 @@ enum PacketSourceListTreeBuilder {
                         children: []
                     ),
                 ]
-            ),
-            PacketSourceListItem(
+            )
+        ]
+
+        if !importedFileItems.isEmpty {
+            roots.append(PacketSourceListItem(
                 id: filesGroupID,
                 title: "Files",
                 systemImageName: nil,
@@ -1273,39 +1282,42 @@ enum PacketSourceListTreeBuilder {
                 kind: .group,
                 selection: nil,
                 children: importedFileItems
-            ),
-            PacketSourceListItem(
-                id: allGroupID,
-                title: "All",
-                systemImageName: nil,
-                iconFilePath: nil,
-                count: nil,
-                kind: .group,
-                selection: nil,
-                children: [
-                    PacketSourceListItem(
-                        id: appsFolderID,
-                        title: "Apps",
-                        systemImageName: "folder.fill",
-                        iconFilePath: nil,
-                        count: appBuckets.reduce(0) { $0 + $1.packetCount },
-                        kind: .folder,
-                        selection: .apps,
-                        children: appItems
-                    ),
-                    PacketSourceListItem(
-                        id: domainsFolderID,
-                        title: "Domains",
-                        systemImageName: "globe",
-                        iconFilePath: nil,
-                        count: domainBuckets.reduce(0) { $0 + $1.packetCount },
-                        kind: .folder,
-                        selection: .domains,
-                        children: domainItems
-                    ),
-                ]
-            ),
-        ]
+            ))
+        }
+
+        roots.append(PacketSourceListItem(
+            id: allGroupID,
+            title: "All",
+            systemImageName: nil,
+            iconFilePath: nil,
+            count: nil,
+            kind: .group,
+            selection: nil,
+            children: [
+                PacketSourceListItem(
+                    id: appsFolderID,
+                    title: "Apps",
+                    systemImageName: "folder.fill",
+                    iconFilePath: nil,
+                    count: appBuckets.reduce(0) { $0 + $1.packetCount },
+                    kind: .folder,
+                    selection: .apps,
+                    children: appItems
+                ),
+                PacketSourceListItem(
+                    id: domainsFolderID,
+                    title: "Domains",
+                    systemImageName: "globe",
+                    iconFilePath: nil,
+                    count: domainBuckets.reduce(0) { $0 + $1.packetCount },
+                    kind: .folder,
+                    selection: .domains,
+                    children: domainItems
+                ),
+            ]
+        ))
+
+        return roots
     }
 
     private static func makeDomainItems(

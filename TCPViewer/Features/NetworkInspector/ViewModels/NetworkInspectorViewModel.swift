@@ -232,7 +232,10 @@ private enum PacketTableContentBuilder {
             }
 
             let rowIndex = store.rows.count
-            store.rows.append(rowTimingState.row(for: packet))
+            store.rows.append(rowTimingState.row(
+                for: packet,
+                clientIconFilePath: clientIconFilePath(for: packet, in: input.ingestState)
+            ))
             store.rowIDs.append(packet.id)
             store.visiblePacketRowIndexByID[packet.id] = rowIndex
         }
@@ -243,6 +246,10 @@ private enum PacketTableContentBuilder {
             malformedPacketCount: malformedPacketCount,
             rowTimingState: rowTimingState
         )
+    }
+
+    private static func clientIconFilePath(for packet: PacketSummary, in ingestState: PacketIngestState) -> String? {
+        ingestState.tcpviewSessionClientIconFilePath(for: packet.client)
     }
 
     private static func packets(from input: PacketTableBuildInput) -> [PacketSummary] {
@@ -557,7 +564,10 @@ private struct PacketTableContentCache {
             }
 
             let rowIndex = store.rows.count
-            store.rows.append(rowTimingState.row(for: packet))
+            store.rows.append(rowTimingState.row(
+                for: packet,
+                clientIconFilePath: clientIconFilePath(for: packet, in: ingestState)
+            ))
             store.rowIDs.append(packet.id)
             store.visiblePacketRowIndexByID[packet.id] = rowIndex
         }
@@ -785,7 +795,10 @@ private struct PacketTableContentCache {
             guard isVisibleNow, let rowIndex = store.visiblePacketRowIndexByID[packetID] else {
                 continue
             }
-            store.rows[rowIndex] = rowTimingState.row(for: packet)
+            store.rows[rowIndex] = rowTimingState.row(
+                for: packet,
+                clientIconFilePath: clientIconFilePath(for: packet, in: ingestState)
+            )
             reloadIndexes.insert(rowIndex)
         }
 
@@ -855,6 +868,10 @@ private struct PacketTableContentCache {
         default:
             return ingestState.packets
         }
+    }
+
+    private func clientIconFilePath(for packet: PacketSummary, in ingestState: PacketIngestState) -> String? {
+        ingestState.tcpviewSessionClientIconFilePath(for: packet.client)
     }
 
     private func matches(
@@ -934,6 +951,8 @@ final class NetworkInspectorViewModel {
     private let structuredFilterService: PacketStructuredFilterService
     private let structuredFilterStore: PacketStructuredFilterStore
     private let packetExportService: PacketExportService
+    private let tcpViewSessionExportService: any TCPViewSessionExportWriting
+    private let packetTableColumnLayoutStore: PacketTableColumnLayoutStore
     private let statusMetricsService: TCPViewerStatusMetricsService
     private let packetTableFilterQueue = DispatchQueue(label: "com.proxyman.TCPViewer.packet-table-filter")
     private let packetTableAsyncRebuildThreshold: Int
@@ -946,6 +965,7 @@ final class NetworkInspectorViewModel {
     private var packetTableFilterGeneration = 0
     private var isPacketTableFiltering = false
     private var selectsFirstVisiblePacketAfterFiltering = false
+    private var pendingSessionImportReport: TCPViewSessionImportReport?
 
     // Trailing-edge debounce for delegate-driven rebuilds. Live ingest fires the controller delegate
     // up to ~10 Hz; coalescing to ~12 Hz keeps the UI feeling live without burning CPU on redundant
@@ -964,6 +984,7 @@ final class NetworkInspectorViewModel {
     private var structuredFilterGroup: PacketStructuredFilterGroup
     private var selectedCustomFilterID: PacketCustomFilter.ID?
     private var helperOnboardingDismissed = false
+    private var isUsingSessionDocumentState = false
 
     convenience init(userDefaults: UserDefaults = .standard) {
         self.init(services: .foundation, userDefaults: userDefaults)
@@ -979,6 +1000,7 @@ final class NetworkInspectorViewModel {
         customFilterService: PacketCustomFilterService = PacketCustomFilterService(),
         structuredFilterService: PacketStructuredFilterService = PacketStructuredFilterService(),
         packetExportService: PacketExportService? = nil,
+        tcpViewSessionExportService: (any TCPViewSessionExportWriting)? = nil,
         statusMetricsService: TCPViewerStatusMetricsService = TCPViewerStatusMetricsService(),
         packetTableAsyncRebuildThreshold: Int = 5_000,
         packetTableFilterBuildHook: (@Sendable () -> Void)? = nil
@@ -996,6 +1018,8 @@ final class NetworkInspectorViewModel {
         self.structuredFilterService = structuredFilterService
         self.structuredFilterStore = PacketStructuredFilterStore(defaults: userDefaults)
         self.packetExportService = packetExportService ?? PacketExportService(defaults: userDefaults)
+        self.tcpViewSessionExportService = tcpViewSessionExportService ?? TCPViewSessionExportService()
+        self.packetTableColumnLayoutStore = PacketTableColumnLayoutStore(defaults: userDefaults)
         self.statusMetricsService = statusMetricsService
         self.packetTableAsyncRebuildThreshold = max(1, packetTableAsyncRebuildThreshold)
         self.packetTableFilterBuildHook = packetTableFilterBuildHook
@@ -1090,6 +1114,17 @@ final class NetworkInspectorViewModel {
 
     var networkHelperToolSnapshot: TCPViewerNetworkHelperToolSnapshot {
         controller.networkHelperToolSnapshot
+    }
+
+    func consumeSessionImportReportWithFailures() -> TCPViewSessionImportReport? {
+        guard let report = pendingSessionImportReport,
+              report.hasFailedFlows else {
+            pendingSessionImportReport = nil
+            return nil
+        }
+
+        pendingSessionImportReport = nil
+        return report
     }
 
     func dismissNetworkHelperOnboarding() {
@@ -1189,7 +1224,9 @@ final class NetworkInspectorViewModel {
 
     func updateDisplayFilterText(_ text: String) {
         displayFilterText = text
-        preferences.persistDisplayFilter(text)
+        if !isUsingSessionDocumentState {
+            preferences.persistDisplayFilter(text)
+        }
         rebuildSnapshot()
     }
 
@@ -1200,7 +1237,9 @@ final class NetworkInspectorViewModel {
     func updateStructuredFilterGroup(_ group: PacketStructuredFilterGroup) {
         structuredFilterGroup = PacketStructuredFilterGroup(filters: group.filters, operator: group.operator)
         selectedCustomFilterID = nil
-        structuredFilterStore.save(structuredFilterGroup)
+        if !isUsingSessionDocumentState {
+            structuredFilterStore.save(structuredFilterGroup)
+        }
         rebuildSnapshot()
     }
 
@@ -1210,7 +1249,9 @@ final class NetworkInspectorViewModel {
         }
 
         isStructuredFilterVisible = isVisible
-        preferences.persistStructuredFilterVisible(isVisible)
+        if !isUsingSessionDocumentState {
+            preferences.persistStructuredFilterVisible(isVisible)
+        }
         rebuildSnapshot()
     }
 
@@ -1241,17 +1282,23 @@ final class NetworkInspectorViewModel {
 
         if isStructuredFilterVisible, selectedCustomFilterID == filter.id {
             isStructuredFilterVisible = false
-            preferences.persistStructuredFilterVisible(false)
+            if !isUsingSessionDocumentState {
+                preferences.persistStructuredFilterVisible(false)
+            }
             rebuildSnapshot()
             return
         }
 
         structuredFilterGroup = PacketStructuredFilterGroup(filters: filter.group.filters, operator: filter.group.operator)
-        structuredFilterStore.save(structuredFilterGroup)
+        if !isUsingSessionDocumentState {
+            structuredFilterStore.save(structuredFilterGroup)
+        }
         selectedCustomFilterID = filter.id
         if !isStructuredFilterVisible {
             isStructuredFilterVisible = true
-            preferences.persistStructuredFilterVisible(true)
+            if !isUsingSessionDocumentState {
+                preferences.persistStructuredFilterVisible(true)
+            }
         }
         rebuildSnapshot()
     }
@@ -1267,7 +1314,9 @@ final class NetworkInspectorViewModel {
         let replacementGroup = PacketStructuredFilterGroup(filters: group.filters, operator: group.operator)
         try customFilterService.updateGroup(id: id, group: replacementGroup)
         structuredFilterGroup = replacementGroup
-        structuredFilterStore.save(replacementGroup)
+        if !isUsingSessionDocumentState {
+            structuredFilterStore.save(replacementGroup)
+        }
         selectedCustomFilterID = id
         rebuildSnapshot()
     }
@@ -1407,6 +1456,41 @@ final class NetworkInspectorViewModel {
         return uniquePins
     }
 
+    private func makeTCPViewSessionExportSnapshot() -> TCPViewSessionExportSnapshot {
+        let ingestState = controller.snapshot.packetIngestState
+        let documentState = controller.snapshot.documentState
+        let sourceMetadata = TCPViewSessionSourceMetadata(
+            fileName: documentState.fileURL?.lastPathComponent,
+            filePath: documentState.fileURL?.path,
+            format: documentState.format?.rawValue,
+            packetCount: ingestState.totalPacketCount
+        )
+
+        return TCPViewSessionExportSnapshot(
+            packets: ingestState.packets,
+            source: ingestState.source,
+            backingIdentity: ingestState.backingIdentity,
+            importedFiles: ingestState.importedFiles,
+            importedPacketReferenceByID: ingestState.importedPacketReferenceByID,
+            pins: pinService.pins(),
+            savedPackets: savedPacketService.records(),
+            customFilters: customFilterService.filters(),
+            quickFilterSelection: quickFilterService.selection,
+            structuredFilterGroup: structuredFilterGroup,
+            displayFilterText: displayFilterText,
+            sourceListFilterText: sourceListFilterText,
+            selectedPacketID: controller.snapshot.selectedPacketID,
+            selectedSourceListSelection: selectedSourceListSelection,
+            workspaceMode: workspaceMode,
+            inspectorTab: inspectorTab,
+            inspectorPlacement: inspectorPlacement,
+            isInspectorVisible: isInspectorVisible,
+            isStructuredFilterVisible: isStructuredFilterVisible,
+            tableColumnLayout: packetTableColumnLayoutStore.load(),
+            sourceMetadata: sourceMetadata
+        )
+    }
+
     private func presentExportPanel(
         identifiers: [PacketSummary.ID],
         scopeName: String,
@@ -1497,7 +1581,10 @@ final class NetworkInspectorViewModel {
         _ identifiers: [PacketSummary.ID],
         requiresSavedBacking: Bool
     ) throws -> [PacketSummary.ID] {
-        let activePacketsByID = Dictionary(uniqueKeysWithValues: controller.snapshot.packetIngestState.packets.map { ($0.id, $0) })
+        var activePacketsByID: [PacketSummary.ID: PacketSummary] = [:]
+        for packet in controller.snapshot.packetIngestState.packets where activePacketsByID[packet.id] == nil {
+            activePacketsByID[packet.id] = packet
+        }
         let missingActiveIDs = identifiers.filter { activePacketsByID[$0] == nil }
         guard missingActiveIDs.isEmpty else {
             throw TCPViewerCoreError(code: .offlineFileSaveFailed, message: "Some selected packets are no longer available in the active capture.")
@@ -1511,7 +1598,10 @@ final class NetworkInspectorViewModel {
             throw TCPViewerCoreError(code: .offlineFileSaveFailed, message: "Saved packets from another session cannot be exported because their raw bytes are not available.")
         }
 
-        let savedRecordsByPacketID = Dictionary(uniqueKeysWithValues: savedPacketService.records().map { ($0.packet.id, $0) })
+        var savedRecordsByPacketID: [PacketSummary.ID: SavedPacketRecord] = [:]
+        for record in savedPacketService.records() where savedRecordsByPacketID[record.packet.id] == nil {
+            savedRecordsByPacketID[record.packet.id] = record
+        }
         for identifier in identifiers {
             guard let record = savedRecordsByPacketID[identifier],
                   record.backingIdentity == activeBackingIdentity,
@@ -1598,6 +1688,7 @@ final class NetworkInspectorViewModel {
                 completion?()
             }
         } else {
+            restorePersistentDocumentState()
             controller.startLiveCapture { [weak self] in
                 self?.rebuildSnapshot()
                 completion?()
@@ -1627,18 +1718,57 @@ final class NetworkInspectorViewModel {
     }
 
     func openDocument(at fileURL: URL, completion: (() -> Void)? = nil) {
+        let standardizedURL = TCPViewerCaptureFileImportPolicy.standardizedFileURL(fileURL)
+        let isSessionFile = TCPViewerCaptureFileImportPolicy.isSessionFileURL(standardizedURL)
         controller.openDocument(at: fileURL) { [weak self] in
-            self?.workspaceMode = .packets
-            self?.selectedSidebar = .liveCapture
-            self?.selectedSourceListSelection = .allPackets
-            self?.rebuildSnapshot()
+            guard let self else {
+                completion?()
+                return
+            }
+
+            if self.controller.lastSessionImportSucceeded,
+               let sessionState = self.controller.currentDocumentSessionState {
+                self.applySessionDocumentState(sessionState)
+                self.pendingSessionImportReport = self.controller.currentDocumentSessionImportReport
+            } else if isSessionFile {
+                self.pendingSessionImportReport = nil
+            } else {
+                self.pendingSessionImportReport = nil
+                self.restorePersistentDocumentState()
+                self.workspaceMode = .packets
+                self.selectedSidebar = .liveCapture
+                self.selectedSourceListSelection = .allPackets
+            }
+            self.rebuildSnapshot()
             completion?()
         }
     }
 
     func importDocuments(at fileURLs: [URL], completion: (() -> Void)? = nil) {
+        let hasSessionFile = fileURLs
+            .map(TCPViewerCaptureFileImportPolicy.standardizedFileURL)
+            .contains(where: TCPViewerCaptureFileImportPolicy.isSessionFileURL)
         controller.importDocuments(at: fileURLs) { [weak self] in
-            self?.finishImportedDocuments(fileURLs: fileURLs, completion: completion)
+            guard let self else {
+                completion?()
+                return
+            }
+
+            if self.controller.lastSessionImportSucceeded,
+               let sessionState = self.controller.currentDocumentSessionState {
+                self.applySessionDocumentState(sessionState)
+                self.pendingSessionImportReport = self.controller.currentDocumentSessionImportReport
+                self.rebuildSnapshot()
+                completion?()
+            } else if hasSessionFile {
+                self.pendingSessionImportReport = nil
+                self.rebuildSnapshot()
+                completion?()
+            } else {
+                self.pendingSessionImportReport = nil
+                self.restorePersistentDocumentState()
+                self.finishImportedDocuments(fileURLs: fileURLs, completion: completion)
+            }
         }
     }
 
@@ -1653,6 +1783,60 @@ final class NetworkInspectorViewModel {
         selectedSourceListSelection = importedFileSelection(for: fileURLs)
         rebuildSnapshot()
         completion?()
+    }
+
+    private func applySessionDocumentState(_ state: TCPViewSessionState) {
+        isUsingSessionDocumentState = true
+        pinService.useDocumentPins(state.pins)
+        savedPacketService.useDocumentRecords(remappedSavedRecordsForCurrentDocument(state.savedPackets))
+        customFilterService.useDocumentFilters(state.customFilters)
+        quickFilterService.apply(state.quickFilterSelection)
+        structuredFilterGroup = state.structuredFilterGroup
+        displayFilterText = state.displayFilterText
+        sourceListFilterText = state.sourceListFilterText
+        selectedCustomFilterID = nil
+        selectedSourceListSelection = state.selectedSourceListSelection?.selection() ?? .allPackets
+        workspaceMode = NetworkInspectorWorkspaceMode(rawValue: state.workspaceMode) ?? .packets
+        selectedSidebar = workspaceMode == .packets ? .liveCapture : .view(workspaceMode)
+        inspectorTab = PacketInspectorTab(rawValue: state.inspectorTab) ?? .summary
+        inspectorPlacement = NetworkInspectorPlacement(rawValue: state.inspectorPlacement) ?? .trailing
+        isInspectorVisible = state.isInspectorVisible
+        isStructuredFilterVisible = state.isStructuredFilterVisible
+        packetTableContentCache.reset()
+
+        if let selectedPacketID = state.selectedPacketID,
+           controller.snapshot.packetIngestState.packet(withID: selectedPacketID) != nil {
+            controller.selectPacket(selectedPacketID)
+        }
+    }
+
+    private func restorePersistentDocumentState() {
+        guard isUsingSessionDocumentState else {
+            return
+        }
+
+        isUsingSessionDocumentState = false
+        pinService.reloadPersistentPins()
+        savedPacketService.reloadPersistentRecords()
+        customFilterService.reloadPersistentFilters()
+        quickFilterService.reset()
+        selectedCustomFilterID = nil
+        sourceListFilterText = ""
+        displayFilterText = preferences.displayFilterText
+        structuredFilterGroup = structuredFilterStore.load()
+        isStructuredFilterVisible = preferences.isStructuredFilterVisible
+        inspectorPlacement = preferences.inspectorPlacement
+        isInspectorVisible = preferences.isInspectorVisible
+        packetTableContentCache.reset()
+    }
+
+    private func remappedSavedRecordsForCurrentDocument(_ records: [SavedPacketRecord]) -> [SavedPacketRecord] {
+        let backingIdentity = controller.snapshot.packetIngestState.backingIdentity
+        return records.map { record in
+            var remappedRecord = record
+            remappedRecord.backingIdentity = backingIdentity
+            return remappedRecord
+        }
     }
 
     func saveDocument(completion: (() -> Void)? = nil) {
@@ -1682,6 +1866,47 @@ final class NetworkInspectorViewModel {
             requiresSavedBacking: false,
             attachedTo: window
         )
+    }
+
+    func presentTCPViewSessionExportPanel(attachedTo window: NSWindow?) {
+        guard !controller.snapshot.packetIngestState.packets.isEmpty else {
+            packetExportService.presentFailure(TCPViewerCoreError(code: .offlineFileSaveFailed, message: "There are no packets to export."))
+            return
+        }
+
+        guard let destinationURL = packetExportService.chooseTCPViewSessionDestination(scopeName: "TCPViewer-Session") else {
+            return
+        }
+
+        let cancellationToken = PacketExportCancellationToken()
+        let progressSheet = packetExportService.showProgressSheet(
+            attachedTo: window,
+            fileName: destinationURL.lastPathComponent,
+            progressTitle: "Exporting Session",
+            unitLabel: "items"
+        ) {
+            cancellationToken.cancel()
+        }
+
+        exportTCPViewSession(
+            to: destinationURL,
+            progress: { progress in
+                DispatchQueue.main.async {
+                    progressSheet.update(progress)
+                }
+            },
+            shouldCancel: {
+                cancellationToken.isCancelled()
+            }
+        ) { [weak self] result in
+            DispatchQueue.main.async {
+                progressSheet.dismiss()
+                if case .failure(let error) = result,
+                   self?.isExportCancellation(error) != true {
+                    self?.packetExportService.presentFailure(error)
+                }
+            }
+        }
     }
 
     func presentPacketExportPanel(identifiers: [PacketSummary.ID], format: CaptureFileFormat, attachedTo window: NSWindow?) {
@@ -1725,6 +1950,33 @@ final class NetworkInspectorViewModel {
             shouldCancel: shouldCancel,
             completion: completion
         )
+    }
+
+    func exportTCPViewSession(
+        to url: URL,
+        progress: PacketExportProgressHandler? = nil,
+        shouldCancel: PacketExportCancellationCheck? = nil,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        let exportSnapshot = makeTCPViewSessionExportSnapshot()
+        guard !exportSnapshot.packets.isEmpty else {
+            completion(.failure(TCPViewerCoreError(code: .offlineFileSaveFailed, message: "There are no packets to export.")))
+            return
+        }
+
+        controller.exportTCPViewSession(
+            snapshot: exportSnapshot,
+            to: url,
+            exportService: tcpViewSessionExportService,
+            progress: progress,
+            shouldCancel: shouldCancel
+        ) { [weak self] result in
+            if case .success = result {
+                self?.packetExportService.rememberDestination(url)
+            }
+            self?.rebuildSnapshot()
+            completion(result)
+        }
     }
 
     func exportPackets(
@@ -1777,6 +2029,18 @@ final class NetworkInspectorViewModel {
         }
     }
 
+    func cancelSessionImport(completion: (() -> Void)? = nil) {
+        controller.cancelSessionImport { [weak self] in
+            self?.rebuildSnapshot()
+            completion?()
+        }
+    }
+
+    func dismissSessionImport() {
+        controller.dismissSessionImport()
+        rebuildSnapshot()
+    }
+
     func selectPacket(_ identifier: PacketSummary.ID?) {
         print("[TCPViewer] \(NetworkInspectorDebugLog.timestamp()) 🎯 Packet row selected: \(identifier?.description ?? "nil")")
         controller.selectPacket(identifier)
@@ -1802,7 +2066,9 @@ final class NetworkInspectorViewModel {
         }
 
         isInspectorVisible = isVisible
-        preferences.persistInspectorVisible(isVisible)
+        if !isUsingSessionDocumentState {
+            preferences.persistInspectorVisible(isVisible)
+        }
         rebuildSnapshot()
     }
 
@@ -1818,8 +2084,10 @@ final class NetworkInspectorViewModel {
 
         inspectorPlacement = placement
         isInspectorVisible = true
-        preferences.persistInspectorPlacement(placement)
-        preferences.persistInspectorVisible(true)
+        if !isUsingSessionDocumentState {
+            preferences.persistInspectorPlacement(placement)
+            preferences.persistInspectorVisible(true)
+        }
         rebuildSnapshot()
     }
 
@@ -1830,7 +2098,9 @@ final class NetworkInspectorViewModel {
             return
         }
 
-        preferences.persistInspectorThickness(thickness, placement: placement ?? inspectorPlacement)
+        if !isUsingSessionDocumentState {
+            preferences.persistInspectorThickness(thickness, placement: placement ?? inspectorPlacement)
+        }
     }
 
     // Reject invalid or collapse-threshold sizes so reopen can fall back to a visible default.

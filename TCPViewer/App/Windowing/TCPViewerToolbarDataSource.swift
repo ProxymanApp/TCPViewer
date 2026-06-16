@@ -37,6 +37,13 @@ private enum TCPViewerToolbarLayout {
     static let trialButtonWidth: CGFloat = 132
 }
 
+private enum TCPViewerShareMenuItemIndex {
+    static let buttonTitle = 0
+    static let exportSession = 1
+    static let exportPcap = 2
+    static let exportPcapng = 3
+}
+
 struct TCPViewerInterfaceMenuSection {
     let title: String
     let interfaces: [CaptureInterfaceSummary]
@@ -131,6 +138,7 @@ protocol TCPViewerToolbarDataSourceDelegate: AnyObject {
     func tcpviewerToolbarDataSource(_ dataSource: TCPViewerToolbarDataSource, didSelectInterface identifier: String)
     func tcpviewerToolbarDataSourceDidToggleCapture(_ dataSource: TCPViewerToolbarDataSource)
     func tcpviewerToolbarDataSourceDidRequestClearAllPackets(_ dataSource: TCPViewerToolbarDataSource)
+    func tcpviewerToolbarDataSourceDidRequestExportSession(_ dataSource: TCPViewerToolbarDataSource)
     func tcpviewerToolbarDataSource(_ dataSource: TCPViewerToolbarDataSource, didRequestExport format: CaptureFileFormat)
     func tcpviewerToolbarDataSourceDidToggleInspector(_ dataSource: TCPViewerToolbarDataSource)
     func tcpviewerToolbarDataSourceDidToggleBottomInspector(_ dataSource: TCPViewerToolbarDataSource)
@@ -286,7 +294,8 @@ final class TCPViewerToolbarDataSource: NSObject {
 
         sharePopup.controlSize = .regular
         sharePopup.addItem(withTitle: "")
-        sharePopup.item(at: 0)?.image = TCPViewerUI.image("square.and.arrow.up")
+        sharePopup.item(at: TCPViewerShareMenuItemIndex.buttonTitle)?.image = TCPViewerUI.image("square.and.arrow.up")
+        sharePopup.addItem(withTitle: "Export Session")
         sharePopup.addItem(withTitle: "Export as pcap")
         sharePopup.addItem(withTitle: "Export as pcapng")
         sharePopup.imagePosition = .imageOnly
@@ -484,9 +493,10 @@ final class TCPViewerToolbarDataSource: NSObject {
     }
 
     private func renderSharePopup() {
-        sharePopup.item(at: 1)?.isEnabled = viewModel.canExport
-        sharePopup.item(at: 2)?.isEnabled = viewModel.canExport
-        sharePopup.selectItem(at: 0)
+        sharePopup.item(at: TCPViewerShareMenuItemIndex.exportSession)?.isEnabled = viewModel.canExport
+        sharePopup.item(at: TCPViewerShareMenuItemIndex.exportPcap)?.isEnabled = viewModel.canExport
+        sharePopup.item(at: TCPViewerShareMenuItemIndex.exportPcapng)?.isEnabled = viewModel.canExport
+        sharePopup.selectItem(at: TCPViewerShareMenuItemIndex.buttonTitle)
     }
 
     private func renderInspectorButton() {
@@ -544,15 +554,17 @@ final class TCPViewerToolbarDataSource: NSObject {
 
     @objc private func shareActionSelected(_ sender: NSPopUpButton) {
         switch sender.indexOfSelectedItem {
-        case 1:
+        case TCPViewerShareMenuItemIndex.exportSession:
+            delegate?.tcpviewerToolbarDataSourceDidRequestExportSession(self)
+        case TCPViewerShareMenuItemIndex.exportPcap:
             delegate?.tcpviewerToolbarDataSource(self, didRequestExport: .pcap)
-        case 2:
+        case TCPViewerShareMenuItemIndex.exportPcapng:
             delegate?.tcpviewerToolbarDataSource(self, didRequestExport: .pcapng)
         default:
             break
         }
 
-        sender.selectItem(at: 0)
+        sender.selectItem(at: TCPViewerShareMenuItemIndex.buttonTitle)
     }
 
     @objc private func inspectorButtonPressed(_ sender: NSButton) {

@@ -151,6 +151,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        let sessionURLs = supportedURLs.filter(TCPViewerCaptureFileImportPolicy.isSessionFileURL)
+        guard sessionURLs.isEmpty || (sessionURLs.count == 1 && supportedURLs.count == 1) else {
+            presentInvalidSessionOpenSelectionAlert()
+            completion?(false)
+            return
+        }
+
         do {
             let windowController = try frontmostOrNewTCPViewerWindowController()
             focusWindowController(windowController)
@@ -161,6 +168,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             NSDocumentController.shared.presentError(error)
             completion?(false)
         }
+    }
+
+    private func presentInvalidSessionOpenSelectionAlert() {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Open One Session"
+        alert.informativeText = "TCPViewer sessions replace the current document and cannot be merged with other capture files."
+        alert.runModal()
     }
 
     private func frontmostOrNewTCPViewerWindowController() throws -> TCPViewerWindowController {
