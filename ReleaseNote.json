@@ -114,11 +114,25 @@
         "Fixed launch update checks so Sparkle checks once per launch when automatic update checks are enabled."
       ]
     },
-        {
+    {
       "version": "1.5.0",
       "title": "TCP Viewer 1.5.0 Support pcap and pcapng",
       "features": [
         "TCP Viewer can open pcap and pcapng file by double clicking on the file in Finder or Drag and Drop the file into the app."
+      ],
+      "improvements": [
+      ],
+      "bugs": [
+      ]
+    },
+    {
+      "version": "1.6.0",
+      "title": "TCP Viewer 1.6.0",
+      "features": [
+        "Add bottom status memory and traffic metrics.",
+        "Add dynamic background view for appearance-aware layers.",
+        "Regenerate macOS app icons with Icon Composer assets.",
+        "Support TCPViewer session export and import."
       ],
       "improvements": [
       ],
