@@ -914,6 +914,132 @@ struct WindowControllerTests {
         await tearDown(controller)
     }
 
+    @Test func openingSessionFileUsesImportStateWithoutChangingDocumentStatus() async throws {
+        let existingURL = URL(fileURLWithPath: "/tmp/existing-session-source.pcapng")
+        let existingPackets = [makePacket(packetNumber: 1, source: .offline, transportHint: .udp)]
+        let sessionPackets = [
+            makePacket(packetNumber: 1, source: .offline, transportHint: .tcp),
+            makePacket(packetNumber: 2, source: .offline, transportHint: .tls),
+        ]
+        let package = try writeSessionPackage(named: "pending-status", packets: sessionPackets)
+        defer { try? FileManager.default.removeItem(at: package.directoryURL) }
+
+        let openGate = AsyncGate()
+        let existingDocument = FakeOfflineDocument(
+            url: existingURL,
+            metadata: CaptureDocumentMetadata(format: .pcapng),
+            openPlan: .completed(existingPackets)
+        )
+        let sessionBackingDocument = FakeOfflineDocument(
+            url: package.captureURL,
+            metadata: CaptureDocumentMetadata(format: .pcapng),
+            openPlan: FakeOfflineDocument.LoadPlan(
+                batches: [sessionPackets],
+                progress: [],
+                error: nil,
+                gate: openGate
+            )
+        )
+        let controller = TCPViewerWorkspaceController(
+            services: TCPViewerServiceRegistry(core: FakeTCPViewerCore(
+                interfaceInventories: [[makeInterface(id: "en0", displayName: "Wi-Fi")]],
+                documentFactory: { url in
+                    url == existingURL ? existingDocument : sessionBackingDocument
+                }
+            ))
+        )
+
+        await controller.openDocument(at: existingURL)
+        await waitUntil {
+            controller.snapshot.documentState.phase == .loaded
+        }
+        let loadedDocumentState = controller.snapshot.documentState
+
+        let openTask = Task {
+            await controller.openDocument(at: package.sessionURL)
+        }
+        await waitUntil {
+            controller.snapshot.sessionImportState.phase == .loading
+        }
+
+        #expect(controller.snapshot.documentState == loadedDocumentState)
+        #expect(controller.snapshot.loadState.canCancel == false)
+        #expect(controller.snapshot.sessionImportState.fileURL == package.sessionURL)
+        #expect(controller.snapshot.sessionImportState.canCancel)
+
+        await openGate.open()
+        await openTask.value
+        await waitUntil {
+            controller.snapshot.documentState.fileURL == package.sessionURL &&
+                controller.snapshot.documentState.phase == .loaded
+        }
+
+        #expect(controller.snapshot.sessionImportState.phase == .idle)
+        #expect(controller.snapshot.packetIngestState.packets.map(\.id) == sessionPackets.map(\.id))
+
+        await tearDown(controller)
+    }
+
+    @Test func cancellingSessionImportKeepsCurrentDocumentAndIgnoresLateCompletion() async throws {
+        let existingURL = URL(fileURLWithPath: "/tmp/existing-before-cancel.pcapng")
+        let existingPackets = [makePacket(packetNumber: 1, source: .offline, transportHint: .dns)]
+        let sessionPackets = [makePacket(packetNumber: 1, source: .offline, transportHint: .tcp)]
+        let package = try writeSessionPackage(named: "cancelled-session", packets: sessionPackets)
+        defer { try? FileManager.default.removeItem(at: package.directoryURL) }
+
+        let openGate = AsyncGate()
+        let existingDocument = FakeOfflineDocument(
+            url: existingURL,
+            metadata: CaptureDocumentMetadata(format: .pcapng),
+            openPlan: .completed(existingPackets)
+        )
+        let sessionBackingDocument = FakeOfflineDocument(
+            url: package.captureURL,
+            metadata: CaptureDocumentMetadata(format: .pcapng),
+            openPlan: FakeOfflineDocument.LoadPlan(
+                batches: [sessionPackets],
+                progress: [],
+                error: nil,
+                gate: openGate
+            )
+        )
+        let controller = TCPViewerWorkspaceController(
+            services: TCPViewerServiceRegistry(core: FakeTCPViewerCore(
+                interfaceInventories: [[makeInterface(id: "en0", displayName: "Wi-Fi")]],
+                documentFactory: { url in
+                    url == existingURL ? existingDocument : sessionBackingDocument
+                }
+            ))
+        )
+
+        await controller.openDocument(at: existingURL)
+        await waitUntil {
+            controller.snapshot.documentState.phase == .loaded
+        }
+        let loadedDocumentState = controller.snapshot.documentState
+
+        let openTask = Task {
+            await controller.openDocument(at: package.sessionURL)
+        }
+        await waitUntil {
+            controller.snapshot.sessionImportState.phase == .loading
+        }
+
+        await controller.cancelSessionImport()
+        #expect(sessionBackingDocument.cancelLoadingCount == 1)
+        #expect(controller.snapshot.sessionImportState.phase == .idle)
+        #expect(controller.snapshot.documentState == loadedDocumentState)
+
+        await openGate.open()
+        await openTask.value
+        await settleEventLoop()
+
+        #expect(controller.snapshot.documentState == loadedDocumentState)
+        #expect(controller.snapshot.packetIngestState.packets.map(\.id) == existingPackets.map(\.id))
+
+        await tearDown(controller)
+    }
+
     @Test func openingNewDocumentIgnoresEventsFromPreviousDocumentStream() async {
         let firstURL = URL(fileURLWithPath: "/tmp/first-stream.pcapng")
         let secondURL = URL(fileURLWithPath: "/tmp/second-stream.pcapng")
@@ -1491,6 +1617,27 @@ struct WindowControllerTests {
                 packetCount: packets.count
             )
         )
+    }
+
+    private func writeSessionPackage(
+        named name: String,
+        packets: [PacketSummary]
+    ) throws -> (sessionURL: URL, captureURL: URL, directoryURL: URL) {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TCPViewerWorkspaceControllerTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+
+        let captureURL = directoryURL.appendingPathComponent("\(name).pcapng")
+        let sessionURL = directoryURL.appendingPathComponent("\(name).tcpviewsession")
+        try Data("pcapng-placeholder".utf8).write(to: captureURL)
+        try TCPViewSessionExportService().writePackage(
+            snapshot: makeSessionSnapshot(packets: packets, source: .offline),
+            captureFileURL: captureURL,
+            to: sessionURL,
+            progress: nil,
+            shouldCancel: nil
+        )
+        return (sessionURL, captureURL, directoryURL)
     }
 
     private func settleEventLoop() async {

@@ -58,6 +58,129 @@ private final class TCPViewerCaptureDropView: NSView {
     }
 }
 
+private protocol TCPViewSessionImportSheetViewControllerDelegate: AnyObject {
+    func tcpViewSessionImportSheetDidRequestCancel(_ controller: TCPViewSessionImportSheetViewController)
+    func tcpViewSessionImportSheetDidRequestClose(_ controller: TCPViewSessionImportSheetViewController)
+}
+
+private final class TCPViewSessionImportSheetViewController: NSViewController {
+    weak var delegate: TCPViewSessionImportSheetViewControllerDelegate?
+
+    private let progressIndicator = NSProgressIndicator()
+    private let titleLabel = TCPViewerUI.label(
+        "Importing TCPViewer Session",
+        font: .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
+    )
+    private let messageLabel = TCPViewerUI.label(
+        "",
+        font: .systemFont(ofSize: NSFont.smallSystemFontSize),
+        color: .secondaryLabelColor
+    )
+    private let actionButton = NSButton(title: "Cancel", target: nil, action: nil)
+    private var phase: TCPViewSessionImportState.Phase = .idle
+
+    override func loadView() {
+        view = TCPViewerDynamicBackgroundView(backgroundColor: .windowBackgroundColor)
+        preferredContentSize = NSSize(width: 380, height: 152)
+        setupLayout()
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        actionButton.target = self
+        actionButton.action = #selector(performAction(_:))
+    }
+
+    func render(state: TCPViewSessionImportState) {
+        phase = state.phase
+        messageLabel.stringValue = state.message
+
+        switch state.phase {
+        case .idle:
+            break
+        case .loading:
+            titleLabel.stringValue = "Importing TCPViewer Session"
+            actionButton.title = "Cancel"
+            actionButton.isEnabled = state.canCancel
+            progressIndicator.isHidden = false
+            progressIndicator.startAnimation(nil)
+        case .cancelling:
+            titleLabel.stringValue = "Cancelling Import"
+            actionButton.title = "Cancel"
+            actionButton.isEnabled = false
+            progressIndicator.isHidden = false
+            progressIndicator.startAnimation(nil)
+        case .failed:
+            titleLabel.stringValue = "Could Not Import Session"
+            actionButton.title = "Close"
+            actionButton.isEnabled = true
+            progressIndicator.stopAnimation(nil)
+            progressIndicator.isHidden = true
+        }
+    }
+
+    private func setupLayout() {
+        progressIndicator.style = .spinning
+        progressIndicator.controlSize = .regular
+        progressIndicator.isIndeterminate = true
+        progressIndicator.translatesAutoresizingMaskIntoConstraints = false
+
+        titleLabel.lineBreakMode = .byTruncatingMiddle
+        messageLabel.lineBreakMode = .byWordWrapping
+        messageLabel.maximumNumberOfLines = 3
+        messageLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        actionButton.bezelStyle = .rounded
+        actionButton.controlSize = .regular
+
+        let textStack = NSStackView(views: [titleLabel, messageLabel])
+        textStack.orientation = .vertical
+        textStack.alignment = .leading
+        textStack.spacing = 6
+        textStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let contentStack = NSStackView(views: [progressIndicator, textStack])
+        contentStack.orientation = .horizontal
+        contentStack.alignment = .top
+        contentStack.spacing = 14
+        contentStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let buttonRow = NSStackView(views: [actionButton])
+        buttonRow.orientation = .horizontal
+        buttonRow.alignment = .centerY
+        buttonRow.distribution = .gravityAreas
+        buttonRow.translatesAutoresizingMaskIntoConstraints = false
+
+        let rootStack = NSStackView(views: [contentStack, buttonRow])
+        rootStack.orientation = .vertical
+        rootStack.alignment = .trailing
+        rootStack.spacing = 18
+        rootStack.translatesAutoresizingMaskIntoConstraints = false
+
+        view.addSubview(rootStack)
+        NSLayoutConstraint.activate([
+            rootStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 22),
+            rootStack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -22),
+            rootStack.topAnchor.constraint(equalTo: view.topAnchor, constant: 22),
+            rootStack.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -18),
+            progressIndicator.widthAnchor.constraint(equalToConstant: 24),
+            progressIndicator.heightAnchor.constraint(equalToConstant: 24),
+            actionButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 88),
+        ])
+    }
+
+    @objc private func performAction(_ sender: Any?) {
+        switch phase {
+        case .failed:
+            delegate?.tcpViewSessionImportSheetDidRequestClose(self)
+        case .loading, .cancelling:
+            delegate?.tcpViewSessionImportSheetDidRequestCancel(self)
+        case .idle:
+            break
+        }
+    }
+}
+
 final class TCPViewerRootViewController: NSViewController {
     weak var delegate: TCPViewerRootViewControllerDelegate?
 
@@ -80,6 +203,7 @@ final class TCPViewerRootViewController: NSViewController {
     private var isRestoringInspectorDivider = false
     private var temporaryInspectorRestoreThickness: CGFloat?
     private var hasRenderedHelperOnboarding = false
+    private var sessionImportSheetViewController: TCPViewSessionImportSheetViewController?
     #if DEBUG
     private var packetSelectionCrashReproducer: TCPViewerPacketSelectionCrashReproducer?
     #endif
@@ -142,6 +266,11 @@ final class TCPViewerRootViewController: NSViewController {
             needsInspectorDividerRefresh = false
             applyInspectorDividerPosition(placement: appliedInspectorPlacement ?? viewModel.snapshot.inspectorPlacement)
         }
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        renderSessionImportSheet(viewModel.snapshot.base.sessionImportState)
     }
 
     func openDocument(at url: URL) {
@@ -381,6 +510,7 @@ final class TCPViewerRootViewController: NSViewController {
         workspaceViewController.render(snapshot: snapshot)
         inspectorViewController.render(snapshot: snapshot)
         statusStripViewController.render(snapshot: snapshot, metrics: viewModel.statusMetricsSnapshot)
+        renderSessionImportSheet(snapshot.base.sessionImportState)
         applyInspectorLayout(snapshot)
         delegate?.tcpviewerRootViewControllerDidChangeToolbarState(self)
 
@@ -388,6 +518,33 @@ final class TCPViewerRootViewController: NSViewController {
             hasRenderedHelperOnboarding = true
             delegate?.tcpviewerRootViewController(self, didRequestHelperOnboarding: viewModel.networkHelperToolSnapshot)
         }
+    }
+
+    private func renderSessionImportSheet(_ state: TCPViewSessionImportState) {
+        // Present session imports as a sheet so document title and bottom strip remain unchanged.
+        guard state.isPresented else {
+            if let sheet = sessionImportSheetViewController {
+                dismiss(sheet)
+                sessionImportSheetViewController = nil
+            }
+            return
+        }
+
+        guard view.window != nil else {
+            return
+        }
+
+        let sheet: TCPViewSessionImportSheetViewController
+        if let currentSheet = sessionImportSheetViewController {
+            sheet = currentSheet
+        } else {
+            let newSheet = TCPViewSessionImportSheetViewController()
+            newSheet.delegate = self
+            sessionImportSheetViewController = newSheet
+            presentAsSheet(newSheet)
+            sheet = newSheet
+        }
+        sheet.render(state: state)
     }
 
     // Restore the last sidebar state early so AppKit lays out the window with the expected split.
@@ -1203,5 +1360,15 @@ extension TCPViewerRootViewController: StatusStripViewControllerDelegate {
         if shouldShow {
             workspaceViewController.focusStructuredFilter()
         }
+    }
+}
+
+extension TCPViewerRootViewController: TCPViewSessionImportSheetViewControllerDelegate {
+    fileprivate func tcpViewSessionImportSheetDidRequestCancel(_ controller: TCPViewSessionImportSheetViewController) {
+        viewModel.cancelSessionImport()
+    }
+
+    fileprivate func tcpViewSessionImportSheetDidRequestClose(_ controller: TCPViewSessionImportSheetViewController) {
+        viewModel.dismissSessionImport()
     }
 }

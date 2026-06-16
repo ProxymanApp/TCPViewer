@@ -1718,15 +1718,20 @@ final class NetworkInspectorViewModel {
     }
 
     func openDocument(at fileURL: URL, completion: (() -> Void)? = nil) {
+        let standardizedURL = TCPViewerCaptureFileImportPolicy.standardizedFileURL(fileURL)
+        let isSessionFile = TCPViewerCaptureFileImportPolicy.isSessionFileURL(standardizedURL)
         controller.openDocument(at: fileURL) { [weak self] in
             guard let self else {
                 completion?()
                 return
             }
 
-            if let sessionState = self.controller.currentDocumentSessionState {
+            if self.controller.lastSessionImportSucceeded,
+               let sessionState = self.controller.currentDocumentSessionState {
                 self.applySessionDocumentState(sessionState)
                 self.pendingSessionImportReport = self.controller.currentDocumentSessionImportReport
+            } else if isSessionFile {
+                self.pendingSessionImportReport = nil
             } else {
                 self.pendingSessionImportReport = nil
                 self.restorePersistentDocumentState()
@@ -1740,15 +1745,23 @@ final class NetworkInspectorViewModel {
     }
 
     func importDocuments(at fileURLs: [URL], completion: (() -> Void)? = nil) {
+        let hasSessionFile = fileURLs
+            .map(TCPViewerCaptureFileImportPolicy.standardizedFileURL)
+            .contains(where: TCPViewerCaptureFileImportPolicy.isSessionFileURL)
         controller.importDocuments(at: fileURLs) { [weak self] in
             guard let self else {
                 completion?()
                 return
             }
 
-            if let sessionState = self.controller.currentDocumentSessionState {
+            if self.controller.lastSessionImportSucceeded,
+               let sessionState = self.controller.currentDocumentSessionState {
                 self.applySessionDocumentState(sessionState)
                 self.pendingSessionImportReport = self.controller.currentDocumentSessionImportReport
+                self.rebuildSnapshot()
+                completion?()
+            } else if hasSessionFile {
+                self.pendingSessionImportReport = nil
                 self.rebuildSnapshot()
                 completion?()
             } else {
@@ -2014,6 +2027,18 @@ final class NetworkInspectorViewModel {
             self?.rebuildSnapshot()
             completion?()
         }
+    }
+
+    func cancelSessionImport(completion: (() -> Void)? = nil) {
+        controller.cancelSessionImport { [weak self] in
+            self?.rebuildSnapshot()
+            completion?()
+        }
+    }
+
+    func dismissSessionImport() {
+        controller.dismissSessionImport()
+        rebuildSnapshot()
     }
 
     func selectPacket(_ identifier: PacketSummary.ID?) {

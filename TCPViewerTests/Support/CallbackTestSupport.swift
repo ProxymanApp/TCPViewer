@@ -42,6 +42,10 @@ extension TCPViewerWorkspaceController {
         await waitForCompletion { importDocuments(at: fileURLs, completion: $0) }
     }
 
+    func cancelSessionImport() async {
+        await waitForCompletion { cancelSessionImport(completion: $0) }
+    }
+
     func reopenDocument() async {
         await waitForCompletion { reopenDocument(completion: $0) }
     }

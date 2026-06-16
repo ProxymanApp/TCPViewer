@@ -562,6 +562,7 @@ struct TCPViewerWindowSnapshot: Sendable, Equatable {
     var inspectionState: PacketInspectionState
     var navigationState: PacketNavigationState
     var loadState: PacketLoadState
+    var sessionImportState: TCPViewSessionImportState
 
     static let foundation = TCPViewerWindowSnapshot(
         accessState: .unknown,
@@ -571,7 +572,8 @@ struct TCPViewerWindowSnapshot: Sendable, Equatable {
         filterState: .empty,
         inspectionState: .empty,
         navigationState: .empty,
-        loadState: .idle
+        loadState: .idle,
+        sessionImportState: .idle
     )
 
     var selectedPacketID: PacketSummary.ID? {
@@ -656,6 +658,37 @@ struct PacketLoadState: Sendable, Equatable {
 
     var canCancel: Bool {
         progress.phase == .loading
+    }
+}
+
+struct TCPViewSessionImportState: Sendable, Equatable {
+    enum Phase: String, Sendable {
+        case idle
+        case loading
+        case cancelling
+        case failed
+    }
+
+    var phase: Phase
+    var fileURL: URL?
+    var loadedPacketCount: Int
+    var message: String
+    var lastError: TCPViewerCoreError?
+
+    static let idle = TCPViewSessionImportState(
+        phase: .idle,
+        fileURL: nil,
+        loadedPacketCount: 0,
+        message: "",
+        lastError: nil
+    )
+
+    var isPresented: Bool {
+        phase != .idle
+    }
+
+    var canCancel: Bool {
+        phase == .loading
     }
 }
 
@@ -919,10 +952,14 @@ final class TCPViewerWorkspaceController {
     private var liveSessionConfiguration: LiveSessionConfiguration?
     private var liveEventGeneration = 0
     private var document: (any OfflineCaptureDocumentProviding)?
+    private var pendingSessionImportDocument: (any OfflineCaptureDocumentProviding)?
     private var importedDocumentsByFileID: [ImportedCaptureFileID: any OfflineCaptureDocumentProviding] = [:]
     private(set) var currentDocumentSessionState: TCPViewSessionState?
     private(set) var currentDocumentSessionImportReport: TCPViewSessionImportReport?
+    private(set) var lastSessionImportSucceeded = false
     private var documentEventGeneration = 0
+    private var sessionImportGeneration = 0
+    private var pendingSessionImportCompletion: (() -> Void)?
     private var inspectionGeneration = 0
     private var filterValidationGeneration = 0
     private var snapshotUpdateDepth = 0
@@ -1398,6 +1435,7 @@ final class TCPViewerWorkspaceController {
                 self.releaseDocumentContext()
                 self.currentDocumentSessionState = nil
                 self.currentDocumentSessionImportReport = nil
+                self.lastSessionImportSucceeded = false
                 self.importedDocumentsByFileID.removeAll(keepingCapacity: false)
                 self.resetInspectionState()
                 self.snapshot.selectedPacketID = nil
@@ -1479,84 +1517,168 @@ final class TCPViewerWorkspaceController {
                     return
                 }
 
-                self.releaseDocumentContext()
-                self.currentDocumentSessionState = nil
-                self.currentDocumentSessionImportReport = nil
-                self.importedDocumentsByFileID.removeAll(keepingCapacity: false)
-                self.resetInspectionState()
-                self.snapshot.selectedPacketID = nil
-                self.snapshot.documentState = CaptureDocumentState(
-                    phase: .opening,
-                    fileURL: fileURL,
-                    format: nil,
-                    metadata: nil,
-                    packetCount: 0,
-                    isDirty: false,
-                    isPartialResult: false,
-                    statusMessage: "Opening \(fileURL.lastPathComponent)...",
-                    lastError: nil
-                )
-                self.services.packetMetadataEnricher.reset()
-                self.snapshot.packetIngestState.reset(source: .offline, message: "Opening \(fileURL.lastPathComponent)...")
-                self.synchronizeVisiblePackets(message: "Opening \(fileURL.lastPathComponent)...")
-                self.snapshot.loadState.progress = PacketLoadProgress(
-                    phase: .loading,
-                    loadedPacketCount: 0,
-                    message: "Opening \(fileURL.lastPathComponent)..."
-                )
-
-                let importService = TCPViewSessionImportService()
-                self.sessionPackageQueue.async { [weak self] in
-                    let loadResult = Result {
-                        try importService.loadPackage(at: fileURL)
-                    }
-                    DispatchQueue.main.async {
-                        guard let self else {
-                            completion?()
-                            return
-                        }
-
-                        switch loadResult {
-                        case .success(let contents):
-                            let document = TCPViewSessionOfflineDocument(contents: contents, core: self.services.core)
-                            self.document = document
-                            self.currentDocumentSessionState = contents.state
-                            self.currentDocumentSessionImportReport = contents.importReport
-                            self.observeDocumentEvents(document)
-                            document.open { [weak self] result in
-                                DispatchQueue.main.async {
-                                    guard let self else {
-                                        completion?()
-                                        return
-                                    }
-
-                                    switch result {
-                                    case .success:
-                                        self.currentDocumentSessionState = document.state
-                                        self.currentDocumentSessionImportReport = document.importReport
-                                        self.refreshDocumentSnapshotFromHandle(
-                                            document,
-                                            phase: .loaded,
-                                            message: "Loaded \(self.snapshot.packetIngestState.totalPacketCount) packets from \(fileURL.lastPathComponent)."
-                                        )
-                                    case .failure(let error):
-                                        self.currentDocumentSessionState = nil
-                                        self.currentDocumentSessionImportReport = nil
-                                        self.handleDocumentLoadFailure(error, document: document)
-                                    }
-                                    completion?()
-                                }
-                            }
-                        case .failure(let error):
-                            self.currentDocumentSessionState = nil
-                            self.currentDocumentSessionImportReport = nil
-                            self.handleDocumentLoadFailure(error, document: nil)
-                            completion?()
-                        }
-                    }
-                }
+                self.beginSessionImport(at: fileURL, completion: completion)
             }
         }
+    }
+
+    private func beginSessionImport(at fileURL: URL, completion: (() -> Void)? = nil) {
+        // Keep session-file import in sheet state until the backing document is fully open.
+        sessionImportGeneration += 1
+        pendingSessionImportDocument?.cancelLoading(completion: nil)
+        pendingSessionImportDocument = nil
+        finishPendingSessionImportCompletion()
+        let generation = sessionImportGeneration
+        pendingSessionImportCompletion = completion
+        lastSessionImportSucceeded = false
+        snapshot.sessionImportState = TCPViewSessionImportState(
+            phase: .loading,
+            fileURL: fileURL,
+            loadedPacketCount: 0,
+            message: "Importing \(fileURL.lastPathComponent)...",
+            lastError: nil
+        )
+
+        let importService = TCPViewSessionImportService()
+        sessionPackageQueue.async { [weak self] in
+            let loadResult = Result {
+                try importService.loadPackage(at: fileURL)
+            }
+            DispatchQueue.main.async {
+                self?.completeSessionPackageLoad(loadResult, fileURL: fileURL, generation: generation)
+            }
+        }
+    }
+
+    private func completeSessionPackageLoad(
+        _ result: Result<TCPViewSessionPackageContents, Error>,
+        fileURL: URL,
+        generation: Int
+    ) {
+        // Drop stale package results after cancellation or a newer session import.
+        guard isCurrentSessionImport(generation) else {
+            if case .success(let contents) = result {
+                try? FileManager.default.removeItem(at: contents.extractionDirectoryURL)
+            }
+            return
+        }
+
+        switch result {
+        case .success(let contents):
+            openLoadedSessionPackage(contents, fileURL: fileURL, generation: generation)
+        case .failure(let error):
+            failSessionImport(error, fileURL: fileURL, generation: generation)
+        }
+    }
+
+    private func openLoadedSessionPackage(
+        _ contents: TCPViewSessionPackageContents,
+        fileURL: URL,
+        generation: Int
+    ) {
+        guard isCurrentSessionImport(generation) else {
+            try? FileManager.default.removeItem(at: contents.extractionDirectoryURL)
+            return
+        }
+
+        let document = TCPViewSessionOfflineDocument(contents: contents, core: services.core)
+        pendingSessionImportDocument = document
+        snapshot.sessionImportState.message = "Reading \(fileURL.lastPathComponent)..."
+        document.eventHandler = { [weak self] result in
+            DispatchQueue.main.async {
+                self?.applyPendingSessionImportEvent(result, generation: generation)
+            }
+        }
+        document.open { [weak self, weak document] result in
+            DispatchQueue.main.async {
+                guard let self, let document else {
+                    return
+                }
+                self.finishSessionImportOpen(result, document: document, fileURL: fileURL, generation: generation)
+            }
+        }
+    }
+
+    private func applyPendingSessionImportEvent(_ result: Result<PacketIngestEvent, Error>, generation: Int) {
+        guard isCurrentSessionImport(generation) else {
+            return
+        }
+
+        switch result {
+        case .success(.loadProgressChanged(let progress)):
+            snapshot.sessionImportState.loadedPacketCount = progress.loadedPacketCount
+            if !progress.message.isEmpty {
+                snapshot.sessionImportState.message = progress.message
+            }
+        case .failure(let error):
+            failSessionImport(error, fileURL: snapshot.sessionImportState.fileURL, generation: generation)
+        default:
+            break
+        }
+    }
+
+    private func finishSessionImportOpen(
+        _ result: Result<[PacketSummary], Error>,
+        document: TCPViewSessionOfflineDocument,
+        fileURL: URL,
+        generation: Int
+    ) {
+        // Commit the imported session atomically so the existing workspace stays visible while loading.
+        guard isCurrentSessionImport(generation) else {
+            return
+        }
+
+        pendingSessionImportDocument = nil
+        switch result {
+        case .success:
+            batchSnapshotUpdates {
+                self.releaseDocumentContext()
+                self.services.packetMetadataEnricher.reset()
+                self.resetInspectionState()
+                self.snapshot.selectedPacketID = nil
+                self.document = document
+                self.currentDocumentSessionState = document.state
+                self.currentDocumentSessionImportReport = document.importReport
+                self.lastSessionImportSucceeded = true
+                self.observeDocumentEvents(document)
+                self.refreshDocumentSnapshotFromHandle(
+                    document,
+                    phase: .loaded,
+                    message: "Loaded \(document.packetSummaries().count) packets from \(fileURL.lastPathComponent)."
+                )
+                self.snapshot.sessionImportState = .idle
+            }
+            finishPendingSessionImportCompletion()
+        case .failure(let error):
+            failSessionImport(error, fileURL: fileURL, generation: generation)
+        }
+    }
+
+    private func isCurrentSessionImport(_ generation: Int) -> Bool {
+        generation == sessionImportGeneration && snapshot.sessionImportState.isPresented
+    }
+
+    private func failSessionImport(_ error: Error, fileURL: URL?, generation: Int) {
+        guard isCurrentSessionImport(generation) else {
+            return
+        }
+
+        let tcpviewerError = tcpviewerError(from: error, defaultCode: .offlineFileOpenFailed)
+        if tcpviewerError.code == .operationCancelled {
+            finishSessionImportCancellation(generation: generation, completion: nil)
+            return
+        }
+
+        pendingSessionImportDocument = nil
+        lastSessionImportSucceeded = false
+        snapshot.sessionImportState = TCPViewSessionImportState(
+            phase: .failed,
+            fileURL: fileURL,
+            loadedPacketCount: snapshot.sessionImportState.loadedPacketCount,
+            message: tcpviewerError.message,
+            lastError: tcpviewerError
+        )
+        finishPendingSessionImportCompletion()
     }
 
     func importDocuments(at fileURLs: [URL], completion: (() -> Void)? = nil) {
@@ -1587,6 +1709,7 @@ final class TCPViewerWorkspaceController {
             return
         }
 
+        lastSessionImportSucceeded = false
         stopLiveCaptureIfNeeded { [weak self] stopResult in
             DispatchQueue.main.async {
                 guard let self else {
@@ -1607,6 +1730,7 @@ final class TCPViewerWorkspaceController {
                     self.releaseDocumentContext()
                     self.currentDocumentSessionState = nil
                     self.currentDocumentSessionImportReport = nil
+                    self.lastSessionImportSucceeded = false
                     self.importedDocumentsByFileID.removeAll(keepingCapacity: false)
                     self.services.packetMetadataEnricher.reset()
                     self.snapshot.packetIngestState.reset(source: .offline, message: "Opening \(requestedURLs.first?.lastPathComponent ?? "capture")...")
@@ -2429,6 +2553,65 @@ final class TCPViewerWorkspaceController {
         }
     }
 
+    func cancelSessionImport(completion: (() -> Void)? = nil) {
+        // Cancel sheet-owned import work without touching the current document state.
+        guard snapshot.sessionImportState.isPresented else {
+            completion?()
+            return
+        }
+
+        guard snapshot.sessionImportState.canCancel else {
+            dismissSessionImport()
+            completion?()
+            return
+        }
+
+        let generation = sessionImportGeneration
+        snapshot.sessionImportState.phase = .cancelling
+        snapshot.sessionImportState.message = "Cancelling \(snapshot.sessionImportState.fileURL?.lastPathComponent ?? "session import")..."
+
+        guard let pendingSessionImportDocument else {
+            finishSessionImportCancellation(generation: generation, completion: completion)
+            return
+        }
+
+        pendingSessionImportDocument.cancelLoading { [weak self] in
+            DispatchQueue.main.async {
+                self?.finishSessionImportCancellation(generation: generation, completion: completion)
+            }
+        }
+    }
+
+    func dismissSessionImport() {
+        guard snapshot.sessionImportState.phase == .failed else {
+            return
+        }
+
+        snapshot.sessionImportState = .idle
+    }
+
+    private func finishSessionImportCancellation(generation: Int, completion: (() -> Void)?) {
+        guard generation == sessionImportGeneration else {
+            completion?()
+            return
+        }
+
+        sessionImportGeneration += 1
+        pendingSessionImportDocument = nil
+        lastSessionImportSucceeded = false
+        snapshot.sessionImportState = .idle
+        let pendingCompletion = pendingSessionImportCompletion
+        pendingSessionImportCompletion = nil
+        completion?()
+        pendingCompletion?()
+    }
+
+    private func finishPendingSessionImportCompletion() {
+        let completion = pendingSessionImportCompletion
+        pendingSessionImportCompletion = nil
+        completion?()
+    }
+
     func clearPackets() {
         let source = snapshot.packetIngestState.source
         let shouldReleaseStoppedLiveSession = snapshot.sessionState.phase == .stopped ||
@@ -3005,6 +3188,7 @@ final class TCPViewerWorkspaceController {
             )
         } else {
             currentDocumentSessionImportReport = nil
+            lastSessionImportSucceeded = false
             snapshot.packetIngestState.replace(with: packets, source: .offline, message: resolvedMessage)
         }
 
@@ -3303,12 +3487,19 @@ final class TCPViewerWorkspaceController {
     }
 
     private func cancelControllerTasks() {
+        let pendingImportDocument = pendingSessionImportDocument
         liveEventGeneration += 1
         documentEventGeneration += 1
+        sessionImportGeneration += 1
         inspectionGeneration += 1
         filterValidationGeneration += 1
         liveSession?.eventHandler = nil
         document?.eventHandler = nil
+        pendingSessionImportDocument?.eventHandler = nil
+        pendingSessionImportDocument = nil
+        pendingSessionImportCompletion = nil
+        lastSessionImportSucceeded = false
+        pendingImportDocument?.cancelLoading(completion: nil)
     }
 
     private func cancelBackgroundWorkForTermination(completion: @escaping () -> Void) {
@@ -3316,7 +3507,10 @@ final class TCPViewerWorkspaceController {
         let currentDocument = document
         let importedDocuments = importedDocumentsExcluding(currentDocument)
         document = nil
+        pendingSessionImportDocument = nil
+        snapshot.sessionImportState = .idle
         currentDocumentSessionImportReport = nil
+        lastSessionImportSucceeded = false
         importedDocumentsByFileID.removeAll(keepingCapacity: false)
         backgroundCoordinator.cancelAll()
         currentDocument?.cancelLoading(completion: nil)
@@ -3335,6 +3529,7 @@ final class TCPViewerWorkspaceController {
         document = nil
         currentDocumentSessionState = nil
         currentDocumentSessionImportReport = nil
+        lastSessionImportSucceeded = false
         importedDocumentsByFileID.removeAll(keepingCapacity: false)
         backgroundCoordinator.endOperation("document-events")
         currentDocument?.cancelLoading(completion: nil)
