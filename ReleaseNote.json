@@ -138,6 +138,17 @@
       ],
       "bugs": [
       ]
+    },
+    {
+      "version": "1.6.1",
+      "title": "TCP Viewer 1.6.1 Sentry Debug Symbol Verification",
+      "features": [
+      ],
+      "improvements": [
+        "Verify Sentry dSYM debug UUIDs before upload so production crash reports match the notarized build."
+      ],
+      "bugs": [
+      ]
     }
   ]
 }
