@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   assertReleaseTitleReflectsChanges,
@@ -207,6 +208,27 @@ test("validates release env names without leaking values", () => {
   assert.ok(missing.includes("TCPVIEWER_NOTARIZATION_USERNAME"));
   assert.ok(missing.includes("SENTRY_AUTH_TOKEN"));
   assert.ok(!missing.includes("TCPVIEWER_NOTARY_KEYCHAIN_PROFILE"));
+});
+
+test("documents required release env values with safe placeholders", () => {
+  const content = readFileSync(new URL("../.env.example", import.meta.url), "utf8");
+  const parsed = parseEnvFile(content);
+  const documentedNames = [
+    ...requiredEnvNames("production"),
+    "TCPVIEWER_PUBLISH_RELEASE_TO_BACKEND",
+    ...releaseBackendRequiredEnvNames
+  ];
+
+  assert.doesNotMatch(content, /^\s*\/\//m);
+  for (const name of documentedNames) {
+    assert.ok(Object.hasOwn(parsed, name), `${name} should be documented in .env.example`);
+  }
+
+  for (const [name, value] of Object.entries(parsed)) {
+    if (/SECRET|PRIVATE|PASSWORD|TOKEN|KEY/i.test(name) && value) {
+      assert.match(value, /^replace-with-/);
+    }
+  }
 });
 
 test("validates optional release backend publishing env", () => {
