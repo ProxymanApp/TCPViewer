@@ -72,7 +72,7 @@ bundle install
 gh auth login
 ```
 
-Create a local `.env` from `.env.example` and fill in the required release values. Never commit real secrets.
+Create a local `.env` from `.env.example` and fill in the required release values. Never commit real secrets. Keep comments in `.env` as `#` comments because `sentry-cli` does not accept `//` comments when it loads the file.
 
 For production releases, add a matching entry to `ReleaseNote.json`, then run:
 

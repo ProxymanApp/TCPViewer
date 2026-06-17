@@ -239,7 +239,58 @@ def sentry_debug_files_path!(paths)
   UI.user_error!("Sentry debug files were not found at #{paths[:dsym_zip_path]} or #{paths[:dsym_path]}")
 end
 
-def upload_sentry_debug_files!(path)
+def app_executable_path!(app_path)
+  executable_path = File.join(app_path, "Contents", "MacOS", "TCPViewer")
+  UI.user_error!("TCP Viewer executable was not found at #{executable_path}") unless File.file?(executable_path)
+
+  executable_path
+end
+
+def parse_dwarfdump_uuids!(output, label)
+  uuids = output.lines.filter_map do |line|
+    match = line.match(/\AUUID: ([0-9A-Fa-f-]+) \([^)]+\)/)
+    match && match[1].upcase
+  end.uniq.sort
+
+  UI.user_error!("No debug UUIDs were found for #{label}") if uuids.empty?
+  uuids
+end
+
+def macho_uuids!(path, label)
+  parse_dwarfdump_uuids!(sh("dwarfdump --uuid #{shell_escape(path)}", log: false), label)
+end
+
+def app_dsym_path!(paths)
+  expected_path = File.join(paths[:dsym_path], "#{APP_NAME}.app.dSYM")
+  return expected_path if File.directory?(expected_path)
+
+  candidates = Dir[File.join(paths[:dsym_path], "*.app.dSYM")]
+  UI.user_error!("TCP Viewer app dSYM was not found at #{expected_path}") if candidates.empty?
+  UI.user_error!("Multiple app dSYM bundles were found in #{paths[:dsym_path]}: #{candidates.join(', ')}") if candidates.length > 1
+
+  candidates.first
+end
+
+def verify_sentry_debug_symbols!(paths)
+  # Match the app and dSYM UUIDs before upload so unsymbolicated releases fail early.
+  app_binary_path = app_executable_path!(built_app_path!(paths))
+  dsym_path = app_dsym_path!(paths)
+  app_uuids = macho_uuids!(app_binary_path, "TCP Viewer app executable")
+  dsym_uuids = macho_uuids!(dsym_path, "TCP Viewer app dSYM")
+
+  unless app_uuids == dsym_uuids
+    UI.user_error!(
+      "TCP Viewer app and dSYM UUIDs do not match. " \
+      "app=#{app_uuids.join(', ')} dSYM=#{dsym_uuids.join(', ')}"
+    )
+  end
+
+  UI.message("Verified TCP Viewer dSYM UUIDs: #{app_uuids.join(', ')}")
+  app_uuids
+end
+
+def upload_sentry_debug_files!(path, required_uuids:)
+  # Upload only when Sentry can find and process the exact app debug UUIDs.
   required_env!([
     "SENTRY_AUTH_TOKEN",
     "SENTRY_ORG_SLUG",
@@ -247,14 +298,22 @@ def upload_sentry_debug_files!(path)
   ])
 
   UI.user_error!("Sentry debug files path was not found at #{path}") unless File.exist?(path)
+  UI.user_error!("Missing Sentry debug UUIDs for upload verification") if required_uuids.empty?
 
-  sentry_debug_files_upload(
-    auth_token: ENV.fetch("SENTRY_AUTH_TOKEN"),
-    org_slug: ENV.fetch("SENTRY_ORG_SLUG"),
-    project_slug: ENV.fetch("SENTRY_PROJECT_SLUG"),
-    include_sources: true,
-    path: [path]
-  )
+  uuid_args = required_uuids.flat_map { |uuid| ["--id", uuid] }
+  command = [
+    "sentry-cli",
+    "debug-files",
+    "upload",
+    "--org", ENV.fetch("SENTRY_ORG_SLUG"),
+    "--project", ENV.fetch("SENTRY_PROJECT_SLUG"),
+    "--include-sources",
+    "--require-all",
+    "--wait-for", "120",
+    *uuid_args,
+    path
+  ]
+  sh(command.map { |part| shell_escape(part) }.join(" "))
 end
 
 def build_release_variant!(release_type, options)
@@ -268,13 +327,14 @@ def build_release_variant!(release_type, options)
   UI.message("Building TCP Viewer #{release_type} #{version} (#{build_number})")
   prepare_output_dir!(output_dir)
   build_mac_app!(paths, version, build_number)
+  sentry_debug_uuids = verify_sentry_debug_symbols!(paths)
   resign_exported_app_for_notarization!(built_app_path!(paths))
   verify_developer_id_app_signature!(built_app_path!(paths))
   create_dmg!(paths)
   sign_dmg!(paths[:dmg_path])
   notarize_package!(paths[:dmg_path])
   verify_dmg!(paths[:dmg_path])
-  upload_sentry_debug_files!(sentry_debug_files_path!(paths))
+  upload_sentry_debug_files!(sentry_debug_files_path!(paths), required_uuids: sentry_debug_uuids)
 end
 
 platform :mac do
@@ -329,7 +389,9 @@ platform :mac do
   lane :upload_sentry_debug_files do |options|
     path = options[:path].to_s
     UI.user_error!("Missing path") if path.strip.empty?
+    uuids = options[:uuid].to_s.split(/[\s,]+/).map(&:strip).reject(&:empty?)
+    UI.user_error!("Missing uuid. Pass uuid:<TCP Viewer app debug UUID> when uploading an existing dSYM.") if uuids.empty?
 
-    upload_sentry_debug_files!(File.expand_path(path))
+    upload_sentry_debug_files!(File.expand_path(path), required_uuids: uuids)
   end
 end
