@@ -189,6 +189,7 @@ final class TCPViewerRootViewController: NSViewController {
     private let mainSplitViewController = NSSplitViewController()
     private let contentSplitViewController = TCPViewerInspectorSplitViewController()
     private let mainContainerViewController = NSViewController()
+    private let mainEmptyStateViewController = TCPViewerMainEmptyStateViewController()
     private let sidebarViewController = SidebarViewController()
     private let workspaceViewController: PacketWorkspaceViewController
     private let inspectorViewController: PacketInspectorViewController
@@ -204,6 +205,7 @@ final class TCPViewerRootViewController: NSViewController {
     private var temporaryInspectorRestoreThickness: CGFloat?
     private var hasRenderedHelperOnboarding = false
     private var sessionImportSheetViewController: TCPViewSessionImportSheetViewController?
+    private var isMainEmptyStateVisible = false
     #if DEBUG
     private var packetSelectionCrashReproducer: TCPViewerPacketSelectionCrashReproducer?
     #endif
@@ -441,6 +443,7 @@ final class TCPViewerRootViewController: NSViewController {
         workspaceViewController.delegate = self
         inspectorViewController.delegate = self
         statusStripViewController.delegate = self
+        mainEmptyStateViewController.delegate = self
 
         mainSplitViewController.splitView.isVertical = true
         contentSplitViewController.splitView.isVertical = true
@@ -459,19 +462,28 @@ final class TCPViewerRootViewController: NSViewController {
 
         mainContainerViewController.view = TCPViewerDynamicBackgroundView(backgroundColor: .controlBackgroundColor)
         mainContainerViewController.addChild(contentSplitViewController)
+        mainContainerViewController.addChild(mainEmptyStateViewController)
         mainContainerViewController.addChild(statusStripViewController)
 
         let mainContainerView = mainContainerViewController.view
         contentSplitViewController.view.translatesAutoresizingMaskIntoConstraints = false
+        mainEmptyStateViewController.view.translatesAutoresizingMaskIntoConstraints = false
         statusStripViewController.view.translatesAutoresizingMaskIntoConstraints = false
         mainContainerView.addSubview(contentSplitViewController.view)
+        mainContainerView.addSubview(mainEmptyStateViewController.view)
         mainContainerView.addSubview(statusStripViewController.view)
+        mainEmptyStateViewController.view.isHidden = true
 
         NSLayoutConstraint.activate([
             contentSplitViewController.view.leadingAnchor.constraint(equalTo: mainContainerView.leadingAnchor),
             contentSplitViewController.view.trailingAnchor.constraint(equalTo: mainContainerView.trailingAnchor),
             contentSplitViewController.view.topAnchor.constraint(equalTo: mainContainerView.topAnchor),
             contentSplitViewController.view.bottomAnchor.constraint(equalTo: statusStripViewController.view.topAnchor),
+
+            mainEmptyStateViewController.view.leadingAnchor.constraint(equalTo: mainContainerView.leadingAnchor),
+            mainEmptyStateViewController.view.trailingAnchor.constraint(equalTo: mainContainerView.trailingAnchor),
+            mainEmptyStateViewController.view.topAnchor.constraint(equalTo: mainContainerView.topAnchor),
+            mainEmptyStateViewController.view.bottomAnchor.constraint(equalTo: statusStripViewController.view.topAnchor),
 
             statusStripViewController.view.leadingAnchor.constraint(equalTo: mainContainerView.leadingAnchor),
             statusStripViewController.view.trailingAnchor.constraint(equalTo: mainContainerView.trailingAnchor),
@@ -509,7 +521,9 @@ final class TCPViewerRootViewController: NSViewController {
         sidebarViewController.render(snapshot: snapshot)
         workspaceViewController.render(snapshot: snapshot)
         inspectorViewController.render(snapshot: snapshot)
+        mainEmptyStateViewController.render(snapshot: snapshot)
         statusStripViewController.render(snapshot: snapshot, metrics: viewModel.statusMetricsSnapshot)
+        applyMainEmptyStateVisibility(snapshot)
         renderSessionImportSheet(snapshot.base.sessionImportState)
         applyInspectorLayout(snapshot)
         delegate?.tcpviewerRootViewControllerDidChangeToolbarState(self)
@@ -518,6 +532,18 @@ final class TCPViewerRootViewController: NSViewController {
             hasRenderedHelperOnboarding = true
             delegate?.tcpviewerRootViewController(self, didRequestHelperOnboarding: viewModel.networkHelperToolSnapshot)
         }
+    }
+
+    private func applyMainEmptyStateVisibility(_ snapshot: NetworkInspectorSnapshot) {
+        // Swap only the central content region so sidebar and status remain available.
+        let shouldShowEmptyState = snapshot.shouldShowMainEmptyState
+        guard isMainEmptyStateVisible != shouldShowEmptyState else {
+            return
+        }
+
+        isMainEmptyStateVisible = shouldShowEmptyState
+        contentSplitViewController.view.isHidden = shouldShowEmptyState
+        mainEmptyStateViewController.view.isHidden = !shouldShowEmptyState
     }
 
     private func renderSessionImportSheet(_ state: TCPViewSessionImportState) {
@@ -1185,6 +1211,14 @@ extension TCPViewerRootViewController {
     var inspectorViewForTesting: NSView? {
         inspectorItem?.viewController.view
     }
+
+    var isMainEmptyStateVisibleForTesting: Bool {
+        isMainEmptyStateVisible
+    }
+
+    var isContentSplitViewHiddenForTesting: Bool {
+        contentSplitViewController.view.isHidden
+    }
 }
 #endif
 
@@ -1195,6 +1229,19 @@ extension TCPViewerRootViewController: NetworkInspectorViewModelDelegate {
 
     func networkInspectorViewModelDidUpdateStatusMetrics(_ viewModel: NetworkInspectorViewModel) {
         statusStripViewController.render(metrics: viewModel.statusMetricsSnapshot)
+    }
+}
+
+extension TCPViewerRootViewController: TCPViewerMainEmptyStateViewControllerDelegate {
+    func tcpViewerMainEmptyStateViewController(
+        _ controller: TCPViewerMainEmptyStateViewController,
+        didSelectInterface identifier: String
+    ) {
+        viewModel.selectInterface(identifier)
+    }
+
+    func tcpViewerMainEmptyStateViewControllerDidRequestStartCapture(_ controller: TCPViewerMainEmptyStateViewController) {
+        viewModel.toggleLiveCapture()
     }
 }
 

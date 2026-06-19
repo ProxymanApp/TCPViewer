@@ -837,6 +837,108 @@ struct NetworkInspectorViewModelTests {
         #expect(frame(inspectorFrame, isVisuallyBelow: workspaceFrame, in: splitView))
     }
 
+    @Test func rootShowsMainEmptyStateForStartupAndRestoresSplitAfterPacketsLoad() async {
+        let packet = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp)
+        let document = InspectorFakeDocument(
+            url: URL(fileURLWithPath: "/tmp/root-main-empty-state.pcapng"),
+            packets: [packet]
+        )
+        let defaults = isolatedDefaults()
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                document: document
+            )),
+            userDefaults: defaults
+        )
+        let controller = TCPViewerRootViewController(
+            viewModel: viewModel,
+            configuration: AppConfiguration(defaults: defaults)
+        )
+
+        controller.loadViewIfNeeded()
+        controller.view.frame = NSRect(x: 0, y: 0, width: 1_200, height: 800)
+        controller.view.layoutSubtreeIfNeeded()
+
+        await viewModel.performInitialLoadIfNeeded()
+        await waitUntil {
+            viewModel.snapshot.base.sessionState.selectedInterfaceID == "en0" &&
+                controller.isMainEmptyStateVisibleForTesting
+        }
+
+        #expect(controller.isMainEmptyStateVisibleForTesting)
+        #expect(controller.isContentSplitViewHiddenForTesting)
+
+        await viewModel.openDocument(at: document.currentURL())
+        await waitUntil {
+            viewModel.snapshot.totalPacketCount == 1 &&
+                !controller.isMainEmptyStateVisibleForTesting
+        }
+
+        #expect(!controller.isMainEmptyStateVisibleForTesting)
+        #expect(!controller.isContentSplitViewHiddenForTesting)
+    }
+
+    @Test func mainEmptyStateVisibilityOnlyAppliesToStartupAllPackets() {
+        var startupSnapshot = makeInspectorSnapshot(
+            packets: [],
+            selectedPacketID: nil,
+            generation: 0,
+            updatePlan: .none
+        )
+
+        #expect(startupSnapshot.shouldShowMainEmptyState)
+
+        startupSnapshot.selectedSourceListSelection = .saved
+        #expect(!startupSnapshot.shouldShowMainEmptyState)
+
+        startupSnapshot.selectedSourceListSelection = .pinned
+        #expect(!startupSnapshot.shouldShowMainEmptyState)
+
+        var displayFilteredSnapshot = makeInspectorSnapshot(
+            packets: [],
+            selectedPacketID: nil,
+            generation: 0,
+            updatePlan: .none
+        )
+        displayFilteredSnapshot.displayFilterText = "protocol:tcp"
+        displayFilteredSnapshot.displayFilter = PacketDisplayFilter("protocol:tcp")
+        #expect(!displayFilteredSnapshot.shouldShowMainEmptyState)
+
+        var structuredFilteredSnapshot = makeInspectorSnapshot(
+            packets: [],
+            selectedPacketID: nil,
+            generation: 0,
+            updatePlan: .none
+        )
+        structuredFilteredSnapshot.isStructuredFilterVisible = true
+        structuredFilteredSnapshot.structuredFilterGroup = PacketStructuredFilterGroup(
+            filters: [PacketStructuredFilter(text: "example.com")],
+            operator: .and
+        )
+        #expect(!structuredFilteredSnapshot.shouldShowMainEmptyState)
+
+        let packet = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp)
+        let displayFilter = PacketDisplayFilter("protocol:udp")
+        let filteredContent = PacketTableContent(
+            displayFilter: displayFilter,
+            displayFilterChips: displayFilter.chips,
+            store: PacketTableRowStore(),
+            generation: 2,
+            updatePlan: .reload,
+            malformedPacketCount: 0
+        )
+        let noMatchingRowsSnapshot = makeInspectorSnapshot(
+            packets: [packet],
+            selectedPacketID: nil,
+            packetTableContent: filteredContent
+        )
+
+        #expect(noMatchingRowsSnapshot.totalPacketCount == 1)
+        #expect(noMatchingRowsSnapshot.packetRows.isEmpty)
+        #expect(!noMatchingRowsSnapshot.shouldShowMainEmptyState)
+    }
+
     @Test func sidebarVisibilityPersistsAcrossReloads() {
         let defaults = isolatedDefaults()
         let services = TCPViewerServiceRegistry(core: InspectorFakeCore(

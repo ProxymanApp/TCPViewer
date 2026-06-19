@@ -30,10 +30,6 @@ private enum TCPViewerToolbarItemMetadata: String, CaseIterable {
 }
 
 private enum TCPViewerToolbarLayout {
-    static let interfacePopupMinimumWidth: CGFloat = 76
-    static let interfacePopupMaximumWidth: CGFloat = 260
-    static let interfacePopupTitlePadding: CGFloat = 48
-    static let toolbarControlHeight: CGFloat = 30
     static let trialButtonWidth: CGFloat = 132
 }
 
@@ -42,96 +38,6 @@ private enum TCPViewerShareMenuItemIndex {
     static let exportSession = 1
     static let exportPcap = 2
     static let exportPcapng = 3
-}
-
-struct TCPViewerInterfaceMenuSection {
-    let title: String
-    let interfaces: [CaptureInterfaceSummary]
-}
-
-enum TCPViewerInterfaceMenuGrouper {
-    static func sections(for interfaces: [CaptureInterfaceSummary]) -> [TCPViewerInterfaceMenuSection] {
-        // Preserve inventory order for sections while merging matching families that appear apart.
-        var orderedGroups: [TCPViewerInterfaceMenuGroup] = []
-        var groupedInterfaces: [TCPViewerInterfaceMenuGroup: [CaptureInterfaceSummary]] = [:]
-
-        for interface in interfaces {
-            let group = TCPViewerInterfaceMenuGroup(interface: interface)
-            if groupedInterfaces[group] == nil {
-                orderedGroups.append(group)
-            }
-            groupedInterfaces[group, default: []].append(interface)
-        }
-
-        return orderedGroups.compactMap { group in
-            guard let interfaces = groupedInterfaces[group], !interfaces.isEmpty else {
-                return nil
-            }
-
-            return TCPViewerInterfaceMenuSection(title: group.title, interfaces: interfaces)
-        }
-    }
-}
-
-private enum TCPViewerInterfaceMenuGroup: Hashable {
-    case aggregate
-    case ethernet
-    case wifi
-    case thunderbolt
-    case loopback
-    case tunnels
-    case bridges
-    case other
-
-    init(interface: CaptureInterfaceSummary) {
-        let technicalName = interface.technicalName.trimmingCharacters(in: .whitespacesAndNewlines).localizedLowercase
-        let displayName = [interface.friendlyName, interface.displayName]
-            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).localizedLowercase }
-            .joined(separator: " ")
-
-        if technicalName == "any" || technicalName.hasPrefix("pktap") || displayName.contains("all interfaces") {
-            self = .aggregate
-        } else if interface.isLoopback || technicalName.hasPrefix("lo") || displayName.contains("loopback") {
-            self = .loopback
-        } else if displayName.contains("wi-fi") || technicalName.hasPrefix("awdl") || technicalName.hasPrefix("llw") {
-            self = .wifi
-        } else if displayName.contains("thunderbolt") {
-            self = .thunderbolt
-        } else if technicalName.hasPrefix("utun") || technicalName.hasPrefix("ipsec") ||
-                    technicalName.hasPrefix("gif") || technicalName.hasPrefix("stf") ||
-                    displayName.contains("tunnel") {
-            self = .tunnels
-        } else if technicalName.hasPrefix("bridge") || displayName.contains("bridge") {
-            self = .bridges
-        } else if displayName.contains("ethernet") ||
-                    technicalName.hasPrefix("en") || technicalName.hasPrefix("ap") ||
-                    technicalName.hasPrefix("anpi") {
-            self = .ethernet
-        } else {
-            self = .other
-        }
-    }
-
-    var title: String {
-        switch self {
-        case .aggregate:
-            "All Interfaces"
-        case .ethernet:
-            "Ethernet"
-        case .wifi:
-            "Wi-Fi"
-        case .thunderbolt:
-            "Thunderbolt"
-        case .loopback:
-            "Loopback"
-        case .tunnels:
-            "Tunnels"
-        case .bridges:
-            "Bridges"
-        case .other:
-            "Other Interfaces"
-        }
-    }
 }
 
 protocol TCPViewerToolbarDataSourceDelegate: AnyObject {
@@ -155,8 +61,8 @@ final class TCPViewerToolbarDataSource: NSObject {
         frame: NSRect(
             x: 0,
             y: 0,
-            width: TCPViewerToolbarLayout.interfacePopupMinimumWidth,
-            height: TCPViewerToolbarLayout.toolbarControlHeight
+            width: TCPViewerInterfacePopupMetrics.minimumWidth,
+            height: TCPViewerInterfacePopupMetrics.controlHeight
         ),
         pullsDown: false
     )
@@ -257,8 +163,7 @@ final class TCPViewerToolbarDataSource: NSObject {
 
         interfacePopup.target = self
         interfacePopup.action = #selector(interfaceChanged(_:))
-        interfacePopup.controlSize = .regular
-        interfacePopup.menu?.autoenablesItems = false
+        TCPViewerInterfacePopupRenderer.configure(interfacePopup)
 
         captureButton.target = self
         captureButton.action = #selector(captureButtonPressed(_:))
@@ -343,135 +248,27 @@ final class TCPViewerToolbarDataSource: NSObject {
     private func constrainDynamicInterfacePopup() {
         interfacePopup.translatesAutoresizingMaskIntoConstraints = false
         let widthConstraint = interfacePopup.widthAnchor.constraint(
-            equalToConstant: TCPViewerToolbarLayout.interfacePopupMinimumWidth
+            equalToConstant: TCPViewerInterfacePopupMetrics.minimumWidth
         )
         NSLayoutConstraint.activate([
             widthConstraint,
-            interfacePopup.heightAnchor.constraint(equalToConstant: TCPViewerToolbarLayout.toolbarControlHeight),
+            interfacePopup.heightAnchor.constraint(equalToConstant: TCPViewerInterfacePopupMetrics.controlHeight),
         ])
         interfacePopupWidthConstraint = widthConstraint
     }
 
     private func renderInterfacePopup() {
-        interfacePopup.removeAllItems()
-        interfacePopup.menu?.autoenablesItems = false
-        if viewModel.interfaces.isEmpty {
-            interfacePopup.addItem(withTitle: "No Interfaces")
-            interfacePopup.isEnabled = false
-            updateInterfacePopupWidth()
-            return
-        }
-
-        let recentInterfaces = viewModel.lastUsedInterfaceIDs.compactMap { identifier in
-            viewModel.interfaces.first { $0.id == identifier }
-        }
-
-        if !recentInterfaces.isEmpty {
-            addInterfaceGroupHeader("Last used")
-            recentInterfaces.forEach(addInterfaceItem)
-            if !viewModel.interfaces.isEmpty {
-                interfacePopup.menu?.addItem(.separator())
-            }
-        }
-
-        addInterfaceSections(TCPViewerInterfaceMenuGrouper.sections(for: viewModel.interfaces))
-        if !selectInterfaceItem(with: viewModel.selectedInterfaceID) {
-            selectFirstInterfaceItem()
-        }
-        interfacePopup.isEnabled = !viewModel.isCaptureLocked
-        updateInterfacePopupWidth()
-    }
-
-    private func addInterfaceSections(_ sections: [TCPViewerInterfaceMenuSection]) {
-        guard sections.count > 1 else {
-            sections.first?.interfaces.forEach(addInterfaceItem)
-            return
-        }
-
-        for (index, section) in sections.enumerated() {
-            if index > 0 {
-                interfacePopup.menu?.addItem(.separator())
-            }
-
-            addInterfaceGroupHeader(section.title)
-            section.interfaces.forEach(addInterfaceItem)
-        }
-    }
-
-    private func addInterfaceGroupHeader(_ title: String) {
-        // Add a disabled group label so each dropdown section reads as a menu group.
-        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-        item.attributedTitle = NSAttributedString(
-            string: title,
-            attributes: [
-                .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold),
-                .foregroundColor: NSColor.disabledControlTextColor,
-            ]
+        TCPViewerInterfacePopupRenderer.render(
+            interfacePopup,
+            state: TCPViewerInterfacePopupState(
+                interfaces: viewModel.interfaces,
+                selectedInterfaceID: viewModel.selectedInterfaceID,
+                lastUsedInterfaceIDs: viewModel.lastUsedInterfaceIDs,
+                activeInterfaceID: viewModel.activeInterfaceID,
+                isCaptureLocked: viewModel.isCaptureLocked
+            ),
+            widthConstraint: interfacePopupWidthConstraint
         )
-        item.isEnabled = false
-        interfacePopup.menu?.addItem(item)
-    }
-
-    private func addInterfaceItem(_ interface: CaptureInterfaceSummary) {
-        // Keep each menu item self-identifying so selection does not depend on grouped menu indexes.
-        let item = NSMenuItem(title: interface.friendlyName ?? interface.displayName, action: nil, keyEquivalent: "")
-        item.representedObject = interface.id
-        item.isEnabled = interface.isSelectable && !viewModel.isCaptureLocked
-        if viewModel.isActiveInterface(interface) {
-            item.image = activeInterfaceMenuIcon()
-            item.toolTip = "Active network interface"
-        }
-        interfacePopup.menu?.addItem(item)
-    }
-
-    private func activeInterfaceMenuIcon() -> NSImage? {
-        // Mark the macOS primary route with a compact icon without changing interface names.
-        let configuration = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
-        let image = TCPViewerUI.image("location.fill")?.withSymbolConfiguration(configuration)?.copy() as? NSImage
-        image?.isTemplate = true
-        return image
-    }
-
-    @discardableResult
-    private func selectInterfaceItem(with identifier: String?) -> Bool {
-        // Select by represented identifier because recent grouping changes visible row order.
-        guard let identifier, let menu = interfacePopup.menu else {
-            return false
-        }
-
-        for (index, item) in menu.items.enumerated() where item.representedObject as? String == identifier {
-            interfacePopup.selectItem(at: index)
-            updateInterfacePopupWidth()
-            return true
-        }
-
-        return false
-    }
-
-    private func selectFirstInterfaceItem() {
-        // Avoid leaving the disabled group header as the visible popup title when no selection exists.
-        guard let menu = interfacePopup.menu else {
-            return
-        }
-
-        for (index, item) in menu.items.enumerated() where item.representedObject is String {
-            interfacePopup.selectItem(at: index)
-            updateInterfacePopupWidth()
-            return
-        }
-    }
-
-    private func updateInterfacePopupWidth() {
-        let title = interfacePopup.selectedItem?.title ?? interfacePopup.title
-        let font = interfacePopup.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
-        let measuredWidth = title.size(withAttributes: [.font: font]).width + TCPViewerToolbarLayout.interfacePopupTitlePadding
-        let width = ceil(min(
-            TCPViewerToolbarLayout.interfacePopupMaximumWidth,
-            max(TCPViewerToolbarLayout.interfacePopupMinimumWidth, measuredWidth)
-        ))
-        interfacePopupWidthConstraint?.constant = width
-        interfacePopup.setFrameSize(NSSize(width: width, height: TCPViewerToolbarLayout.toolbarControlHeight))
-        interfacePopup.superview?.layoutSubtreeIfNeeded()
     }
 
     private func renderCaptureButton() {
@@ -529,14 +326,21 @@ final class TCPViewerToolbarDataSource: NSObject {
 
     @objc private func interfaceChanged(_ sender: NSPopUpButton) {
         guard let identifier = sender.selectedItem?.representedObject as? String else {
-            if !selectInterfaceItem(with: viewModel.selectedInterfaceID) {
-                selectFirstInterfaceItem()
+            if !TCPViewerInterfacePopupRenderer.selectInterfaceItem(
+                with: viewModel.selectedInterfaceID,
+                in: interfacePopup,
+                widthConstraint: interfacePopupWidthConstraint
+            ) {
+                TCPViewerInterfacePopupRenderer.selectFirstInterfaceItem(
+                    in: interfacePopup,
+                    widthConstraint: interfacePopupWidthConstraint
+                )
             }
-            updateInterfacePopupWidth()
+            TCPViewerInterfacePopupRenderer.updateWidth(of: interfacePopup, widthConstraint: interfacePopupWidthConstraint)
             return
         }
 
-        updateInterfacePopupWidth()
+        TCPViewerInterfacePopupRenderer.updateWidth(of: interfacePopup, widthConstraint: interfacePopupWidthConstraint)
         delegate?.tcpviewerToolbarDataSource(self, didSelectInterface: identifier)
     }
 
@@ -717,15 +521,6 @@ private final class TCPViewerToolbarViewModel {
             "\(snapshot.droppedPacketCount) dropped",
             "\(snapshot.malformedPacketCount) malformed",
         ].joined(separator: " | ")
-    }
-
-    func isActiveInterface(_ interface: CaptureInterfaceSummary) -> Bool {
-        guard let activeInterfaceID else {
-            return false
-        }
-
-        return interface.id.caseInsensitiveCompare(activeInterfaceID) == .orderedSame ||
-            interface.technicalName.caseInsensitiveCompare(activeInterfaceID) == .orderedSame
     }
 
     var isTrailingInspectorVisible: Bool {

@@ -659,6 +659,18 @@ struct NetworkInspectorSnapshot: Equatable {
             base.sessionState.canResume ||
             base.sessionState.canStop
     }
+
+    var shouldShowMainEmptyState: Bool {
+        // Reserve the main empty state for the first-run all-packets view; scoped empty results stay local.
+        guard totalPacketCount == 0,
+              selectedSourceListSelection == .allPackets,
+              activeFilterBarLabels.isEmpty,
+              displayFilter.isEmpty else {
+            return false
+        }
+
+        return !isStructuredFilterVisible || structuredFilterGroup.activeFilters.isEmpty
+    }
 }
 
 // Class-backed storage for the table's row buffer so the content cache can append rows in place.
