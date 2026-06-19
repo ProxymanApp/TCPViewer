@@ -1,6 +1,6 @@
 import { createHash, createHmac } from "node:crypto";
 
-export const minimumSystemVersion = "15.6";
+export const minimumSystemVersion = "15.0";
 export const releaseDMGAppName = "tcpviewer";
 export const emptyPayloadSHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 

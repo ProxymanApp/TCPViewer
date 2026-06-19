@@ -35,8 +35,11 @@ HexFiend provides the embedded packet hex viewer framework.
 
 ## Transitive Runtime Libraries
 
-`scripts/stage-wireshark-runtime.sh` recursively stages non-system dynamic
-libraries required by the Wireshark runtime. Before publishing a binary release,
-inspect the generated `OpenSourceLicenses/RUNTIME_LIBRARIES.txt` file inside the
-app bundle and make sure every non-system runtime library has its required
-license notice included with the release.
+`scripts/bootstrap-wireshark-deps.sh` builds Wireshark's non-system runtime
+dependency closure from pinned source archives into
+`Vendor/.install/wireshark-deps`, and `scripts/stage-wireshark-runtime.sh`
+recursively stages those repo-built dynamic libraries. Before publishing a
+binary release, inspect the generated
+`OpenSourceLicenses/RUNTIME_LIBRARIES.txt` file inside the app bundle and make
+sure every non-system runtime library has its required license notice included
+with the release.

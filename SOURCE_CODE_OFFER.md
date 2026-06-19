@@ -6,7 +6,8 @@ any later version published by the Free Software Foundation.
 If you received a binary or object-code distribution of TCP Viewer, you may
 obtain the complete corresponding source code for TCP Viewer and bundled GPL
 components, including the pinned Wireshark source used to build `libwireshark`,
-`libwiretap`, and `libwsutil`, from the published source archive for the same
+`libwiretap`, `libwsutil`, and the pinned source archives for bundled
+non-system runtime dependencies, from the published source archive for the same
 release. Binary releases may also include other open-source runtime libraries;
 their required notices and source availability terms are tracked in
 `THIRD_PARTY_NOTICES.md` and the release bundle's `OpenSourceLicenses`

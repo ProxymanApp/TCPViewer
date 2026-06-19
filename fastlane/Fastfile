@@ -120,6 +120,14 @@ def built_app_path!(paths)
   UI.user_error!("Built app was not found at #{paths[:exported_app_path]} or #{paths[:archived_app_path]}")
 end
 
+def verify_bundled_runtime_compatibility!(app_path)
+  sh([
+    File.join(REPO_ROOT, "scripts", "verify-bundled-runtime-compatibility.sh"),
+    app_path,
+    "15.0"
+  ].map { |part| shell_escape(part) }.join(" "))
+end
+
 def sparkle_code_paths(app_path)
   sparkle_root = File.join(app_path, "Contents", "Frameworks", "Sparkle.framework", "Versions", "B")
   [
@@ -327,6 +335,7 @@ def build_release_variant!(release_type, options)
   UI.message("Building TCP Viewer #{release_type} #{version} (#{build_number})")
   prepare_output_dir!(output_dir)
   build_mac_app!(paths, version, build_number)
+  verify_bundled_runtime_compatibility!(built_app_path!(paths))
   sentry_debug_uuids = verify_sentry_debug_symbols!(paths)
   resign_exported_app_for_notarization!(built_app_path!(paths))
   verify_developer_id_app_signature!(built_app_path!(paths))
@@ -354,6 +363,7 @@ platform :mac do
 
     sh("xcodebuild -project #{shell_escape(PROJECT_PATH)} -scheme #{shell_escape(SCHEME_NAME)} -configuration #{shell_escape(CONFIGURATION_NAME)} -showBuildSettings > /dev/null")
     sh("test -d Vendor/.install/wireshark/lib")
+    sh("test -d Vendor/.install/wireshark-deps/lib")
     developer_id_identity!
     sh("xcrun notarytool --version > /dev/null")
   end

@@ -99,7 +99,7 @@ test("generates Sparkle appcast XML from structured notes", () => {
 
   assert.match(xml, /<title>Packet Inspector Launch<\/title>/);
   assert.match(xml, /<sparkle:version>42<\/sparkle:version>/);
-  assert.match(xml, /<sparkle:minimumSystemVersion>15.6<\/sparkle:minimumSystemVersion>/);
+  assert.match(xml, /<sparkle:minimumSystemVersion>15.0<\/sparkle:minimumSystemVersion>/);
   assert.match(xml, /sparkle:edSignature="abc123"/);
   assert.match(xml, /New &lt;feature&gt;/);
 });

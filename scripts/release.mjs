@@ -29,6 +29,7 @@ import {
   makeR2ObjectKey,
   makeR2StorageObjectKey,
   mergeEnv,
+  minimumSystemVersion,
   missingRequiredEnv,
   normalizeReleaseBackendURL,
   normalizeSparklePrivateKey,
@@ -190,6 +191,13 @@ async function preflight({ env, releaseType, objectKey, settings, releaseBackend
   await requireTool("xcodebuild", ["-version"]);
   await requireTool("xcrun", ["notarytool", "--version"]);
   await access(path.join(repoRoot, "Vendor/.install/wireshark/lib"));
+  await access(path.join(repoRoot, "Vendor/.install/wireshark-deps/lib"));
+  await requireTool(path.join(repoRoot, "scripts/verify-bundled-runtime-compatibility.sh"), [
+    path.join(repoRoot, "Vendor/.install/wireshark-deps"),
+    minimumSystemVersion,
+    "--allow-prefix",
+    path.join(repoRoot, "Vendor/.install/wireshark-deps")
+  ]);
 
   if (settings.ENABLE_HARDENED_RUNTIME !== "YES") {
     throw new Error("TCPViewer Release build must enable hardened runtime.");

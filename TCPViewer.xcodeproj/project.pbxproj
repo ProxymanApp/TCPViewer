@@ -843,14 +843,10 @@
 					"$(PROJECT_DIR)/Vendor/.build/wireshark-$(CONFIGURATION)-arm64",
 					"$(PROJECT_DIR)/Vendor/Wireshark",
 					"$(PROJECT_DIR)/Vendor/Wireshark/include",
-					"/opt/homebrew/include/glib-2.0",
-					"/opt/homebrew/lib/glib-2.0/include",
-					/opt/homebrew/opt/gettext/include,
-					/opt/homebrew/opt/pcre2/include,
-					"/usr/local/include/glib-2.0",
-					"/usr/local/lib/glib-2.0/include",
-					/usr/local/opt/gettext/include,
-					/usr/local/opt/pcre2/include,
+					"$(PROJECT_DIR)/Vendor/.install/wireshark-deps/include",
+					"$(PROJECT_DIR)/Vendor/.install/wireshark-deps/include/glib-2.0",
+					"$(PROJECT_DIR)/Vendor/.install/wireshark-deps/lib/glib-2.0/include",
+					"$(PROJECT_DIR)/Vendor/.install/wireshark-deps/include/p11-kit-1",
 				);
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
@@ -863,10 +859,7 @@
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Vendor/.install/wireshark/lib",
-					/opt/homebrew/opt/glib/lib,
-					/opt/homebrew/opt/gettext/lib,
-					/usr/local/opt/glib/lib,
-					/usr/local/opt/gettext/lib,
+					"$(PROJECT_DIR)/Vendor/.install/wireshark-deps/lib",
 				);
 				MARKETING_VERSION = 1.0;
 				MODULE_VERIFIER_SUPPORTED_LANGUAGES = "objective-c objective-c++";
@@ -921,14 +914,10 @@
 					"$(PROJECT_DIR)/Vendor/.build/wireshark-$(CONFIGURATION)-arm64",
 					"$(PROJECT_DIR)/Vendor/Wireshark",
 					"$(PROJECT_DIR)/Vendor/Wireshark/include",
-					"/opt/homebrew/include/glib-2.0",
-					"/opt/homebrew/lib/glib-2.0/include",
-					/opt/homebrew/opt/gettext/include,
-					/opt/homebrew/opt/pcre2/include,
-					"/usr/local/include/glib-2.0",
-					"/usr/local/lib/glib-2.0/include",
-					/usr/local/opt/gettext/include,
-					/usr/local/opt/pcre2/include,
+					"$(PROJECT_DIR)/Vendor/.install/wireshark-deps/include",
+					"$(PROJECT_DIR)/Vendor/.install/wireshark-deps/include/glib-2.0",
+					"$(PROJECT_DIR)/Vendor/.install/wireshark-deps/lib/glib-2.0/include",
+					"$(PROJECT_DIR)/Vendor/.install/wireshark-deps/include/p11-kit-1",
 				);
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
@@ -941,10 +930,7 @@
 				LIBRARY_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Vendor/.install/wireshark/lib",
-					/opt/homebrew/opt/glib/lib,
-					/opt/homebrew/opt/gettext/lib,
-					/usr/local/opt/glib/lib,
-					/usr/local/opt/gettext/lib,
+					"$(PROJECT_DIR)/Vendor/.install/wireshark-deps/lib",
 				);
 				MARKETING_VERSION = 1.0;
 				MODULE_VERIFIER_SUPPORTED_LANGUAGES = "objective-c objective-c++";

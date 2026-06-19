@@ -7,11 +7,10 @@ TCP Viewer is a macOS packet viewer for live captures and capture files. It uses
 - macOS 15+
 - Xcode 16+
 - Git
-- CMake, Ninja, and pkg-config
-- Wireshark build dependencies
+- CMake, Ninja, Meson, pkg-config, and autotools
 
 ```bash
-brew install cmake ninja pkg-config glib libgcrypt gnutls nghttp2 brotli lz4 zstd
+brew install cmake ninja meson pkg-config autoconf automake libtool
 ```
 
 ## Setup
@@ -31,6 +30,12 @@ If you already cloned without submodules:
 git submodule update --init --recursive
 ./scripts/bootstrap-wireshark.sh
 ```
+
+`scripts/bootstrap-wireshark.sh` first runs
+`scripts/bootstrap-wireshark-deps.sh`, which builds Wireshark's bundled runtime
+libraries from source into `Vendor/.install/wireshark-deps` with macOS 15.0 as
+the deployment target. Homebrew is used only for build tools; release bundles
+must not copy Homebrew bottle dylibs from `/opt/homebrew` or `/usr/local`.
 
 Keep local signing, appcast, Sparkle, Sentry, and release values out of Git. Use ignored local files such as `Config/TCPViewer.local.xcconfig`, `.env`, shell environment variables, or Keychain-backed tools.
 

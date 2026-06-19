@@ -4,9 +4,15 @@ set -eu
 
 PROJECT_DIR="${PROJECT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 SOURCE_LIB_DIR="$PROJECT_DIR/Vendor/.install/wireshark/lib"
+DEPS_LIB_DIR="$PROJECT_DIR/Vendor/.install/wireshark-deps/lib"
 
 if [ ! -d "$SOURCE_LIB_DIR" ]; then
   echo "error: Wireshark libraries are missing at $SOURCE_LIB_DIR. Run scripts/bootstrap-wireshark.sh." >&2
+  exit 1
+fi
+
+if [ ! -d "$DEPS_LIB_DIR" ]; then
+  echo "error: Wireshark dependency libraries are missing at $DEPS_LIB_DIR. Run scripts/bootstrap-wireshark-deps.sh." >&2
   exit 1
 fi
 
@@ -25,6 +31,8 @@ COPIED_PATHS_FILE="$WORK_DIR/copied-paths.txt"
 
 mkdir -p "$DESTINATION_DIR"
 rm -f "$DESTINATION_DIR/.wireshark-runtime-staged"
+find "$DESTINATION_DIR" -maxdepth 1 -name '*.dylib' -type f -delete
+find "$DESTINATION_DIR" -maxdepth 1 -name '*.dylib' -type l -delete
 rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR"
 : > "$QUEUE_FILE"
@@ -41,10 +49,30 @@ is_system_dependency() {
   return 1
 }
 
+is_allowed_vendor_dependency() {
+  case "$1" in
+    "$SOURCE_LIB_DIR"/*|"$DEPS_LIB_DIR"/*|"$DESTINATION_DIR"/*)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+is_forbidden_machine_dependency() {
+  case "$1" in
+    /opt/homebrew/*|/usr/local/*)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
 resolve_rpath_library() {
   LIBRARY_NAME="$1"
 
-  for LIBRARY_DIR in "$SOURCE_LIB_DIR" /opt/homebrew/lib /opt/homebrew/opt/*/lib /usr/local/lib /usr/local/opt/*/lib; do
+  for LIBRARY_DIR in "$DESTINATION_DIR" "$SOURCE_LIB_DIR" "$DEPS_LIB_DIR"; do
     if [ -f "$LIBRARY_DIR/$LIBRARY_NAME" ]; then
       printf '%s\n' "$LIBRARY_DIR/$LIBRARY_NAME"
       return
@@ -129,7 +157,18 @@ queue_dependency() {
       fi
       ;;
     /*)
-      queue_library "$DEPENDENCY"
+      if is_forbidden_machine_dependency "$DEPENDENCY"; then
+        echo "error: refusing to stage machine-local Wireshark dependency: $DEPENDENCY" >&2
+        echo "       Rebuild with scripts/bootstrap-wireshark-deps.sh so runtime deps come from Vendor/.install/wireshark-deps." >&2
+        exit 1
+      fi
+
+      if is_allowed_vendor_dependency "$DEPENDENCY"; then
+        queue_library "$DEPENDENCY"
+      else
+        echo "error: refusing to stage unexpected absolute Wireshark dependency: $DEPENDENCY" >&2
+        exit 1
+      fi
       ;;
   esac
 }
@@ -153,7 +192,7 @@ copy_next_library() {
   printf '%s\n' "$LIBRARY_NAME" >> "$COPIED_NAMES_FILE"
   printf '%s\n' "$DESTINATION_PATH" >> "$COPIED_PATHS_FILE"
 
-  otool -L "$DESTINATION_PATH" | awk 'NR > 2 { print $1 }' > "$WORK_DIR/dependencies.txt"
+  otool -L "$DESTINATION_PATH" | sed -n '/^[[:space:]]/ { s/^[[:space:]]*//; s/ (compatibility.*$//; p; }' > "$WORK_DIR/dependencies.txt"
   while IFS= read -r DEPENDENCY; do
     [ -n "$DEPENDENCY" ] || continue
     queue_dependency "$DEPENDENCY" "$LIBRARY_PATH"
@@ -167,7 +206,7 @@ patch_library() {
   install_name_tool -id "@rpath/$LIBRARY_NAME" "$LIBRARY_PATH"
   install_name_tool -add_rpath "@loader_path" "$LIBRARY_PATH" 2>/dev/null || true
 
-  otool -L "$LIBRARY_PATH" | awk 'NR > 2 { print $1 }' > "$WORK_DIR/patch-dependencies.txt"
+  otool -L "$LIBRARY_PATH" | sed -n '/^[[:space:]]/ { s/^[[:space:]]*//; s/ (compatibility.*$//; p; }' > "$WORK_DIR/patch-dependencies.txt"
   while IFS= read -r DEPENDENCY; do
     [ -n "$DEPENDENCY" ] || continue
 
@@ -187,7 +226,7 @@ patch_consumer_binary() {
 
   install_name_tool -add_rpath "@loader_path/Frameworks" "$BINARY_PATH" 2>/dev/null || true
 
-  otool -L "$BINARY_PATH" | awk 'NR > 2 { print $1 }' > "$WORK_DIR/patch-consumer-dependencies.txt"
+  otool -L "$BINARY_PATH" | sed -n '/^[[:space:]]/ { s/^[[:space:]]*//; s/ (compatibility.*$//; p; }' > "$WORK_DIR/patch-consumer-dependencies.txt"
   while IFS= read -r DEPENDENCY; do
     [ -n "$DEPENDENCY" ] || continue
 
