@@ -149,6 +149,20 @@
       ],
       "bugs": [
       ]
+    },
+    {
+      "version": "1.7.0",
+      "title": "TCP Viewer 1.7.0 Getting started onboarding, macOS 15 crash fix",
+      "features": [
+        "Improve main empty state onboarding with the Getting Started guide to know where to start"
+      ],
+      "improvements": [
+        "Improve network interface dropdown selection.",
+        "Investigate and harden Wireshark startup/runtime packaging."
+      ],
+      "bugs": [
+        "Fixed: Proxyman crashes when running on macOS 15"
+      ]
     }
   ]
 }
