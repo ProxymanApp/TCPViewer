@@ -1,5 +1,6 @@
 require "fileutils"
 require "shellwords"
+require "tmpdir"
 
 default_platform(:mac)
 ENV["FASTLANE_XCODEBUILD_SETTINGS_TIMEOUT"] = "120"
@@ -268,6 +269,42 @@ def macho_uuids!(path, label)
   parse_dwarfdump_uuids!(sh("dwarfdump --uuid #{shell_escape(path)}", log: false), label)
 end
 
+def sentry_artifact_uuids!(path)
+  Dir.mktmpdir("tcpviewer-sentry-dsyms-") do |tmp_dir|
+    scan_root = path
+
+    if File.file?(path) && File.extname(path).casecmp(".zip").zero?
+      # dwarfdump cannot inspect zipped dSYMs, so scan a temporary extraction instead.
+      sh("ditto -x -k #{shell_escape(path)} #{shell_escape(tmp_dir)}", log: false)
+      scan_root = tmp_dir
+    end
+
+    dsym_paths = if File.directory?(scan_root) && File.basename(scan_root).end_with?(".dSYM")
+      [scan_root]
+    elsif File.directory?(scan_root)
+      Dir[File.join(scan_root, "**", "*.dSYM")]
+    else
+      []
+    end
+    UI.user_error!("No dSYM bundles were found in Sentry debug files artifact #{path}") if dsym_paths.empty?
+
+    dsym_paths.flat_map { |dsym_path| macho_uuids!(dsym_path, dsym_path) }.uniq.sort
+  end
+end
+
+def verify_sentry_upload_artifact!(path, required_uuids)
+  artifact_uuids = sentry_artifact_uuids!(path)
+  missing_uuids = required_uuids.map(&:upcase) - artifact_uuids
+  unless missing_uuids.empty?
+    UI.user_error!(
+      "Sentry debug files artifact is missing required UUIDs. " \
+      "missing=#{missing_uuids.join(', ')} found=#{artifact_uuids.join(', ')}"
+    )
+  end
+
+  UI.message("Verified Sentry upload artifact UUIDs: #{required_uuids.join(', ')}")
+end
+
 def app_dsym_path!(paths)
   expected_path = File.join(paths[:dsym_path], "#{APP_NAME}.app.dSYM")
   return expected_path if File.directory?(expected_path)
@@ -298,7 +335,7 @@ def verify_sentry_debug_symbols!(paths)
 end
 
 def upload_sentry_debug_files!(path, required_uuids:)
-  # Upload only when Sentry can find and process the exact app debug UUIDs.
+  # Upload only after the local artifact contains the exact app debug UUIDs.
   required_env!([
     "SENTRY_AUTH_TOKEN",
     "SENTRY_ORG_SLUG",
@@ -307,21 +344,23 @@ def upload_sentry_debug_files!(path, required_uuids:)
 
   UI.user_error!("Sentry debug files path was not found at #{path}") unless File.exist?(path)
   UI.user_error!("Missing Sentry debug UUIDs for upload verification") if required_uuids.empty?
+  verify_sentry_upload_artifact!(path, required_uuids)
 
-  uuid_args = required_uuids.flat_map { |uuid| ["--id", uuid] }
-  command = [
+  base_command = [
     "sentry-cli",
     "debug-files",
     "upload",
     "--org", ENV.fetch("SENTRY_ORG_SLUG"),
     "--project", ENV.fetch("SENTRY_PROJECT_SLUG"),
-    "--include-sources",
-    "--require-all",
-    "--wait-for", "120",
-    *uuid_args,
+    "--include-sources"
+  ]
+
+  # Keep --require-all out of the real upload; Sentry can dedupe files before its UUID lookup sees them.
+  upload_command = [
+    *base_command,
     path
   ]
-  sh(command.map { |part| shell_escape(part) }.join(" "))
+  sh(upload_command.map { |part| shell_escape(part) }.join(" "))
 end
 
 def build_release_variant!(release_type, options)

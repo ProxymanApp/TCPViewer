@@ -18,6 +18,8 @@ function parseArgs(argv) {
       args.type = arg.slice("--type=".length).trim().toLowerCase();
     } else if (arg.startsWith("--beta-name=")) {
       args.betaName = arg.slice("--beta-name=".length).trim();
+    } else if (arg === "--yes" || arg === "-y") {
+      args.yes = true;
     }
   }
   return args;
@@ -97,6 +99,9 @@ function buildReleaseArgs(type, args) {
   const releaseArgs = [releaseScriptPath, `--type=${type}`];
   if (args.betaName) {
     releaseArgs.push(`--beta-name=${args.betaName}`);
+  }
+  if (args.yes) {
+    releaseArgs.push("--yes");
   }
   return releaseArgs;
 }

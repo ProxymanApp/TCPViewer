@@ -40,12 +40,37 @@ if [ ! -e "$ROOT_PATH" ]; then
 fi
 
 version_gt() {
-  /usr/bin/ruby -e '
-    def version(value)
-      value.to_s.split(".").map(&:to_i)
-    end
-    exit((version(ARGV[0]) <=> version(ARGV[1])) == 1 ? 0 : 1)
-  ' "$1" "$2"
+  VERSION_COMPARE_RESULT="$(awk -v left="$1" -v right="$2" '
+    function split_version(value, parts) {
+      count = split(value, raw_parts, ".")
+      for (i = 1; i <= 4; i += 1) {
+        parts[i] = i <= count ? raw_parts[i] + 0 : 0
+      }
+    }
+
+    BEGIN {
+      split_version(left, left_parts)
+      split_version(right, right_parts)
+
+      for (i = 1; i <= 4; i += 1) {
+        if (left_parts[i] > right_parts[i]) {
+          print "1"
+          exit
+        }
+        if (left_parts[i] < right_parts[i]) {
+          print "0"
+          exit
+        }
+      }
+
+      print "0"
+    }
+  ')" || {
+    echo "error: failed to compare macOS versions: $1 and $2" >&2
+    exit 1
+  }
+
+  [ "$VERSION_COMPARE_RESULT" = "1" ]
 }
 
 macho_minos_values() {
