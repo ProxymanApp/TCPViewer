@@ -1,0 +1,198 @@
+#!/bin/sh
+
+set -eu
+
+if [ "$#" -lt 1 ]; then
+  echo "usage: $0 <app-or-directory> [maximum-macos-version] [--allow-prefix <path> ...]" >&2
+  exit 2
+fi
+
+ROOT_PATH="$1"
+MAXIMUM_MACOS_VERSION="${2:-15.0}"
+shift
+if [ "$#" -gt 0 ]; then
+  shift
+fi
+
+ALLOW_PREFIXES=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --allow-prefix)
+      shift
+      if [ "$#" -eq 0 ]; then
+        echo "error: --allow-prefix requires a path." >&2
+        exit 2
+      fi
+      ALLOW_PREFIXES="${ALLOW_PREFIXES}
+$1"
+      ;;
+    *)
+      echo "error: unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+if [ ! -e "$ROOT_PATH" ]; then
+  echo "error: compatibility scan path does not exist: $ROOT_PATH" >&2
+  exit 1
+fi
+
+version_gt() {
+  VERSION_COMPARE_RESULT="$(awk -v left="$1" -v right="$2" '
+    function split_version(value, parts) {
+      count = split(value, raw_parts, ".")
+      for (i = 1; i <= 4; i += 1) {
+        parts[i] = i <= count ? raw_parts[i] + 0 : 0
+      }
+    }
+
+    BEGIN {
+      split_version(left, left_parts)
+      split_version(right, right_parts)
+
+      for (i = 1; i <= 4; i += 1) {
+        if (left_parts[i] > right_parts[i]) {
+          print "1"
+          exit
+        }
+        if (left_parts[i] < right_parts[i]) {
+          print "0"
+          exit
+        }
+      }
+
+      print "0"
+    }
+  ')" || {
+    echo "error: failed to compare macOS versions: $1 and $2" >&2
+    exit 1
+  }
+
+  [ "$VERSION_COMPARE_RESULT" = "1" ]
+}
+
+macho_minos_values() {
+  otool -l "$1" 2>/dev/null | awk '
+    function emit(value) {
+      if (value != "" && !seen[value]++) {
+        print value
+      }
+    }
+
+    $1 == "cmd" && $2 == "LC_BUILD_VERSION" {
+      in_build = 1
+      in_legacy = 0
+      next
+    }
+
+    $1 == "cmd" && $2 == "LC_VERSION_MIN_MACOSX" {
+      in_build = 0
+      in_legacy = 1
+      next
+    }
+
+    $1 == "cmd" {
+      in_build = 0
+      in_legacy = 0
+      next
+    }
+
+    in_build && $1 == "minos" {
+      emit($2)
+      in_build = 0
+      next
+    }
+
+    in_legacy && $1 == "version" {
+      emit($2)
+      in_legacy = 0
+      next
+    }
+  '
+}
+
+is_macho() {
+  otool -h "$1" >/dev/null 2>&1
+}
+
+is_allowed_prefix_path() {
+  PATH_VALUE="$1"
+
+  case "$PATH_VALUE" in
+    /usr/lib/*|/System/Library/*|@rpath/*|@loader_path/*|@executable_path/*)
+      return 0
+      ;;
+  esac
+
+  OLD_IFS="$IFS"
+  IFS='
+'
+  for PREFIX in $ALLOW_PREFIXES; do
+    [ -n "$PREFIX" ] || continue
+    case "$PATH_VALUE" in
+      "$PREFIX"/*)
+        IFS="$OLD_IFS"
+        return 0
+        ;;
+    esac
+  done
+  IFS="$OLD_IFS"
+
+  return 1
+}
+
+TMP_FAILURES="${TMPDIR:-/tmp}/tcpviewer-runtime-compatibility-$$.txt"
+TMP_SELF_IDS="${TMPDIR:-/tmp}/tcpviewer-runtime-compatibility-self-ids-$$.txt"
+trap 'rm -f "$TMP_FAILURES" "$TMP_SELF_IDS"' EXIT
+: > "$TMP_FAILURES"
+
+find "$ROOT_PATH" -type f -print | while IFS= read -r FILE_PATH; do
+  if ! is_macho "$FILE_PATH"; then
+    continue
+  fi
+
+  macho_minos_values "$FILE_PATH" | while IFS= read -r MINOS; do
+    [ -n "$MINOS" ] || continue
+    if version_gt "$MINOS" "$MAXIMUM_MACOS_VERSION"; then
+      printf '%s\n' "minos $MINOS > $MAXIMUM_MACOS_VERSION: $FILE_PATH" >> "$TMP_FAILURES"
+    fi
+  done
+
+  otool -D "$FILE_PATH" 2>/dev/null | sed -n '/):$/d; 1!p' > "$TMP_SELF_IDS"
+  while IFS= read -r INSTALL_ID; do
+    [ -n "$INSTALL_ID" ] || continue
+    case "$INSTALL_ID" in
+      /opt/homebrew/*|/usr/local/*)
+        printf '%s\n' "machine-local install ID $INSTALL_ID in $FILE_PATH" >> "$TMP_FAILURES"
+        ;;
+    esac
+  done < "$TMP_SELF_IDS"
+
+  otool -L "$FILE_PATH" 2>/dev/null | sed -n '/^[[:space:]]/ { s/^[[:space:]]*//; s/ (compatibility.*$//; p; }' | while IFS= read -r DEPENDENCY; do
+    [ -n "$DEPENDENCY" ] || continue
+    if grep -Fxq "$DEPENDENCY" "$TMP_SELF_IDS"; then
+      continue
+    fi
+
+    case "$DEPENDENCY" in
+      /opt/homebrew/*|/usr/local/*)
+        printf '%s\n' "machine-local dependency $DEPENDENCY referenced by $FILE_PATH" >> "$TMP_FAILURES"
+        ;;
+      /*)
+        if ! is_allowed_prefix_path "$DEPENDENCY"; then
+          printf '%s\n' "unexpected absolute dependency $DEPENDENCY referenced by $FILE_PATH" >> "$TMP_FAILURES"
+        fi
+        ;;
+    esac
+  done
+done
+
+if [ -s "$TMP_FAILURES" ]; then
+  echo "error: bundled runtime compatibility check failed:" >&2
+  sed 's/^/  - /' "$TMP_FAILURES" >&2
+  exit 1
+fi
+
+echo "Bundled runtime compatibility check passed for $ROOT_PATH."

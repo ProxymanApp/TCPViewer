@@ -1,6 +1,6 @@
 import { createHash, createHmac } from "node:crypto";
 
-export const minimumSystemVersion = "15.6";
+export const minimumSystemVersion = "15.0";
 export const releaseDMGAppName = "tcpviewer";
 export const emptyPayloadSHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
@@ -97,6 +97,28 @@ export function publishReleaseToBackendEnabled(env) {
   }
 
   throw new Error("TCPVIEWER_PUBLISH_RELEASE_TO_BACKEND must be one of: 1, true, yes, on, 0, false, no, off.");
+}
+
+export function isRetryableHTTPStatus(status) {
+  return status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
+export function describeFetchError(error) {
+  const descriptions = [];
+  let current = error;
+  for (let depth = 0; current && depth < 4; depth += 1) {
+    const code = typeof current.code === "string" && current.code ? `${current.code}: ` : "";
+    const message = typeof current.message === "string" && current.message
+      ? current.message
+      : String(current);
+    const description = `${code}${message}`.trim();
+    if (description && !descriptions.includes(description)) {
+      descriptions.push(description);
+    }
+    current = current.cause;
+  }
+
+  return descriptions.join(" | ") || "Unknown fetch failure.";
 }
 
 export function normalizeReleaseBackendURL(value) {

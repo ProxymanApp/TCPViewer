@@ -19,9 +19,11 @@ import { spawn } from "node:child_process";
 import prompts from "prompts";
 import {
   assertReleaseTitleReflectsChanges,
+  describeFetchError,
   emptyPayloadSHA256,
   findReleaseNote,
   generateAppcastXML,
+  isRetryableHTTPStatus,
   makeGitHubReleaseTagName,
   makeBetaDMGFileName,
   makeDMGFileName,
@@ -29,6 +31,7 @@ import {
   makeR2ObjectKey,
   makeR2StorageObjectKey,
   mergeEnv,
+  minimumSystemVersion,
   missingRequiredEnv,
   normalizeReleaseBackendURL,
   normalizeSparklePrivateKey,
@@ -48,6 +51,10 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
 const releaseBackendPlatform = "macos";
+const r2UploadMaxAttempts = 3;
+const r2UploadConfirmationAttempts = 3;
+const r2UploadAttemptTimeoutMs = 300_000;
+const r2UploadConfirmationTimeoutMs = 30_000;
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
@@ -114,7 +121,7 @@ async function main() {
     githubRelease,
     releaseBackend
   });
-  if (!await askReleaseConfirmation()) {
+  if (!args.yes && !await askReleaseConfirmation()) {
     console.log("Release cancelled.");
     return;
   }
@@ -190,6 +197,13 @@ async function preflight({ env, releaseType, objectKey, settings, releaseBackend
   await requireTool("xcodebuild", ["-version"]);
   await requireTool("xcrun", ["notarytool", "--version"]);
   await access(path.join(repoRoot, "Vendor/.install/wireshark/lib"));
+  await access(path.join(repoRoot, "Vendor/.install/wireshark-deps/lib"));
+  await requireTool(path.join(repoRoot, "scripts/verify-bundled-runtime-compatibility.sh"), [
+    path.join(repoRoot, "Vendor/.install/wireshark-deps"),
+    minimumSystemVersion,
+    "--allow-prefix",
+    path.join(repoRoot, "Vendor/.install/wireshark-deps")
+  ]);
 
   if (settings.ENABLE_HARDENED_RUNTIME !== "YES") {
     throw new Error("TCPViewer Release build must enable hardened runtime.");
@@ -242,7 +256,7 @@ async function runFastlaneBuild({ env, releaseType, version, buildNumber, output
     `build_number:${buildNumber}`,
     `output_dir:${outputDir}`,
     `dmg_name:${dmgFileName}`
-  ], { env });
+  ], { env: { ...env, FASTLANE_SKIP_UPDATE_CHECK: "1" } });
 }
 
 async function verifyFinalDMG({ dmgPath }) {
@@ -338,17 +352,181 @@ async function uploadDMGToR2({ env, objectKey, dmgPath }) {
       "content-type": "application/x-apple-diskimage"
     }
   });
-
-  const response = await fetch(url, {
-    method: "PUT",
-    headers: signedHeaders,
-    body: createReadStream(dmgPath),
-    duplex: "half"
+  const verificationHeaders = signR2Request({
+    method: "HEAD",
+    url,
+    accessKeyId: env.TCPVIEWER_R2_ACCESS_KEY_ID,
+    secretAccessKey: env.TCPVIEWER_R2_SECRET_ACCESS_KEY,
+    payloadHash: emptyPayloadSHA256
   });
 
-  if (!response.ok) {
-    throw new Error(`R2 upload failed for ${objectKey}: ${response.status} ${await response.text()}`);
+  console.log(`Uploading DMG to R2: ${objectKey}`);
+  await putR2ObjectWithRetry({
+    url,
+    signedHeaders,
+    verificationHeaders,
+    dmgPath,
+    objectKey,
+    expectedSize: fileStat.size
+  });
+  console.log(`Uploaded DMG to R2: ${objectKey}`);
+}
+
+async function putR2ObjectWithRetry({ url, signedHeaders, verificationHeaders, dmgPath, objectKey, expectedSize }) {
+  for (let attempt = 1; attempt <= r2UploadMaxAttempts; attempt += 1) {
+    let response;
+    try {
+      response = await curlR2Request({
+        method: "PUT",
+        url,
+        headers: signedHeaders,
+        uploadFile: dmgPath,
+        timeoutMs: r2UploadAttemptTimeoutMs
+      });
+    } catch (error) {
+      const message = describeFetchError(error);
+      if (attempt === r2UploadMaxAttempts) {
+        if (await r2ObjectHasExpectedSize({ url, headers: verificationHeaders, expectedSize })) {
+          console.warn(`R2 upload response was lost, but ${objectKey} exists with the expected size. Continuing.`);
+          return;
+        }
+        throw new Error(`R2 upload failed for ${objectKey}: ${message}`);
+      }
+      await retryR2Upload({ attempt, message, objectKey });
+      continue;
+    }
+
+    if (isSuccessfulHTTPStatus(response.status)) {
+      return;
+    }
+
+    const message = `${response.status} ${response.body}`.trim();
+    if (!isRetryableHTTPStatus(response.status)) {
+      throw new Error(`R2 upload failed for ${objectKey}: ${message}`);
+    }
+
+    if (attempt === r2UploadMaxAttempts) {
+      if (await r2ObjectHasExpectedSize({ url, headers: verificationHeaders, expectedSize })) {
+        console.warn(`R2 upload ended with ${response.status}, but ${objectKey} exists with the expected size. Continuing.`);
+        return;
+      }
+      throw new Error(`R2 upload failed for ${objectKey}: ${message}`);
+    }
+
+    await retryR2Upload({ attempt, message, objectKey });
   }
+}
+
+async function retryR2Upload({ attempt, message, objectKey }) {
+  console.warn(`R2 upload attempt ${attempt}/${r2UploadMaxAttempts} failed for ${objectKey}: ${message}. Retrying...`);
+  await sleep(attempt * 1500);
+}
+
+async function r2ObjectHasExpectedSize({ url, headers, expectedSize }) {
+  for (let attempt = 1; attempt <= r2UploadConfirmationAttempts; attempt += 1) {
+    try {
+      const response = await curlR2Request({
+        method: "HEAD",
+        url,
+        headers,
+        timeoutMs: r2UploadConfirmationTimeoutMs
+      });
+      if (response.status === 404) {
+        return false;
+      }
+      if (isSuccessfulHTTPStatus(response.status)) {
+        return Number(response.headers.get("content-length")) === expectedSize;
+      }
+    } catch {
+      // A lost PUT response can race with transient network failures; retry the confirmation too.
+    }
+
+    if (attempt < r2UploadConfirmationAttempts) {
+      await sleep(attempt * 1000);
+    }
+  }
+
+  return false;
+}
+
+function sleep(milliseconds) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
+}
+
+async function curlR2Request({ method, url, headers, uploadFile = null, timeoutMs }) {
+  const args = [
+    "-sS",
+    "--max-time", String(Math.ceil(timeoutMs / 1000)),
+    "--write-out", "\n%{http_code}",
+    "--output", "-"
+  ];
+
+  if (method === "HEAD") {
+    args.push("--head");
+  } else {
+    args.push("--request", method);
+  }
+
+  if (uploadFile) {
+    args.push("--upload-file", uploadFile);
+  }
+
+  args.push(...curlHeaderArgs(headers, { skipHeaders: uploadFile ? ["content-length"] : [] }));
+  args.push(url.href);
+
+  const result = await runCommand("/usr/bin/curl", args, { capture: true });
+  return parseCurlHTTPResponse(result.stdout);
+}
+
+function curlHeaderArgs(headers, { skipHeaders = [] } = {}) {
+  const skipped = new Set(skipHeaders.map((name) => name.toLowerCase()));
+  return Object.entries(headers).flatMap(([name, value]) => {
+    if (skipped.has(name.toLowerCase())) {
+      return [];
+    }
+    return ["--header", `${name}: ${value}`];
+  });
+}
+
+function parseCurlHTTPResponse(stdout) {
+  const markerIndex = stdout.lastIndexOf("\n");
+  const status = Number(stdout.slice(markerIndex + 1).trim());
+  const body = markerIndex === -1 ? "" : stdout.slice(0, markerIndex).trim();
+  if (!Number.isInteger(status) || status < 100) {
+    throw new Error("curl did not return an HTTP status code.");
+  }
+
+  return {
+    status,
+    body,
+    headers: parseCurlHeaders(body)
+  };
+}
+
+function parseCurlHeaders(rawHeaders) {
+  const headers = new Map();
+  for (const line of rawHeaders.split(/\r?\n/)) {
+    const separatorIndex = line.indexOf(":");
+    if (separatorIndex === -1) {
+      continue;
+    }
+    headers.set(
+      line.slice(0, separatorIndex).trim().toLowerCase(),
+      line.slice(separatorIndex + 1).trim()
+    );
+  }
+
+  return {
+    get(name) {
+      return headers.get(name.toLowerCase()) ?? null;
+    }
+  };
+}
+
+function isSuccessfulHTTPStatus(status) {
+  return status >= 200 && status < 300;
 }
 
 function resolveReleaseBackend({ env, releaseType }) {
@@ -853,6 +1031,8 @@ function parseArgs(argv) {
       args.type = arg.slice("--type=".length).toLowerCase();
     } else if (arg.startsWith("--beta-name=")) {
       args.betaName = arg.slice("--beta-name=".length);
+    } else if (arg === "--yes" || arg === "-y") {
+      args.yes = true;
     }
   }
   return args;
