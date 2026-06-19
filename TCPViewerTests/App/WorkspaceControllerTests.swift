@@ -5,6 +5,7 @@
 //  Created by Proxyman LLC on 23/4/26.
 //
 
+import AppKit
 import Foundation
 import Testing
 import PcapPlusPlusCore
@@ -57,6 +58,88 @@ struct WindowControllerTests {
         #expect(sections.first { $0.title == "Ethernet" }?.interfaces.map(\.id) == ["ap1", "en0", "anpi0"])
         #expect(sections.first { $0.title == "Wi-Fi" }?.interfaces.map(\.id) == ["en1", "awdl0"])
         #expect(sections.first { $0.title == "Tunnels" }?.interfaces.map(\.id) == ["gif0", "utun0"])
+    }
+
+    @Test func interfacePopupMovesUncommonInterfacesIntoOtherSubmenu() throws {
+        let interfaces = [
+            makeInterface(id: "pktap0", displayName: "All Interfaces"),
+            makeInterface(id: "ap1", displayName: "Ethernet"),
+            makeInterface(id: "en0", displayName: "Ethernet"),
+            makeInterface(id: "en2", displayName: "Thunderbolt 1"),
+            makeInterface(id: "en1", displayName: "Wi-Fi"),
+            makeInterface(id: "lo0", displayName: "Loopback", isLoopback: true),
+            makeInterface(id: "awdl0", displayName: "Apple Wireless Direct Link", availability: .unavailable, canCapture: false),
+            makeInterface(id: "anpi0", displayName: "Ethernet", availability: .unavailable, canCapture: false),
+            makeInterface(id: "gif0", displayName: "Generic Tunnel", availability: .unavailable, canCapture: false),
+            makeInterface(id: "utun0", displayName: "VPN Tunnel", availability: .unavailable, canCapture: false),
+        ]
+        let popup = NSPopUpButton(frame: .zero, pullsDown: false)
+        let actionTarget = InterfacePopupActionTarget()
+        popup.target = actionTarget
+        popup.action = #selector(InterfacePopupActionTarget.interfaceChanged(_:))
+
+        TCPViewerInterfacePopupRenderer.configure(popup)
+        TCPViewerInterfacePopupRenderer.render(
+            popup,
+            state: TCPViewerInterfacePopupState(
+                interfaces: interfaces,
+                selectedInterfaceID: "en1",
+                lastUsedInterfaceIDs: [],
+                activeInterfaceID: "en1",
+                isCaptureLocked: false
+            ),
+            widthConstraint: nil
+        )
+
+        let menu = try #require(popup.menu)
+        #expect(menu.items.compactMap { $0.representedObject as? String } == ["pktap0", "en0", "en1"])
+
+        let otherItem = try #require(menu.items.first { $0.title == "Other" })
+        let otherMenu = try #require(otherItem.submenu)
+        let otherIDs = Set(otherMenu.items.compactMap { $0.representedObject as? String })
+        #expect(otherIDs == Set(["ap1", "en2", "lo0", "awdl0", "anpi0", "gif0", "utun0"]))
+
+        let otherInterfaceItems = otherMenu.items.filter { $0.representedObject is String }
+        #expect(otherInterfaceItems.allSatisfy { ($0.target as AnyObject?) === actionTarget })
+        #expect(otherInterfaceItems.allSatisfy { $0.action == #selector(InterfacePopupActionTarget.interfaceChanged(_:)) })
+        #expect(otherMenu.items.first { $0.representedObject as? String == "awdl0" }?.isEnabled == false)
+    }
+
+    @Test func interfacePopupWidthIncludesSelectedIcon() {
+        let interfaces = [makeInterface(id: "en0", displayName: "Wi-Fi (en0)")]
+        let plainPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        let activePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+        let plainWidth = plainPopup.widthAnchor.constraint(equalToConstant: 0)
+        let activeWidth = activePopup.widthAnchor.constraint(equalToConstant: 0)
+
+        TCPViewerInterfacePopupRenderer.configure(plainPopup)
+        TCPViewerInterfacePopupRenderer.render(
+            plainPopup,
+            state: TCPViewerInterfacePopupState(
+                interfaces: interfaces,
+                selectedInterfaceID: "en0",
+                lastUsedInterfaceIDs: [],
+                activeInterfaceID: nil,
+                isCaptureLocked: false
+            ),
+            widthConstraint: plainWidth,
+            maximumWidth: nil
+        )
+        TCPViewerInterfacePopupRenderer.configure(activePopup)
+        TCPViewerInterfacePopupRenderer.render(
+            activePopup,
+            state: TCPViewerInterfacePopupState(
+                interfaces: interfaces,
+                selectedInterfaceID: "en0",
+                lastUsedInterfaceIDs: [],
+                activeInterfaceID: "en0",
+                isCaptureLocked: false
+            ),
+            widthConstraint: activeWidth,
+            maximumWidth: nil
+        )
+
+        #expect(activeWidth.constant > plainWidth.constant)
     }
 
     @Test func controllerInitialLoadSelectsActiveInterfaceBeforeFirstEligibleFallback() async {
@@ -1667,6 +1750,10 @@ struct WindowControllerTests {
         await settleEventLoop()
         await settleEventLoop()
     }
+}
+
+private final class InterfacePopupActionTarget: NSObject {
+    @objc func interfaceChanged(_ sender: Any) {}
 }
 
 @Suite

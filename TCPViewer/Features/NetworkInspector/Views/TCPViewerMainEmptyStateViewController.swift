@@ -142,8 +142,8 @@ final class TCPViewerMainEmptyStateViewController: NSViewController {
         startButton.toolTip = canStart ? "Start Capture" : statusMessage
     }
 
-    @objc private func interfaceChanged(_ sender: NSPopUpButton) {
-        guard let identifier = sender.selectedItem?.representedObject as? String else {
+    @objc private func interfaceChanged(_ sender: Any) {
+        guard let identifier = TCPViewerInterfacePopupRenderer.selectedInterfaceIdentifier(from: sender) else {
             if !TCPViewerInterfacePopupRenderer.selectInterfaceItem(
                 with: selectedInterfaceID,
                 in: interfacePopup,
