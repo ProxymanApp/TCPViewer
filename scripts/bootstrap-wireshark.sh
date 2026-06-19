@@ -87,7 +87,16 @@ is_forbidden_runtime_cache_entry() {
   KEY="$1"
   VALUE="$2"
 
+  # CMake install/output bookkeeping is not dependency discovery.
   case "$KEY" in
+    CMAKE_INSTALL_OLDINCLUDEDIR|*_OUTPUT_PATH|*_OUTPUT_DIRECTORY)
+      return 1
+      ;;
+  esac
+
+  case "$KEY" in
+    *FIND_PACKAGE_MESSAGE_DETAILS*|pkgcfg_lib_*)
+      ;;
     *LIBRARY*|*LIBRARIES*|*INCLUDE*|*LIBDIR*|*LIBRARY_DIRS*|*LDFLAGS*|*LDFLAG*|*LINK_FLAGS*)
       ;;
     *)

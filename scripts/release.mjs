@@ -19,9 +19,11 @@ import { spawn } from "node:child_process";
 import prompts from "prompts";
 import {
   assertReleaseTitleReflectsChanges,
+  describeFetchError,
   emptyPayloadSHA256,
   findReleaseNote,
   generateAppcastXML,
+  isRetryableHTTPStatus,
   makeGitHubReleaseTagName,
   makeBetaDMGFileName,
   makeDMGFileName,
@@ -49,6 +51,8 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
 const releaseBackendPlatform = "macos";
+const r2UploadMaxAttempts = 3;
+const r2UploadConfirmationAttempts = 3;
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
@@ -346,17 +350,113 @@ async function uploadDMGToR2({ env, objectKey, dmgPath }) {
       "content-type": "application/x-apple-diskimage"
     }
   });
-
-  const response = await fetch(url, {
-    method: "PUT",
-    headers: signedHeaders,
-    body: createReadStream(dmgPath),
-    duplex: "half"
+  const verificationHeaders = signR2Request({
+    method: "HEAD",
+    url,
+    accessKeyId: env.TCPVIEWER_R2_ACCESS_KEY_ID,
+    secretAccessKey: env.TCPVIEWER_R2_SECRET_ACCESS_KEY,
+    payloadHash: emptyPayloadSHA256
   });
 
-  if (!response.ok) {
-    throw new Error(`R2 upload failed for ${objectKey}: ${response.status} ${await response.text()}`);
+  console.log(`Uploading DMG to R2: ${objectKey}`);
+  await putR2ObjectWithRetry({
+    url,
+    signedHeaders,
+    verificationHeaders,
+    dmgPath,
+    objectKey,
+    expectedSize: fileStat.size
+  });
+  console.log(`Uploaded DMG to R2: ${objectKey}`);
+}
+
+async function putR2ObjectWithRetry({ url, signedHeaders, verificationHeaders, dmgPath, objectKey, expectedSize }) {
+  for (let attempt = 1; attempt <= r2UploadMaxAttempts; attempt += 1) {
+    let response;
+    try {
+      response = await fetch(url, {
+        method: "PUT",
+        headers: signedHeaders,
+        body: createReadStream(dmgPath),
+        duplex: "half"
+      });
+    } catch (error) {
+      const message = describeFetchError(error);
+      if (attempt === r2UploadMaxAttempts) {
+        if (await r2ObjectHasExpectedSize({ url, headers: verificationHeaders, expectedSize })) {
+          console.warn(`R2 upload response was lost, but ${objectKey} exists with the expected size. Continuing.`);
+          return;
+        }
+        throw new Error(`R2 upload failed for ${objectKey}: ${message}`);
+      }
+      await retryR2Upload({ attempt, message, objectKey });
+      continue;
+    }
+
+    if (response.ok) {
+      return;
+    }
+
+    const message = `${response.status} ${await safeReadResponseText(response)}`.trim();
+    if (!isRetryableHTTPStatus(response.status)) {
+      throw new Error(`R2 upload failed for ${objectKey}: ${message}`);
+    }
+
+    if (attempt === r2UploadMaxAttempts) {
+      if (await r2ObjectHasExpectedSize({ url, headers: verificationHeaders, expectedSize })) {
+        console.warn(`R2 upload ended with ${response.status}, but ${objectKey} exists with the expected size. Continuing.`);
+        return;
+      }
+      throw new Error(`R2 upload failed for ${objectKey}: ${message}`);
+    }
+
+    await retryR2Upload({ attempt, message, objectKey });
   }
+}
+
+async function retryR2Upload({ attempt, message, objectKey }) {
+  console.warn(`R2 upload attempt ${attempt}/${r2UploadMaxAttempts} failed for ${objectKey}: ${message}. Retrying...`);
+  await sleep(attempt * 1500);
+}
+
+async function r2ObjectHasExpectedSize({ url, headers, expectedSize }) {
+  for (let attempt = 1; attempt <= r2UploadConfirmationAttempts; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        method: "HEAD",
+        headers
+      });
+      if (response.status === 404) {
+        return false;
+      }
+      if (response.ok) {
+        return Number(response.headers.get("content-length")) === expectedSize;
+      }
+    } catch {
+      // A lost PUT response can race with transient network failures; retry the confirmation too.
+    }
+
+    if (attempt < r2UploadConfirmationAttempts) {
+      await sleep(attempt * 1000);
+    }
+  }
+
+  return false;
+}
+
+async function safeReadResponseText(response) {
+  try {
+    const text = await response.text();
+    return text.trim() || response.statusText;
+  } catch (error) {
+    return describeFetchError(error);
+  }
+}
+
+function sleep(milliseconds) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
 }
 
 function resolveReleaseBackend({ env, releaseType }) {

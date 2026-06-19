@@ -3,9 +3,11 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   assertReleaseTitleReflectsChanges,
+  describeFetchError,
   emptyPayloadSHA256,
   findReleaseNote,
   generateAppcastXML,
+  isRetryableHTTPStatus,
   makeBetaDMGFileName,
   makeDMGFileName,
   makeGitHubReleaseTagName,
@@ -249,6 +251,21 @@ test("validates optional release backend publishing env", () => {
     releaseBackendRequiredEnvNames
   );
   assert.deepEqual(missing, ["TCPVIEWER_RELEASE_BACKEND_SCRIPT_SECRET"]);
+});
+
+test("classifies transient release HTTP failures", () => {
+  assert.equal(isRetryableHTTPStatus(408), true);
+  assert.equal(isRetryableHTTPStatus(429), true);
+  assert.equal(isRetryableHTTPStatus(500), true);
+  assert.equal(isRetryableHTTPStatus(403), false);
+});
+
+test("describes nested fetch failures for release diagnostics", () => {
+  const error = new TypeError("fetch failed", {
+    cause: Object.assign(new Error("socket closed"), { code: "UND_ERR_SOCKET" })
+  });
+
+  assert.equal(describeFetchError(error), "fetch failed | UND_ERR_SOCKET: socket closed");
 });
 
 test("parses Sparkle signing output", () => {
