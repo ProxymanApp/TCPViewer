@@ -45,19 +45,66 @@ cache_entry_value() {
   awk -F= -v key="$KEY" 'index($1, key ":") == 1 { print $2; exit }' "$CACHE_FILE"
 }
 
+is_allowed_runtime_cache_path() {
+  PATH_VALUE="$1"
+
+  case "$PATH_VALUE" in
+    -I/*|-L/*)
+      PATH_VALUE="${PATH_VALUE#-?}"
+      ;;
+    -Wl,-rpath,/*)
+      PATH_VALUE="${PATH_VALUE#-Wl,-rpath,}"
+      ;;
+  esac
+
+  case "$PATH_VALUE" in
+    ""|*-NOTFOUND|*NOTFOUND)
+      return 0
+      ;;
+    "$DEPS_INSTALL_ROOT"|"$DEPS_INSTALL_ROOT"/*|/usr/lib/*|/System/Library/*)
+      return 0
+      ;;
+  esac
+
+  if [ -n "$SDKROOT_PATH" ]; then
+    case "$PATH_VALUE" in
+      "$SDKROOT_PATH"|"$SDKROOT_PATH"/*)
+        return 0
+        ;;
+    esac
+  fi
+
+  case "$PATH_VALUE" in
+    /*)
+      return 1
+      ;;
+  esac
+
+  return 0
+}
+
 is_forbidden_runtime_cache_entry() {
   KEY="$1"
   VALUE="$2"
 
   case "$KEY" in
-    *LIBRARY*|*LIBRARIES*|*INCLUDE*|*LIBDIR*|*LIBRARY_DIRS*)
-      case "$VALUE" in
-        *"/opt/homebrew/"*|*"/usr/local/"*)
-          return 0
-          ;;
-      esac
+    *LIBRARY*|*LIBRARIES*|*INCLUDE*|*LIBDIR*|*LIBRARY_DIRS*|*LDFLAGS*|*LDFLAG*|*LINK_FLAGS*)
+      ;;
+    *)
+      return 1
       ;;
   esac
+
+  OLD_IFS="$IFS"
+  IFS=';'
+  for PATH_VALUE in $VALUE; do
+    IFS="$OLD_IFS"
+    if ! is_allowed_runtime_cache_path "$PATH_VALUE"; then
+      return 0
+    fi
+    IFS=';'
+  done
+  IFS="$OLD_IFS"
 
   return 1
 }

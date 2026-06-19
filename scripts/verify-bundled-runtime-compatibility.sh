@@ -48,12 +48,43 @@ version_gt() {
   ' "$1" "$2"
 }
 
-macho_minos() {
+macho_minos_values() {
   otool -l "$1" 2>/dev/null | awk '
-    /LC_BUILD_VERSION/ { in_build = 1; next }
-    in_build && /minos / { print $2; exit }
-    /LC_VERSION_MIN_MACOSX/ { in_legacy = 1; next }
-    in_legacy && /version / { print $2; exit }
+    function emit(value) {
+      if (value != "" && !seen[value]++) {
+        print value
+      }
+    }
+
+    $1 == "cmd" && $2 == "LC_BUILD_VERSION" {
+      in_build = 1
+      in_legacy = 0
+      next
+    }
+
+    $1 == "cmd" && $2 == "LC_VERSION_MIN_MACOSX" {
+      in_build = 0
+      in_legacy = 1
+      next
+    }
+
+    $1 == "cmd" {
+      in_build = 0
+      in_legacy = 0
+      next
+    }
+
+    in_build && $1 == "minos" {
+      emit($2)
+      in_build = 0
+      next
+    }
+
+    in_legacy && $1 == "version" {
+      emit($2)
+      in_legacy = 0
+      next
+    }
   '
 }
 
@@ -97,10 +128,12 @@ find "$ROOT_PATH" -type f -print | while IFS= read -r FILE_PATH; do
     continue
   fi
 
-  MINOS="$(macho_minos "$FILE_PATH")"
-  if [ -n "$MINOS" ] && version_gt "$MINOS" "$MAXIMUM_MACOS_VERSION"; then
-    printf '%s\n' "minos $MINOS > $MAXIMUM_MACOS_VERSION: $FILE_PATH" >> "$TMP_FAILURES"
-  fi
+  macho_minos_values "$FILE_PATH" | while IFS= read -r MINOS; do
+    [ -n "$MINOS" ] || continue
+    if version_gt "$MINOS" "$MAXIMUM_MACOS_VERSION"; then
+      printf '%s\n' "minos $MINOS > $MAXIMUM_MACOS_VERSION: $FILE_PATH" >> "$TMP_FAILURES"
+    fi
+  done
 
   otool -D "$FILE_PATH" 2>/dev/null | sed -n '/):$/d; 1!p' > "$TMP_SELF_IDS"
   while IFS= read -r INSTALL_ID; do
