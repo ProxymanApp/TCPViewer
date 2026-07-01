@@ -163,6 +163,24 @@
       "bugs": [
         "Fixed: Proxyman crashes when running on macOS 15"
       ]
+    },
+    {
+      "version": "1.8.0",
+      "title": "TCP Viewer 1.8.0 Custom Columns, and Copy as Bytes, UTF-8 and more",
+      "features": [
+        "Create custom packet table columns from packet detail rows.",
+        "Copy packet details from the inspector menu.",
+        "Copy IP addresses from the source list.",
+        "Use toolbar shortcuts for packet actions."
+      ],
+      "improvements": [
+        "Improve custom column and copy handling.",
+        "Add logs for Wireshark critical errors."
+      ],
+      "bugs": [
+        "Fix crashes from Wireshark critical exceptions.",
+        "Fix packet copy edge cases."
+      ]
     }
   ]
 }
