@@ -2055,6 +2055,10 @@ final class NetworkInspectorViewModel {
         rebuildSnapshot()
     }
 
+    func inspectPacket(_ identifier: PacketSummary.ID, completion: @escaping TCPViewerCompletion<PacketInspection>) {
+        controller.inspectPacket(id: identifier, completion: completion)
+    }
+
     func selectInspectorTab(_ tab: PacketInspectorTab) {
         inspectorTab = tab
         rebuildSnapshot()

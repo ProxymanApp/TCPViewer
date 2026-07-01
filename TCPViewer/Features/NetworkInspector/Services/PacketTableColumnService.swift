@@ -112,14 +112,40 @@ struct PacketTableColumnLayout: Codable, Equatable {
         let width: Double
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case columns
+        case customColumns
+    }
+
     static let currentVersion = 1
 
     let version: Int
     let columns: [Column]
+    let customColumns: [PacketCustomColumn]
 
-    init(version: Int = PacketTableColumnLayout.currentVersion, columns: [Column]) {
+    init(
+        version: Int = PacketTableColumnLayout.currentVersion,
+        columns: [Column],
+        customColumns: [PacketCustomColumn] = []
+    ) {
         self.version = version
         self.columns = columns
+        self.customColumns = customColumns
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decodeIfPresent(Int.self, forKey: .version) ?? Self.currentVersion
+        columns = try container.decode([Column].self, forKey: .columns)
+        customColumns = try container.decodeIfPresent([PacketCustomColumn].self, forKey: .customColumns) ?? []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(version, forKey: .version)
+        try container.encode(columns, forKey: .columns)
+        try container.encode(customColumns, forKey: .customColumns)
     }
 }
 
@@ -183,12 +209,14 @@ final class PacketTableColumnService {
         .builtIn(.tags, title: "Tags", defaultWidth: 140, minimumWidth: 90),
     ]
 
-    let definitions: [PacketTableColumnDefinition]
+    private(set) var definitions: [PacketTableColumnDefinition]
+    private let baseDefinitions: [PacketTableColumnDefinition]
     private var visibilityByIdentifier: [String: Bool]
 
     // Start each known column from its declared default visibility.
     init(definitions: [PacketTableColumnDefinition] = PacketTableColumnService.defaultDefinitions) {
-        self.definitions = Self.uniqueDefinitions(definitions)
+        self.baseDefinitions = Self.uniqueDefinitions(definitions)
+        self.definitions = baseDefinitions
         self.visibilityByIdentifier = Dictionary(
             uniqueKeysWithValues: self.definitions.map { ($0.identifier, $0.isDefaultVisible) }
         )
@@ -211,6 +239,36 @@ final class PacketTableColumnService {
 
     func definition(identifier: String) -> PacketTableColumnDefinition? {
         definitions.first { $0.identifier == identifier }
+    }
+
+    // Append custom definitions after built-ins while preserving known visibility state.
+    func setCustomColumns(_ customColumns: [PacketCustomColumn]) {
+        let customDefinitions = customColumns.map { column in
+            PacketTableColumnDefinition.custom(
+                identifier: column.identifier,
+                title: column.title,
+                defaultWidth: column.defaultWidth,
+                minimumWidth: column.minimumWidth
+            )
+        }
+        let nextDefinitions = Self.uniqueDefinitions(baseDefinitions + customDefinitions)
+        var nextVisibility = Dictionary(
+            uniqueKeysWithValues: nextDefinitions.map { definition in
+                (
+                    definition.identifier,
+                    visibilityByIdentifier[definition.identifier] ?? definition.isDefaultVisible
+                )
+            }
+        )
+
+        nextDefinitions.forEach { definition in
+            if !definition.canUserHide {
+                nextVisibility[definition.identifier] = true
+            }
+        }
+
+        definitions = nextDefinitions
+        visibilityByIdentifier = nextVisibility
     }
 
     func isColumnVisible(identifier: String) -> Bool {

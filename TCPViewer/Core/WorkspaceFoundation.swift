@@ -2720,6 +2720,18 @@ final class TCPViewerWorkspaceController {
         scheduleInspection(for: identifier)
     }
 
+    func inspectPacket(id identifier: PacketSummary.ID, completion: @escaping TCPViewerCompletion<PacketInspection>) {
+        guard let packet = snapshot.packetIngestState.packet(withID: identifier) else {
+            completion(.failure(TCPViewerCoreError(
+                code: .offlineFileOpenFailed,
+                message: "Packet \(identifier) is no longer available for inspection."
+            )))
+            return
+        }
+
+        inspectPacket(packet, identifier: identifier, completion: completion)
+    }
+
     func cancelBackgroundWork() {
         cancelControllerTasks()
 
@@ -3629,8 +3641,6 @@ final class TCPViewerWorkspaceController {
             return
         }
 
-        let liveSession = self.liveSession
-        let document = self.document
         let completion: TCPViewerCompletion<PacketInspection> = { [weak self] result in
             DispatchQueue.main.async {
                 guard let self,
@@ -3658,9 +3668,26 @@ final class TCPViewerWorkspaceController {
             }
         }
 
+        inspectPacket(packet, identifier: identifier, completion: completion)
+    }
+
+    // Inspect a packet without mutating selection so table custom-column lookups can reuse decode data.
+    private func inspectPacket(
+        _ packet: PacketSummary,
+        identifier: PacketSummary.ID,
+        completion: @escaping TCPViewerCompletion<PacketInspection>
+    ) {
         switch packet.source {
         case .live:
-            liveSession?.inspectPacket(id: identifier, completion: completion)
+            guard let liveSession else {
+                completion(.failure(TCPViewerCoreError(
+                    code: .offlineFileOpenFailed,
+                    message: "Live packet \(identifier) is no longer available for inspection."
+                )))
+                return
+            }
+
+            liveSession.inspectPacket(id: identifier, completion: completion)
         case .offline:
             if let reference = snapshot.packetIngestState.importedPacketReference(for: identifier),
                let importedDocument = importedDocumentsByFileID[reference.fileID] {
@@ -3668,10 +3695,21 @@ final class TCPViewerWorkspaceController {
                     completion(result.map { $0.tcpviewerRemapping(packetID: identifier) })
                 }
             } else {
-                document?.inspectPacket(id: identifier, completion: completion)
+                guard let document else {
+                    completion(.failure(TCPViewerCoreError(
+                        code: .offlineFileOpenFailed,
+                        message: "Packet \(identifier) is no longer available for inspection."
+                    )))
+                    return
+                }
+
+                document.inspectPacket(id: identifier, completion: completion)
             }
         @unknown default:
-            break
+            completion(.failure(TCPViewerCoreError(
+                code: .offlineFileOpenFailed,
+                message: "Packet \(identifier) cannot be inspected."
+            )))
         }
     }
 

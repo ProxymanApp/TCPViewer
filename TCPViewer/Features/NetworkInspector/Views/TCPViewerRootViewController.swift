@@ -1301,6 +1301,14 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
         viewModel.deletePackets(identifiers)
     }
 
+    func packetWorkspaceViewController(
+        _ controller: PacketWorkspaceViewController,
+        inspectPacket identifier: PacketSummary.ID,
+        completion: @escaping TCPViewerCompletion<PacketInspection>
+    ) {
+        viewModel.inspectPacket(identifier, completion: completion)
+    }
+
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didUpdateStructuredFilterGroup group: PacketStructuredFilterGroup) {
         viewModel.updateStructuredFilterGroup(group)
     }
@@ -1389,6 +1397,13 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
 extension TCPViewerRootViewController: PacketInspectorViewControllerDelegate {
     func packetInspectorViewController(_ controller: PacketInspectorViewController, didSelectDetailNode identifier: String?) {
         viewModel.selectDetailNode(identifier)
+    }
+
+    func packetInspectorViewController(
+        _ controller: PacketInspectorViewController,
+        didRequestCreateCustomColumn request: PacketCustomColumnRequest
+    ) {
+        workspaceViewController.createCustomColumn(from: request)
     }
 }
 

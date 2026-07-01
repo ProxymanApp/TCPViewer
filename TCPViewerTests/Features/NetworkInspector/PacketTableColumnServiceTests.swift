@@ -78,6 +78,29 @@ struct PacketTableColumnServiceTests {
         #expect(!service.isColumnVisible(identifier: "custom.tcpFlags"))
     }
 
+    @Test func appendsCustomColumnsAfterBuiltInsAndIgnoresDuplicateFields() {
+        let service = PacketTableColumnService()
+        let customColumns = [
+            PacketCustomColumn(identifier: "custom.field.ip.src", fieldName: "ip.src", title: "Source Address"),
+            PacketCustomColumn(identifier: "custom.field.tcp.srcport", fieldName: "tcp.srcport", title: "TCP Source Port"),
+        ]
+
+        service.setCustomColumns(customColumns)
+
+        #expect(service.definitions.suffix(2).map(\.identifier) == [
+            "custom.field.ip.src",
+            "custom.field.tcp.srcport",
+        ])
+        #expect(!service.isColumnVisible(identifier: "custom.field.ip.src"))
+        #expect(service.setColumnVisibility(identifier: "custom.field.ip.src", isVisible: true))
+        #expect(service.isColumnVisible(identifier: "custom.field.ip.src"))
+
+        service.setCustomColumns([customColumns[0]])
+
+        #expect(service.definition(identifier: "custom.field.tcp.srcport") == nil)
+        #expect(service.isColumnVisible(identifier: "custom.field.ip.src"))
+    }
+
     @Test func preventsHidingTheLastVisibleColumn() {
         let service = PacketTableColumnService(definitions: [
             .builtIn(.number, title: "#", defaultWidth: 68, minimumWidth: 52),
@@ -121,10 +144,11 @@ struct PacketTableColumnServiceTests {
     @Test func layoutStoreRoundTripsAndClearsColumnLayout() throws {
         let defaults = Self.makeUserDefaults()
         let store = PacketTableColumnLayoutStore(defaults: defaults)
+        let customColumn = PacketCustomColumn(identifier: "custom.field.ip.src", fieldName: "ip.src", title: "Source Address")
         let layout = PacketTableColumnLayout(columns: [
             .init(identifier: "number", isVisible: true, width: 70),
             .init(identifier: "sourcePort", isVisible: false, width: 92),
-        ])
+        ], customColumns: [customColumn])
 
         #expect(store.load() == nil)
 
@@ -135,11 +159,32 @@ struct PacketTableColumnServiceTests {
         #expect(store.load() == nil)
     }
 
+    @Test func layoutDecodesOlderPayloadWithoutCustomColumns() throws {
+        let data = try #require("""
+        {
+          "version": 1,
+          "columns": [
+            { "identifier": "number", "isVisible": true, "width": 70 }
+          ]
+        }
+        """.data(using: .utf8))
+
+        let layout = try JSONDecoder().decode(PacketTableColumnLayout.self, from: data)
+
+        #expect(layout.columns == [
+            PacketTableColumnLayout.Column(identifier: "number", isVisible: true, width: 70),
+        ])
+        #expect(layout.customColumns.isEmpty)
+    }
+
     @MainActor
     @Test func columnVisibilityMenuUsesNativeCheckedItemsAndResetAtBottom() throws {
         let service = PacketTableColumnService(definitions: [
             .builtIn(.number, title: "#", defaultWidth: 68, minimumWidth: 52),
             .builtIn(.time, title: "Time", defaultWidth: 112, minimumWidth: 96, isDefaultVisible: false),
+        ])
+        service.setCustomColumns([
+            PacketCustomColumn(identifier: "custom.field.ip.src", fieldName: "ip.src", title: "Source Address"),
         ])
         let controller = PacketTableColumnVisibilityMenuController(columnService: service)
         let actionHandler = ColumnMenuActionHandler()
@@ -154,8 +199,8 @@ struct PacketTableColumnServiceTests {
         let resetItem = try #require(menu.items.last)
 
         #expect(menu.showsStateColumn)
-        #expect(visibleTitles == ["#", "Time", "Reset All Columns"])
-        #expect(menu.items[2].isSeparatorItem)
+        #expect(visibleTitles == ["#", "Time", "Source Address", "Reset All Columns"])
+        #expect(menu.items[3].isSeparatorItem)
         #expect(numberItem.view == nil)
         #expect(timeItem.view == nil)
         #expect(resetItem.view == nil)
