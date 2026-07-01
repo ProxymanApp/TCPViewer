@@ -539,6 +539,8 @@ enum NativeBridgeMapper {
             code = .operationCancelled
         case 1012:
             code = .unavailableFeature
+        case 1013:
+            code = .unavailableFeature
         default:
             code = defaultCode
         }

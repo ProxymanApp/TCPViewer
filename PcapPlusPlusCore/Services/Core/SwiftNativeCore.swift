@@ -244,8 +244,8 @@ final class PCPPNativeOfflineDocument {
             guard let record = state.file.records.first(where: { $0.identifier == identifier }) else {
                 throw NativeNSError(.fileReadFailed, "Packet \(identifier) is not available in the backing store.")
             }
-            return autoreleasepool {
-                self.makePacketInspectionDescriptorSafely(record: record, state: &state)
+            return try autoreleasepool {
+                try self.makePacketInspectionDescriptorSafely(record: record, state: &state)
             }
         }
     }
@@ -329,9 +329,9 @@ final class PCPPNativeOfflineDocument {
                     throw NativeNSError(.operationCancelled, progress.message)
                 }
 
-                let summary = autoreleasepool {
-                    state.write {
-                        self.makePacketSummaryDescriptorSafely(record: record, state: &$0)
+                let summary = try autoreleasepool {
+                    try state.write {
+                        try self.makePacketSummaryDescriptorSafely(record: record, state: &$0)
                     }
                 }
                 summaries.append(summary)
@@ -400,7 +400,7 @@ final class PCPPNativeOfflineDocument {
     private func makePacketSummaryDescriptorSafely(
         record: NativePacketRecord,
         state: inout PCPPNativeOfflineDocumentState
-    ) -> PCPPNativePacketSummaryDescriptor {
+    ) throws -> PCPPNativePacketSummaryDescriptor {
         do {
             let session = try requireDissectionSession(in: state)
             try session.observe(record)
@@ -408,6 +408,9 @@ final class PCPPNativeOfflineDocument {
             let analyzer = PacketAnalyzer(record: record).analyze()
             return makePacketSummaryDescriptor(record: record, analyzed: analyzer, wireshark: wiresharkSummary)
         } catch {
+            if NativeErrorIsCriticalWiresharkException(error) {
+                throw error
+            }
             // A single packet can be malformed enough for epan to reject it; keep the file open.
             state.partiallyLoaded = true
             return SwiftPacketDissector.dissect(record: record, disablesWireshark: true).summary
@@ -417,12 +420,15 @@ final class PCPPNativeOfflineDocument {
     private func makePacketInspectionDescriptorSafely(
         record: NativePacketRecord,
         state: inout PCPPNativeOfflineDocumentState
-    ) -> PCPPNativePacketInspectionDescriptor {
+    ) throws -> PCPPNativePacketInspectionDescriptor {
         do {
             let analyzer = PacketAnalyzer(record: record).analyze()
             let inspection = try requireDissectionSession(in: state).inspect(record)
             return makePacketInspectionDescriptor(record: record, analyzed: analyzer, wireshark: inspection)
         } catch {
+            if NativeErrorIsCriticalWiresharkException(error) {
+                throw error
+            }
             return SwiftPacketDissector.dissect(record: record, disablesWireshark: true).inspection
         }
     }

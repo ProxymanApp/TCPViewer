@@ -24,6 +24,7 @@
 #include <epan/column-utils.h>
 #include <epan/epan.h>
 #include <epan/epan_dissect.h>
+#include <epan/exceptions.h>
 #include <epan/frame_data_sequence.h>
 #include <epan/packet.h>
 #include <epan/prefs.h>
@@ -134,6 +135,17 @@ struct PacketContextView {
     uint32_t sectionNumber = 0;
 };
 
+struct WiresharkCriticalException {
+    bool isCriticalException = true;
+    unsigned long exceptionGroup = 0;
+    unsigned long exceptionCode = 0;
+    uint64_t packetIdentifier = 0;
+    bool hasPacketIdentifier = false;
+    std::string operation;
+    std::string exceptionName;
+    std::string reason;
+};
+
 std::mutex &WiresharkAPIMutex()
 {
     // libwireshark has process-wide registries, so all epan entry points share one lock.
@@ -176,6 +188,97 @@ char *CopyCString(const std::string &value, bool allowNull = true)
         return nullptr;
     }
     return strdup(value.c_str());
+}
+
+const char *WiresharkExceptionName(unsigned long code)
+{
+    switch (code) {
+        case BoundsError:
+            return "BoundsError";
+        case ContainedBoundsError:
+            return "ContainedBoundsError";
+        case ReportedBoundsError:
+            return "ReportedBoundsError";
+        case FragmentBoundsError:
+            return "FragmentBoundsError";
+        case TypeError:
+            return "TypeError";
+        case DissectorError:
+            return "DissectorError";
+        case ScsiBoundsError:
+            return "ScsiBoundsError";
+        case OutOfMemoryError:
+            return "OutOfMemoryError";
+        case ReassemblyError:
+            return "ReassemblyError";
+        default:
+            return "Unknown";
+    }
+}
+
+std::string CriticalExceptionReason(const std::string &operation)
+{
+    return "Wireshark raised a critical exception while " + operation + ". TCP Viewer stopped this operation to keep the app running.";
+}
+
+WiresharkCriticalException MakeCriticalException(const char *operation, except_t *exception, std::optional<uint64_t> packetIdentifier)
+{
+    WiresharkCriticalException report;
+    report.exceptionGroup = exception == nullptr ? 0 : except_group(exception);
+    report.exceptionCode = exception == nullptr ? 0 : except_code(exception);
+    report.operation = operation == nullptr || operation[0] == '\0' ? "running Wireshark" : operation;
+    report.exceptionName = WiresharkExceptionName(report.exceptionCode);
+    report.reason = CriticalExceptionReason(report.operation);
+    if (packetIdentifier.has_value()) {
+        report.packetIdentifier = *packetIdentifier;
+        report.hasPacketIdentifier = true;
+    }
+    return report;
+}
+
+template <typename Body>
+std::optional<WiresharkCriticalException> CatchWiresharkException(const char *operation, std::optional<uint64_t> packetIdentifier, Body body)
+{
+    static const except_id_t catchSpec[] = {{XCEPT_GROUP_WIRESHARK, XCEPT_CODE_ANY}};
+    struct except_stacknode stackNode;
+    struct except_catch catcher;
+    std::optional<WiresharkCriticalException> report;
+
+    except_setup_try(&stackNode, &catcher, catchSpec, 1);
+    if (setjmp(catcher.except_jmp) == 0) {
+        body();
+    } else {
+        report = MakeCriticalException(operation, &catcher.except_obj, packetIdentifier);
+    }
+    except_free(catcher.except_obj.except_dyndata);
+    except_pop();
+    return report;
+}
+
+using WiresharkCriticalExceptionReports = std::vector<WiresharkCriticalException>;
+
+void AppendCriticalExceptionIfNeeded(WiresharkCriticalExceptionReports &reports, std::optional<WiresharkCriticalException> report)
+{
+    if (report.has_value()) {
+        reports.push_back(std::move(*report));
+    }
+}
+
+TCPViewerWiresharkExceptionReport *CopyExceptionReport(const WiresharkCriticalException &report)
+{
+    auto *copy = static_cast<TCPViewerWiresharkExceptionReport *>(std::calloc(1, sizeof(TCPViewerWiresharkExceptionReport)));
+    if (copy == nullptr) {
+        return nullptr;
+    }
+    copy->isCriticalException = report.isCriticalException;
+    copy->exceptionGroup = report.exceptionGroup;
+    copy->exceptionCode = report.exceptionCode;
+    copy->packetIdentifier = report.packetIdentifier;
+    copy->hasPacketIdentifier = report.hasPacketIdentifier;
+    copy->operation = CopyCString(report.operation);
+    copy->exceptionName = CopyCString(report.exceptionName);
+    copy->reason = CopyCString(report.reason, false);
+    return copy;
 }
 
 std::string HexBytes(const uint8_t *bytes, size_t length)
@@ -283,24 +386,56 @@ struct WiresharkSessionResources {
     std::unique_ptr<packet_provider_data> provider;
 };
 
-void FreeWiresharkSessionResources(WiresharkSessionResources &resources)
+std::optional<WiresharkCriticalException> FreeEpanDissect(epan_dissect_t *&dissect, const char *operation, std::optional<uint64_t> packetIdentifier)
 {
+    if (dissect == nullptr) {
+        return std::nullopt;
+    }
+    auto *dissectToFree = dissect;
+    dissect = nullptr;
+    return CatchWiresharkException(operation, packetIdentifier, [dissectToFree] {
+        epan_dissect_free(dissectToFree);
+    });
+}
+
+WiresharkCriticalExceptionReports FreeWiresharkSessionResources(WiresharkSessionResources &resources)
+{
+    WiresharkCriticalExceptionReports reports;
     if (resources.epan != nullptr) {
-        epan_free(resources.epan);
+        auto *epan = resources.epan;
+        AppendCriticalExceptionIfNeeded(
+            reports,
+            CatchWiresharkException("freeing Wireshark session", std::nullopt, [epan] {
+                epan_free(epan);
+            })
+        );
         resources.epan = nullptr;
     }
     if (resources.provider == nullptr) {
-        return;
+        return reports;
     }
     if (resources.provider->frames != nullptr) {
-        free_frame_data_sequence(resources.provider->frames);
+        auto *frames = resources.provider->frames;
+        AppendCriticalExceptionIfNeeded(
+            reports,
+            CatchWiresharkException("freeing Wireshark frame storage", std::nullopt, [frames] {
+                free_frame_data_sequence(frames);
+            })
+        );
         resources.provider->frames = nullptr;
     }
     if (resources.provider->frames_modified_blocks != nullptr) {
-        g_tree_destroy(resources.provider->frames_modified_blocks);
+        auto *blocks = resources.provider->frames_modified_blocks;
+        AppendCriticalExceptionIfNeeded(
+            reports,
+            CatchWiresharkException("freeing Wireshark frame metadata", std::nullopt, [blocks] {
+                g_tree_destroy(blocks);
+            })
+        );
         resources.provider->frames_modified_blocks = nullptr;
     }
     resources.provider.reset();
+    return reports;
 }
 
 class WiresharkRecord {
@@ -404,17 +539,6 @@ struct WiresharkSourceSet {
     std::unordered_map<const tvbuff_t *, std::string> idsByTVB;
     std::unordered_map<std::string, size_t> indexByID;
 };
-
-struct EpanDissectDeleter {
-    void operator()(epan_dissect_t *dissect) const
-    {
-        if (dissect != nullptr) {
-            epan_dissect_free(dissect);
-        }
-    }
-};
-
-using EpanDissectPtr = std::unique_ptr<epan_dissect_t, EpanDissectDeleter>;
 
 uint32_t FrameNumberForContext(const PacketContextView &context, uint64_t fallbackFrameNumber)
 {
@@ -882,23 +1006,88 @@ public:
 
     bool isAvailable() const { return available_; }
     const std::string &unavailableReason() const { return unavailableReason_; }
+    const std::optional<WiresharkCriticalException> &criticalException() const { return criticalException_; }
+    const WiresharkCriticalExceptionReports &criticalExceptionReports() const { return criticalExceptionReports_; }
 
 private:
+    void recordCriticalException(WiresharkCriticalException report)
+    {
+        if (!criticalException_.has_value()) {
+            criticalException_ = report;
+        }
+        criticalExceptionReports_.push_back(std::move(report));
+    }
+
+    void cleanupEpanAfterSetupFailure()
+    {
+        if (auto report = CatchWiresharkException("cleaning up Wireshark protocol registry after setup failure", std::nullopt, [] {
+                epan_cleanup();
+            })) {
+            recordCriticalException(std::move(*report));
+        }
+    }
+
+    void cleanupWiretapAfterSetupFailure()
+    {
+        if (auto report = CatchWiresharkException("cleaning up Wireshark Wiretap after setup failure", std::nullopt, [] {
+                wtap_cleanup();
+            })) {
+            recordCriticalException(std::move(*report));
+        }
+    }
+
     WiresharkRuntime()
     {
         std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
-        wtap_init(true);
+        if (except_init() == 0) {
+            available_ = false;
+            unavailableReason_ = "Wireshark exception handling failed to initialize.";
+            return;
+        }
+        initializedExceptions_ = true;
+        if (auto report = CatchWiresharkException("initializing Wireshark Wiretap", std::nullopt, [] {
+                wtap_init(true);
+            })) {
+            recordCriticalException(std::move(*report));
+            available_ = false;
+            unavailableReason_ = criticalException_->reason;
+            return;
+        }
         initializedWiretap_ = true;
-        if (!epan_init(nullptr, nullptr, true)) {
+        bool didInitializeEpan = false;
+        if (auto report = CatchWiresharkException("initializing Wireshark protocol registry", std::nullopt, [&didInitializeEpan] {
+                didInitializeEpan = epan_init(nullptr, nullptr, true);
+            })) {
+            recordCriticalException(std::move(*report));
+            available_ = false;
+            unavailableReason_ = criticalException_->reason;
+            cleanupEpanAfterSetupFailure();
+            cleanupWiretapAfterSetupFailure();
+            initializedWiretap_ = false;
+            return;
+        }
+        if (!didInitializeEpan) {
             available_ = false;
             unavailableReason_ = "Wireshark protocol registry failed to initialize.";
-            wtap_cleanup();
+            cleanupEpanAfterSetupFailure();
+            cleanupWiretapAfterSetupFailure();
             initializedWiretap_ = false;
             return;
         }
         initializedEpan_ = true;
-        epan_load_settings();
-        prefs_apply_all();
+        if (auto report = CatchWiresharkException("loading Wireshark settings", std::nullopt, [] {
+                epan_load_settings();
+                prefs_apply_all();
+            })) {
+            recordCriticalException(std::move(*report));
+            available_ = false;
+            unavailableReason_ = criticalException_->reason;
+            cleanupEpanAfterSetupFailure();
+            cleanupWiretapAfterSetupFailure();
+            initializedEpan_ = false;
+            initializedWiretap_ = false;
+            return;
+        }
         available_ = true;
         unavailableReason_.clear();
     }
@@ -907,17 +1096,31 @@ private:
     {
         std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
         if (initializedEpan_) {
-            epan_cleanup();
+            if (auto report = CatchWiresharkException("cleaning up Wireshark protocol registry", std::nullopt, [] {
+                    epan_cleanup();
+                })) {
+                recordCriticalException(std::move(*report));
+            }
         }
         if (initializedWiretap_) {
-            wtap_cleanup();
+            if (auto report = CatchWiresharkException("cleaning up Wireshark Wiretap", std::nullopt, [] {
+                    wtap_cleanup();
+                })) {
+                recordCriticalException(std::move(*report));
+            }
+        }
+        if (initializedExceptions_) {
+            except_deinit();
         }
     }
 
     bool available_ = false;
+    bool initializedExceptions_ = false;
     bool initializedWiretap_ = false;
     bool initializedEpan_ = false;
     std::string unavailableReason_ = kBackendUnavailableReason;
+    std::optional<WiresharkCriticalException> criticalException_;
+    WiresharkCriticalExceptionReports criticalExceptionReports_;
 };
 
 }  // namespace
@@ -927,13 +1130,14 @@ struct TCPViewerWiresharkSession {
     std::string unavailableReason = kBackendUnavailableReason;
     std::unique_ptr<packet_provider_data> provider;
     epan_t *epan = nullptr;
-    EpanDissectPtr firstPassDissect;
+    epan_dissect_t *firstPassDissect = nullptr;
     nstime_t elapsedTime = NSTIME_INIT_ZERO;
     frame_data referenceFrame{};
     uint32_t cumulativeBytes = 0;
     std::vector<PacketSnapshot> observedPackets;
     std::unordered_set<uint32_t> storedFrameNumbers;
     std::unordered_set<uint32_t> activeFrameNumbers;
+    std::deque<WiresharkCriticalException> pendingCriticalExceptions;
     bool disabled = false;
     bool firstPassFinished = false;
     bool backendAvailable = false;
@@ -955,6 +1159,9 @@ struct TCPViewerWiresharkSession {
         auto &runtime = WiresharkRuntime::shared();
         backendAvailable = runtime.isAvailable();
         unavailableReason = runtime.unavailableReason();
+        for (const auto &report : runtime.criticalExceptionReports()) {
+            pendingCriticalExceptions.push_back(report);
+        }
         if (!backendAvailable) {
             return;
         }
@@ -978,6 +1185,39 @@ struct TCPViewerWiresharkSession {
         return epan != nullptr && provider != nullptr && provider->frames != nullptr;
     }
 
+    void clearCriticalExceptionsLocked()
+    {
+        pendingCriticalExceptions.clear();
+    }
+
+    bool hasCriticalExceptionLocked() const
+    {
+        return !pendingCriticalExceptions.empty();
+    }
+
+    void recordCriticalExceptionLocked(WiresharkCriticalException report, bool updateUnavailableReason)
+    {
+        if (updateUnavailableReason || unavailableReason.empty()) {
+            unavailableReason = report.reason;
+        }
+        pendingCriticalExceptions.push_back(std::move(report));
+    }
+
+    void recordCriticalExceptionsLocked(WiresharkCriticalExceptionReports reports, bool updateUnavailableReason)
+    {
+        for (auto &report : reports) {
+            recordCriticalExceptionLocked(std::move(report), updateUnavailableReason);
+            updateUnavailableReason = false;
+        }
+    }
+
+    bool failWithCriticalExceptionLocked(WiresharkCriticalException report)
+    {
+        recordCriticalExceptionLocked(std::move(report), true);
+        releaseWiresharkResourcesLocked(unavailableReason, true);
+        return false;
+    }
+
     void resetActiveFrameStateLocked()
     {
         activeFrameNumbers.clear();
@@ -996,13 +1236,15 @@ struct TCPViewerWiresharkSession {
         if (activeSession() == this) {
             activeSession() = nullptr;
         }
-        firstPassDissect.reset();
+        if (auto report = FreeEpanDissect(firstPassDissect, "freeing Wireshark first-pass dissector", std::nullopt)) {
+            recordCriticalExceptionLocked(std::move(*report), false);
+        }
         WiresharkSessionResources resources{epan, std::move(provider)};
         epan = nullptr;
         if (!reason.empty()) {
             unavailableReason = reason;
         }
-        FreeWiresharkSessionResources(resources);
+        recordCriticalExceptionsLocked(FreeWiresharkSessionResources(resources), false);
         resetActiveFrameStateLocked();
         if (finishSession) {
             firstPassFinished = true;
@@ -1017,23 +1259,48 @@ struct TCPViewerWiresharkSession {
         }
 
         provider = std::make_unique<packet_provider_data>();
-        provider->frames = new_frame_data_sequence();
+        frame_data_sequence *frames = nullptr;
+        if (auto report = CatchWiresharkException("creating Wireshark frame storage", std::nullopt, [&frames] {
+                frames = new_frame_data_sequence();
+            })) {
+            provider.reset();
+            return failWithCriticalExceptionLocked(std::move(*report));
+        }
+        provider->frames = frames;
         if (provider->frames == nullptr) {
             unavailableReason = "Wireshark frame storage could not be created.";
             provider.reset();
             return false;
         }
 
-        epan = epan_new(provider.get(), &kPacketProviderFuncs);
+        epan_t *newEpan = nullptr;
+        auto *providerPointer = provider.get();
+        if (auto report = CatchWiresharkException("creating Wireshark session", std::nullopt, [&newEpan, providerPointer] {
+                newEpan = epan_new(providerPointer, &kPacketProviderFuncs);
+            })) {
+            WiresharkSessionResources resources{nullptr, std::move(provider)};
+            recordCriticalExceptionLocked(std::move(*report), true);
+            recordCriticalExceptionsLocked(FreeWiresharkSessionResources(resources), false);
+            releaseWiresharkResourcesLocked(unavailableReason, true);
+            return false;
+        }
+        epan = newEpan;
         if (epan == nullptr) {
             WiresharkSessionResources resources{nullptr, std::move(provider)};
-            FreeWiresharkSessionResources(resources);
+            recordCriticalExceptionsLocked(FreeWiresharkSessionResources(resources), false);
             unavailableReason = "Wireshark session could not be created.";
             return false;
         }
 
-        firstPassDissect.reset(epan_dissect_new(epan, false, false));
-        if (!firstPassDissect) {
+        epan_dissect_t *firstPass = nullptr;
+        auto *currentEpan = epan;
+        if (auto report = CatchWiresharkException("creating Wireshark first-pass dissector", std::nullopt, [&firstPass, currentEpan] {
+                firstPass = epan_dissect_new(currentEpan, false, false);
+            })) {
+            return failWithCriticalExceptionLocked(std::move(*report));
+        }
+        firstPassDissect = firstPass;
+        if (firstPassDissect == nullptr) {
             releaseWiresharkResourcesLocked("Wireshark could not allocate a first-pass dissector.", true);
             return false;
         }
@@ -1069,17 +1336,23 @@ struct TCPViewerWiresharkSession {
         }
 
         frame_data frame{};
-        frame_data_init(&frame, frameNumber, record.get(), cumulativeBytes, cumulativeBytes);
-        frame_data_set_before_dissect(&frame, &elapsedTime, &provider->ref, provider->prev_dis);
-        if (provider->ref == &frame) {
-            referenceFrame = frame;
-            provider->ref = &referenceFrame;
+        frame_data *storedFrame = nullptr;
+        if (auto report = CatchWiresharkException("running Wireshark first-pass dissection", context.packetIdentifier, [&] {
+                frame_data_init(&frame, frameNumber, record.get(), cumulativeBytes, cumulativeBytes);
+                frame_data_set_before_dissect(&frame, &elapsedTime, &provider->ref, provider->prev_dis);
+                if (provider->ref == &frame) {
+                    referenceFrame = frame;
+                    provider->ref = &referenceFrame;
+                }
+                epan_dissect_run(firstPassDissect, WTAP_FILE_TYPE_SUBTYPE_UNKNOWN, record.get(), &frame, nullptr);
+                frame_data_set_after_dissect(&frame, &cumulativeBytes);
+                storedFrame = frame_data_sequence_add(provider->frames, &frame);
+                epan_dissect_reset(firstPassDissect);
+            })) {
+            return failWithCriticalExceptionLocked(std::move(*report));
         }
-        epan_dissect_run(firstPassDissect.get(), WTAP_FILE_TYPE_SUBTYPE_UNKNOWN, record.get(), &frame, nullptr);
-        frame_data_set_after_dissect(&frame, &cumulativeBytes);
 
-        provider->prev_cap = provider->prev_dis = frame_data_sequence_add(provider->frames, &frame);
-        epan_dissect_reset(firstPassDissect.get());
+        provider->prev_cap = provider->prev_dis = storedFrame;
         activeFrameNumbers.insert(frameNumber);
         return true;
     }
@@ -1098,7 +1371,10 @@ struct TCPViewerWiresharkSession {
         }
 
         if (shouldFinishFirstPass) {
-            finishActiveFirstPassLocked();
+            if (!finishActiveFirstPassLocked()) {
+                firstPassFinished = shouldFinishFirstPass;
+                return false;
+            }
         }
         firstPassFinished = shouldFinishFirstPass;
         return true;
@@ -1158,13 +1434,16 @@ struct TCPViewerWiresharkSession {
         return true;
     }
 
-    void finishActiveFirstPassLocked()
+    bool finishActiveFirstPassLocked()
     {
-        firstPassDissect.reset();
+        if (auto report = FreeEpanDissect(firstPassDissect, "freeing Wireshark first-pass dissector", std::nullopt)) {
+            return failWithCriticalExceptionLocked(std::move(*report));
+        }
         if (provider != nullptr) {
             provider->prev_dis = nullptr;
             provider->prev_cap = nullptr;
         }
+        return true;
     }
 
     bool finishFirstPassLocked()
@@ -1175,7 +1454,9 @@ struct TCPViewerWiresharkSession {
         if (!ensureActiveSessionLocked()) {
             return false;
         }
-        finishActiveFirstPassLocked();
+        if (!finishActiveFirstPassLocked()) {
+            return false;
+        }
         firstPassFinished = true;
         return true;
     }
@@ -1210,44 +1491,91 @@ struct TCPViewerWiresharkSession {
         }
 
         WiresharkColumnInfo columnInfo;
-        EpanDissectPtr dissect(epan_dissect_new(epan, buildTree, buildTree));
-        if (!dissect) {
+        epan_dissect_t *rawDissect = nullptr;
+        auto *currentEpan = epan;
+        if (auto report = CatchWiresharkException("creating Wireshark second-pass dissector", context.packetIdentifier, [&rawDissect, currentEpan, buildTree] {
+                rawDissect = epan_dissect_new(currentEpan, buildTree, buildTree);
+            })) {
+            failWithCriticalExceptionLocked(std::move(*report));
+            result.fallbackReason = unavailableReason;
+            return result;
+        }
+        if (rawDissect == nullptr) {
             result.fallbackReason = "Wireshark could not allocate a second-pass dissector.";
             return result;
         }
 
+        auto failWithLocalCriticalException = [&](WiresharkCriticalException report) {
+            recordCriticalExceptionLocked(std::move(report), true);
+            if (auto cleanupReport = FreeEpanDissect(rawDissect, "freeing Wireshark second-pass dissector", context.packetIdentifier)) {
+                recordCriticalExceptionLocked(std::move(*cleanupReport), false);
+            }
+            releaseWiresharkResourcesLocked(unavailableReason, true);
+            result = WiresharkDissectionResult{};
+            result.fallbackReason = unavailableReason;
+        };
+        auto freeSecondPassDissector = [&]() -> bool {
+            if (auto cleanupReport = FreeEpanDissect(rawDissect, "freeing Wireshark second-pass dissector", context.packetIdentifier)) {
+                failWithCriticalExceptionLocked(std::move(*cleanupReport));
+                result = WiresharkDissectionResult{};
+                result.fallbackReason = unavailableReason;
+                return false;
+            }
+            return true;
+        };
+
         if (columnInfo.get() != nullptr) {
-            col_custom_prime_edt(dissect.get(), columnInfo.get());
+            if (auto report = CatchWiresharkException("priming Wireshark custom columns", context.packetIdentifier, [&] {
+                    col_custom_prime_edt(rawDissect, columnInfo.get());
+                })) {
+                failWithLocalCriticalException(std::move(*report));
+                return result;
+            }
         }
 
-        frame_data_set_before_dissect(frame, &elapsedTime, &provider->ref, provider->prev_dis);
-        if (provider->ref == frame) {
-            referenceFrame = *frame;
-            provider->ref = &referenceFrame;
-        }
         wtap_block_t block = record.get()->block != nullptr ? wtap_block_ref(record.get()->block) : nullptr;
-        if (buildTree) {
-            epan_dissect_run_with_taps(dissect.get(), WTAP_FILE_TYPE_SUBTYPE_UNKNOWN, record.get(), frame, columnInfo.get());
-        } else {
-            epan_dissect_run(dissect.get(), WTAP_FILE_TYPE_SUBTYPE_UNKNOWN, record.get(), frame, columnInfo.get());
+        if (auto report = CatchWiresharkException("running Wireshark second-pass dissection", context.packetIdentifier, [&] {
+                frame_data_set_before_dissect(frame, &elapsedTime, &provider->ref, provider->prev_dis);
+                if (provider->ref == frame) {
+                    referenceFrame = *frame;
+                    provider->ref = &referenceFrame;
+                }
+                if (buildTree) {
+                    epan_dissect_run_with_taps(rawDissect, WTAP_FILE_TYPE_SUBTYPE_UNKNOWN, record.get(), frame, columnInfo.get());
+                } else {
+                    epan_dissect_run(rawDissect, WTAP_FILE_TYPE_SUBTYPE_UNKNOWN, record.get(), frame, columnInfo.get());
+                }
+                uint32_t secondPassCumulativeBytes = frame->cum_bytes >= frame->pkt_len ? frame->cum_bytes - frame->pkt_len : 0;
+                frame_data_set_after_dissect(frame, &secondPassCumulativeBytes);
+            })) {
+            record.get()->block = block;
+            failWithLocalCriticalException(std::move(*report));
+            return result;
         }
-        uint32_t secondPassCumulativeBytes = frame->cum_bytes >= frame->pkt_len ? frame->cum_bytes - frame->pkt_len : 0;
-        frame_data_set_after_dissect(frame, &secondPassCumulativeBytes);
 
         result.columns = ColumnsFromInfo(columnInfo.get());
         if (buildTree) {
-            auto sourceSet = ExtractByteSources(dissect->pi.data_src);
-            result.nodes = MapProtoTree(dissect->tree, sourceSet);
+            auto sourceSet = ExtractByteSources(rawDissect->pi.data_src);
+            result.nodes = MapProtoTree(rawDissect->tree, sourceSet);
             if (auto sni = FindSNIInNodes(result.nodes)) {
                 result.sniDomainName = *sni;
             }
             result.byteSources = std::move(sourceSet.sources);
         }
-        epan_dissect_reset(dissect.get());
+        if (auto report = CatchWiresharkException("resetting Wireshark second-pass dissector", context.packetIdentifier, [&] {
+                epan_dissect_reset(rawDissect);
+            })) {
+            record.get()->block = block;
+            failWithLocalCriticalException(std::move(*report));
+            return result;
+        }
         record.get()->block = block;
         result.usedWireshark = buildTree ? !result.nodes.empty() : (!result.columns.protocol.empty() || !result.columns.info.empty());
         if (!result.usedWireshark && buildTree) {
             result.fallbackReason = "Wireshark protocol-tree dissection returned no nodes for this packet.";
+        }
+        if (!freeSecondPassDissector()) {
+            return result;
         }
         return result;
     }
@@ -1257,6 +1585,9 @@ struct TCPViewerWiresharkSession {
         auto result = runSecondPassLocked(context, false);
         if (result.usedWireshark && ShouldExtractSNIFromTree(result.columns)) {
             auto treeResult = runSecondPassLocked(context, true);
+            if (!treeResult.usedWireshark && hasCriticalExceptionLocked()) {
+                return treeResult;
+            }
             if (!treeResult.sniDomainName.empty()) {
                 result.sniDomainName = treeResult.sniDomainName;
             }
@@ -1278,6 +1609,16 @@ TCPViewerWiresharkSession *TCPViewerWiresharkSessionCreate(bool disabled)
 void TCPViewerWiresharkSessionDestroy(TCPViewerWiresharkSession *session)
 {
     delete session;
+}
+
+void TCPViewerWiresharkSessionReleaseResources(TCPViewerWiresharkSession *session)
+{
+    if (session == nullptr || (session->epan == nullptr && session->provider == nullptr && session->firstPassDissect == nullptr)) {
+        return;
+    }
+    std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
+    std::lock_guard<std::mutex> sessionLock(session->mutex);
+    session->releaseWiresharkResourcesLocked("", false);
 }
 
 bool TCPViewerWiresharkSessionIsAvailable(TCPViewerWiresharkSession *session)
@@ -1305,6 +1646,7 @@ bool TCPViewerWiresharkSessionObservePacket(TCPViewerWiresharkSession *session, 
     }
     std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
     std::lock_guard<std::mutex> sessionLock(session->mutex);
+    session->clearCriticalExceptionsLocked();
     return session->observePacketLocked(ContextViewFromC(context));
 }
 
@@ -1315,6 +1657,7 @@ bool TCPViewerWiresharkSessionFinishFirstPass(TCPViewerWiresharkSession *session
     }
     std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
     std::lock_guard<std::mutex> sessionLock(session->mutex);
+    session->clearCriticalExceptionsLocked();
     return session->finishFirstPassLocked();
 }
 
@@ -1328,6 +1671,7 @@ TCPViewerWiresharkSummaryResult *TCPViewerWiresharkSessionSummarizePacket(TCPVie
 
     std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
     std::lock_guard<std::mutex> sessionLock(session->mutex);
+    session->clearCriticalExceptionsLocked();
     const auto dissection = session->summarizePacketLocked(ContextViewFromC(context));
     result->succeeded = dissection.usedWireshark;
     if (!dissection.usedWireshark) {
@@ -1350,6 +1694,7 @@ TCPViewerWiresharkInspectionResult *TCPViewerWiresharkSessionInspectPacket(TCPVi
 
     std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
     std::lock_guard<std::mutex> sessionLock(session->mutex);
+    session->clearCriticalExceptionsLocked();
     const auto dissection = session->inspectPacketLocked(ContextViewFromC(context));
     result->succeeded = dissection.usedWireshark;
     if (!dissection.usedWireshark) {
@@ -1372,6 +1717,32 @@ TCPViewerWiresharkInspectionResult *TCPViewerWiresharkSessionInspectPacket(TCPVi
         }
     }
     return result;
+}
+
+TCPViewerWiresharkExceptionReport *TCPViewerWiresharkSessionCopyLastCriticalException(TCPViewerWiresharkSession *session)
+{
+    if (session == nullptr) {
+        return nullptr;
+    }
+    std::lock_guard<std::mutex> sessionLock(session->mutex);
+    if (session->pendingCriticalExceptions.empty()) {
+        return nullptr;
+    }
+    return CopyExceptionReport(session->pendingCriticalExceptions.back());
+}
+
+TCPViewerWiresharkExceptionReport *TCPViewerWiresharkSessionCopyNextCriticalException(TCPViewerWiresharkSession *session)
+{
+    if (session == nullptr) {
+        return nullptr;
+    }
+    std::lock_guard<std::mutex> sessionLock(session->mutex);
+    if (session->pendingCriticalExceptions.empty()) {
+        return nullptr;
+    }
+    auto report = CopyExceptionReport(session->pendingCriticalExceptions.front());
+    session->pendingCriticalExceptions.pop_front();
+    return report;
 }
 
 void TCPViewerWiresharkSummaryResultDestroy(TCPViewerWiresharkSummaryResult *result)
@@ -1403,3 +1774,49 @@ void TCPViewerWiresharkInspectionResultDestroy(TCPViewerWiresharkInspectionResul
     std::free(result->nodes);
     std::free(result);
 }
+
+void TCPViewerWiresharkExceptionReportDestroy(TCPViewerWiresharkExceptionReport *report)
+{
+    if (report == nullptr) {
+        return;
+    }
+    std::free(const_cast<char *>(report->operation));
+    std::free(const_cast<char *>(report->exceptionName));
+    std::free(const_cast<char *>(report->reason));
+    std::free(report);
+}
+
+#if DEBUG
+TCPViewerWiresharkExceptionReport *TCPViewerWiresharkTestCopyCaughtExceptionReport(void)
+{
+    auto &runtime = WiresharkRuntime::shared();
+    if (!runtime.isAvailable()) {
+        return runtime.criticalException().has_value() ? CopyExceptionReport(*runtime.criticalException()) : nullptr;
+    }
+
+    std::optional<WiresharkCriticalException> report;
+    {
+        std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
+        report = CatchWiresharkException("testing Wireshark exception handling", uint64_t{42}, [] {
+            except_throw(XCEPT_GROUP_WIRESHARK, DissectorError, "test-only private message");
+        });
+    }
+    return report.has_value() ? CopyExceptionReport(*report) : nullptr;
+}
+
+bool TCPViewerWiresharkSessionTestInjectCriticalException(TCPViewerWiresharkSession *session)
+{
+    if (session == nullptr) {
+        return false;
+    }
+    std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
+    std::lock_guard<std::mutex> sessionLock(session->mutex);
+    session->clearCriticalExceptionsLocked();
+    if (auto report = CatchWiresharkException("testing Wireshark session exception handling", uint64_t{42}, [] {
+            except_throw(XCEPT_GROUP_WIRESHARK, DissectorError, "test-only private message");
+        })) {
+        return session->failWithCriticalExceptionLocked(std::move(*report));
+    }
+    return true;
+}
+#endif

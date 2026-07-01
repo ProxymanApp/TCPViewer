@@ -491,8 +491,15 @@ enum TCPViewerNativeErrorCode: Int {
     case invalidFilter = 1010
     case operationCancelled = 1011
     case unavailableFeature = 1012
+    case criticalWiresharkException = 1013
 }
 
 func NativeNSError(_ code: TCPViewerNativeErrorCode, _ message: String) -> NSError {
     NSError(domain: TCPViewerNativeErrorDomain, code: code.rawValue, userInfo: [NSLocalizedDescriptionKey: message])
+}
+
+func NativeErrorIsCriticalWiresharkException(_ error: Error) -> Bool {
+    let nsError = error as NSError
+    return nsError.domain == TCPViewerNativeErrorDomain
+        && nsError.code == TCPViewerNativeErrorCode.criticalWiresharkException.rawValue
 }

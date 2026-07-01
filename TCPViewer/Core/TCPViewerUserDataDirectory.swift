@@ -12,6 +12,7 @@ final class TCPViewerUserDataDirectory {
 
     private static let appFolderName = "TCPViewer"
     private static let settingsFolderName = "settings"
+    private static let logsFolderName = "Logs"
 
     private let fileManager: FileManager
     private let applicationSupportBaseURL: URL
@@ -29,6 +30,10 @@ final class TCPViewerUserDataDirectory {
         appDirectoryURL.appendingPathComponent(Self.settingsFolderName, isDirectory: true)
     }
 
+    var logsDirectoryURL: URL {
+        appDirectoryURL.appendingPathComponent(Self.logsFolderName, isDirectory: true)
+    }
+
     func settingsFileURL(named fileName: String) -> URL {
         settingsDirectoryURL.appendingPathComponent(fileName)
     }
@@ -37,6 +42,12 @@ final class TCPViewerUserDataDirectory {
     func createSettingsDirectoryIfNeeded() throws -> URL {
         try fileManager.createDirectory(at: settingsDirectoryURL, withIntermediateDirectories: true)
         return settingsDirectoryURL
+    }
+
+    @discardableResult
+    func createLogsDirectoryIfNeeded() throws -> URL {
+        try fileManager.createDirectory(at: logsDirectoryURL, withIntermediateDirectories: true)
+        return logsDirectoryURL
     }
 
     private static func defaultApplicationSupportBaseURL(fileManager: FileManager) -> URL {
