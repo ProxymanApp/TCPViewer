@@ -7,6 +7,7 @@
 
 import AppKit
 import PcapPlusPlusCore
+import QuartzCore
 
 protocol PacketTableViewControllerDelegate: AnyObject {
     func packetTableViewController(_ controller: PacketTableViewController, didSelectPacket identifier: PacketSummary.ID?)
@@ -17,6 +18,11 @@ protocol PacketTableViewControllerDelegate: AnyObject {
     func packetTableViewController(_ controller: PacketTableViewController, didRequestSavePackets identifiers: [PacketSummary.ID])
     func packetTableViewController(_ controller: PacketTableViewController, didRequestExportPackets identifiers: [PacketSummary.ID], format: CaptureFileFormat)
     func packetTableViewController(_ controller: PacketTableViewController, didRequestDeletePackets identifiers: [PacketSummary.ID])
+    func packetTableViewController(
+        _ controller: PacketTableViewController,
+        inspectPacket identifier: PacketSummary.ID,
+        completion: @escaping TCPViewerCompletion<PacketInspection>
+    )
 }
 
 enum PacketTableSelectionSyncAction: Equatable {
@@ -104,6 +110,10 @@ final class PacketTableViewModel {
         return rowStore.rowIDs[index]
     }
 
+    func rowIndex(for identifier: PacketSummary.ID) -> Int? {
+        rowStore.visiblePacketRowIndexByID[identifier]
+    }
+
     // Store the latest render state so the controller can apply incremental table updates.
     func render(snapshot: NetworkInspectorSnapshot) -> PacketTableUpdatePlan {
         let previousRowStore = rowStore
@@ -126,6 +136,12 @@ final class PacketTableViewModel {
 final class PacketTableViewController: NSViewController {
     static let columnAutosaveName: NSTableView.AutosaveName = "TCPViewer.PacketTable.Columns"
 
+    private struct CustomColumnWorkItem {
+        let generation: Int
+        let column: PacketCustomColumn
+        let packetID: PacketSummary.ID
+    }
+
     weak var delegate: PacketTableViewControllerDelegate?
 
     private let configuration: AppConfiguration
@@ -133,6 +149,7 @@ final class PacketTableViewController: NSViewController {
     private let scrollView = NSScrollView()
     private let viewModel = PacketTableViewModel()
     private let contextMenuController = PacketTableContextMenuController()
+    private let customColumnService = PacketCustomColumnService()
     private let columnService: PacketTableColumnService
     private let columnLayoutStore: PacketTableColumnLayoutStore
     private let columnVisibilityMenuController: PacketTableColumnVisibilityMenuController
@@ -142,6 +159,16 @@ final class PacketTableViewController: NSViewController {
     private var pendingUserSelection: PendingUserSelection?
     private var clickedRowIndex: Int?
     private var clickedColumnIdentifier: String?
+    private var customColumnWorkQueue: [CustomColumnWorkItem] = []
+    private var customColumnWorkQueueHeadIndex = 0
+    private var queuedCustomColumnWorkKeys = Set<String>()
+    private var activeCustomColumnInspectionCount = 0
+    private var customColumnResolutionGeneration = 0
+    private var pendingCustomColumnReloadIndexes = IndexSet()
+    private var pendingCustomColumnReloadWorkItem: DispatchWorkItem?
+    private var renderedPacketLineageRevision: UInt64?
+
+    private let maximumConcurrentCustomColumnInspections = 8
 
     // Wraps Optional<ID> so we can distinguish "no pending intent" from a
     // pending user-driven deselect. A pending intent means the user has just
@@ -190,6 +217,12 @@ final class PacketTableViewController: NSViewController {
 
     // Apply packet rows, using append plans when the model says only new visible rows arrived.
     func render(snapshot: NetworkInspectorSnapshot) {
+        if renderedPacketLineageRevision != snapshot.base.packetIngestState.packetLineageRevision {
+            customColumnService.clearValues()
+            resetCustomColumnResolutionQueue()
+            renderedPacketLineageRevision = snapshot.base.packetIngestState.packetLineageRevision
+        }
+
         let previousRowCount = rows.count
         let updatePlan = viewModel.render(snapshot: snapshot)
         applyAppearanceConfiguration(reload: false)
@@ -213,6 +246,8 @@ final class PacketTableViewController: NSViewController {
 
             syncSelection()
         }
+
+        enqueueCustomColumnResolution(after: updatePlan, previousRowCount: previousRowCount)
     }
 
     private func applyAppendPlan(range: Range<Int>, previousRowCount: Int) {
@@ -265,6 +300,8 @@ final class PacketTableViewController: NSViewController {
         tableView.headerView?.menu = columnVisibilityMenuController.makeMenu()
 
         let restoredLayout = columnLayoutStore.load()
+        customColumnService.restoreColumns(restoredLayout?.customColumns ?? [])
+        columnService.setCustomColumns(customColumnService.columns)
         if let restoredLayout {
             columnService.applyVisibility(from: restoredLayout)
         }
@@ -298,6 +335,15 @@ final class PacketTableViewController: NSViewController {
         column.dataCell = cell(for: definition.cellKind)
         column.isHidden = !columnService.isColumnVisible(identifier: definition.identifier)
         tableView.addTableColumn(column)
+    }
+
+    private func addCustomColumnIfNeeded(_ column: PacketCustomColumn) {
+        guard tableView.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier(column.identifier)) == nil,
+              let definition = columnService.definition(identifier: column.identifier) else {
+            return
+        }
+
+        addColumn(definition)
     }
 
     private func cell(for kind: PacketTableColumnCellKind) -> NSCell {
@@ -362,6 +408,8 @@ final class PacketTableViewController: NSViewController {
         isRestoringColumnLayout = true
         defer { isRestoringColumnLayout = false }
 
+        removeCustomTableColumns()
+        columnService.setCustomColumns(customColumnService.columns)
         columnService.definitions.enumerated().forEach { targetIndex, definition in
             guard let currentIndex = tableView.tableColumns.firstIndex(where: {
                 $0.identifier.rawValue == definition.identifier
@@ -380,6 +428,13 @@ final class PacketTableViewController: NSViewController {
         }
     }
 
+    private func removeCustomTableColumns() {
+        let customColumnIDs = Set(customColumnService.columns.map(\.identifier))
+        for column in tableView.tableColumns where customColumnIDs.contains(column.identifier.rawValue) || column.identifier.rawValue.hasPrefix("custom.field.") {
+            tableView.removeTableColumn(column)
+        }
+    }
+
     private func currentColumnLayout() -> PacketTableColumnLayout {
         PacketTableColumnLayout(columns: tableView.tableColumns.map { column in
             PacketTableColumnLayout.Column(
@@ -387,7 +442,7 @@ final class PacketTableViewController: NSViewController {
                 isVisible: !column.isHidden,
                 width: Double(column.width)
             )
-        })
+        }, customColumns: customColumnService.columns)
     }
 
     private func saveColumnLayout() {
@@ -397,6 +452,22 @@ final class PacketTableViewController: NSViewController {
 
         syncColumnVisibilityFromTable()
         columnLayoutStore.save(currentColumnLayout())
+    }
+
+    func createCustomColumn(from request: PacketCustomColumnRequest) {
+        let result = customColumnService.createColumn(from: request)
+        guard let customColumn = result.column else {
+            return
+        }
+
+        columnService.setCustomColumns(customColumnService.columns)
+        addCustomColumnIfNeeded(customColumn)
+        _ = columnService.setColumnVisibility(identifier: customColumn.identifier, isVisible: true)
+        applyColumnVisibility(identifier: customColumn.identifier)
+        saveColumnLayout()
+        reloadColumn(identifier: customColumn.identifier)
+        enqueueCustomColumnResolution(for: customColumn, visibleFirst: true)
+        animateScrollToColumn(identifier: customColumn.identifier)
     }
 
     private func columnIdentifier(from sender: Any?) -> String? {
@@ -417,6 +488,33 @@ final class PacketTableViewController: NSViewController {
         updates()
         clipView.scroll(to: visibleOrigin)
         scrollView.reflectScrolledClipView(clipView)
+    }
+
+    private func animateScrollToColumn(identifier: String) {
+        guard let columnIndex = tableView.tableColumns.firstIndex(where: { $0.identifier.rawValue == identifier }) else {
+            return
+        }
+
+        tableView.layoutSubtreeIfNeeded()
+        let columnRect = tableView.rect(ofColumn: columnIndex)
+        let clipView = scrollView.contentView
+        let documentWidth = max(tableView.bounds.width, columnRect.maxX)
+        let targetX = min(
+            max(0, columnRect.minX - 16),
+            max(0, documentWidth - clipView.bounds.width)
+        )
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.24
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            clipView.animator().setBoundsOrigin(NSPoint(x: targetX, y: clipView.bounds.origin.y))
+        } completionHandler: { [weak self] in
+            guard let self else {
+                return
+            }
+
+            self.scrollView.reflectScrolledClipView(clipView)
+        }
     }
 
     private func suppressSelectionCallbacks(_ updates: () -> Void) {
@@ -479,7 +577,11 @@ final class PacketTableViewController: NSViewController {
     }
 
     private func text(for column: String, in row: PacketTableRow) -> String {
-        row.text(for: PacketTableColumnRole(columnIdentifier: column))
+        if customColumnService.columns.contains(where: { $0.identifier == column }) {
+            return customColumnService.value(columnIdentifier: column, packetID: row.id) ?? ""
+        }
+
+        return row.text(for: PacketTableColumnRole(columnIdentifier: column))
     }
 
     private func textStyle(for column: String, in row: PacketTableRow) -> PacketTextCell.Style {
@@ -523,6 +625,215 @@ final class PacketTableViewController: NSViewController {
         clickedColumnIdentifier = tableView.tableColumns.indices.contains(column)
             ? tableView.tableColumns[column].identifier.rawValue
             : nil
+    }
+
+    private func enqueueCustomColumnResolution(after updatePlan: PacketTableUpdatePlan, previousRowCount: Int) {
+        guard !customColumnService.columns.isEmpty else {
+            return
+        }
+
+        switch updatePlan {
+        case .none:
+            return
+        case .append(let range), .appendAndReloadRows(let range, _):
+            let lowerBound = max(range.lowerBound, previousRowCount)
+            let upperBound = min(range.upperBound, rows.count)
+            guard lowerBound < upperBound else {
+                return
+            }
+            let safeRange = lowerBound..<upperBound
+            guard !safeRange.isEmpty else {
+                return
+            }
+            let appendedPacketIDs = rows[safeRange].map(\.id)
+            visibleCustomColumns().forEach { column in
+                enqueueCustomColumnResolution(for: column, preferredPacketIDs: appendedPacketIDs)
+            }
+        case .reload:
+            visibleCustomColumns().forEach { column in
+                enqueueCustomColumnResolution(for: column, visibleFirst: true)
+            }
+        case .reloadRows:
+            return
+        }
+    }
+
+    private func enqueueCustomColumnResolution(for column: PacketCustomColumn, visibleFirst: Bool) {
+        let preferredPacketIDs = visibleFirst ? visiblePacketIDs() : []
+        enqueueCustomColumnResolution(for: column, preferredPacketIDs: preferredPacketIDs)
+    }
+
+    private func enqueueCustomColumnResolution(
+        for column: PacketCustomColumn,
+        preferredPacketIDs: [PacketSummary.ID]
+    ) {
+        let packetIDs = customColumnService.unresolvedPacketIDs(
+            for: column,
+            rows: rows,
+            preferredPacketIDs: preferredPacketIDs
+        )
+        guard !packetIDs.isEmpty else {
+            return
+        }
+
+        for packetID in packetIDs {
+            let key = customColumnWorkKey(columnIdentifier: column.identifier, packetID: packetID)
+            guard queuedCustomColumnWorkKeys.insert(key).inserted else {
+                continue
+            }
+
+            customColumnWorkQueue.append(CustomColumnWorkItem(
+                generation: customColumnResolutionGeneration,
+                column: column,
+                packetID: packetID
+            ))
+        }
+
+        processCustomColumnWorkIfNeeded()
+    }
+
+    private func processCustomColumnWorkIfNeeded() {
+        guard let delegate else {
+            customColumnWorkQueue.removeAll()
+            customColumnWorkQueueHeadIndex = 0
+            queuedCustomColumnWorkKeys.removeAll()
+            activeCustomColumnInspectionCount = 0
+            return
+        }
+
+        while activeCustomColumnInspectionCount < maximumConcurrentCustomColumnInspections,
+              customColumnWorkQueueHeadIndex < customColumnWorkQueue.count {
+            let workItem = customColumnWorkQueue[customColumnWorkQueueHeadIndex]
+            customColumnWorkQueueHeadIndex += 1
+            activeCustomColumnInspectionCount += 1
+            delegate.packetTableViewController(self, inspectPacket: workItem.packetID) { [weak self] result in
+                DispatchQueue.main.async {
+                    self?.completeCustomColumnWork(workItem, result: result)
+                }
+            }
+        }
+
+        compactCustomColumnWorkQueueIfNeeded()
+    }
+
+    private func completeCustomColumnWork(
+        _ workItem: CustomColumnWorkItem,
+        result: Result<PacketInspection, Error>
+    ) {
+        guard workItem.generation == customColumnResolutionGeneration else {
+            return
+        }
+
+        activeCustomColumnInspectionCount = max(0, activeCustomColumnInspectionCount - 1)
+        queuedCustomColumnWorkKeys.remove(customColumnWorkKey(
+            columnIdentifier: workItem.column.identifier,
+            packetID: workItem.packetID
+        ))
+
+        let value: String
+        switch result {
+        case .success(let inspection):
+            value = PacketCustomColumnService.resolvedValue(fieldName: workItem.column.fieldName, in: inspection)
+        case .failure:
+            value = ""
+        }
+
+        customColumnService.storeValue(value, columnIdentifier: workItem.column.identifier, packetID: workItem.packetID)
+        queueCustomColumnReload(packetID: workItem.packetID)
+        processCustomColumnWorkIfNeeded()
+    }
+
+    // Compact consumed queue entries in batches so large captures avoid repeated removeFirst work.
+    private func compactCustomColumnWorkQueueIfNeeded() {
+        guard customColumnWorkQueueHeadIndex > 0 else {
+            return
+        }
+
+        if customColumnWorkQueueHeadIndex >= customColumnWorkQueue.count {
+            customColumnWorkQueue.removeAll(keepingCapacity: true)
+            customColumnWorkQueueHeadIndex = 0
+            return
+        }
+
+        if customColumnWorkQueueHeadIndex > 512,
+           customColumnWorkQueueHeadIndex * 2 >= customColumnWorkQueue.count {
+            customColumnWorkQueue.removeFirst(customColumnWorkQueueHeadIndex)
+            customColumnWorkQueueHeadIndex = 0
+        }
+    }
+
+    private func queueCustomColumnReload(packetID: PacketSummary.ID) {
+        guard let rowIndex = viewModel.rowIndex(for: packetID),
+              rowIndex >= 0,
+              rowIndex < tableView.numberOfRows else {
+            return
+        }
+
+        pendingCustomColumnReloadIndexes.insert(rowIndex)
+        guard pendingCustomColumnReloadWorkItem == nil else {
+            return
+        }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.flushPendingCustomColumnReloads()
+        }
+        pendingCustomColumnReloadWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: workItem)
+    }
+
+    private func flushPendingCustomColumnReloads() {
+        pendingCustomColumnReloadWorkItem = nil
+        let validRange = 0..<tableView.numberOfRows
+        let rowIndexes = IndexSet(pendingCustomColumnReloadIndexes.filter { validRange.contains($0) })
+        pendingCustomColumnReloadIndexes = []
+        guard !rowIndexes.isEmpty else {
+            return
+        }
+
+        tableView.reloadData(forRowIndexes: rowIndexes, columnIndexes: IndexSet(0..<tableView.numberOfColumns))
+    }
+
+    private func visiblePacketIDs() -> [PacketSummary.ID] {
+        let visibleRows = tableView.rows(in: scrollView.contentView.bounds)
+        guard visibleRows.location != NSNotFound else {
+            return []
+        }
+
+        let rowRange = visibleRows.location..<(visibleRows.location + visibleRows.length)
+        return rowRange.compactMap { rowIndex in
+            rows.indices.contains(rowIndex) ? rows[rowIndex].id : nil
+        }
+    }
+
+    private func resetCustomColumnResolutionQueue() {
+        customColumnResolutionGeneration += 1
+        customColumnWorkQueue.removeAll()
+        customColumnWorkQueueHeadIndex = 0
+        queuedCustomColumnWorkKeys.removeAll()
+        activeCustomColumnInspectionCount = 0
+        pendingCustomColumnReloadIndexes = []
+        pendingCustomColumnReloadWorkItem?.cancel()
+        pendingCustomColumnReloadWorkItem = nil
+    }
+
+    private func customColumnWorkKey(columnIdentifier: String, packetID: PacketSummary.ID) -> String {
+        "\(columnIdentifier)|\(packetID)"
+    }
+
+    private func visibleCustomColumns() -> [PacketCustomColumn] {
+        customColumnService.columns.filter { columnService.isColumnVisible(identifier: $0.identifier) }
+    }
+
+    private func reloadColumn(identifier: String) {
+        guard let columnIndex = tableView.tableColumns.firstIndex(where: { $0.identifier.rawValue == identifier }),
+              tableView.numberOfRows > 0 else {
+            return
+        }
+
+        tableView.reloadData(
+            forRowIndexes: IndexSet(0..<tableView.numberOfRows),
+            columnIndexes: IndexSet(integer: columnIndex)
+        )
     }
 
     private func menuState() -> PacketTableMenuState {
@@ -735,11 +1046,17 @@ extension PacketTableViewController: PacketTableColumnVisibilityMenuActionHandli
         }
 
         applyColumnVisibility(identifier: identifier)
+        if columnService.isColumnVisible(identifier: identifier),
+           let customColumn = customColumnService.columns.first(where: { $0.identifier == identifier }) {
+            enqueueCustomColumnResolution(for: customColumn, visibleFirst: true)
+        }
         saveColumnLayout()
         tableView.headerView?.menu?.cancelTracking()
     }
 
     func resetPacketTableColumnsFromMenu(_ sender: Any?) {
+        resetCustomColumnResolutionQueue()
+        customColumnService.reset()
         columnService.resetToDefaults()
         restoreDefaultColumnLayout()
         columnLayoutStore.clear()

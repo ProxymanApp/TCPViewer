@@ -192,6 +192,53 @@ struct PacketTableMenuLogicTests {
     }
 
     @MainActor
+    @Test func packetTableCreatesPersistsAndResetsCustomColumns() throws {
+        let defaults = Self.makeUserDefaults()
+        let controller = PacketTableViewController(configuration: AppConfiguration(defaults: defaults))
+        controller.loadViewIfNeeded()
+        let tableView = try Self.tableView(in: controller)
+
+        controller.createCustomColumn(from: PacketCustomColumnRequest(
+            fieldName: "ip.src",
+            title: "Source Address",
+            packetID: 1,
+            sampleValue: "10.0.0.1"
+        ))
+        controller.createCustomColumn(from: PacketCustomColumnRequest(
+            fieldName: "IP.SRC",
+            title: "Duplicate Source",
+            packetID: 1,
+            sampleValue: "10.0.0.1"
+        ))
+
+        let customColumns = tableView.tableColumns.filter { $0.identifier.rawValue == "custom.field.ip.src" }
+        let customColumn = try #require(customColumns.first)
+
+        #expect(customColumns.count == 1)
+        #expect(!customColumn.isHidden)
+        #expect(tableView.tableColumns.last?.identifier.rawValue == "custom.field.ip.src")
+
+        let restoredController = PacketTableViewController(configuration: AppConfiguration(defaults: defaults))
+        restoredController.loadViewIfNeeded()
+        let restoredTableView = try Self.tableView(in: restoredController)
+        let restoredCustomColumn = try #require(restoredTableView.tableColumn(
+            withIdentifier: NSUserInterfaceItemIdentifier("custom.field.ip.src")
+        ))
+
+        #expect(restoredTableView.tableColumns.last?.identifier.rawValue == "custom.field.ip.src")
+        #expect(!restoredCustomColumn.isHidden)
+
+        restoredController.resetPacketTableColumnsFromMenu(nil)
+
+        let resetController = PacketTableViewController(configuration: AppConfiguration(defaults: defaults))
+        resetController.loadViewIfNeeded()
+        let resetTableView = try Self.tableView(in: resetController)
+
+        #expect(resetTableView.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier("custom.field.ip.src")) == nil)
+        #expect(Set(resetTableView.tableColumns.map { $0.identifier.rawValue }) == Set(PacketTableColumnService.defaultDefinitions.map(\.identifier)))
+    }
+
+    @MainActor
     @Test func contextMenuItemsIncludeCopyRowsAsSubmenuAndTooltips() throws {
         let controller = PacketTableContextMenuController()
         let stateProvider = MenuStateProvider(state: PacketTableMenuState(

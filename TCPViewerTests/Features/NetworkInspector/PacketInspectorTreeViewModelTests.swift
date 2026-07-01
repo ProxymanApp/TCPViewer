@@ -184,13 +184,14 @@ struct PacketInspectorTreeViewModelTests {
 
         controller.menuNeedsUpdate(menu)
 
-        #expect(menu.items.count == 6)
+        #expect(menu.items.count == 7)
         let copyItem = menu.items[0]
-        let separatorItem = menu.items[1]
-        let expandAllItem = menu.items[2]
-        let collapseAllItem = menu.items[3]
-        let secondSeparatorItem = menu.items[4]
-        let filterItem = menu.items[5]
+        let createColumnItem = menu.items[1]
+        let separatorItem = menu.items[2]
+        let expandAllItem = menu.items[3]
+        let collapseAllItem = menu.items[4]
+        let secondSeparatorItem = menu.items[5]
+        let filterItem = menu.items[6]
         let copySubmenu = try #require(copyItem.submenu)
         let copySubmenuTitles = copySubmenu.items.map(\.title)
 
@@ -216,6 +217,9 @@ struct PacketInspectorTreeViewModelTests {
         #expect(copySubmenu.items[2].isSeparatorItem)
         let byteCopyItemsEnabled = copySubmenu.items.dropFirst(3).allSatisfy { $0.isEnabled }
         #expect(byteCopyItemsEnabled)
+        #expect(createColumnItem.title == "Create Column")
+        #expect(createColumnItem.isEnabled)
+        #expect(createColumnItem.toolTip == "Create a packet table column from the selected packet detail field.")
         #expect(separatorItem.isSeparatorItem)
         #expect(expandAllItem.title == "Expand All")
         #expect(expandAllItem.isEnabled)
@@ -1137,8 +1141,16 @@ struct PacketInspectorTreeViewModelTests {
 
 private final class PacketInspectorDelegateSpy: PacketInspectorViewControllerDelegate {
     var selectedDetailNodeID: String?
+    var customColumnRequest: PacketCustomColumnRequest?
 
     func packetInspectorViewController(_ controller: PacketInspectorViewController, didSelectDetailNode identifier: String?) {
         selectedDetailNodeID = identifier
+    }
+
+    func packetInspectorViewController(
+        _ controller: PacketInspectorViewController,
+        didRequestCreateCustomColumn request: PacketCustomColumnRequest
+    ) {
+        customColumnRequest = request
     }
 }

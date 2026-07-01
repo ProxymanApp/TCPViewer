@@ -10,6 +10,7 @@ import PcapPlusPlusCore
 
 protocol PacketInspectorViewControllerDelegate: AnyObject {
     func packetInspectorViewController(_ controller: PacketInspectorViewController, didSelectDetailNode identifier: String?)
+    func packetInspectorViewController(_ controller: PacketInspectorViewController, didRequestCreateCustomColumn request: PacketCustomColumnRequest)
 }
 
 enum PacketInspectorTreeItemKind: Equatable {
@@ -87,6 +88,7 @@ final class PacketInspectorTreeItem: NSObject {
     let name: String
     let fieldName: String?
     let value: String?
+    let rawValue: String?
     let kind: PacketInspectorTreeItemKind
     let severity: PacketDetailNodeSeverity
     let byteRange: PacketByteRange?
@@ -99,6 +101,7 @@ final class PacketInspectorTreeItem: NSObject {
         name: String,
         fieldName: String? = nil,
         value: String? = nil,
+        rawValue: String? = nil,
         kind: PacketInspectorTreeItemKind,
         severity: PacketDetailNodeSeverity = .normal,
         byteRange: PacketByteRange? = nil,
@@ -110,6 +113,7 @@ final class PacketInspectorTreeItem: NSObject {
         self.name = name
         self.fieldName = fieldName
         self.value = value
+        self.rawValue = rawValue
         self.kind = kind
         self.severity = severity
         self.byteRange = byteRange
@@ -286,6 +290,7 @@ final class PacketInspectorTreeViewModel {
             name: item.name,
             fieldName: item.fieldName,
             value: item.value,
+            rawValue: item.rawValue,
             kind: item.kind,
             severity: item.severity,
             byteRange: item.byteRange,
@@ -446,6 +451,7 @@ final class PacketInspectorTreeViewModel {
             name: displayParts.name,
             fieldName: node.fieldName,
             value: displayParts.value,
+            rawValue: node.rawValue,
             kind: itemKind(from: node.kind),
             severity: node.severity,
             byteRange: node.byteRange,
@@ -1153,6 +1159,24 @@ final class PacketInspectorViewController: NSViewController {
         viewModel.copyItems(forSelectionIDs: selectedCopySelectionIDs())
     }
 
+    private func selectedCustomColumnRequest() -> PacketCustomColumnRequest? {
+        guard outlineView.selectedRowIndexes.count == 1,
+              let row = outlineView.selectedRowIndexes.first,
+              let item = outlineView.item(atRow: row) as? PacketInspectorTreeItem,
+              item.kind != .message,
+              let fieldName = item.fieldName?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !fieldName.isEmpty else {
+            return nil
+        }
+
+        return PacketCustomColumnRequest(
+            fieldName: fieldName,
+            title: item.name,
+            packetID: latestInspectionState?.selectedPacketID,
+            sampleValue: item.value ?? item.rawValue
+        )
+    }
+
     // Write inspector copy rows to the system pasteboard as plain text.
     private func copyRowsToPasteboard(_ rows: [PacketInspectorCopyRow]) {
         let text = PacketInspectorCopyFormatter.text(for: rows)
@@ -1263,6 +1287,14 @@ final class PacketInspectorViewController: NSViewController {
         }
 
         copySelectedBytesToPasteboard(format: format)
+    }
+
+    @objc private func createColumnFromMenu(_ sender: Any?) {
+        guard let request = selectedCustomColumnRequest() else {
+            return
+        }
+
+        delegate?.packetInspectorViewController(self, didRequestCreateCustomColumn: request)
     }
 
     @objc private func expandAllRowsFromMenu(_ sender: Any?) {
@@ -1463,7 +1495,9 @@ extension PacketInspectorViewController: NSMenuDelegate {
         let hasSelectedRows = !selectedCopySelectionIDs().isEmpty
         let hasSelectedByteRanges = hasSelectedBytes()
         let hasExpandableRows = hasExpandableInspectorRows()
+        let canCreateColumn = selectedCustomColumnRequest() != nil
         menu.addItem(copySubmenuItem(hasSelectedRows: hasSelectedRows, hasSelectedByteRanges: hasSelectedByteRanges))
+        menu.addItem(createColumnItem(isEnabled: canCreateColumn))
         menu.addItem(.separator())
 
         let expandAllItem = NSMenuItem(
@@ -1546,6 +1580,19 @@ extension PacketInspectorViewController: NSMenuDelegate {
         menuItem.isEnabled = hasSelectedRows || viewModel.hasCopyableDetails()
         menuItem.toolTip = "Choose how to copy packet detail rows or bytes."
         menuItem.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Copy")
+        return menuItem
+    }
+
+    private func createColumnItem(isEnabled: Bool) -> NSMenuItem {
+        let menuItem = NSMenuItem(
+            title: "Create Column",
+            action: #selector(createColumnFromMenu(_:)),
+            keyEquivalent: ""
+        )
+        menuItem.target = self
+        menuItem.isEnabled = isEnabled
+        menuItem.toolTip = "Create a packet table column from the selected packet detail field."
+        menuItem.image = NSImage(systemSymbolName: "tablecells", accessibilityDescription: "Create Column")
         return menuItem
     }
 }

@@ -17,6 +17,11 @@ protocol PacketWorkspaceViewControllerDelegate: AnyObject {
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestSavePackets identifiers: [PacketSummary.ID])
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestExportPackets identifiers: [PacketSummary.ID], format: CaptureFileFormat)
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestDeletePackets identifiers: [PacketSummary.ID])
+    func packetWorkspaceViewController(
+        _ controller: PacketWorkspaceViewController,
+        inspectPacket identifier: PacketSummary.ID,
+        completion: @escaping TCPViewerCompletion<PacketInspection>
+    )
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didUpdateStructuredFilterGroup group: PacketStructuredFilterGroup)
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestSaveCustomFilterNamed name: String, group: PacketStructuredFilterGroup)
     func packetWorkspaceViewController(
@@ -157,6 +162,10 @@ final class PacketWorkspaceViewController: NSViewController {
     func focusStructuredFilter() {
         applyStructuredFilterVisibility(true)
         structuredFilterController.focusLastFilterTextField()
+    }
+
+    func createCustomColumn(from request: PacketCustomColumnRequest) {
+        tableController.createCustomColumn(from: request)
     }
 
     private func setupContent() {
@@ -379,6 +388,14 @@ extension PacketWorkspaceViewController: PacketTableViewControllerDelegate {
 
     func packetTableViewController(_ controller: PacketTableViewController, didRequestDeletePackets identifiers: [PacketSummary.ID]) {
         delegate?.packetWorkspaceViewController(self, didRequestDeletePackets: identifiers)
+    }
+
+    func packetTableViewController(
+        _ controller: PacketTableViewController,
+        inspectPacket identifier: PacketSummary.ID,
+        completion: @escaping TCPViewerCompletion<PacketInspection>
+    ) {
+        delegate?.packetWorkspaceViewController(self, inspectPacket: identifier, completion: completion)
     }
 }
 
