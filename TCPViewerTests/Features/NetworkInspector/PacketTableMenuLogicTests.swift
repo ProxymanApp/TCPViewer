@@ -56,6 +56,22 @@ struct PacketTableMenuLogicTests {
         #expect(state.exportEnabled)
     }
 
+    @Test func customClickedColumnEnablesCopyCellWithRawIdentifier() {
+        let rows = [PacketTableRow(packet: makePacket(packetNumber: 1))]
+
+        let state = PacketTableMenuLogic.state(
+            rows: rows,
+            selectedRowIndexes: IndexSet(),
+            clickedRowIndex: 0,
+            clickedColumnIdentifier: "custom.field.ip.src"
+        )
+
+        #expect(state.targetRows == [0])
+        #expect(state.clickedColumn == .unknown)
+        #expect(state.clickedColumnIdentifier == "custom.field.ip.src")
+        #expect(state.copyCellEnabled)
+    }
+
     @Test func copyFormatterUsesCSVRowsAndClickedColumnCells() {
         let rows = [
             PacketTableRow(packet: makePacket(packetNumber: 1, infoSummary: "Hello, world")),
@@ -64,12 +80,17 @@ struct PacketTableMenuLogicTests {
 
         let rowCopy = PacketTableCopyFormatter.rows(rows, format: .csv)
         let cellCopy = PacketTableCopyFormatter.csvCells(rows, column: .summary)
+        let customCellCopy = PacketTableCopyFormatter.csvValues(["10.0.0.1", "Hello, world"])
 
         #expect(rowCopy.contains("\"Hello, world\""))
         #expect(rowCopy.split(separator: "\n").count == 2)
         #expect(cellCopy == """
         "Hello, world"
         Plain
+        """)
+        #expect(customCellCopy == """
+        10.0.0.1
+        "Hello, world"
         """)
     }
 
@@ -244,6 +265,7 @@ struct PacketTableMenuLogicTests {
         let stateProvider = MenuStateProvider(state: PacketTableMenuState(
             targetRows: [0],
             clickedColumn: .source,
+            clickedColumnIdentifier: "source",
             copyRowEnabled: true,
             copyCellEnabled: true,
             pinEnabled: true,

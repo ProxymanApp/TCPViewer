@@ -125,6 +125,20 @@ struct PacketCustomColumnServiceTests {
         #expect(unresolvedIDs == [4, 2, 1])
     }
 
+    @Test func unresolvedPacketIDsForBoundedListDoNotExpandBeyondInput() {
+        let column = PacketCustomColumn(identifier: "custom.field.ip.src", fieldName: "ip.src", title: "Source")
+        let service = PacketCustomColumnService(columns: [column])
+
+        service.storeValue("cached", columnIdentifier: column.identifier, packetID: 2)
+
+        let unresolvedIDs = service.unresolvedPacketIDs(
+            for: column,
+            packetIDs: [2, 4, 4, 1]
+        )
+
+        #expect(unresolvedIDs == [4, 1])
+    }
+
     private static func packet(packetNumber: UInt64) -> PacketSummary {
         PacketSummary(
             packetNumber: packetNumber,

@@ -118,6 +118,18 @@ final class PacketCustomColumnService {
         valuesByColumnID = [:]
     }
 
+    // Return unresolved packet IDs from an already-bounded packet list.
+    func unresolvedPacketIDs(
+        for column: PacketCustomColumn,
+        packetIDs: [PacketSummary.ID]
+    ) -> [PacketSummary.ID] {
+        var seenIDs = Set<PacketSummary.ID>()
+        return packetIDs.filter { packetID in
+            seenIDs.insert(packetID).inserted &&
+                !hasResolvedValue(columnIdentifier: column.identifier, packetID: packetID)
+        }
+    }
+
     // Return unresolved packet IDs with visible/current rows first, then the remaining rows.
     func unresolvedPacketIDs(
         for column: PacketCustomColumn,

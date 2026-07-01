@@ -647,7 +647,7 @@ final class PacketTableViewController: NSViewController {
             }
             let appendedPacketIDs = rows[safeRange].map(\.id)
             visibleCustomColumns().forEach { column in
-                enqueueCustomColumnResolution(for: column, preferredPacketIDs: appendedPacketIDs)
+                enqueueCustomColumnResolution(for: column, packetIDs: appendedPacketIDs)
             }
         case .reload:
             visibleCustomColumns().forEach { column in
@@ -665,6 +665,14 @@ final class PacketTableViewController: NSViewController {
 
     private func enqueueCustomColumnResolution(
         for column: PacketCustomColumn,
+        packetIDs: [PacketSummary.ID]
+    ) {
+        let unresolvedPacketIDs = customColumnService.unresolvedPacketIDs(for: column, packetIDs: packetIDs)
+        enqueueCustomColumnResolutionWork(for: column, packetIDs: unresolvedPacketIDs)
+    }
+
+    private func enqueueCustomColumnResolution(
+        for column: PacketCustomColumn,
         preferredPacketIDs: [PacketSummary.ID]
     ) {
         let packetIDs = customColumnService.unresolvedPacketIDs(
@@ -672,6 +680,13 @@ final class PacketTableViewController: NSViewController {
             rows: rows,
             preferredPacketIDs: preferredPacketIDs
         )
+        enqueueCustomColumnResolutionWork(for: column, packetIDs: packetIDs)
+    }
+
+    private func enqueueCustomColumnResolutionWork(
+        for column: PacketCustomColumn,
+        packetIDs: [PacketSummary.ID]
+    ) {
         guard !packetIDs.isEmpty else {
             return
         }
@@ -888,8 +903,12 @@ final class PacketTableViewController: NSViewController {
 
     @objc func copyCellFromMenu(_ sender: Any?) {
         let state = menuState()
+        guard let columnIdentifier = state.clickedColumnIdentifier else {
+            return
+        }
+
         let rows = state.targetRows.compactMap { self.rows.indices.contains($0) ? self.rows[$0] : nil }
-        writeToPasteboard(PacketTableCopyFormatter.csvCells(rows, column: state.clickedColumn))
+        writeToPasteboard(PacketTableCopyFormatter.csvValues(rows.map { text(for: columnIdentifier, in: $0) }))
     }
 
     @objc func pinRowsFromMenu(_ sender: Any?) {

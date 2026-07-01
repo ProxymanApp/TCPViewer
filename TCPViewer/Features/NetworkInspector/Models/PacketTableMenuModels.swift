@@ -49,6 +49,7 @@ enum PacketTableColumnRole: String, Equatable, Sendable {
 struct PacketTableMenuState: Equatable {
     let targetRows: [Int]
     let clickedColumn: PacketTableColumnRole
+    let clickedColumnIdentifier: String?
     let copyRowEnabled: Bool
     let copyCellEnabled: Bool
     let pinEnabled: Bool
@@ -59,6 +60,7 @@ struct PacketTableMenuState: Equatable {
     static let empty = PacketTableMenuState(
         targetRows: [],
         clickedColumn: .unknown,
+        clickedColumnIdentifier: nil,
         copyRowEnabled: false,
         copyCellEnabled: false,
         pinEnabled: false,
@@ -94,8 +96,9 @@ enum PacketTableMenuLogic {
         return PacketTableMenuState(
             targetRows: targetIndexes,
             clickedColumn: clickedColumn,
+            clickedColumnIdentifier: clickedColumnIdentifier,
             copyRowEnabled: !targetRows.isEmpty,
-            copyCellEnabled: !targetRows.isEmpty && clickedColumn != .unknown,
+            copyCellEnabled: !targetRows.isEmpty && clickedColumnIdentifier != nil,
             pinEnabled: targetRows.contains { $0.canPinClient },
             saveEnabled: !targetRows.isEmpty,
             exportEnabled: !targetRows.isEmpty,
@@ -236,9 +239,12 @@ enum PacketTableCopyFormatter {
 
     // Build newline-separated values from the clicked table column.
     static func csvCells(_ rows: [PacketTableRow], column: PacketTableColumnRole) -> String {
-        rows
-            .map { csvEscaped($0.text(for: column)) }
-            .joined(separator: "\n")
+        csvValues(rows.map { $0.text(for: column) })
+    }
+
+    // Build newline-separated CSV values that may come from built-in or custom table columns.
+    static func csvValues(_ values: [String]) -> String {
+        values.map(csvEscaped).joined(separator: "\n")
     }
 
     private static func plainTextEscaped(_ value: String) -> String {
