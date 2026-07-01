@@ -664,6 +664,10 @@ final class SidebarViewController: NSViewController {
         PacketSourceListFinderPolicy.fileURL(for: contextSourceItem() ?? selectedSourceItem())
     }
 
+    private func selectedCopyAction() -> PacketSourceListCopyAction? {
+        PacketSourceListCopyPolicy.action(for: contextSourceItem() ?? selectedSourceItem())
+    }
+
     private func selectedPinTargets() -> [PacketSourceListPinTarget] {
         PacketSourceListPinPolicy.targets(for: selectedSourceItems())
     }
@@ -725,6 +729,16 @@ final class SidebarViewController: NSViewController {
         }
 
         NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    @objc private func copySelectedSourceListItemName(_ sender: Any?) {
+        guard let copyAction = selectedCopyAction() else {
+            return
+        }
+
+        // Resolve at click time so right-click context rows copy the intended node.
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(copyAction.value, forType: .string)
     }
 
     @objc private func exportSelectedSourceListItemAsPcap(_ sender: Any?) {
@@ -894,17 +908,31 @@ extension SidebarViewController: NSSearchFieldDelegate {
 extension SidebarViewController: NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         updateSelectionFromCurrentMenuEvent()
+        let copyAction = selectedCopyAction()
         let pinTargets = selectedPinTargets()
         let action = selectedDeletionAction()
         let exportSelection = selectedExportSelection()
         let finderURL = selectedFinderURL()
 
         menu.removeAllItems()
-        guard !pinTargets.isEmpty || action.isEnabled || exportSelection != nil || finderURL != nil else {
+        guard copyAction != nil || !pinTargets.isEmpty || action.isEnabled || exportSelection != nil || finderURL != nil else {
             return
         }
 
+        if let copyAction {
+            let copyItem = NSMenuItem(title: copyAction.menuTitle, action: #selector(copySelectedSourceListItemName(_:)), keyEquivalent: "")
+            copyItem.target = self
+            copyItem.isEnabled = true
+            copyItem.toolTip = "Copy the selected source-list name."
+            copyItem.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: copyAction.menuTitle)
+            menu.addItem(copyItem)
+        }
+
         if !pinTargets.isEmpty {
+            if copyAction != nil {
+                menu.addItem(.separator())
+            }
+
             let pinItem = NSMenuItem(title: "Pin", action: #selector(pinSelectedSourceListItems(_:)), keyEquivalent: "")
             pinItem.target = self
             pinItem.isEnabled = true
@@ -913,7 +941,7 @@ extension SidebarViewController: NSMenuDelegate {
         }
 
         if exportSelection != nil {
-            if !pinTargets.isEmpty {
+            if copyAction != nil || !pinTargets.isEmpty {
                 menu.addItem(.separator())
             }
 
@@ -933,7 +961,7 @@ extension SidebarViewController: NSMenuDelegate {
         }
 
         if finderURL != nil {
-            if !pinTargets.isEmpty || exportSelection != nil {
+            if copyAction != nil || !pinTargets.isEmpty || exportSelection != nil {
                 menu.addItem(.separator())
             }
 
@@ -946,7 +974,7 @@ extension SidebarViewController: NSMenuDelegate {
         }
 
         if action.isEnabled {
-            if !pinTargets.isEmpty || exportSelection != nil || finderURL != nil {
+            if copyAction != nil || !pinTargets.isEmpty || exportSelection != nil || finderURL != nil {
                 menu.addItem(.separator())
             }
 

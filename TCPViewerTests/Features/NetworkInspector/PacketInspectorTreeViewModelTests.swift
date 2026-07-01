@@ -169,13 +169,13 @@ struct PacketInspectorTreeViewModelTests {
     }
 
     @MainActor
-    @Test func inspectorContextMenuIncludesFilterCommandForRows() throws {
+    @Test func inspectorContextMenuIncludesCopySubmenuExpandAndCollapseCommands() throws {
         let packet = makePacket()
         let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
         controller.loadViewIfNeeded()
         controller.render(snapshot: makeSnapshot(
             packet: packet,
-            inspectionState: loadedInspectionState(packet: packet, inspection: makeFrameInspection(for: packet))
+            inspectionState: loadedInspectionState(packet: packet, inspection: makeNestedInspection(for: packet))
         ))
 
         let outlineView = try #require(firstSubview(ofType: NSOutlineView.self, in: controller.view))
@@ -184,20 +184,81 @@ struct PacketInspectorTreeViewModelTests {
 
         controller.menuNeedsUpdate(menu)
 
-        #expect(menu.items.count == 4)
+        #expect(menu.items.count == 6)
         let copyItem = menu.items[0]
-        let copyAllItem = menu.items[1]
-        let separatorItem = menu.items[2]
-        let filterItem = menu.items[3]
+        let separatorItem = menu.items[1]
+        let expandAllItem = menu.items[2]
+        let collapseAllItem = menu.items[3]
+        let secondSeparatorItem = menu.items[4]
+        let filterItem = menu.items[5]
+        let copySubmenu = try #require(copyItem.submenu)
+        let copySubmenuTitles = copySubmenu.items.map(\.title)
 
         #expect(copyItem.title == "Copy")
         #expect(copyItem.isEnabled)
-        #expect(copyAllItem.title == "Copy All")
-        #expect(copyAllItem.isEnabled)
+        #expect(copySubmenuTitles == [
+            "Selected Tree Items",
+            "All Tree Items",
+            "",
+            "Copy Bytes as Hex + ASCII Dump",
+            "...as Hex Dump",
+            "...as UTF-8 Text",
+            "...as ASCII Text",
+            "...as a Hex Stream",
+            "...as a Base64 String",
+            "...as MIME Data",
+            "...as C String",
+            "...as Go literal",
+            "...as C Array",
+        ])
+        #expect(copySubmenu.items[0].isEnabled)
+        #expect(copySubmenu.items[1].isEnabled)
+        #expect(copySubmenu.items[2].isSeparatorItem)
+        let byteCopyItemsEnabled = copySubmenu.items.dropFirst(3).allSatisfy { $0.isEnabled }
+        #expect(byteCopyItemsEnabled)
         #expect(separatorItem.isSeparatorItem)
+        #expect(expandAllItem.title == "Expand All")
+        #expect(expandAllItem.isEnabled)
+        #expect(collapseAllItem.title == "Collapse All")
+        #expect(collapseAllItem.isEnabled)
+        #expect(secondSeparatorItem.isSeparatorItem)
         #expect(filterItem.title == "Filter")
         #expect(filterItem.isEnabled)
         #expect(filterItem.keyEquivalent.isEmpty)
+    }
+
+    @MainActor
+    @Test func inspectorContextMenuExpandsAndCollapsesAllRows() throws {
+        let packet = makePacket()
+        let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: makeSnapshot(
+            packet: packet,
+            inspectionState: loadedInspectionState(packet: packet, inspection: makeNestedInspection(for: packet))
+        ))
+
+        let outlineView = try #require(firstSubview(ofType: NSOutlineView.self, in: controller.view))
+        let menu = try #require(outlineView.menu)
+        controller.menuNeedsUpdate(menu)
+        let expandAllItem = try #require(menu.items.first { $0.title == "Expand All" })
+        let collapseAllItem = try #require(menu.items.first { $0.title == "Collapse All" })
+        let expandAction = try #require(expandAllItem.action)
+        let collapseAction = try #require(collapseAllItem.action)
+
+        #expect(outlineView.numberOfRows == 2)
+        #expect(NSApp.sendAction(expandAction, to: expandAllItem.target, from: expandAllItem))
+
+        let expandedRoot = try #require(outlineView.item(atRow: 0) as? PacketInspectorTreeItem)
+        let expandedChild = try #require(outlineView.item(atRow: 1) as? PacketInspectorTreeItem)
+        #expect(outlineView.numberOfRows == 3)
+        #expect(outlineView.isItemExpanded(expandedRoot))
+        #expect(outlineView.isItemExpanded(expandedChild))
+
+        #expect(NSApp.sendAction(collapseAction, to: collapseAllItem.target, from: collapseAllItem))
+
+        let collapsedRoot = try #require(outlineView.item(atRow: 0) as? PacketInspectorTreeItem)
+        #expect(outlineView.numberOfRows == 1)
+        #expect(!outlineView.isItemExpanded(collapsedRoot))
     }
 
     @MainActor
@@ -1010,12 +1071,19 @@ struct PacketInspectorTreeViewModelTests {
                     name: "Frame",
                     value: "Packet \(packet.packetNumber)",
                     kind: .layer,
+                    byteRange: PacketByteRange(offset: 0, length: 2),
                     children: [
                         PacketDetailNode(
                             id: "frame.flags",
                             name: "Flags",
+                            byteRange: PacketByteRange(offset: 0, length: 1),
                             children: [
-                                PacketDetailNode(id: "frame.flags.df", name: "Don't Fragment", value: "Set"),
+                                PacketDetailNode(
+                                    id: "frame.flags.df",
+                                    name: "Don't Fragment",
+                                    value: "Set",
+                                    byteRange: PacketByteRange(offset: 0, length: 1, bitOffset: 1, bitLength: 1, hasBitRange: true)
+                                ),
                             ]
                         ),
                     ]

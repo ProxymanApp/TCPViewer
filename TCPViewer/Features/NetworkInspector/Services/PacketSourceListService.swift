@@ -210,6 +210,43 @@ enum PacketSourceListDeletionAction: Equatable, Sendable {
     }
 }
 
+struct PacketSourceListCopyAction: Equatable, Sendable {
+    let menuTitle: String
+    let value: String
+}
+
+enum PacketSourceListCopyPolicy {
+    static func action(for item: PacketSourceListItem?) -> PacketSourceListCopyAction? {
+        guard let item,
+              let value = trimmed(item.title),
+              let selection = item.selection else {
+            return nil
+        }
+
+        // Limit copying to real app/domain rows so placeholder IP buckets are not mislabeled.
+        switch selection {
+        case .app, .fileApp:
+            return PacketSourceListCopyAction(menuTitle: "Copy App Name", value: value)
+        case .appDomain(_, let key),
+                .domain(let key),
+                .fileAppDomain(_, _, let key),
+                .fileDomain(_, let key),
+                .pinnedItemDomain(_, let key):
+            guard !key.isMissingDomain else {
+                return nil
+            }
+            return PacketSourceListCopyAction(menuTitle: "Copy Domain Name", value: value)
+        default:
+            return nil
+        }
+    }
+
+    private static func trimmed(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
 enum PacketSourceListExportPolicy {
     static func selection(for item: PacketSourceListItem?) -> PacketSourceListSelection? {
         guard let item,
