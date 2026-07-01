@@ -42,6 +42,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         wireAboutMenu()
         wirePreferencesMenu()
         wireUpdatesMenu()
+        wireClearAllPacketsMenu()
         wireFilterMenu()
         wireHelpMenu()
         verifyLicenseAtLaunch()
@@ -531,6 +532,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let insertionIndex = editMenu.items.firstIndex { $0.title == "Find" } ?? editMenu.items.count
         editMenu.insertItem(item, at: insertionIndex)
+    }
+
+    private func wireClearAllPacketsMenu() {
+        guard let editMenu = NSApp.mainMenu?.items.first(where: { $0.title == "Edit" })?.submenu else {
+            return
+        }
+
+        if let existingItem = editMenu.items.first(where: { $0.action == #selector(TCPViewerWindowController.clearAllPackets(_:)) }) {
+            configureClearAllPacketsMenuItem(existingItem)
+            return
+        }
+
+        let item = NSMenuItem(
+            title: "Clear All Packets",
+            action: #selector(TCPViewerWindowController.clearAllPackets(_:)),
+            keyEquivalent: "k"
+        )
+        configureClearAllPacketsMenuItem(item)
+
+        let insertionIndex = editMenu.items.firstIndex { $0.title == "Find" } ?? editMenu.items.count
+        editMenu.insertItem(item, at: insertionIndex)
+    }
+
+    private func configureClearAllPacketsMenuItem(_ item: NSMenuItem) {
+        item.title = "Clear All Packets"
+        item.target = nil
+        item.action = #selector(TCPViewerWindowController.clearAllPackets(_:))
+        item.keyEquivalent = "k"
+        item.keyEquivalentModifierMask = [.command]
     }
 
     private func configureFilterMenuItem(_ item: NSMenuItem) {

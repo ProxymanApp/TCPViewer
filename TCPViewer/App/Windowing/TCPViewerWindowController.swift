@@ -97,6 +97,10 @@ final class TCPViewerWindowController: NSWindowController {
         rootViewController.focusSidebarFilter()
     }
 
+    @IBAction func clearAllPackets(_ sender: Any?) {
+        rootViewController.clearAllPackets()
+    }
+
     private func setupToolbar() {
         toolbarDataSource.delegate = self
         window?.toolbar = toolbarDataSource.toolbar
@@ -228,7 +232,7 @@ extension TCPViewerWindowController: TCPViewerToolbarDataSourceDelegate {
     }
 
     func tcpviewerToolbarDataSourceDidRequestClearAllPackets(_ dataSource: TCPViewerToolbarDataSource) {
-        rootViewController.clearAllPackets()
+        clearAllPackets(dataSource)
     }
 
     func tcpviewerToolbarDataSourceDidRequestExportSession(_ dataSource: TCPViewerToolbarDataSource) {
@@ -287,5 +291,17 @@ extension TCPViewerWindowController: PacketQuickFilterViewControllerDelegate {
 
     func packetQuickFilterViewControllerDidRequestReset(_ controller: PacketQuickFilterViewController) {
         rootViewController.resetQuickFilters()
+    }
+}
+
+extension TCPViewerWindowController: NSMenuItemValidation {
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        guard menuItem.action == #selector(clearAllPackets(_:)) else {
+            return true
+        }
+
+        // Keep the keyboard command disabled whenever the toolbar clear button is disabled.
+        let snapshot = rootViewController.viewModel.snapshot
+        return snapshot.totalPacketCount > 0 && !snapshot.base.loadState.canCancel
     }
 }

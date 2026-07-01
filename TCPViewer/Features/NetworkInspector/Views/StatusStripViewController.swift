@@ -42,7 +42,7 @@ final class StatusStripViewController: NSViewController {
     private let viewModel = StatusStripViewModel()
     private let cancelButton = NSButton(title: "Cancel Load", target: nil, action: nil)
     private let clearButton = NSButton(title: "Clear", target: nil, action: nil)
-    private let filterButton = NSButton(title: "Filter", target: nil, action: nil)
+    private let filterButton = NSButton(title: "Filter ⌘F", target: nil, action: nil)
     private let totalLabel = TCPViewerUI.label(
         "",
         font: .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
@@ -99,7 +99,7 @@ final class StatusStripViewController: NSViewController {
         filterButton.controlSize = .small
         filterButton.image = TCPViewerUI.image("line.3.horizontal.decrease.circle")
         filterButton.imagePosition = .imageLeading
-        filterButton.toolTip = "Show or hide packet filters"
+        filterButton.toolTip = "Show or hide packet filters (⌘F)"
 
         totalLabel.alignment = .center
         totalLabel.translatesAutoresizingMaskIntoConstraints = false
