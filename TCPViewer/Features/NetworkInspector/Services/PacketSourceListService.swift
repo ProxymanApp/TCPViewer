@@ -223,7 +223,7 @@ enum PacketSourceListCopyPolicy {
             return nil
         }
 
-        // Limit copying to real app/domain rows so placeholder IP buckets are not mislabeled.
+        // Limit copying to concrete app/domain/IP rows so group placeholders are not mislabeled.
         switch selection {
         case .app, .fileApp:
             return PacketSourceListCopyAction(menuTitle: "Copy App Name", value: value)
@@ -231,6 +231,8 @@ enum PacketSourceListCopyPolicy {
             return PacketSourceListCopyAction(menuTitle: "Copy App Name", value: value)
         case .pinnedItem(let pinID) where pinID.rawValue.hasPrefix("domain:"):
             return PacketSourceListCopyAction(menuTitle: "Copy Domain Name", value: value)
+        case .pinnedItem(let pinID) where pinID.rawValue.hasPrefix("ip:"):
+            return PacketSourceListCopyAction(menuTitle: "Copy IP Address", value: value)
         case .appDomain(_, let key),
                 .domain(let key),
                 .fileAppDomain(_, _, let key),
@@ -240,6 +242,12 @@ enum PacketSourceListCopyPolicy {
                 return nil
             }
             return PacketSourceListCopyAction(menuTitle: "Copy Domain Name", value: value)
+        case .appIPAddress,
+                .fileAppIPAddress,
+                .fileIPAddress,
+                .pinnedItemIPAddress,
+                .ipAddress:
+            return PacketSourceListCopyAction(menuTitle: "Copy IP Address", value: value)
         default:
             return nil
         }
