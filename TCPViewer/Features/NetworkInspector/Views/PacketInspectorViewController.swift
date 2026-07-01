@@ -1497,6 +1497,7 @@ extension PacketInspectorViewController: NSMenuDelegate {
         let hasExpandableRows = hasExpandableInspectorRows()
         let canCreateColumn = selectedCustomColumnRequest() != nil
         menu.addItem(copySubmenuItem(hasSelectedRows: hasSelectedRows, hasSelectedByteRanges: hasSelectedByteRanges))
+        menu.addItem(.separator())
         menu.addItem(createColumnItem(isEnabled: canCreateColumn))
         menu.addItem(.separator())
 

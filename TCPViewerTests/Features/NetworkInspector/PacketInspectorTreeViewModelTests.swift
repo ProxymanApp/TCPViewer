@@ -184,14 +184,15 @@ struct PacketInspectorTreeViewModelTests {
 
         controller.menuNeedsUpdate(menu)
 
-        #expect(menu.items.count == 7)
+        #expect(menu.items.count == 8)
         let copyItem = menu.items[0]
-        let createColumnItem = menu.items[1]
-        let separatorItem = menu.items[2]
-        let expandAllItem = menu.items[3]
-        let collapseAllItem = menu.items[4]
-        let secondSeparatorItem = menu.items[5]
-        let filterItem = menu.items[6]
+        let createColumnSeparatorItem = menu.items[1]
+        let createColumnItem = menu.items[2]
+        let separatorItem = menu.items[3]
+        let expandAllItem = menu.items[4]
+        let collapseAllItem = menu.items[5]
+        let secondSeparatorItem = menu.items[6]
+        let filterItem = menu.items[7]
         let copySubmenu = try #require(copyItem.submenu)
         let copySubmenuTitles = copySubmenu.items.map(\.title)
 
@@ -217,6 +218,7 @@ struct PacketInspectorTreeViewModelTests {
         #expect(copySubmenu.items[2].isSeparatorItem)
         let byteCopyItemsEnabled = copySubmenu.items.dropFirst(3).allSatisfy { $0.isEnabled }
         #expect(byteCopyItemsEnabled)
+        #expect(createColumnSeparatorItem.isSeparatorItem)
         #expect(createColumnItem.title == "Create Column")
         #expect(createColumnItem.isEnabled)
         #expect(createColumnItem.toolTip == "Create a packet table column from the selected packet detail field.")
