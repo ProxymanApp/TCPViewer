@@ -326,6 +326,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         presentFactoryResetConfirmation()
     }
 
+    @IBAction func openLogFolder(_ sender: Any?) {
+        do {
+            let logsURL = try TCPViewerUserDataDirectory.shared.createLogsDirectoryIfNeeded()
+            guard NSWorkspace.shared.open(logsURL) else {
+                throw TCPViewerCoreError(code: .offlineFileOpenFailed, message: "TCP Viewer could not open the log folder.")
+            }
+        } catch {
+            presentOpenLogFolderAlert(error)
+        }
+    }
+
     private func presentLicenseSheet(presentationMode: TCPViewerLicensePresentationMode, sender: Any?) {
         // Reuse one sheet owner while allowing Trial and menu actions to open different license modes.
         guard let parentWindow = licenseSheetParentWindow() ?? createLicenseSheetParentWindow() else {
@@ -593,6 +604,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        let logFolderItem = findOrCreateLogFolderMenuItem(in: helpMenu)
+        configureLogFolderMenuItem(logFolderItem)
+
         let advancedItem = findOrCreateAdvancedMenuItem(in: helpMenu)
         let advancedMenu = advancedItem.submenu ?? NSMenu(title: "Advanced")
         advancedItem.submenu = advancedMenu
@@ -605,6 +619,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let item = NSMenuItem(title: "Factory Reset…", action: #selector(factoryReset(_:)), keyEquivalent: "")
         configureFactoryResetMenuItem(item)
         advancedMenu.addItem(item)
+    }
+
+    private func findOrCreateLogFolderMenuItem(in helpMenu: NSMenu) -> NSMenuItem {
+        if let existingItem = helpMenu.items.first(where: { $0.action == #selector(openLogFolder(_:)) || $0.title == "Open Log Folder" }) {
+            return existingItem
+        }
+
+        let item = NSMenuItem(title: "Open Log Folder", action: #selector(openLogFolder(_:)), keyEquivalent: "")
+        if !helpMenu.items.isEmpty, helpMenu.items.last?.isSeparatorItem == false {
+            helpMenu.addItem(NSMenuItem.separator())
+        }
+        helpMenu.addItem(item)
+        return item
     }
 
     private func findOrCreateAdvancedMenuItem(in helpMenu: NSMenu) -> NSMenuItem {
@@ -628,6 +655,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         item.action = #selector(factoryReset(_:))
         item.keyEquivalent = ""
         item.keyEquivalentModifierMask = []
+    }
+
+    private func configureLogFolderMenuItem(_ item: NSMenuItem) {
+        item.title = "Open Log Folder"
+        item.target = self
+        item.action = #selector(openLogFolder(_:))
+        item.keyEquivalent = ""
+        item.keyEquivalentModifierMask = []
+    }
+
+    private func presentOpenLogFolderAlert(_ error: Error) {
+        let alert = NSAlert(error: error)
+        alert.messageText = "Could Not Open Log Folder"
+        alert.informativeText = error.localizedDescription
+        alert.runModal()
     }
 
     private func presentFactoryResetConfirmation() {

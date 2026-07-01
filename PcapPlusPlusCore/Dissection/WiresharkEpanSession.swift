@@ -22,29 +22,39 @@ struct WiresharkPacketInspectionFields {
 
 final class WiresharkEpanSession {
     private let handle: OpaquePointer
+    private let criticalExceptionLogger: WiresharkCriticalExceptionLogger
 
-    init(disabled: Bool = false) throws {
+    init(disabled: Bool = false, criticalExceptionLogger: WiresharkCriticalExceptionLogger = .shared) throws {
+        self.criticalExceptionLogger = criticalExceptionLogger
         guard let createdHandle = TCPViewerWiresharkSessionCreate(disabled) else {
             throw NativeNSError(.unavailableFeature, "Wireshark libwireshark backend could not be created.")
         }
 
         guard TCPViewerWiresharkSessionIsAvailable(createdHandle) else {
+            if let criticalError = Self.criticalExceptionErrorIfNeeded(for: createdHandle, logger: criticalExceptionLogger) {
+                TCPViewerWiresharkSessionDestroy(createdHandle)
+                throw criticalError
+            }
             let reason = Self.string(TCPViewerWiresharkSessionUnavailableReason(createdHandle))
                 ?? "Wireshark libwireshark backend is unavailable."
             TCPViewerWiresharkSessionDestroy(createdHandle)
             throw NativeNSError(.unavailableFeature, reason)
         }
-
         self.handle = createdHandle
     }
 
     deinit {
+        TCPViewerWiresharkSessionReleaseResources(handle)
+        logPendingCriticalExceptions()
         TCPViewerWiresharkSessionDestroy(handle)
     }
 
     func observe(_ record: NativePacketRecord) throws {
         try withContext(for: record) { context in
             guard TCPViewerWiresharkSessionObservePacket(handle, context) else {
+                if let criticalError = criticalExceptionErrorIfNeeded() {
+                    throw criticalError
+                }
                 throw unavailableError()
             }
         }
@@ -52,6 +62,9 @@ final class WiresharkEpanSession {
 
     func finishFirstPass() throws {
         guard TCPViewerWiresharkSessionFinishFirstPass(handle) else {
+            if let criticalError = criticalExceptionErrorIfNeeded() {
+                throw criticalError
+            }
             throw unavailableError()
         }
     }
@@ -65,6 +78,9 @@ final class WiresharkEpanSession {
 
             let result = resultPointer.pointee
             guard result.succeeded else {
+                if let criticalError = criticalExceptionErrorIfNeeded() {
+                    throw criticalError
+                }
                 throw unavailableError(Self.string(result.errorMessage))
             }
 
@@ -85,6 +101,9 @@ final class WiresharkEpanSession {
 
             let result = resultPointer.pointee
             guard result.succeeded else {
+                if let criticalError = criticalExceptionErrorIfNeeded() {
+                    throw criticalError
+                }
                 throw unavailableError(Self.string(result.errorMessage))
             }
 
@@ -135,6 +154,38 @@ final class WiresharkEpanSession {
             ?? Self.string(TCPViewerWiresharkSessionUnavailableReason(handle))
             ?? "Wireshark libwireshark backend is unavailable."
         return NativeNSError(.unavailableFeature, reason)
+    }
+
+    private func criticalExceptionErrorIfNeeded() -> NSError? {
+        Self.criticalExceptionErrorIfNeeded(for: handle, logger: criticalExceptionLogger)
+    }
+
+    private static func criticalExceptionErrorIfNeeded(for handle: OpaquePointer, logger: WiresharkCriticalExceptionLogger) -> NSError? {
+        let reports = copyPendingCriticalExceptions(for: handle)
+        guard let report = reports.first else {
+            return nil
+        }
+        log(reports, with: logger)
+        return NativeNSError(.criticalWiresharkException, report.reason)
+    }
+
+    private func logPendingCriticalExceptions() {
+        Self.log(Self.copyPendingCriticalExceptions(for: handle), with: criticalExceptionLogger)
+    }
+
+    private static func log(_ reports: [WiresharkCriticalExceptionReport], with logger: WiresharkCriticalExceptionLogger) {
+        for report in reports {
+            _ = try? logger.log(report)
+        }
+    }
+
+    private static func copyPendingCriticalExceptions(for handle: OpaquePointer) -> [WiresharkCriticalExceptionReport] {
+        var reports: [WiresharkCriticalExceptionReport] = []
+        while let reportPointer = TCPViewerWiresharkSessionCopyNextCriticalException(handle) {
+            reports.append(WiresharkCriticalExceptionReport(reportPointer.pointee))
+            TCPViewerWiresharkExceptionReportDestroy(reportPointer)
+        }
+        return reports
     }
 
     private func byteViews(from result: TCPViewerWiresharkInspectionResult) -> [PCPPNativePacketByteViewDescriptor] {
@@ -209,3 +260,16 @@ final class WiresharkEpanSession {
         return value.isEmpty ? nil : value
     }
 }
+
+#if DEBUG
+extension WiresharkEpanSession {
+    func testInjectCriticalException() throws {
+        guard TCPViewerWiresharkSessionTestInjectCriticalException(handle) else {
+            if let criticalError = criticalExceptionErrorIfNeeded() {
+                throw criticalError
+            }
+            throw unavailableError()
+        }
+    }
+}
+#endif

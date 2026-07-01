@@ -19,12 +19,16 @@ struct TCPViewerUserDataDirectoryTests {
 
         #expect(directory.appDirectoryURL == baseURL.appendingPathComponent("TCPViewer", isDirectory: true))
         #expect(directory.settingsDirectoryURL == directory.appDirectoryURL.appendingPathComponent("settings", isDirectory: true))
+        #expect(directory.logsDirectoryURL == directory.appDirectoryURL.appendingPathComponent("Logs", isDirectory: true))
         #expect(directory.settingsFileURL(named: "PinnedPackets.json") == directory.settingsDirectoryURL.appendingPathComponent("PinnedPackets.json"))
 
         try directory.createSettingsDirectoryIfNeeded()
+        try directory.createLogsDirectoryIfNeeded()
 
         var isDirectory = ObjCBool(false)
         #expect(FileManager.default.fileExists(atPath: directory.settingsDirectoryURL.path, isDirectory: &isDirectory))
+        #expect(isDirectory.boolValue)
+        #expect(FileManager.default.fileExists(atPath: directory.logsDirectoryURL.path, isDirectory: &isDirectory))
         #expect(isDirectory.boolValue)
     }
 

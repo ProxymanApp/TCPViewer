@@ -73,16 +73,36 @@ typedef struct TCPViewerWiresharkInspectionResult {
     size_t nodeCount;
 } TCPViewerWiresharkInspectionResult;
 
+typedef struct TCPViewerWiresharkExceptionReport {
+    bool isCriticalException;
+    unsigned long exceptionGroup;
+    unsigned long exceptionCode;
+    uint64_t packetIdentifier;
+    bool hasPacketIdentifier;
+    const char *operation;
+    const char *exceptionName;
+    const char *reason;
+} TCPViewerWiresharkExceptionReport;
+
 TCPViewerWiresharkSession *TCPViewerWiresharkSessionCreate(bool disabled);
 void TCPViewerWiresharkSessionDestroy(TCPViewerWiresharkSession *session);
+void TCPViewerWiresharkSessionReleaseResources(TCPViewerWiresharkSession *session);
 bool TCPViewerWiresharkSessionIsAvailable(TCPViewerWiresharkSession *session);
 const char *TCPViewerWiresharkSessionUnavailableReason(TCPViewerWiresharkSession *session);
 bool TCPViewerWiresharkSessionObservePacket(TCPViewerWiresharkSession *session, const TCPViewerWiresharkPacketContext *context);
 bool TCPViewerWiresharkSessionFinishFirstPass(TCPViewerWiresharkSession *session);
 TCPViewerWiresharkSummaryResult *TCPViewerWiresharkSessionSummarizePacket(TCPViewerWiresharkSession *session, const TCPViewerWiresharkPacketContext *context);
 TCPViewerWiresharkInspectionResult *TCPViewerWiresharkSessionInspectPacket(TCPViewerWiresharkSession *session, const TCPViewerWiresharkPacketContext *context);
+TCPViewerWiresharkExceptionReport *TCPViewerWiresharkSessionCopyLastCriticalException(TCPViewerWiresharkSession *session);
+TCPViewerWiresharkExceptionReport *TCPViewerWiresharkSessionCopyNextCriticalException(TCPViewerWiresharkSession *session);
 void TCPViewerWiresharkSummaryResultDestroy(TCPViewerWiresharkSummaryResult *result);
 void TCPViewerWiresharkInspectionResultDestroy(TCPViewerWiresharkInspectionResult *result);
+void TCPViewerWiresharkExceptionReportDestroy(TCPViewerWiresharkExceptionReport *report);
+
+#if DEBUG
+TCPViewerWiresharkExceptionReport *TCPViewerWiresharkTestCopyCaughtExceptionReport(void);
+bool TCPViewerWiresharkSessionTestInjectCriticalException(TCPViewerWiresharkSession *session);
+#endif
 
 #ifdef __cplusplus
 }
