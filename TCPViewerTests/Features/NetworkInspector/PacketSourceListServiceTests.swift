@@ -302,6 +302,53 @@ struct PacketSourceListServiceTests {
         #expect(PacketSourceListFinderPolicy.fileURL(for: relativeAppItem) == nil)
     }
 
+    @Test func copyPolicyBuildsSingleAppDomainOrIPAddressCopyAction() throws {
+        let client = makeClient(displayName: "Example", bundleIdentifier: "com.example.app")
+        let clientPin = makeClientPin(displayName: "Example", key: "bundleIdentifier:com.example.app")
+        let domainPin = makeDomainPin("api.example.com")
+        let ipPin = makeIPPin("10.0.0.2")
+        var state = PacketIngestState.empty
+        state.append([
+            makePacket(packetNumber: 1, sniDomainName: "api.example.com", client: client),
+            makePacket(packetNumber: 2, sniDomainName: nil, client: client),
+        ], source: .live)
+
+        let snapshot = PacketSourceListService().snapshot(for: state, pinnedItems: [clientPin, domainPin, ipPin])
+        let appKey = PacketSourceClientKey(rawValue: "bundleIdentifier:com.example.app")
+        let domainKey = PacketSourceDomainKey(rawValue: "api.example.com", isMissingDomain: false)
+        let ipKey = PacketSourceIPAddressKey(rawValue: "10.0.0.2")
+        let fileID = ImportedCaptureFileID(rawValue: "/captures/a.pcap")
+        let fileIPAddressItem = copyTestItem(title: "10.0.0.2", selection: .fileIPAddress(fileID, ipKey))
+        let fileAppIPAddressItem = copyTestItem(title: "10.0.0.2", selection: .fileAppIPAddress(fileID, appKey, ipKey))
+
+        #expect(PacketSourceListCopyPolicy.action(for: snapshot.item(for: .app(appKey))) ==
+            PacketSourceListCopyAction(menuTitle: "Copy App Name", value: "Example"))
+        #expect(PacketSourceListCopyPolicy.action(for: snapshot.item(for: .pinnedItem(clientPin.id))) ==
+            PacketSourceListCopyAction(menuTitle: "Copy App Name", value: "Example"))
+        #expect(PacketSourceListCopyPolicy.action(for: snapshot.item(for: .appDomain(appKey, domainKey))) ==
+            PacketSourceListCopyAction(menuTitle: "Copy Domain Name", value: "api.example.com"))
+        #expect(PacketSourceListCopyPolicy.action(for: snapshot.item(for: .domain(domainKey))) ==
+            PacketSourceListCopyAction(menuTitle: "Copy Domain Name", value: "api.example.com"))
+        #expect(PacketSourceListCopyPolicy.action(for: snapshot.item(for: .pinnedItem(domainPin.id))) ==
+            PacketSourceListCopyAction(menuTitle: "Copy Domain Name", value: "api.example.com"))
+        #expect(PacketSourceListCopyPolicy.action(for: snapshot.item(for: .pinnedItemDomain(clientPin.id, domainKey))) ==
+            PacketSourceListCopyAction(menuTitle: "Copy Domain Name", value: "api.example.com"))
+        #expect(PacketSourceListCopyPolicy.action(for: snapshot.item(for: .appIPAddress(appKey, ipKey))) ==
+            PacketSourceListCopyAction(menuTitle: "Copy IP Address", value: "10.0.0.2"))
+        #expect(PacketSourceListCopyPolicy.action(for: snapshot.item(for: .pinnedItem(ipPin.id))) ==
+            PacketSourceListCopyAction(menuTitle: "Copy IP Address", value: "10.0.0.2"))
+        #expect(PacketSourceListCopyPolicy.action(for: snapshot.item(for: .pinnedItemIPAddress(clientPin.id, ipKey))) ==
+            PacketSourceListCopyAction(menuTitle: "Copy IP Address", value: "10.0.0.2"))
+        #expect(PacketSourceListCopyPolicy.action(for: snapshot.item(for: .ipAddress(ipKey))) ==
+            PacketSourceListCopyAction(menuTitle: "Copy IP Address", value: "10.0.0.2"))
+        #expect(PacketSourceListCopyPolicy.action(for: fileIPAddressItem) ==
+            PacketSourceListCopyAction(menuTitle: "Copy IP Address", value: "10.0.0.2"))
+        #expect(PacketSourceListCopyPolicy.action(for: fileAppIPAddressItem) ==
+            PacketSourceListCopyAction(menuTitle: "Copy IP Address", value: "10.0.0.2"))
+        #expect(PacketSourceListCopyPolicy.action(for: snapshot.item(for: .apps)) == nil)
+        #expect(PacketSourceListCopyPolicy.action(for: snapshot.item(for: .domain(.ipAddresses))) == nil)
+    }
+
     @Test func pinPolicyExtractsOnlyAppAndRealDomainTargets() throws {
         let client = makeClient(displayName: "Example", bundleIdentifier: "com.example.app")
         var state = PacketIngestState.empty
@@ -592,6 +639,19 @@ struct PacketSourceListServiceTests {
         try #require(snapshot.firstItem { $0.id == PacketSourceListTreeBuilder.filesGroupID })
     }
 
+    private func copyTestItem(title: String, selection: PacketSourceListSelection) -> PacketSourceListItem {
+        PacketSourceListItem(
+            id: "copy-test:\(title)",
+            title: title,
+            systemImageName: nil,
+            iconFilePath: nil,
+            count: 1,
+            kind: .domain,
+            selection: selection,
+            children: []
+        )
+    }
+
     private func makeDomainPin(_ domain: String) -> PacketPin {
         PacketPin(
             id: PacketPinID(rawValue: "domain:\(domain)"),
@@ -600,6 +660,20 @@ struct PacketSourceListServiceTests {
             createdAt: Date(timeIntervalSince1970: 10),
             domain: domain,
             ipAddress: nil,
+            clientKey: nil,
+            clientDisplayName: nil,
+            clientIconFilePath: nil
+        )
+    }
+
+    private func makeIPPin(_ ipAddress: String) -> PacketPin {
+        PacketPin(
+            id: PacketPinID(rawValue: "ip:\(ipAddress)"),
+            kind: .ip,
+            title: ipAddress,
+            createdAt: Date(timeIntervalSince1970: 10),
+            domain: nil,
+            ipAddress: ipAddress,
             clientKey: nil,
             clientDisplayName: nil,
             clientIconFilePath: nil

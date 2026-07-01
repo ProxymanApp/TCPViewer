@@ -216,6 +216,17 @@ final class PacketInspectorTreeViewModel {
         return copyRowsForSelection(from: unfilteredRootItems, level: 0, selectedIDs: selectedIDs, copiedItemIDs: &copiedItemIDs)
     }
 
+    // Return selected packet-detail subtrees once, in source order, for byte-oriented copy formats.
+    func copyItems(forSelectionIDs selectionIDs: [String]) -> [PacketInspectorTreeItem] {
+        let selectedIDs = Set(selectionIDs)
+        guard !selectedIDs.isEmpty else {
+            return []
+        }
+
+        var copiedItemIDs: Set<String> = []
+        return copyItemsForSelection(from: unfilteredRootItems, selectedIDs: selectedIDs, copiedItemIDs: &copiedItemIDs)
+    }
+
     private func makeRootItems(from inspectionState: PacketInspectionState) -> [PacketInspectorTreeItem] {
         if inspectionState.isLoading, inspectionState.currentInspection == nil {
             return [messageItem(id: "loading", message: inspectionState.statusMessage)]
@@ -361,6 +372,42 @@ final class PacketInspectorTreeViewModel {
         }
 
         return rows
+    }
+
+    // Walk all roots so multi-selection order follows the original packet-detail tree.
+    private func copyItemsForSelection(
+        from items: [PacketInspectorTreeItem],
+        selectedIDs: Set<String>,
+        copiedItemIDs: inout Set<String>
+    ) -> [PacketInspectorTreeItem] {
+        var copiedItems: [PacketInspectorTreeItem] = []
+        for item in items {
+            if let selectionID = item.selectionID, selectedIDs.contains(selectionID) {
+                if copiedItemIDs.insert(item.id).inserted {
+                    collectItemIDs(from: item, into: &copiedItemIDs)
+                    copiedItems.append(item)
+                }
+            } else {
+                copiedItems.append(contentsOf: copyItemsForSelection(
+                    from: item.children,
+                    selectedIDs: selectedIDs,
+                    copiedItemIDs: &copiedItemIDs
+                ))
+            }
+        }
+
+        return copiedItems
+    }
+
+    // Mark descendants so selecting a parent and child does not copy duplicate bytes or row text.
+    private func collectItemIDs(
+        from item: PacketInspectorTreeItem,
+        into copiedItemIDs: inout Set<String>
+    ) {
+        for child in item.children {
+            copiedItemIDs.insert(child.id)
+            collectItemIDs(from: child, into: &copiedItemIDs)
+        }
     }
 
     private func validSelectedNodeID(from inspectionState: PacketInspectionState) -> String? {
@@ -627,6 +674,7 @@ final class PacketInspectorViewController: NSViewController {
 
     private let configuration: AppConfiguration
     private let viewModel = PacketInspectorTreeViewModel()
+    private let byteCopyService = PacketInspectorByteCopyService()
     private let expansionState = PacketInspectorOutlineExpansionState()
     private let hexViewController: PacketHexViewController
     private let detailSplitViewController = NSSplitViewController()
@@ -1101,6 +1149,10 @@ final class PacketInspectorViewController: NSViewController {
         }
     }
 
+    private func selectedCopyItems() -> [PacketInspectorTreeItem] {
+        viewModel.copyItems(forSelectionIDs: selectedCopySelectionIDs())
+    }
+
     // Write inspector copy rows to the system pasteboard as plain text.
     private func copyRowsToPasteboard(_ rows: [PacketInspectorCopyRow]) {
         let text = PacketInspectorCopyFormatter.text(for: rows)
@@ -1120,12 +1172,105 @@ final class PacketInspectorViewController: NSViewController {
         copyRowsToPasteboard(viewModel.copyRowsForAllDetails())
     }
 
+    // Copy bytes from selected packet-detail nodes using their packet byte ranges.
+    private func copySelectedBytesToPasteboard(format: PacketInspectorByteCopyFormat) {
+        let text = byteCopyService.copyText(
+            format: format,
+            inspection: latestInspectionState?.currentInspection,
+            items: selectedCopyItems()
+        )
+        guard !text.isEmpty else {
+            return
+        }
+
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private func hasSelectedBytes() -> Bool {
+        byteCopyService.canCopyBytes(
+            from: selectedCopyItems(),
+            inspection: latestInspectionState?.currentInspection
+        )
+    }
+
+    // Report whether the visible detail tree has rows that can expand or collapse.
+    private func hasExpandableInspectorRows() -> Bool {
+        viewModel.rootItems.contains(where: hasExpandableInspectorRows(in:))
+    }
+
+    private func hasExpandableInspectorRows(in item: PacketInspectorTreeItem) -> Bool {
+        !item.children.isEmpty || item.children.contains(where: hasExpandableInspectorRows(in:))
+    }
+
+    // Expand every visible detail node and persist that choice for matching packet-detail IDs.
+    private func expandAllInspectorRows() {
+        isApplyingExpansionState = true
+        defer { isApplyingExpansionState = false }
+
+        for item in viewModel.rootItems {
+            expandAllInspectorRows(in: item)
+        }
+    }
+
+    private func expandAllInspectorRows(in item: PacketInspectorTreeItem) {
+        guard !item.children.isEmpty else {
+            return
+        }
+
+        expansionState.recordExpanded(item: item)
+        outlineView.expandItem(item)
+        for child in item.children {
+            expandAllInspectorRows(in: child)
+        }
+    }
+
+    // Collapse every visible detail node while recording children so future reloads stay collapsed.
+    private func collapseAllInspectorRows() {
+        isApplyingExpansionState = true
+        defer { isApplyingExpansionState = false }
+
+        for item in viewModel.rootItems {
+            collapseAllInspectorRows(in: item)
+        }
+    }
+
+    private func collapseAllInspectorRows(in item: PacketInspectorTreeItem) {
+        guard !item.children.isEmpty else {
+            return
+        }
+
+        for child in item.children {
+            collapseAllInspectorRows(in: child)
+        }
+        expansionState.recordCollapsed(item: item)
+        outlineView.collapseItem(item)
+    }
+
     @objc private func copySelectedRowsFromMenu(_ sender: Any?) {
         copySelectedRowsToPasteboard()
     }
 
     @objc private func copyAllRowsFromMenu(_ sender: Any?) {
         copyAllRowsToPasteboard()
+    }
+
+    @objc private func copySelectedBytesFromMenu(_ sender: Any?) {
+        guard let menuItem = sender as? NSMenuItem,
+              let rawValue = menuItem.representedObject as? String,
+              let format = PacketInspectorByteCopyFormat(rawValue: rawValue) else {
+            return
+        }
+
+        copySelectedBytesToPasteboard(format: format)
+    }
+
+    @objc private func expandAllRowsFromMenu(_ sender: Any?) {
+        expandAllInspectorRows()
+    }
+
+    @objc private func collapseAllRowsFromMenu(_ sender: Any?) {
+        collapseAllInspectorRows()
     }
 
     @objc private func showFilterFromMenu(_ sender: Any?) {
@@ -1316,27 +1461,32 @@ extension PacketInspectorViewController: NSMenuDelegate {
 
         menu.removeAllItems()
         let hasSelectedRows = !selectedCopySelectionIDs().isEmpty
-        let copyItem = NSMenuItem(
-            title: "Copy",
-            action: #selector(copySelectedRowsFromMenu(_:)),
-            keyEquivalent: "c"
-        )
-        copyItem.target = self
-        copyItem.isEnabled = hasSelectedRows
-        copyItem.toolTip = "Copy the selected inspector rows."
-        copyItem.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Copy")
-        menu.addItem(copyItem)
+        let hasSelectedByteRanges = hasSelectedBytes()
+        let hasExpandableRows = hasExpandableInspectorRows()
+        menu.addItem(copySubmenuItem(hasSelectedRows: hasSelectedRows, hasSelectedByteRanges: hasSelectedByteRanges))
+        menu.addItem(.separator())
 
-        let copyAllItem = NSMenuItem(
-            title: "Copy All",
-            action: #selector(copyAllRowsFromMenu(_:)),
+        let expandAllItem = NSMenuItem(
+            title: "Expand All",
+            action: #selector(expandAllRowsFromMenu(_:)),
             keyEquivalent: ""
         )
-        copyAllItem.target = self
-        copyAllItem.isEnabled = viewModel.hasCopyableDetails()
-        copyAllItem.toolTip = "Copy all packet detail rows."
-        copyAllItem.image = NSImage(systemSymbolName: "doc.on.doc.fill", accessibilityDescription: "Copy All")
-        menu.addItem(copyAllItem)
+        expandAllItem.target = self
+        expandAllItem.isEnabled = hasExpandableRows
+        expandAllItem.toolTip = "Expand all packet detail rows."
+        expandAllItem.image = NSImage(systemSymbolName: "arrow.down.right.and.arrow.up.left", accessibilityDescription: "Expand All")
+        menu.addItem(expandAllItem)
+
+        let collapseAllItem = NSMenuItem(
+            title: "Collapse All",
+            action: #selector(collapseAllRowsFromMenu(_:)),
+            keyEquivalent: ""
+        )
+        collapseAllItem.target = self
+        collapseAllItem.isEnabled = hasExpandableRows
+        collapseAllItem.toolTip = "Collapse all packet detail rows."
+        collapseAllItem.image = NSImage(systemSymbolName: "arrow.up.left.and.arrow.down.right", accessibilityDescription: "Collapse All")
+        menu.addItem(collapseAllItem)
         menu.addItem(.separator())
 
         let filterItem = NSMenuItem(
@@ -1349,5 +1499,53 @@ extension PacketInspectorViewController: NSMenuDelegate {
         filterItem.toolTip = "Focus the inspector filter."
         filterItem.image = NSImage(systemSymbolName: "line.3.horizontal.decrease.circle", accessibilityDescription: "Filter")
         menu.addItem(filterItem)
+    }
+
+    private func copySubmenuItem(hasSelectedRows: Bool, hasSelectedByteRanges: Bool) -> NSMenuItem {
+        let menuItem = NSMenuItem(title: "Copy", action: nil, keyEquivalent: "")
+        let submenu = NSMenu(title: "Copy")
+        submenu.autoenablesItems = false
+
+        let selectedTreeItem = NSMenuItem(
+            title: "Selected Tree Items",
+            action: #selector(copySelectedRowsFromMenu(_:)),
+            keyEquivalent: "c"
+        )
+        selectedTreeItem.target = self
+        selectedTreeItem.isEnabled = hasSelectedRows
+        selectedTreeItem.toolTip = "Copy the selected inspector rows."
+        selectedTreeItem.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Selected Tree Items")
+        submenu.addItem(selectedTreeItem)
+
+        let allTreeItem = NSMenuItem(
+            title: "All Tree Items",
+            action: #selector(copyAllRowsFromMenu(_:)),
+            keyEquivalent: ""
+        )
+        allTreeItem.target = self
+        allTreeItem.isEnabled = viewModel.hasCopyableDetails()
+        allTreeItem.toolTip = "Copy all packet detail rows."
+        allTreeItem.image = NSImage(systemSymbolName: "doc.on.doc.fill", accessibilityDescription: "All Tree Items")
+        submenu.addItem(allTreeItem)
+        submenu.addItem(.separator())
+
+        for format in PacketInspectorByteCopyFormat.allCases {
+            let item = NSMenuItem(
+                title: format.menuTitle,
+                action: #selector(copySelectedBytesFromMenu(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = format.rawValue
+            item.isEnabled = hasSelectedByteRanges
+            item.toolTip = format.toolTip
+            submenu.addItem(item)
+        }
+
+        menuItem.submenu = submenu
+        menuItem.isEnabled = hasSelectedRows || viewModel.hasCopyableDetails()
+        menuItem.toolTip = "Choose how to copy packet detail rows or bytes."
+        menuItem.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Copy")
+        return menuItem
     }
 }

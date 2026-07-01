@@ -150,7 +150,7 @@ struct SidebarOutlineReloadPolicyTests {
     }
 
     @MainActor
-    @Test func sidebarContextMenuPlacesShowInFinderAboveDelete() throws {
+    @Test func sidebarContextMenuPlacesCopyAndShowInFinderAboveDelete() throws {
         let appKey = PacketSourceClientKey(rawValue: "bundleIdentifier:com.example.App")
         let controller = SidebarViewController()
         controller.loadViewIfNeeded()
@@ -167,11 +167,35 @@ struct SidebarOutlineReloadPolicyTests {
         controller.menuNeedsUpdate(menu)
 
         let nonSeparatorTitles = menu.items.filter { !$0.isSeparatorItem }.map(\.title)
-        #expect(nonSeparatorTitles == ["Pin", "Export", "Show in Finder…", "Delete"])
+        #expect(nonSeparatorTitles == ["Copy App Name", "Pin", "Export", "Show in Finder…", "Delete"])
+        let copyIndex = try #require(menu.items.firstIndex { $0.title == "Copy App Name" })
+        #expect(menu.items[copyIndex + 1].isSeparatorItem)
         let finderIndex = try #require(menu.items.firstIndex { $0.title == "Show in Finder…" })
         let deleteIndex = try #require(menu.items.firstIndex { $0.title == "Delete" })
         #expect(deleteIndex == finderIndex + 2)
         #expect(menu.items[finderIndex + 1].isSeparatorItem)
+    }
+
+    @MainActor
+    @Test func sidebarContextMenuUsesDomainCopyTitleForDomainRows() throws {
+        let domainKey = PacketSourceDomainKey(rawValue: "example.com", isMissingDomain: false)
+        let controller = SidebarViewController()
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: makeSnapshot(
+            sourceListSnapshot: snapshotWithDomain(),
+            selectedSelection: .domain(domainKey),
+            packetMutation: .none
+        ))
+
+        let outlineView = try #require(findOutlineScrollView(in: controller.view)?.documentView as? NSOutlineView)
+        let menu = try #require(outlineView.menu)
+        #expect(outlineView.selectedRow >= 0)
+
+        controller.menuNeedsUpdate(menu)
+
+        let nonSeparatorTitles = menu.items.filter { !$0.isSeparatorItem }.map(\.title)
+        #expect(nonSeparatorTitles.first == "Copy Domain Name")
+        #expect(!nonSeparatorTitles.contains("Copy App Name"))
     }
 
     @MainActor

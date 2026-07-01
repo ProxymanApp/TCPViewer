@@ -105,6 +105,18 @@ struct WindowControllerTests {
         #expect(otherMenu.items.first { $0.representedObject as? String == "awdl0" }?.isEnabled == false)
     }
 
+    @Test func clearAllToolbarButtonTooltipShowsShortcut() throws {
+        let dataSource = TCPViewerToolbarDataSource()
+
+        let item = try #require(dataSource.toolbar(
+            dataSource.toolbar,
+            itemForItemIdentifier: NSToolbarItem.Identifier("TCPViewer.ClearAll"),
+            willBeInsertedIntoToolbar: true
+        ))
+        let button = try #require(item.view as? NSButton)
+        #expect(button.toolTip == "Clear All Packets (⌘K)")
+    }
+
     @Test func interfacePopupWidthIncludesSelectedIcon() {
         let interfaces = [makeInterface(id: "en0", displayName: "Wi-Fi (en0)")]
         let plainPopup = NSPopUpButton(frame: .zero, pullsDown: false)

@@ -179,7 +179,7 @@ final class TCPViewerToolbarDataSource: NSObject {
         clearAllButton.controlSize = .regular
         clearAllButton.image = TCPViewerUI.image("trash")
         clearAllButton.imagePosition = .imageOnly
-        clearAllButton.toolTip = "Clear All Packets"
+        clearAllButton.toolTip = "Clear All Packets (⌘K)"
 
         trialButton.target = self
         trialButton.action = #selector(trialButtonPressed(_:))

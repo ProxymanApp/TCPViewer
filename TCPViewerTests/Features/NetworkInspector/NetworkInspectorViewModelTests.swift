@@ -633,6 +633,18 @@ struct NetworkInspectorViewModelTests {
         #expect(!labels.contains("Stopped"))
     }
 
+    @Test func statusStripFilterButtonShowsShortcut() throws {
+        let controller = StatusStripViewController()
+
+        controller.loadViewIfNeeded()
+
+        let filterButton = try #require(allSubviews(ofType: NSButton.self, in: controller.view).first { button in
+            button.title.contains("Filter")
+        })
+        #expect(filterButton.title == "Filter ⌘F")
+        #expect(filterButton.toolTip == "Show or hide packet filters (⌘F)")
+    }
+
     @Test func statusStripRendersProcessAndCapturedTrafficMetrics() {
         let viewModel = StatusStripViewModel()
         let metrics = TCPViewerStatusMetricsSnapshot(
