@@ -77,6 +77,21 @@ struct PacketInspectorByteCopyServiceTests {
         #expect(service.copyText(format: .hexStream, inspection: inspection, items: [tcpItem]) == "12345678")
     }
 
+    @Test func parentWithoutByteRangeMergesChildrenInByteOffsetOrder() {
+        let inspection = makeInspection(rawBytes: Data([0xaa, 0xbb, 0xcc, 0xdd]))
+        let optionsItem = makeItem(
+            id: "tcp.options",
+            name: "Options",
+            kind: .field,
+            children: [
+                makeItem(id: "tcp.options.late", name: "Late Option", byteRange: PacketByteRange(offset: 2, length: 2)),
+                makeItem(id: "tcp.options.early", name: "Early Option", byteRange: PacketByteRange(offset: 0, length: 2)),
+            ]
+        )
+
+        #expect(service.copyText(format: .hexStream, inspection: inspection, items: [optionsItem]) == "aabbccdd")
+    }
+
     @Test func invalidRangesAreIgnoredAndValidRangesAreClipped() {
         let inspection = makeInspection(rawBytes: Data([0x01, 0x02, 0x03, 0x04]))
         let clippedItem = makeItem(id: "valid", name: "Valid", byteRange: PacketByteRange(offset: 2, length: 20))

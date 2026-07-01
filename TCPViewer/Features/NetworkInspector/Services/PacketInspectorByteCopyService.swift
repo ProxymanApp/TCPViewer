@@ -184,7 +184,15 @@ struct PacketInspectorByteCopyService {
     }
 
     private static func mergedRanges(_ ranges: [PacketByteRange]) -> [PacketByteRange] {
-        ranges.reduce(into: []) { result, range in
+        // Child rows may be displayed in protocol order rather than byte-offset order, so sort before coalescing.
+        let sortedRanges = ranges.sorted { lhs, rhs in
+            if lhs.sourceID == rhs.sourceID {
+                return lhs.offset < rhs.offset
+            }
+            return lhs.sourceID < rhs.sourceID
+        }
+
+        return sortedRanges.reduce(into: []) { result, range in
             guard let previous = result.last,
                   previous.sourceID == range.sourceID,
                   range.offset <= previous.upperBound else {

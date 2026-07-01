@@ -305,22 +305,27 @@ struct PacketSourceListServiceTests {
     @Test func copyPolicyBuildsSingleAppOrDomainCopyAction() throws {
         let client = makeClient(displayName: "Example", bundleIdentifier: "com.example.app")
         let clientPin = makeClientPin(displayName: "Example", key: "bundleIdentifier:com.example.app")
+        let domainPin = makeDomainPin("api.example.com")
         var state = PacketIngestState.empty
         state.append([
             makePacket(packetNumber: 1, sniDomainName: "api.example.com", client: client),
             makePacket(packetNumber: 2, sniDomainName: nil, client: client),
         ], source: .live)
 
-        let snapshot = PacketSourceListService().snapshot(for: state, pinnedItems: [clientPin])
+        let snapshot = PacketSourceListService().snapshot(for: state, pinnedItems: [clientPin, domainPin])
         let appKey = PacketSourceClientKey(rawValue: "bundleIdentifier:com.example.app")
         let domainKey = PacketSourceDomainKey(rawValue: "api.example.com", isMissingDomain: false)
         let ipKey = PacketSourceIPAddressKey(rawValue: "10.0.0.2")
 
         #expect(PacketSourceListCopyPolicy.action(for: snapshot.item(for: .app(appKey))) ==
             PacketSourceListCopyAction(menuTitle: "Copy App Name", value: "Example"))
+        #expect(PacketSourceListCopyPolicy.action(for: snapshot.item(for: .pinnedItem(clientPin.id))) ==
+            PacketSourceListCopyAction(menuTitle: "Copy App Name", value: "Example"))
         #expect(PacketSourceListCopyPolicy.action(for: snapshot.item(for: .appDomain(appKey, domainKey))) ==
             PacketSourceListCopyAction(menuTitle: "Copy Domain Name", value: "api.example.com"))
         #expect(PacketSourceListCopyPolicy.action(for: snapshot.item(for: .domain(domainKey))) ==
+            PacketSourceListCopyAction(menuTitle: "Copy Domain Name", value: "api.example.com"))
+        #expect(PacketSourceListCopyPolicy.action(for: snapshot.item(for: .pinnedItem(domainPin.id))) ==
             PacketSourceListCopyAction(menuTitle: "Copy Domain Name", value: "api.example.com"))
         #expect(PacketSourceListCopyPolicy.action(for: snapshot.item(for: .pinnedItemDomain(clientPin.id, domainKey))) ==
             PacketSourceListCopyAction(menuTitle: "Copy Domain Name", value: "api.example.com"))

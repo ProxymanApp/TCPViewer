@@ -227,6 +227,10 @@ enum PacketSourceListCopyPolicy {
         switch selection {
         case .app, .fileApp:
             return PacketSourceListCopyAction(menuTitle: "Copy App Name", value: value)
+        case .pinnedItem(let pinID) where pinID.rawValue.hasPrefix("client:"):
+            return PacketSourceListCopyAction(menuTitle: "Copy App Name", value: value)
+        case .pinnedItem(let pinID) where pinID.rawValue.hasPrefix("domain:"):
+            return PacketSourceListCopyAction(menuTitle: "Copy Domain Name", value: value)
         case .appDomain(_, let key),
                 .domain(let key),
                 .fileAppDomain(_, _, let key),
