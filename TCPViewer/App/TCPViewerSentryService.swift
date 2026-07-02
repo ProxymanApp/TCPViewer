@@ -10,6 +10,7 @@ import Sentry
 
 enum TCPViewerSentryConfiguration {
     static let dsnInfoKey = "TCPViewerSentryDSN"
+    static let environment = "production"
 
     // Return a configured DSN only when local build settings resolved it.
     static func dsn(from bundle: Bundle = .main) -> String? {
@@ -106,7 +107,7 @@ final class TCPViewerSentryService {
             return
         }
 
-        controller.start(dsn: dsn) { [weak configuration] in
+        controller.start(dsn: dsn, environment: TCPViewerSentryConfiguration.environment) { [weak configuration] in
             configuration?.sharesCrashReports == true
         }
     }
@@ -115,7 +116,7 @@ final class TCPViewerSentryService {
 protocol TCPViewerSentryControlling: AnyObject {
     var isStarted: Bool { get }
 
-    func start(dsn: String, isCrashReportingAllowed: @escaping () -> Bool)
+    func start(dsn: String, environment: String, isCrashReportingAllowed: @escaping () -> Bool)
     func close()
 }
 
@@ -125,13 +126,14 @@ final class TCPViewerSentrySDKController: TCPViewerSentryControlling {
     }
 
     // Configure Sentry as crash-report-only telemetry for the Privacy crash report toggle.
-    func start(dsn: String, isCrashReportingAllowed: @escaping () -> Bool) {
+    func start(dsn: String, environment: String, isCrashReportingAllowed: @escaping () -> Bool) {
         guard !isStarted else {
             return
         }
 
         SentrySDK.start { options in
             options.dsn = dsn
+            options.environment = environment
             options.debug = false
             options.enabled = true
             options.enableSwizzling = false

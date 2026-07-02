@@ -20,13 +20,59 @@ struct WiresharkPacketInspectionFields {
     let sniDomainName: String?
 }
 
+struct WiresharkRuntimeConfiguration {
+    private static let appFolderName = "TCPViewer"
+    private static let settingsFolderName = "settings"
+    private static let wiresharkFolderName = "Wireshark"
+
+    private let fileManager: FileManager
+    private let applicationSupportBaseURL: URL
+
+    init(fileManager: FileManager = .default, applicationSupportBaseURL: URL? = nil) {
+        self.fileManager = fileManager
+        self.applicationSupportBaseURL = applicationSupportBaseURL ?? Self.defaultApplicationSupportBaseURL(fileManager: fileManager)
+    }
+
+    var personalConfigurationDirectoryURL: URL {
+        applicationSupportBaseURL
+            .appendingPathComponent(Self.appFolderName, isDirectory: true)
+            .appendingPathComponent(Self.settingsFolderName, isDirectory: true)
+            .appendingPathComponent(Self.wiresharkFolderName, isDirectory: true)
+    }
+
+    @discardableResult
+    func createPersonalConfigurationDirectoryIfNeeded() throws -> URL {
+        try fileManager.createDirectory(at: personalConfigurationDirectoryURL, withIntermediateDirectories: true)
+        return personalConfigurationDirectoryURL
+    }
+
+    private static func defaultApplicationSupportBaseURL(fileManager: FileManager) -> URL {
+        fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support", isDirectory: true)
+    }
+}
+
 final class WiresharkEpanSession {
     private let handle: OpaquePointer
     private let criticalExceptionLogger: WiresharkCriticalExceptionLogger
 
-    init(disabled: Bool = false, criticalExceptionLogger: WiresharkCriticalExceptionLogger = .shared) throws {
+    init(
+        disabled: Bool = false,
+        criticalExceptionLogger: WiresharkCriticalExceptionLogger = .shared,
+        runtimeConfiguration: WiresharkRuntimeConfiguration = WiresharkRuntimeConfiguration()
+    ) throws {
         self.criticalExceptionLogger = criticalExceptionLogger
-        guard let createdHandle = TCPViewerWiresharkSessionCreate(disabled) else {
+        let createdHandle: OpaquePointer?
+        if disabled {
+            createdHandle = TCPViewerWiresharkSessionCreate(true, nil)
+        } else {
+            let configurationDirectory = try runtimeConfiguration.createPersonalConfigurationDirectoryIfNeeded()
+            createdHandle = configurationDirectory.path.withCString { path in
+                TCPViewerWiresharkSessionCreate(false, path)
+            }
+        }
+
+        guard let createdHandle else {
             throw NativeNSError(.unavailableFeature, "Wireshark libwireshark backend could not be created.")
         }
 

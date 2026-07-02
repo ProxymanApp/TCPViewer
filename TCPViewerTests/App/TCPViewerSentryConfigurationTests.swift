@@ -48,7 +48,22 @@ struct TCPViewerSentryConfigurationTests {
 
         configuration.sharesCrashReports = true
         #expect(controller.startCalls == ["https://public@example.ingest.sentry.io/1"])
+        #expect(controller.environmentCalls == ["production"])
         #expect(controller.isCrashReportingAllowed?() == true)
+    }
+
+    @Test func serviceUsesProductionSentryEnvironment() {
+        let configuration = AppConfiguration(defaults: Self.makeUserDefaults())
+        let controller = StubSentryController()
+        let service = TCPViewerSentryService(
+            configuration: configuration,
+            controller: controller,
+            dsnProvider: { "https://public@example.ingest.sentry.io/1" }
+        )
+
+        service.start()
+
+        #expect(controller.environmentCalls == [TCPViewerSentryConfiguration.environment])
     }
 
     @Test func serviceClosesWhenCrashReportsAreDisabled() {
@@ -92,6 +107,7 @@ struct TCPViewerSentryConfigurationTests {
 
 private final class StubSentryController: TCPViewerSentryControlling {
     private(set) var startCalls: [String] = []
+    private(set) var environmentCalls: [String] = []
     private(set) var closeCallCount = 0
     private(set) var isCrashReportingAllowed: (() -> Bool)?
 
@@ -99,8 +115,9 @@ private final class StubSentryController: TCPViewerSentryControlling {
         !startCalls.isEmpty && closeCallCount == 0
     }
 
-    func start(dsn: String, isCrashReportingAllowed: @escaping () -> Bool) {
+    func start(dsn: String, environment: String, isCrashReportingAllowed: @escaping () -> Bool) {
         startCalls.append(dsn)
+        environmentCalls.append(environment)
         self.isCrashReportingAllowed = isCrashReportingAllowed
     }
 
