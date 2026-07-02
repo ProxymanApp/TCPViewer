@@ -84,7 +84,7 @@ typedef struct TCPViewerWiresharkExceptionReport {
     const char *reason;
 } TCPViewerWiresharkExceptionReport;
 
-TCPViewerWiresharkSession *TCPViewerWiresharkSessionCreate(bool disabled);
+TCPViewerWiresharkSession *TCPViewerWiresharkSessionCreate(bool disabled, const char *personalConfigurationDirectory);
 void TCPViewerWiresharkSessionDestroy(TCPViewerWiresharkSession *session);
 void TCPViewerWiresharkSessionReleaseResources(TCPViewerWiresharkSession *session);
 bool TCPViewerWiresharkSessionIsAvailable(TCPViewerWiresharkSession *session);
@@ -100,7 +100,7 @@ void TCPViewerWiresharkInspectionResultDestroy(TCPViewerWiresharkInspectionResul
 void TCPViewerWiresharkExceptionReportDestroy(TCPViewerWiresharkExceptionReport *report);
 
 #if DEBUG
-TCPViewerWiresharkExceptionReport *TCPViewerWiresharkTestCopyCaughtExceptionReport(void);
+TCPViewerWiresharkExceptionReport *TCPViewerWiresharkTestCopyCaughtExceptionReport(const char *personalConfigurationDirectory);
 bool TCPViewerWiresharkSessionTestInjectCriticalException(TCPViewerWiresharkSession *session);
 #endif
 

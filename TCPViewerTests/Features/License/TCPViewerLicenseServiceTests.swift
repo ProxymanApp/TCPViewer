@@ -31,6 +31,26 @@ struct TCPViewerLicenseServiceTests {
         #expect(network.registeredOSVersion == "macOS 15.6")
     }
 
+    @Test func activationCompletionRunsOnMainQueueAfterAsyncNetworkCallback() throws {
+        let storage = try makeStorage()
+        let network = StubLicenseNetworkClient()
+        let license = makeLicense()
+        network.registerResult = .success(license)
+        network.callbackQueue = DispatchQueue(label: "TCPViewerLicenseServiceTests.activationCallback")
+        let service = makeService(storage: storage, network: network)
+        var completedOnMain = false
+
+        let status = waitForStatus { finish in
+            service.activate(licenseKey: "TCPV-KEY") { status in
+                completedOnMain = Thread.isMainThread
+                finish(status)
+            }
+        }
+
+        #expect(status == .authorized(license))
+        #expect(completedOnMain)
+    }
+
     @Test func activationRejectsInvalidPrefixBeforeNetworkCall() throws {
         let storage = try makeStorage()
         let network = StubLicenseNetworkClient()
@@ -80,6 +100,27 @@ struct TCPViewerLicenseServiceTests {
         #expect(storage.readLicense() == updatedLicense)
         #expect(network.verifiedSignature == oldLicense.signature)
         #expect(network.verifiedDeviceUUID == "device-1")
+    }
+
+    @Test func verificationCompletionRunsOnMainQueueAfterAsyncNetworkCallback() throws {
+        let storage = try makeStorage()
+        let license = makeLicense()
+        try storage.writeLicense(license)
+        let network = StubLicenseNetworkClient()
+        network.verifyResult = .success(license)
+        network.callbackQueue = DispatchQueue(label: "TCPViewerLicenseServiceTests.verifyCallback")
+        let service = makeService(storage: storage, network: network)
+        var completedOnMain = false
+
+        let status = waitForStatus { finish in
+            service.verifyAtLaunch { status in
+                completedOnMain = Thread.isMainThread
+                finish(status)
+            }
+        }
+
+        #expect(status == .authorized(license))
+        #expect(completedOnMain)
     }
 
     @Test func launchVerificationUsesStoredFallbackDeviceUUID() throws {
@@ -292,6 +333,27 @@ struct TCPViewerLicenseServiceTests {
         #expect(network.revokedSignature == license.signature)
     }
 
+    @Test func revokeCompletionRunsOnMainQueueAfterAsyncNetworkCallback() throws {
+        let storage = try makeStorage()
+        let license = makeLicense()
+        try storage.writeLicense(license)
+        let network = StubLicenseNetworkClient()
+        network.revokeResult = .success(())
+        network.callbackQueue = DispatchQueue(label: "TCPViewerLicenseServiceTests.revokeCallback")
+        let service = makeService(storage: storage, network: network)
+        var completedOnMain = false
+
+        let result = waitForVoid { finish in
+            service.revokeCurrentDevice { result in
+                completedOnMain = Thread.isMainThread
+                finish(result)
+            }
+        }
+
+        try result.get()
+        #expect(completedOnMain)
+    }
+
     private func makeService(
         storage: TCPViewerLicenseStorage,
         network: StubLicenseNetworkClient,
@@ -352,7 +414,7 @@ struct TCPViewerLicenseServiceTests {
             status = $0
             semaphore.signal()
         }
-        #expect(semaphore.wait(timeout: .now() + 2) == .success)
+        #expect(waitUntilSignaled(semaphore))
         return status ?? .unauthorized(.error("Missing callback"))
     }
 
@@ -365,8 +427,23 @@ struct TCPViewerLicenseServiceTests {
             result = $0
             semaphore.signal()
         }
-        #expect(semaphore.wait(timeout: .now() + 2) == .success)
+        #expect(waitUntilSignaled(semaphore))
         return result ?? .failure(.error("Missing callback"))
+    }
+
+    private func waitUntilSignaled(_ semaphore: DispatchSemaphore) -> Bool {
+        let deadline = Date().addingTimeInterval(2)
+        if Thread.isMainThread {
+            while Date() < deadline {
+                if semaphore.wait(timeout: .now()) == .success {
+                    return true
+                }
+                _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+            }
+            return semaphore.wait(timeout: .now()) == .success
+        }
+
+        return semaphore.wait(timeout: .now() + 2) == .success
     }
 }
 
@@ -390,6 +467,7 @@ private final class StubLicenseNetworkClient: TCPViewerLicenseNetworkClienting {
     var registerResult: Result<TCPViewerLicense, TCPViewerLicenseError> = .failure(.invalidLicense)
     var verifyResult: Result<TCPViewerLicense, TCPViewerLicenseError> = .failure(.invalidLicense)
     var revokeResult: Result<Void, TCPViewerLicenseError> = .success(())
+    var callbackQueue: DispatchQueue?
 
     var registeredLicenseKey: String?
     var registeredDeviceUUID: String?
@@ -416,7 +494,7 @@ private final class StubLicenseNetworkClient: TCPViewerLicenseNetworkClienting {
         registeredBuildNumber = buildNumber
         registeredAppVersion = appVersion
         registeredOSVersion = osVersion
-        completion(registerResult)
+        complete(registerResult, completion: completion)
     }
 
     func verifyLicense(
@@ -431,7 +509,7 @@ private final class StubLicenseNetworkClient: TCPViewerLicenseNetworkClienting {
         verifiedDeviceUUID = deviceUUID
         verifiedAppVersion = appVersion
         verifiedOSVersion = osVersion
-        completion(verifyResult)
+        complete(verifyResult, completion: completion)
     }
 
     func revokeLicense(
@@ -439,6 +517,17 @@ private final class StubLicenseNetworkClient: TCPViewerLicenseNetworkClienting {
         completion: @escaping (Result<Void, TCPViewerLicenseError>) -> Void
     ) {
         revokedSignature = license.signature
-        completion(revokeResult)
+        complete(revokeResult, completion: completion)
+    }
+
+    private func complete<T>(_ value: T, completion: @escaping (T) -> Void) {
+        guard let callbackQueue else {
+            completion(value)
+            return
+        }
+
+        callbackQueue.async {
+            completion(value)
+        }
     }
 }

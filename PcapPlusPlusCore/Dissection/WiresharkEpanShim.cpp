@@ -34,6 +34,11 @@
 #include <wiretap/wtap.h>
 #include <wiretap/wtap_opttypes.h>
 #include <wsutil/buffer.h>
+#include <wsutil/filesystem.h>
+
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
 
 struct packet_provider_data {
     wtap *wth = nullptr;
@@ -152,6 +157,21 @@ std::mutex &WiresharkAPIMutex()
     // Keep the lock alive until process exit; test runners can tear down Swift objects late.
     static auto *mutex = new std::mutex();
     return *mutex;
+}
+
+std::string CurrentExecutablePath()
+{
+#if defined(__APPLE__)
+    uint32_t size = 0;
+    _NSGetExecutablePath(nullptr, &size);
+    if (size > 0) {
+        std::vector<char> buffer(size);
+        if (_NSGetExecutablePath(buffer.data(), &size) == 0) {
+            return std::string(buffer.data());
+        }
+    }
+#endif
+    return "TCPViewer";
 }
 
 const char *KindString(NodeKind kind)
@@ -998,9 +1018,9 @@ void DestroyByteSource(TCPViewerWiresharkByteSource &source)
 
 class WiresharkRuntime {
 public:
-    static WiresharkRuntime &shared()
+    static WiresharkRuntime &shared(const char *personalConfigurationDirectory)
     {
-        static WiresharkRuntime runtime;
+        static WiresharkRuntime runtime(personalConfigurationDirectory);
         return runtime;
     }
 
@@ -1036,9 +1056,23 @@ private:
         }
     }
 
-    WiresharkRuntime()
+    explicit WiresharkRuntime(const char *personalConfigurationDirectory)
     {
         std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
+        if (personalConfigurationDirectory == nullptr || personalConfigurationDirectory[0] == '\0') {
+            available_ = false;
+            unavailableReason_ = "Wireshark personal configuration directory is unavailable.";
+            return;
+        }
+        // Wireshark resolves bundled data relative to the host executable path.
+        const auto executablePath = CurrentExecutablePath();
+        if (char *configurationError = configuration_init(executablePath.c_str())) {
+            available_ = false;
+            unavailableReason_ = std::string("Wireshark configuration initialization failed: ") + configurationError;
+            g_free(configurationError);
+            return;
+        }
+        set_persconffile_dir(personalConfigurationDirectory);
         if (except_init() == 0) {
             available_ = false;
             unavailableReason_ = "Wireshark exception handling failed to initialize.";
@@ -1046,7 +1080,7 @@ private:
         }
         initializedExceptions_ = true;
         if (auto report = CatchWiresharkException("initializing Wireshark Wiretap", std::nullopt, [] {
-                wtap_init(true);
+                wtap_init(false);
             })) {
             recordCriticalException(std::move(*report));
             available_ = false;
@@ -1056,7 +1090,7 @@ private:
         initializedWiretap_ = true;
         bool didInitializeEpan = false;
         if (auto report = CatchWiresharkException("initializing Wireshark protocol registry", std::nullopt, [&didInitializeEpan] {
-                didInitializeEpan = epan_init(nullptr, nullptr, true);
+                didInitializeEpan = epan_init(nullptr, nullptr, false);
             })) {
             recordCriticalException(std::move(*report));
             available_ = false;
@@ -1138,6 +1172,7 @@ struct TCPViewerWiresharkSession {
     std::unordered_set<uint32_t> storedFrameNumbers;
     std::unordered_set<uint32_t> activeFrameNumbers;
     std::deque<WiresharkCriticalException> pendingCriticalExceptions;
+    std::string personalConfigurationDirectory;
     bool disabled = false;
     bool firstPassFinished = false;
     bool backendAvailable = false;
@@ -1148,15 +1183,16 @@ struct TCPViewerWiresharkSession {
         return session;
     }
 
-    explicit TCPViewerWiresharkSession(bool disablesWireshark)
+    TCPViewerWiresharkSession(bool disablesWireshark, const char *personalConfigurationDirectory)
     {
+        this->personalConfigurationDirectory = personalConfigurationDirectory == nullptr ? "" : personalConfigurationDirectory;
         if (disablesWireshark) {
             disabled = true;
             unavailableReason = kBackendDisabledReason;
             firstPassFinished = true;
             return;
         }
-        auto &runtime = WiresharkRuntime::shared();
+        auto &runtime = WiresharkRuntime::shared(this->personalConfigurationDirectory.c_str());
         backendAvailable = runtime.isAvailable();
         unavailableReason = runtime.unavailableReason();
         for (const auto &report : runtime.criticalExceptionReports()) {
@@ -1385,7 +1421,7 @@ struct TCPViewerWiresharkSession {
         if (disabled) {
             return false;
         }
-        auto &runtime = WiresharkRuntime::shared();
+        auto &runtime = WiresharkRuntime::shared(personalConfigurationDirectory.c_str());
         backendAvailable = runtime.isAvailable();
         if (!backendAvailable) {
             unavailableReason = runtime.unavailableReason();
@@ -1601,9 +1637,9 @@ struct TCPViewerWiresharkSession {
     }
 };
 
-TCPViewerWiresharkSession *TCPViewerWiresharkSessionCreate(bool disabled)
+TCPViewerWiresharkSession *TCPViewerWiresharkSessionCreate(bool disabled, const char *personalConfigurationDirectory)
 {
-    return new TCPViewerWiresharkSession(disabled);
+    return new TCPViewerWiresharkSession(disabled, personalConfigurationDirectory);
 }
 
 void TCPViewerWiresharkSessionDestroy(TCPViewerWiresharkSession *session)
@@ -1787,9 +1823,9 @@ void TCPViewerWiresharkExceptionReportDestroy(TCPViewerWiresharkExceptionReport 
 }
 
 #if DEBUG
-TCPViewerWiresharkExceptionReport *TCPViewerWiresharkTestCopyCaughtExceptionReport(void)
+TCPViewerWiresharkExceptionReport *TCPViewerWiresharkTestCopyCaughtExceptionReport(const char *personalConfigurationDirectory)
 {
-    auto &runtime = WiresharkRuntime::shared();
+    auto &runtime = WiresharkRuntime::shared(personalConfigurationDirectory);
     if (!runtime.isAvailable()) {
         return runtime.criticalException().has_value() ? CopyExceptionReport(*runtime.criticalException()) : nullptr;
     }

@@ -192,7 +192,13 @@ final class WiresharkCriticalExceptionLogger {
 #if DEBUG
 enum WiresharkExceptionHandlingTestProbe {
     static func caughtExceptionReport() -> WiresharkCriticalExceptionReport? {
-        guard let reportPointer = TCPViewerWiresharkTestCopyCaughtExceptionReport() else {
+        guard let configurationDirectory = try? WiresharkRuntimeConfiguration().createPersonalConfigurationDirectoryIfNeeded() else {
+            return nil
+        }
+        let reportPointer = configurationDirectory.path.withCString { path in
+            TCPViewerWiresharkTestCopyCaughtExceptionReport(path)
+        }
+        guard let reportPointer else {
             return nil
         }
         defer { TCPViewerWiresharkExceptionReportDestroy(reportPointer) }

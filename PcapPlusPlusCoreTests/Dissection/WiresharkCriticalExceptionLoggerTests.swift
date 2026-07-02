@@ -12,6 +12,22 @@ import Testing
 @Suite(.serialized)
 struct WiresharkCriticalExceptionLoggerTests {
 
+    @Test func runtimeConfigurationUsesTCPViewerOwnedSettingsDirectory() throws {
+        let baseURL = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: baseURL) }
+        let configuration = WiresharkRuntimeConfiguration(applicationSupportBaseURL: baseURL)
+
+        let directory = try configuration.createPersonalConfigurationDirectoryIfNeeded()
+
+        #expect(directory == baseURL
+            .appendingPathComponent("TCPViewer", isDirectory: true)
+            .appendingPathComponent("settings", isDirectory: true)
+            .appendingPathComponent("Wireshark", isDirectory: true))
+        var isDirectory = ObjCBool(false)
+        #expect(FileManager.default.fileExists(atPath: directory.path, isDirectory: &isDirectory))
+        #expect(isDirectory.boolValue)
+    }
+
     @Test func writesPrivacySafeCriticalExceptionLog() throws {
         let baseURL = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: baseURL) }
