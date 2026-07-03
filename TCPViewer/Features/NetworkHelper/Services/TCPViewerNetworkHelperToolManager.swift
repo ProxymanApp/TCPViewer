@@ -30,6 +30,23 @@ struct TCPViewerNetworkHelperToolSnapshot: Sendable, Equatable {
     let lastCheckedAt: Date?
     let message: String
     let installedHelperToolVersion: String?
+    let diagnosticDescription: String?
+
+    init(
+        status: TCPViewerNetworkHelperToolStatus,
+        authorizationStatus: TCPViewerNetworkHelperAuthorizationStatus,
+        lastCheckedAt: Date?,
+        message: String,
+        installedHelperToolVersion: String?,
+        diagnosticDescription: String? = nil
+    ) {
+        self.status = status
+        self.authorizationStatus = authorizationStatus
+        self.lastCheckedAt = lastCheckedAt
+        self.message = message
+        self.installedHelperToolVersion = installedHelperToolVersion
+        self.diagnosticDescription = diagnosticDescription
+    }
 
     static let notInstalled = TCPViewerNetworkHelperToolSnapshot(
         status: .notInstalled,
@@ -79,13 +96,25 @@ struct TCPViewerNetworkHelperBPFInspection: Sendable, Equatable {
 protocol TCPViewerNetworkHelperServiceControlling {
     var status: TCPViewerNetworkHelperAuthorizationStatus { get }
     var installedHelperToolVersion: String? { get }
+    var diagnosticDescription: String? { get }
     func register() throws
     func unregister() throws
     func openSystemSettings()
 }
 
+extension TCPViewerNetworkHelperServiceControlling {
+    var diagnosticDescription: String? { nil }
+}
+
 protocol TCPViewerNetworkHelperBPFChecking {
     func inspect() -> TCPViewerNetworkHelperBPFInspection
+}
+
+struct TCPViewerNetworkHelperPostInstallStatusWait: Sendable {
+    static let live = TCPViewerNetworkHelperPostInstallStatusWait(maximumAttempts: 12, interval: 0.25)
+
+    let maximumAttempts: Int
+    let interval: TimeInterval
 }
 
 enum TCPViewerNetworkHelperAuthorizationRight {
@@ -141,6 +170,7 @@ final class TCPViewerNetworkHelperToolManager: TCPViewerNetworkHelperToolManagin
     private let legacyServiceControllers: [any TCPViewerNetworkHelperServiceControlling]
     private let bpfChecker: any TCPViewerNetworkHelperBPFChecking
     private let logger: TCPViewerNetworkHelperLogger
+    private let postInstallStatusWait: TCPViewerNetworkHelperPostInstallStatusWait
     private let workerQueue = DispatchQueue(label: "com.proxyman.tcpviewer.NetworkHelperToolManager", qos: .userInitiated)
 
     convenience init() {
@@ -158,12 +188,14 @@ final class TCPViewerNetworkHelperToolManager: TCPViewerNetworkHelperToolManagin
         serviceController: any TCPViewerNetworkHelperServiceControlling,
         legacyServiceControllers: [any TCPViewerNetworkHelperServiceControlling] = [],
         bpfChecker: any TCPViewerNetworkHelperBPFChecking,
-        logger: TCPViewerNetworkHelperLogger = TCPViewerNetworkHelperLogger()
+        logger: TCPViewerNetworkHelperLogger = TCPViewerNetworkHelperLogger(),
+        postInstallStatusWait: TCPViewerNetworkHelperPostInstallStatusWait = .live
     ) {
         self.serviceController = serviceController
         self.legacyServiceControllers = legacyServiceControllers
         self.bpfChecker = bpfChecker
         self.logger = logger
+        self.postInstallStatusWait = postInstallStatusWait
         self.snapshot = .notInstalled
     }
 
@@ -185,8 +217,8 @@ final class TCPViewerNetworkHelperToolManager: TCPViewerNetworkHelperToolManagin
         let currentSnapshot = snapshot
         workerQueue.async {
             let updatedSnapshot = self.makeSnapshot()
-            if let operation {
-                self.logger.log(operation, snapshot: updatedSnapshot)
+            if let operationToLog = operation ?? self.logOperationForStatusCheck(updatedSnapshot) {
+                self.logger.log(operationToLog, snapshot: updatedSnapshot)
             }
             self.publish(updatedSnapshot, completion: completion)
         }
@@ -208,14 +240,15 @@ final class TCPViewerNetworkHelperToolManager: TCPViewerNetworkHelperToolManagin
             authorizationStatus: serviceController.status,
             lastCheckedAt: Date(),
             message: "Registering TCP Viewer Network Helper Tool with macOS.",
-            installedHelperToolVersion: serviceController.installedHelperToolVersion
+            installedHelperToolVersion: serviceController.installedHelperToolVersion,
+            diagnosticDescription: serviceController.diagnosticDescription
         )
         snapshot = installingSnapshot
         workerQueue.async {
             do {
                 try self.serviceController.register()
                 self.unregisterLegacyServices()
-                let updatedSnapshot = self.makeSnapshot()
+                let updatedSnapshot = self.makeSnapshotAfterHelperRegistration(operation: operation)
                 self.logger.log(operation, snapshot: updatedSnapshot)
                 self.publish(updatedSnapshot, completion: completion)
             } catch {
@@ -233,7 +266,8 @@ final class TCPViewerNetworkHelperToolManager: TCPViewerNetworkHelperToolManagin
                     authorizationStatus: refreshedSnapshot.authorizationStatus,
                     lastCheckedAt: Date(),
                     message: "TCP Viewer could not register the helper: \(error.localizedDescription)",
-                    installedHelperToolVersion: refreshedSnapshot.installedHelperToolVersion
+                    installedHelperToolVersion: refreshedSnapshot.installedHelperToolVersion,
+                    diagnosticDescription: refreshedSnapshot.diagnosticDescription
                 )
                 self.logger.log(operation, snapshot: failedSnapshot)
                 self.publish(failedSnapshot, completion: completion)
@@ -268,7 +302,8 @@ final class TCPViewerNetworkHelperToolManager: TCPViewerNetworkHelperToolManagin
                     authorizationStatus: refreshedSnapshot.authorizationStatus,
                     lastCheckedAt: Date(),
                     message: "TCP Viewer could not uninstall the helper: \(unregisterError.localizedDescription)",
-                    installedHelperToolVersion: refreshedSnapshot.installedHelperToolVersion
+                    installedHelperToolVersion: refreshedSnapshot.installedHelperToolVersion,
+                    diagnosticDescription: refreshedSnapshot.diagnosticDescription
                 )
                 self.logger.log(.remove, snapshot: failedSnapshot)
                 self.publish(failedSnapshot, completion: completion)
@@ -290,6 +325,10 @@ final class TCPViewerNetworkHelperToolManager: TCPViewerNetworkHelperToolManagin
         let bpfInspection = bpfChecker.inspect()
         let status: TCPViewerNetworkHelperToolStatus
         let message: String
+        let diagnosticDescription = makeDiagnosticDescription(
+            authorizationStatus: authorizationStatus,
+            bpfInspection: bpfInspection
+        )
 
         switch authorizationStatus {
         case .notRegistered:
@@ -302,15 +341,21 @@ final class TCPViewerNetworkHelperToolManager: TCPViewerNetworkHelperToolManagin
             status = .waitingForApproval
             message = "Approve TCP Viewer in System Settings > General > Login Items, then retry."
         case .enabled:
-            if !bpfInspection.groupExists || !bpfInspection.expectedPermissionsReady {
+            if !bpfInspection.groupExists {
                 status = .broken
-                message = bpfInspection.message
+                message = "The Helper Tool is installed, but it has not created the TCP Viewer capture group yet."
+            } else if bpfInspection.deviceCount == 0 {
+                status = .broken
+                message = "TCP Viewer could not find /dev/bpf* devices for live capture."
+            } else if !bpfInspection.expectedPermissionsReady {
+                status = .broken
+                message = "The Helper Tool is installed, but /dev/bpf* permissions are not ready yet."
             } else if !bpfInspection.currentProcessHasCaptureGroup {
                 status = .installedNeedsRelaunch
                 message = "Relaunch TCP Viewer to finish enabling live capture."
             } else if !bpfInspection.currentProcessCanAccessBPF {
                 status = .broken
-                message = bpfInspection.message
+                message = "TCP Viewer is in the capture group, but macOS still denies /dev/bpf* access."
             } else {
                 status = .ready
                 message = bpfInspection.message
@@ -325,8 +370,64 @@ final class TCPViewerNetworkHelperToolManager: TCPViewerNetworkHelperToolManagin
             authorizationStatus: authorizationStatus,
             lastCheckedAt: Date(),
             message: message,
-            installedHelperToolVersion: serviceController.installedHelperToolVersion
+            installedHelperToolVersion: serviceController.installedHelperToolVersion,
+            diagnosticDescription: diagnosticDescription
         )
+    }
+
+    private func logOperationForStatusCheck(_ snapshot: TCPViewerNetworkHelperToolSnapshot) -> TCPViewerNetworkHelperLogOperation? {
+        snapshot.status.allowsLiveCapture ? nil : .statusCheck
+    }
+
+    private func makeSnapshotAfterHelperRegistration(
+        operation: TCPViewerNetworkHelperLogOperation
+    ) -> TCPViewerNetworkHelperToolSnapshot {
+        var latestSnapshot = makeSnapshot()
+        guard shouldWaitForPostInstallStatus(latestSnapshot) else {
+            return latestSnapshot
+        }
+
+        logger.log(.debug, "\(operation.label) is waiting for launchd to finish helper setup: \(logSummary(for: latestSnapshot))")
+        for _ in 1..<max(1, postInstallStatusWait.maximumAttempts) {
+            if postInstallStatusWait.interval > 0 {
+                Thread.sleep(forTimeInterval: postInstallStatusWait.interval)
+            }
+
+            latestSnapshot = makeSnapshot()
+            if !shouldWaitForPostInstallStatus(latestSnapshot) {
+                logger.log(.debug, "\(operation.label) helper setup settled: \(logSummary(for: latestSnapshot))")
+                return latestSnapshot
+            }
+        }
+
+        return latestSnapshot
+    }
+
+    private func shouldWaitForPostInstallStatus(_ snapshot: TCPViewerNetworkHelperToolSnapshot) -> Bool {
+        // SMJobBless returns once launchd accepts the job, but the one-shot helper may still be fixing /dev/bpf*.
+        snapshot.authorizationStatus == .enabled && snapshot.status == .broken
+    }
+
+    private func makeDiagnosticDescription(
+        authorizationStatus: TCPViewerNetworkHelperAuthorizationStatus,
+        bpfInspection: TCPViewerNetworkHelperBPFInspection
+    ) -> String? {
+        let serviceDiagnostics = serviceController.diagnosticDescription
+        let bpfDiagnostics = [
+            "bpfGroupExists=\(bpfInspection.groupExists)",
+            "bpfDeviceCount=\(bpfInspection.deviceCount)",
+            "bpfPermissionsReady=\(bpfInspection.expectedPermissionsReady)",
+            "processHasCaptureGroup=\(bpfInspection.currentProcessHasCaptureGroup)",
+            "processCanAccessBPF=\(bpfInspection.currentProcessCanAccessBPF)",
+        ].joined(separator: ", ")
+        return [serviceDiagnostics, "authorization=\(authorizationStatus.logDescription)", bpfDiagnostics]
+            .compactMap { value -> String? in value?.nilIfEmpty }
+            .joined(separator: " | ")
+            .nilIfEmpty
+    }
+
+    private func logSummary(for snapshot: TCPViewerNetworkHelperToolSnapshot) -> String {
+        "status=\(snapshot.status.rawValue), authorization=\(snapshot.authorizationStatus.logDescription), message=\"\(snapshot.message)\""
     }
 
     private func unregisterLegacyServices() {
@@ -375,7 +476,9 @@ final class ReadyTCPViewerNetworkHelperToolManager: TCPViewerNetworkHelperToolMa
         return snapshot
     }
 
-    func openSystemSettings() {}
+    func openSystemSettings() {
+        SMAppService.openSystemSettingsLoginItems()
+    }
 }
 
 struct TCPViewerNetworkHelperSMJobBlessController: TCPViewerNetworkHelperServiceControlling {
@@ -428,6 +531,13 @@ struct TCPViewerNetworkHelperSMJobBlessController: TCPViewerNetworkHelperService
 
     var status: TCPViewerNetworkHelperAuthorizationStatus {
         if installedServiceExists() {
+            if installedLaunchDaemonPlistExists() {
+                let legacyStatus = SMAppService.statusForLegacyPlist(at: installedLaunchDaemonPlistURL)
+                if legacyStatus == .requiresApproval {
+                    return .requiresApproval
+                }
+            }
+
             return .enabled
         }
 
@@ -440,6 +550,17 @@ struct TCPViewerNetworkHelperSMJobBlessController: TCPViewerNetworkHelperService
         }
 
         return helperToolVersion(at: installedHelperToolURL)
+    }
+
+    var diagnosticDescription: String? {
+        [
+            "bundledHelperExists=\(fileManager.fileExists(atPath: bundledHelperToolURL.path))",
+            "bundledPlistExists=\(fileManager.fileExists(atPath: bundledLaunchDaemonPlistURL.path))",
+            "installedHelperExists=\(fileManager.fileExists(atPath: installedHelperToolURL.path))",
+            "installedPlistExists=\(fileManager.fileExists(atPath: installedLaunchDaemonPlistURL.path))",
+            "legacyPlistStatus=\(legacyPlistStatusDescription())",
+            "launchdJob=\(launchdJobDescription())",
+        ].joined(separator: ", ")
     }
 
     func register() throws {
@@ -482,7 +603,27 @@ struct TCPViewerNetworkHelperSMJobBlessController: TCPViewerNetworkHelperService
         }
     }
 
-    func openSystemSettings() {}
+    func openSystemSettings() {
+        SMAppService.openSystemSettingsLoginItems()
+    }
+
+    private func legacyPlistStatusDescription() -> String {
+        guard installedLaunchDaemonPlistExists() else {
+            return "missing"
+        }
+
+        return SMAppService.statusForLegacyPlist(at: installedLaunchDaemonPlistURL).logDescription
+    }
+
+    private func launchdJobDescription() -> String {
+        guard let job = SMJobCopyDictionary(kSMDomainSystemLaunchd, serviceLabel as CFString)?.takeRetainedValue() as? [String: Any] else {
+            return "missing"
+        }
+
+        let lastExitStatus = job["LastExitStatus"].map { "\($0)" } ?? "unknown"
+        let pid = job["PID"].map { "\($0)" } ?? "notRunning"
+        return "present(lastExitStatus=\(lastExitStatus), pid=\(pid))"
+    }
 
     private func bundledPayloadExists() -> Bool {
         fileManager.fileExists(atPath: bundledHelperToolURL.path) &&
@@ -796,6 +937,12 @@ private extension Array where Element == String {
         return try arguments.withMemoryRebound(to: UnsafeMutablePointer<CChar>.self, capacity: cStrings.count + 1) { reboundArguments in
             try body(UnsafePointer(reboundArguments))
         }
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }
 
