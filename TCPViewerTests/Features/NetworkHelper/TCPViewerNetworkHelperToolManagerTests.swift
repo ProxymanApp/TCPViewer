@@ -134,6 +134,58 @@ struct TCPViewerNetworkHelperToolManagerTests {
         })
     }
 
+    @Test func repairWaitsForHelperSetupToFinish() async {
+        let logs = LockedLogSink()
+        let bpfChecker = ScriptedNetworkHelperBPFChecker(inspections: [
+            .missingCaptureGroup,
+            .ready,
+        ])
+        let manager = makeManager(
+            current: FakeNetworkHelperServiceController(status: .enabled),
+            bpfChecker: bpfChecker,
+            logger: TCPViewerNetworkHelperLogger(output: logs.append),
+            postInstallStatusWait: TCPViewerNetworkHelperPostInstallStatusWait(maximumAttempts: 3, interval: 0)
+        )
+
+        let snapshot = await repair(manager)
+
+        #expect(snapshot.status == .ready)
+        #expect(bpfChecker.inspectCallCount == 2)
+        #expect(logs.messages.contains { $0.contains("Repair helper tool is waiting for launchd") })
+        #expect(logs.messages.contains { $0.contains("Repair helper tool succeeded") })
+    }
+
+    @Test func statusCheckLogsDiagnosticsWhenHelperIsNotReady() async {
+        let logs = LockedLogSink()
+        let manager = makeManager(
+            current: FakeNetworkHelperServiceController(
+                status: .enabled,
+                diagnosticDescription: "launchdJob=missing"
+            ),
+            bpfChecker: ScriptedNetworkHelperBPFChecker(inspections: [.missingCaptureGroup]),
+            logger: TCPViewerNetworkHelperLogger(output: logs.append)
+        )
+
+        _ = await refreshStatus(manager)
+
+        #expect(logs.messages.contains { $0.contains("Helper status check failed") })
+        #expect(logs.messages.contains { $0.contains("launchdJob=missing") })
+        #expect(logs.messages.contains { $0.contains("bpfGroupExists=false") })
+    }
+
+    @Test func helperLoggerWritesMessagesToLogFile() throws {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TCPViewerNetworkHelperLogFileWriterTests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: rootURL) }
+        let userDataDirectory = TCPViewerUserDataDirectory(applicationSupportBaseURL: rootURL)
+        let writer = TCPViewerNetworkHelperLogFileWriter(userDataDirectory: userDataDirectory, mirrorToConsole: false)
+
+        writer.append("[test] helper status failed")
+
+        let content = try String(contentsOf: writer.logFileURL, encoding: .utf8)
+        #expect(content.contains("[test] helper status failed"))
+    }
+
     @Test func constantsUseTCPViewerHelperIdentityAndFreshCaptureGroup() {
         #expect(TCPViewerNetworkHelperConstants.serviceLabel == "com.proxyman.tcpviewer.helpertool")
         #expect(TCPViewerNetworkHelperConstants.launchDaemonPlistName == "com.proxyman.tcpviewer.helpertool.plist")
@@ -267,13 +319,16 @@ struct TCPViewerNetworkHelperToolManagerTests {
     private func makeManager(
         current: FakeNetworkHelperServiceController,
         legacy: [FakeNetworkHelperServiceController] = [],
-        logger: TCPViewerNetworkHelperLogger = TCPViewerNetworkHelperLogger(output: { _ in })
+        bpfChecker: any TCPViewerNetworkHelperBPFChecking = ReadyNetworkHelperBPFChecker(),
+        logger: TCPViewerNetworkHelperLogger = TCPViewerNetworkHelperLogger(output: { _ in }),
+        postInstallStatusWait: TCPViewerNetworkHelperPostInstallStatusWait = TCPViewerNetworkHelperPostInstallStatusWait(maximumAttempts: 1, interval: 0)
     ) -> TCPViewerNetworkHelperToolManager {
         TCPViewerNetworkHelperToolManager(
             serviceController: current,
             legacyServiceControllers: legacy,
-            bpfChecker: ReadyNetworkHelperBPFChecker(),
-            logger: logger
+            bpfChecker: bpfChecker,
+            logger: logger,
+            postInstallStatusWait: postInstallStatusWait
         )
     }
 
@@ -288,6 +343,22 @@ struct TCPViewerNetworkHelperToolManagerTests {
     private func uninstall(_ manager: TCPViewerNetworkHelperToolManager) async -> TCPViewerNetworkHelperToolSnapshot {
         await withCheckedContinuation { continuation in
             manager.uninstall { snapshot in
+                continuation.resume(returning: snapshot)
+            }
+        }
+    }
+
+    private func repair(_ manager: TCPViewerNetworkHelperToolManager) async -> TCPViewerNetworkHelperToolSnapshot {
+        await withCheckedContinuation { continuation in
+            manager.repair { snapshot in
+                continuation.resume(returning: snapshot)
+            }
+        }
+    }
+
+    private func refreshStatus(_ manager: TCPViewerNetworkHelperToolManager) async -> TCPViewerNetworkHelperToolSnapshot {
+        await withCheckedContinuation { continuation in
+            manager.refreshStatus { snapshot in
                 continuation.resume(returning: snapshot)
             }
         }
@@ -390,6 +461,7 @@ private final class FakeNetworkHelperServiceController: TCPViewerNetworkHelperSe
     private let registerError: Error?
     private let unregisterError: Error?
     private let storedInstalledHelperToolVersion: String?
+    let diagnosticDescription: String?
 
     var registerCallCount: Int {
         state.read(\.registerCallCount)
@@ -403,12 +475,14 @@ private final class FakeNetworkHelperServiceController: TCPViewerNetworkHelperSe
         status: TCPViewerNetworkHelperAuthorizationStatus,
         registerError: Error? = nil,
         unregisterError: Error? = nil,
-        installedHelperToolVersion: String? = nil
+        installedHelperToolVersion: String? = nil,
+        diagnosticDescription: String? = nil
     ) {
         self.state = Protected(State(status: status))
         self.registerError = registerError
         self.unregisterError = unregisterError
         self.storedInstalledHelperToolVersion = installedHelperToolVersion
+        self.diagnosticDescription = diagnosticDescription
     }
 
     var status: TCPViewerNetworkHelperAuthorizationStatus {
@@ -454,15 +528,56 @@ private final class FakeNetworkHelperServiceController: TCPViewerNetworkHelperSe
 
 private struct ReadyNetworkHelperBPFChecker: TCPViewerNetworkHelperBPFChecking {
     func inspect() -> TCPViewerNetworkHelperBPFInspection {
-        TCPViewerNetworkHelperBPFInspection(
-            groupExists: true,
-            deviceCount: 2,
-            expectedPermissionsReady: true,
-            currentProcessHasCaptureGroup: true,
-            currentProcessCanAccessBPF: true,
-            message: "TCP Viewer is ready to capture live traffic."
-        )
+        .ready
     }
+}
+
+private final class ScriptedNetworkHelperBPFChecker: TCPViewerNetworkHelperBPFChecking {
+    private struct State {
+        var inspections: [TCPViewerNetworkHelperBPFInspection]
+        var inspectCallCount = 0
+    }
+
+    private let state: Protected<State>
+
+    var inspectCallCount: Int {
+        state.read(\.inspectCallCount)
+    }
+
+    init(inspections: [TCPViewerNetworkHelperBPFInspection]) {
+        self.state = Protected(State(inspections: inspections))
+    }
+
+    func inspect() -> TCPViewerNetworkHelperBPFInspection {
+        state.write { state in
+            state.inspectCallCount += 1
+            guard !state.inspections.isEmpty else {
+                return .ready
+            }
+
+            return state.inspections.removeFirst()
+        }
+    }
+}
+
+private extension TCPViewerNetworkHelperBPFInspection {
+    static let ready = TCPViewerNetworkHelperBPFInspection(
+        groupExists: true,
+        deviceCount: 2,
+        expectedPermissionsReady: true,
+        currentProcessHasCaptureGroup: true,
+        currentProcessCanAccessBPF: true,
+        message: "TCP Viewer is ready to capture live traffic."
+    )
+
+    static let missingCaptureGroup = TCPViewerNetworkHelperBPFInspection(
+        groupExists: false,
+        deviceCount: 2,
+        expectedPermissionsReady: false,
+        currentProcessHasCaptureGroup: false,
+        currentProcessCanAccessBPF: false,
+        message: "TCP Viewer needs the Helper Tool to finish setting up live capture."
+    )
 }
 
 private enum FakeNetworkHelperError: LocalizedError {

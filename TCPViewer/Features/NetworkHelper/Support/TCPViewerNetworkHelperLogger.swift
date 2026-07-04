@@ -6,8 +6,10 @@
 //
 
 import Foundation
+import ServiceManagement
 
 enum TCPViewerNetworkHelperLogOperation {
+    case statusCheck
     case launchStatus
     case install
     case repair
@@ -15,6 +17,8 @@ enum TCPViewerNetworkHelperLogOperation {
 
     var label: String {
         switch self {
+        case .statusCheck:
+            "Helper status check"
         case .launchStatus:
             "Launch helper status"
         case .install:
@@ -28,7 +32,7 @@ enum TCPViewerNetworkHelperLogOperation {
 
     func succeeded(with snapshot: TCPViewerNetworkHelperToolSnapshot) -> Bool {
         switch self {
-        case .launchStatus:
+        case .statusCheck, .launchStatus:
             snapshot.status == .ready
         case .install, .repair:
             snapshot.status == .ready ||
@@ -57,7 +61,7 @@ final class TCPViewerNetworkHelperLogger {
 
     private let output: (String) -> Void
 
-    init(output: @escaping (String) -> Void = { print($0) }) {
+    init(output: @escaping (String) -> Void = TCPViewerNetworkHelperLogFileWriter.shared.append) {
         self.output = output
     }
 
@@ -91,13 +95,62 @@ final class TCPViewerNetworkHelperLogger {
     }
 }
 
-private extension TCPViewerNetworkHelperToolSnapshot {
-    var logDescription: String {
-        "status=\(status.rawValue), authorization=\(authorizationStatus.logDescription), installedVersion=\(installedHelperToolVersion ?? "none"), message=\"\(message)\""
+final class TCPViewerNetworkHelperLogFileWriter {
+    static let shared = TCPViewerNetworkHelperLogFileWriter(userDataDirectory: .shared)
+    static let logFileName = "network-helper.log"
+
+    private let userDataDirectory: TCPViewerUserDataDirectory
+    private let fileManager: FileManager
+    private let mirrorToConsole: Bool
+    private let queue = DispatchQueue(label: "com.proxyman.tcpviewer.NetworkHelperLogFileWriter")
+
+    init(
+        userDataDirectory: TCPViewerUserDataDirectory,
+        fileManager: FileManager = .default,
+        mirrorToConsole: Bool = true
+    ) {
+        self.userDataDirectory = userDataDirectory
+        self.fileManager = fileManager
+        self.mirrorToConsole = mirrorToConsole
+    }
+
+    var logFileURL: URL {
+        userDataDirectory.logsDirectoryURL.appendingPathComponent(Self.logFileName)
+    }
+
+    // Append synchronously so launch-time helper failures are on disk before the user opens Logs.
+    func append(_ message: String) {
+        queue.sync {
+            do {
+                let logsURL = try userDataDirectory.createLogsDirectoryIfNeeded()
+                let fileURL = logsURL.appendingPathComponent(Self.logFileName)
+                if !fileManager.fileExists(atPath: fileURL.path) {
+                    _ = fileManager.createFile(atPath: fileURL.path, contents: nil)
+                }
+
+                let handle = try FileHandle(forWritingTo: fileURL)
+                defer { handle.closeFile() }
+                handle.seekToEndOfFile()
+                handle.write(Data((message + "\n").utf8))
+            } catch {
+                print("[TCPViewer][HelperTool] Failed to write helper log: \(error.localizedDescription)")
+            }
+
+            if mirrorToConsole {
+                print(message)
+            }
+        }
     }
 }
 
-private extension TCPViewerNetworkHelperAuthorizationStatus {
+private extension TCPViewerNetworkHelperToolSnapshot {
+    var logDescription: String {
+        let diagnosticSuffix = diagnosticDescription.map { ", diagnostics=\"\($0)\"" } ?? ""
+        return "status=\(status.rawValue), authorization=\(authorizationStatus.logDescription), installedVersion=\(installedHelperToolVersion ?? "none"), message=\"\(message)\"\(diagnosticSuffix)"
+    }
+}
+
+extension TCPViewerNetworkHelperAuthorizationStatus {
     var logDescription: String {
         switch self {
         case .notRegistered:
@@ -109,6 +162,23 @@ private extension TCPViewerNetworkHelperAuthorizationStatus {
         case .notFound:
             "notFound"
         case .unknown(let rawValue):
+            "unknown(\(rawValue))"
+        }
+    }
+}
+
+extension SMAppService.Status {
+    var logDescription: String {
+        switch self {
+        case .notRegistered:
+            "notRegistered"
+        case .enabled:
+            "enabled"
+        case .requiresApproval:
+            "requiresApproval"
+        case .notFound:
+            "notFound"
+        @unknown default:
             "unknown(\(rawValue))"
         }
     }
