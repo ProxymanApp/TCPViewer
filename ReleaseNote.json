@@ -181,6 +181,19 @@
         "Fix crashes from Wireshark critical exceptions.",
         "Fix packet copy edge cases."
       ]
+    },
+        {
+      "version": "1.8.1",
+      "title": "TCP Viewer 1.8.1: Improve helper tool connection and error handling",
+      "features": [
+      ],
+      "improvements": [
+        "Improve how TCPViewer connects to the helper tool and handle errors better"
+      ],
+      "bugs": [
+        "Fix few top crashes from Sentry.",
+        "Sometiomes, TCPViewer could not connect to the helper tool"
+      ]
     }
   ]
 }
