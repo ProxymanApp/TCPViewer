@@ -50,6 +50,7 @@ protocol TCPViewerToolbarDataSourceDelegate: AnyObject {
     func tcpviewerToolbarDataSourceDidToggleBottomInspector(_ dataSource: TCPViewerToolbarDataSource)
     func tcpviewerToolbarDataSourceDidRequestHelperToolScreen(_ dataSource: TCPViewerToolbarDataSource)
     func tcpviewerToolbarDataSourceDidRequestPaywall(_ dataSource: TCPViewerToolbarDataSource)
+    func tcpviewerToolbarDataSourceDidRequestCheckForUpdates(_ dataSource: TCPViewerToolbarDataSource)
 }
 
 final class TCPViewerToolbarDataSource: NSObject {
@@ -77,6 +78,7 @@ final class TCPViewerToolbarDataSource: NSObject {
     private let inspectorBottomButton = NSButton(frame: NSRect(x: 0, y: 0, width: 34, height: 30))
     private var interfacePopupWidthConstraint: NSLayoutConstraint?
     private var isTrialButtonRequired = !TCPViewerLicenseService.shared.isLicenseAuthorized
+    private var availableUpdateCount = 0
 
     private var allowedItemIdentifiers: [NSToolbarItem.Identifier] {
         var identifiers = TCPViewerToolbarItemMetadata.allCases
@@ -135,6 +137,12 @@ final class TCPViewerToolbarDataSource: NSObject {
         renderInspectorButton()
         statusView.render(viewModel: viewModel)
         syncTrialToolbarItem()
+    }
+
+    // Update only the status badge because release availability is independent of capture state.
+    func setAvailableUpdateCount(_ count: Int) {
+        availableUpdateCount = max(0, count)
+        statusView.renderUpdateBadge(availableUpdateCount)
     }
 
     private func configureToolbar() {
@@ -234,6 +242,14 @@ final class TCPViewerToolbarDataSource: NSObject {
             }
 
             delegate?.tcpviewerToolbarDataSourceDidRequestHelperToolScreen(self)
+        }
+
+        statusView.onCheckForUpdates = { [weak self] in
+            guard let self else {
+                return
+            }
+
+            delegate?.tcpviewerToolbarDataSourceDidRequestCheckForUpdates(self)
         }
     }
 
@@ -639,11 +655,13 @@ private struct TCPViewerToolbarHelperError {
 
 private final class TCPViewerToolbarStatusView: NSView {
     var onOpenHelperToolScreen: (() -> Void)?
+    var onCheckForUpdates: (() -> Void)?
 
     private let dot = NSView()
     private let statusLabel = TCPViewerUI.label("", font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium), color: .secondaryLabelColor)
     private let emphasizedLabel = TCPViewerUI.label("", font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold))
     private let helperErrorButton = NSButton(title: "Error", target: nil, action: nil)
+    private let updateBadgeButton = NSButton(title: "", target: nil, action: nil)
     private var helperError: TCPViewerToolbarHelperError?
 
     override init(frame frameRect: NSRect) {
@@ -672,6 +690,17 @@ private final class TCPViewerToolbarStatusView: NSView {
         toolTip = viewModel.helpText
     }
 
+    // Render the optional release badge independently from live-capture status updates.
+    func renderUpdateBadge(_ count: Int) {
+        guard count > 0 else {
+            updateBadgeButton.isHidden = true
+            return
+        }
+
+        updateBadgeButton.title = count == 1 ? "New Update" : "\(count) New Updates"
+        updateBadgeButton.isHidden = false
+    }
+
     private func setupLayout() {
         dot.wantsLayer = true
         dot.layer?.cornerRadius = 4
@@ -679,14 +708,15 @@ private final class TCPViewerToolbarStatusView: NSView {
         statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         emphasizedLabel.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
         configureHelperErrorButton()
+        configureUpdateBadgeButton()
 
-        let stack = NSStackView(views: [dot, statusLabel, emphasizedLabel, helperErrorButton])
+        let stack = NSStackView(views: [dot, statusLabel, emphasizedLabel, updateBadgeButton, helperErrorButton])
         stack.orientation = .horizontal
         stack.alignment = .centerY
         stack.spacing = 6
         stack.setCustomSpacing(10, after: dot)
         stack.setCustomSpacing(4, after: statusLabel)
-        stack.setCustomSpacing(12, after: emphasizedLabel)
+        stack.setCustomSpacing(8, after: emphasizedLabel)
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
 
@@ -725,11 +755,26 @@ private final class TCPViewerToolbarStatusView: NSView {
         helperErrorButton.setContentCompressionResistancePriority(.required, for: .horizontal)
     }
 
+    private func configureUpdateBadgeButton() {
+        updateBadgeButton.target = self
+        updateBadgeButton.action = #selector(updateBadgeButtonPressed(_:))
+        updateBadgeButton.bezelStyle = .rounded
+        updateBadgeButton.controlSize = .small
+        updateBadgeButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
+        updateBadgeButton.toolTip = "Check for Updates"
+        updateBadgeButton.isHidden = true
+        updateBadgeButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+    }
+
     @objc private func helperErrorButtonPressed(_ sender: NSButton) {
         guard helperError != nil else {
             return
         }
 
         onOpenHelperToolScreen?()
+    }
+
+    @objc private func updateBadgeButtonPressed(_ sender: NSButton) {
+        onCheckForUpdates?()
     }
 }

@@ -19,6 +19,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var licenseWindowController: TCPViewerLicenseWindowController?
     private var updaterController: SPUStandardUpdaterController?
     private let sparkleUpdaterDelegate = TCPViewerSparkleUpdaterDelegate()
+    private let updateAvailabilityService = TCPViewerUpdateAvailabilityService()
     private weak var checkForUpdatesMenuItem: NSMenuItem?
     private weak var licenseMenuItem: NSMenuItem?
     private var licenseStatusObserver: NSObjectProtocol?
@@ -29,6 +30,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var isShowingRenewalRequiredAlert = false
     private var isVerifyingLicenseAtLaunch = false
     private var didCheckForUpdatesAtLaunch = false
+    private var availableUpdateCount = 0
     private var isTerminatingAfterFactoryReset = false
     #if DEBUG
     private var shouldOpenUntitledDocumentAfterIgnoringDebugLaunchFiles = false
@@ -42,6 +44,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         wireAboutMenu()
         wirePreferencesMenu()
         wireUpdatesMenu()
+        checkForAvailableUpdatesAtLaunch()
         wireClearAllPacketsMenu()
         wireFilterMenu()
         wireHelpMenu()
@@ -502,6 +505,44 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         updater.checkForUpdatesInBackground()
+    }
+
+    // Check the release count separately so skipped Sparkle releases still appear in the toolbar badge.
+    private func checkForAvailableUpdatesAtLaunch() {
+        guard isSparkleConfigured() else {
+            return
+        }
+
+        updateAvailabilityService.checkForAvailableBuilds { [weak self] count in
+            DispatchQueue.main.async {
+                guard let self else {
+                    return
+                }
+
+                self.availableUpdateCount = count
+                self.updateToolbarUpdateBadges()
+            }
+        }
+    }
+
+    // Supply the last launch-time count to document windows created after the network request completes.
+    func currentAvailableUpdateCount() -> Int {
+        availableUpdateCount
+    }
+
+    // Trigger Sparkle's user-initiated flow so its normal update presentation remains the single install path.
+    func checkForUpdatesFromToolbar() {
+        guard let updaterController = makeUpdaterControllerIfConfigured() else {
+            return
+        }
+
+        updaterController.checkForUpdates(nil)
+    }
+
+    private func updateToolbarUpdateBadges() {
+        for windowController in NSApp.windows.compactMap({ $0.windowController as? TCPViewerWindowController }) {
+            windowController.updateAvailableBuildCount(availableUpdateCount)
+        }
     }
 
     private func isSparkleConfigured() -> Bool {

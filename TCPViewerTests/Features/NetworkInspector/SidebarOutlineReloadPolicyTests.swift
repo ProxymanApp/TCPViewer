@@ -150,7 +150,7 @@ struct SidebarOutlineReloadPolicyTests {
     }
 
     @MainActor
-    @Test func sidebarContextMenuPlacesCopyAndShowInFinderAboveDelete() throws {
+    @Test func sidebarContextMenuPlacesPinFirstAndShowInFinderAboveDelete() throws {
         let appKey = PacketSourceClientKey(rawValue: "bundleIdentifier:com.example.App")
         let controller = SidebarViewController()
         controller.loadViewIfNeeded()
@@ -167,7 +167,10 @@ struct SidebarOutlineReloadPolicyTests {
         controller.menuNeedsUpdate(menu)
 
         let nonSeparatorTitles = menu.items.filter { !$0.isSeparatorItem }.map(\.title)
-        #expect(nonSeparatorTitles == ["Copy App Name", "Pin", "Export", "Show in Finder…", "Delete"])
+        #expect(nonSeparatorTitles == ["Pin", "Copy App Name", "Export", "Show in Finder…", "Delete"])
+        let pinIndex = try #require(menu.items.firstIndex { $0.title == "Pin" })
+        #expect(pinIndex == 0)
+        #expect(menu.items[pinIndex + 1].isSeparatorItem)
         let copyIndex = try #require(menu.items.firstIndex { $0.title == "Copy App Name" })
         #expect(menu.items[copyIndex + 1].isSeparatorItem)
         let finderIndex = try #require(menu.items.firstIndex { $0.title == "Show in Finder…" })
@@ -194,7 +197,8 @@ struct SidebarOutlineReloadPolicyTests {
         controller.menuNeedsUpdate(menu)
 
         let nonSeparatorTitles = menu.items.filter { !$0.isSeparatorItem }.map(\.title)
-        #expect(nonSeparatorTitles.first == "Copy Domain Name")
+        #expect(nonSeparatorTitles.first == "Pin")
+        #expect(nonSeparatorTitles.contains("Copy Domain Name"))
         #expect(!nonSeparatorTitles.contains("Copy App Name"))
     }
 

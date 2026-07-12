@@ -105,6 +105,12 @@ final class TCPViewerWindowController: NSWindowController {
         toolbarDataSource.delegate = self
         window?.toolbar = toolbarDataSource.toolbar
         window?.toolbarStyle = .unified
+        toolbarDataSource.setAvailableUpdateCount((NSApp.delegate as? AppDelegate)?.currentAvailableUpdateCount() ?? 0)
+    }
+
+    // Update the independent release badge without rebuilding the capture toolbar state.
+    func updateAvailableBuildCount(_ count: Int) {
+        toolbarDataSource.setAvailableUpdateCount(count)
     }
 
     private func setupQuickFilters() {
@@ -261,6 +267,10 @@ extension TCPViewerWindowController: TCPViewerToolbarDataSourceDelegate {
 
     func tcpviewerToolbarDataSourceDidRequestPaywall(_ dataSource: TCPViewerToolbarDataSource) {
         (NSApp.delegate as? AppDelegate)?.showPaywall(self)
+    }
+
+    func tcpviewerToolbarDataSourceDidRequestCheckForUpdates(_ dataSource: TCPViewerToolbarDataSource) {
+        (NSApp.delegate as? AppDelegate)?.checkForUpdatesFromToolbar()
     }
 }
 
