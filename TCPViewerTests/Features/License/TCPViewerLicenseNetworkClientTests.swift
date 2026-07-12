@@ -289,7 +289,7 @@ struct TCPViewerLicenseNetworkClientTests {
     }
 }
 
-private final class StubLicenseTransport: TCPViewerLicenseNetworkTransport {
+private final class StubLicenseTransport: TCPViewerServerNetworkTransport {
     enum TransportResult {
         case success((Data?, HTTPURLResponse))
         case failure(Error)

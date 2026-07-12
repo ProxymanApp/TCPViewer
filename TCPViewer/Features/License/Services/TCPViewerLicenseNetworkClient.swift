@@ -33,14 +33,14 @@ protocol TCPViewerLicenseNetworkClienting: AnyObject {
     )
 }
 
-protocol TCPViewerLicenseNetworkTransport {
+protocol TCPViewerServerNetworkTransport {
     func perform(
         _ request: URLRequest,
         completion: @escaping (Data?, HTTPURLResponse?, Error?) -> Void
     )
 }
 
-final class TCPViewerLicenseURLSessionTransport: TCPViewerLicenseNetworkTransport {
+final class TCPViewerServerURLSessionTransport: TCPViewerServerNetworkTransport {
     private let session: URLSession
 
     init(session: URLSession = .shared) {
@@ -58,22 +58,49 @@ final class TCPViewerLicenseURLSessionTransport: TCPViewerLicenseNetworkTranspor
     }
 }
 
-final class TCPViewerLicenseNetworkClient: TCPViewerLicenseNetworkClienting {
-    private enum ServerEndpoint {
-        static let localServerInfoKey = "TCPViewerUsesLocalLicenseServer"
-        static let productionBaseURL = URL(string: "https://api-tcpviewer.proxyman.com")!
-        static let localBaseURL = URL(string: "http://proxyman.debug:3000")!
+enum TCPViewerServerEndpoint {
+    static let localServerInfoKey = "TCPViewerUsesLocalLicenseServer"
+    static let productionBaseURL = URL(string: "https://api-tcpviewer.proxyman.com")!
+    static let localBaseURL = URL(string: "http://proxyman.debug:3000")!
+
+    // Resolve the shared server root so release and license requests use the same environment.
+    static func baseURL(bundleInfo: [String: Any]) -> URL {
+        guard isEnabled(bundleInfo[localServerInfoKey]) else {
+            return productionBaseURL
+        }
+
+        return localBaseURL
     }
 
+    // Accept plist/build-setting values regardless of whether Xcode emits string, number, or bool.
+    private static func isEnabled(_ value: Any?) -> Bool {
+        if let value = value as? Bool {
+            return value
+        }
+
+        if let value = value as? NSNumber {
+            return value.boolValue
+        }
+
+        guard let value = value as? String else {
+            return false
+        }
+
+        let normalizedValue = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return ["1", "true", "yes", "on"].contains(normalizedValue)
+    }
+}
+
+final class TCPViewerLicenseNetworkClient: TCPViewerLicenseNetworkClienting {
     private let baseURLOverride: URL?
     private let bundleInfo: [String: Any]
-    private let transport: any TCPViewerLicenseNetworkTransport
+    private let transport: any TCPViewerServerNetworkTransport
     private let decoder = JSONDecoder()
 
     init(
         baseURL: URL? = nil,
         bundleInfo: [String: Any] = Bundle.main.infoDictionary ?? [:],
-        transport: any TCPViewerLicenseNetworkTransport = TCPViewerLicenseURLSessionTransport()
+        transport: any TCPViewerServerNetworkTransport = TCPViewerServerURLSessionTransport()
     ) {
         self.baseURLOverride = baseURL
         self.bundleInfo = bundleInfo
@@ -198,7 +225,7 @@ final class TCPViewerLicenseNetworkClient: TCPViewerLicenseNetworkClienting {
 
     private func makeJSONRequest(path: String, method: String, body: [String: Any]) throws -> URLRequest {
         let relativePath = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let baseURL = baseURLOverride ?? Self.baseURL(bundleInfo: bundleInfo)
+        let baseURL = baseURLOverride ?? TCPViewerServerEndpoint.baseURL(bundleInfo: bundleInfo)
         guard let url = URL(string: relativePath, relativeTo: baseURL)?.absoluteURL else {
             throw TCPViewerLicenseError.error("Invalid license server URL.")
         }
@@ -207,33 +234,6 @@ final class TCPViewerLicenseNetworkClient: TCPViewerLicenseNetworkClienting {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
         return request
-    }
-
-    // Resolve the shared server root so every license request honors the same build setting.
-    private static func baseURL(bundleInfo: [String: Any]) -> URL {
-        guard isEnabled(bundleInfo[ServerEndpoint.localServerInfoKey]) else {
-            return ServerEndpoint.productionBaseURL
-        }
-
-        return ServerEndpoint.localBaseURL
-    }
-
-    // Accept plist/build-setting values regardless of whether Xcode emits string, number, or bool.
-    private static func isEnabled(_ value: Any?) -> Bool {
-        if let value = value as? Bool {
-            return value
-        }
-
-        if let value = value as? NSNumber {
-            return value.boolValue
-        }
-
-        guard let value = value as? String else {
-            return false
-        }
-
-        let normalizedValue = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return ["1", "true", "yes", "on"].contains(normalizedValue)
     }
 
     private static func mapNetworkError(_ error: Error) -> TCPViewerLicenseError {

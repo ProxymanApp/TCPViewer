@@ -907,6 +907,7 @@ extension SidebarViewController: NSSearchFieldDelegate {
 
 extension SidebarViewController: NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
+        // Rebuild the available actions for the rows targeted by the current click.
         updateSelectionFromCurrentMenuEvent()
         let copyAction = selectedCopyAction()
         let pinTargets = selectedPinTargets()
@@ -919,25 +920,25 @@ extension SidebarViewController: NSMenuDelegate {
             return
         }
 
+        if !pinTargets.isEmpty {
+            let pinItem = NSMenuItem(title: "Pin", action: #selector(pinSelectedSourceListItems(_:)), keyEquivalent: "")
+            pinItem.target = self
+            pinItem.isEnabled = true
+            pinItem.image = NSImage(systemSymbolName: "pin", accessibilityDescription: "Pin")
+            menu.addItem(pinItem)
+        }
+
         if let copyAction {
+            if !pinTargets.isEmpty {
+                menu.addItem(.separator())
+            }
+
             let copyItem = NSMenuItem(title: copyAction.menuTitle, action: #selector(copySelectedSourceListItemName(_:)), keyEquivalent: "")
             copyItem.target = self
             copyItem.isEnabled = true
             copyItem.toolTip = "Copy the selected source-list name."
             copyItem.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: copyAction.menuTitle)
             menu.addItem(copyItem)
-        }
-
-        if !pinTargets.isEmpty {
-            if copyAction != nil {
-                menu.addItem(.separator())
-            }
-
-            let pinItem = NSMenuItem(title: "Pin", action: #selector(pinSelectedSourceListItems(_:)), keyEquivalent: "")
-            pinItem.target = self
-            pinItem.isEnabled = true
-            pinItem.image = NSImage(systemSymbolName: "pin", accessibilityDescription: "Pin")
-            menu.addItem(pinItem)
         }
 
         if exportSelection != nil {
