@@ -506,6 +506,7 @@ final class PCPPNativeLiveSession {
     private let dissectionSessionFactory: () throws -> WiresharkEpanSession?
     private let state: Protected<PCPPNativeLiveSessionState>
     private let captureQueue = DispatchQueue(label: "com.proxyman.tcpviewer.PcapPlusPlusCore.PCPPNativeLiveSession.capture", qos: .userInitiated)
+    private let captureQueueKey = DispatchSpecificKey<UInt8>()
 
     var healthSnapshot: PCPPNativeCaptureHealthDescriptor {
         state.read {
@@ -520,6 +521,7 @@ final class PCPPNativeLiveSession {
         self.captureBackend = LibpcapLiveCaptureBackend()
         self.dissectionSessionFactory = { try WiresharkEpanSession(purpose: .live) }
         self.state = Protected(PCPPNativeLiveSessionState())
+        self.captureQueue.setSpecific(key: captureQueueKey, value: 1)
     }
 
     init(interfaceIdentifier: String, options: PCPPNativeCaptureOptionsDescriptor, disablesWireshark: Bool, error: AutoreleasingUnsafeMutablePointer<NSError?>?) {
@@ -529,6 +531,7 @@ final class PCPPNativeLiveSession {
         self.captureBackend = LibpcapLiveCaptureBackend()
         self.dissectionSessionFactory = disablesWireshark ? { nil } : { try WiresharkEpanSession(purpose: .live) }
         self.state = Protected(PCPPNativeLiveSessionState())
+        self.captureQueue.setSpecific(key: captureQueueKey, value: 1)
     }
 
     init(
@@ -543,6 +546,7 @@ final class PCPPNativeLiveSession {
         self.captureBackend = captureBackend
         self.dissectionSessionFactory = dissectionSessionFactory
         self.state = Protected(PCPPNativeLiveSessionState())
+        self.captureQueue.setSpecific(key: captureQueueKey, value: 1)
     }
 
     func start() throws {
@@ -558,16 +562,6 @@ final class PCPPNativeLiveSession {
         }
 
         phaseHandler?(.starting, "Starting capture on \(interfaceIdentifier)...")
-        let nextDissectionSession: WiresharkEpanSession?
-        let dissectionStatus: String?
-        do {
-            nextDissectionSession = try dissectionSessionFactory()
-            dissectionStatus = disablesWireshark ? "Wireshark details are disabled; capture continues with the Swift dissector." : nil
-        } catch {
-            nextDissectionSession = nil
-            dissectionStatus = "Wireshark details are unavailable; capture continues with the Swift dissector."
-        }
-
         let openedHandle: OpaquePointer
         do {
             openedHandle = try captureBackend.open(interfaceName: interfaceIdentifier, options: options)
@@ -581,6 +575,17 @@ final class PCPPNativeLiveSession {
                 $0.statusMessage = nil
             }
             throw error
+        }
+
+        // Acquire process-global EPAN ownership only after libpcap can start successfully.
+        let nextDissectionSession: WiresharkEpanSession?
+        let dissectionStatus: String?
+        do {
+            nextDissectionSession = try dissectionSessionFactory()
+            dissectionStatus = disablesWireshark ? "Wireshark details are disabled; capture continues with the Swift dissector." : nil
+        } catch {
+            nextDissectionSession = nil
+            dissectionStatus = "Wireshark details are unavailable; capture continues with the Swift dissector."
         }
 
         state.write {
@@ -636,10 +641,11 @@ final class PCPPNativeLiveSession {
         if let handleToStop {
             phaseHandler?(.stopping, "Stopping capture...")
             captureBackend.breakLoop(handleToStop)
-            captureQueue.sync {}
+            waitForCaptureLoopIfNeeded()
         }
-        try? state.write {
-            try $0.dissectionSession?.finishFirstPass()
+        state.write {
+            try? $0.dissectionSession?.finishFirstPass()
+            $0.dissectionSession = nil
         }
         if let handleToStop {
             closeCaptureHandleIfOwned(handleToStop)
@@ -661,9 +667,12 @@ final class PCPPNativeLiveSession {
         }
 
         captureBackend.breakLoop(handle)
-        captureQueue.sync {}
+        waitForCaptureLoopIfNeeded()
         closeCaptureHandleIfOwned(handle)
-        state.write { $0.phase = .stopped }
+        state.write {
+            $0.phase = .stopped
+            $0.dissectionSession = nil
+        }
     }
 
     func clearCapturedPackets() {
@@ -846,6 +855,7 @@ final class PCPPNativeLiveSession {
             state.paused = false
             state.phase = .failed
             state.statusMessage = message
+            state.dissectionSession = nil
         }
         closeCaptureHandleIfOwned(handle)
         errorHandler?(error)
@@ -869,6 +879,14 @@ final class PCPPNativeLiveSession {
         if shouldClose {
             captureBackend.close(handle)
         }
+    }
+
+    private func waitForCaptureLoopIfNeeded() {
+        // A callback may release the public session on this queue; never synchronously join it from itself.
+        guard DispatchQueue.getSpecific(key: captureQueueKey) == nil else {
+            return
+        }
+        captureQueue.sync {}
     }
 
     private func disableWiresharkAfterFailure(_ error: Error, state: inout PCPPNativeLiveSessionState) {

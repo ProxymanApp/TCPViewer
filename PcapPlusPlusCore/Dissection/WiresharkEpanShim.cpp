@@ -1293,13 +1293,16 @@ struct TCPViewerWiresharkSession {
     bool initializeWiresharkResourcesLocked()
     {
         if (auto *active = activeSession(); active != nullptr && active != this) {
-            if (!livePriority || active->livePriority) {
+            if (active->livePriority) {
                 unavailableReason = "Wireshark is busy with another capture; this packet uses the built-in fallback dissector.";
                 return false;
             }
-            // A live capture owns the process-global file scope until it stops.
+            // Switching offline documents is bounded to explicit work and never replays the previous capture.
             std::lock_guard<std::mutex> activeLock(active->mutex);
-            active->releaseWiresharkResourcesLocked("Wireshark details were released because a live capture started.", false);
+            const char *reason = livePriority
+                ? "Wireshark details were released because a live capture started."
+                : "Wireshark details were released because another offline capture became active.";
+            active->releaseWiresharkResourcesLocked(reason, false);
         }
 
         provider = std::make_unique<packet_provider_data>();

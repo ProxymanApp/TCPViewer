@@ -161,8 +161,11 @@ final class NativeLivePacketDiskStore {
             writer = try FileHandle(forWritingTo: backingFileURL)
             reader = try FileHandle(forReadingFrom: backingFileURL)
             try writer?.seekToEnd()
+            // Keep packet payloads accessible only through open descriptors so crashes leave no named file behind.
+            try fileManager.removeItem(at: backingFileURL)
         } catch {
             try? writer?.close()
+            try? reader?.close()
             writer = nil
             reader = nil
             throw NativeNSError(.fileWriteFailed, "The live packet backing store could not be opened: \(error.localizedDescription)")

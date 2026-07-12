@@ -31,6 +31,25 @@ struct LiveCaptureLifecycleTests {
         #expect(backend.closeCount == 1)
     }
 
+    @Test func startFailureDoesNotAcquireLiveDissectionOwnership() {
+        let backend = TestLiveCaptureBackend(openFailuresRemaining: 1)
+        var dissectionFactoryCallCount = 0
+        let session = PCPPNativeLiveSession(
+            interfaceIdentifier: "test0",
+            options: makeOptions(),
+            captureBackend: backend,
+            dissectionSessionFactory: {
+                dissectionFactoryCallCount += 1
+                return nil
+            }
+        )
+
+        #expect(throws: NSError.self) {
+            try session.start()
+        }
+        #expect(dissectionFactoryCallCount == 0)
+    }
+
     @Test func fatalPacketReadClosesHandleAndReportsFailureOnce() throws {
         let backend = TestLiveCaptureBackend(queuedReads: [.failure("synthetic read failure")])
         let session = makeSession(backend: backend)
@@ -72,6 +91,50 @@ struct LiveCaptureLifecycleTests {
         #expect(inspection.detailNodes.contains { $0.fieldName == "tcpviewer.wireshark.fallback" })
         try session.stop()
         #expect(backend.closeCount == 1)
+    }
+
+    @Test func shutdownFromCaptureCallbackDoesNotJoinItsOwnQueue() throws {
+        let packet = Data([0, 1, 2, 3])
+        let header = pcap_pkthdr(
+            ts: timeval(tv_sec: 1, tv_usec: 0),
+            caplen: UInt32(packet.count),
+            len: UInt32(packet.count)
+        )
+        let backend = TestLiveCaptureBackend(queuedReads: [.packet(header: header, bytes: packet)])
+        let session = makeSession(backend: backend)
+        let shutdownCompleted = DispatchSemaphore(value: 0)
+        session.packetHandler = { [weak session] _ in
+            session?.shutdown()
+            shutdownCompleted.signal()
+        }
+
+        try session.start()
+
+        #expect(shutdownCompleted.wait(timeout: .now() + 2) == .success)
+        #expect(backend.breakCount == 1)
+        #expect(backend.closeCount == 1)
+    }
+
+    @Test func stoppedLiveCaptureReleasesEpanForOfflineInspection() throws {
+        let backend = TestLiveCaptureBackend()
+        let liveSession = PCPPNativeLiveSession(
+            interfaceIdentifier: "test0",
+            options: makeOptions(),
+            captureBackend: backend,
+            dissectionSessionFactory: { try WiresharkEpanSession(purpose: .live) }
+        )
+        let offlineSession = try WiresharkEpanSession()
+        let record = makeUDPPacketRecord()
+
+        try liveSession.start()
+        #expect(throws: NSError.self) {
+            try offlineSession.observe(record)
+        }
+
+        try liveSession.stop()
+
+        try offlineSession.observe(record)
+        #expect(try offlineSession.summarize(record).infoSummary.isEmpty == false)
     }
 
     @Test func captureOptionsRejectValuesThatWouldTrapInt32Conversion() {
@@ -121,6 +184,27 @@ struct LiveCaptureLifecycleTests {
             fileFormat: nil,
             maxFileSizeBytes: 0,
             ringFileCount: 0
+        )
+    }
+
+    private func makeUDPPacketRecord() -> NativePacketRecord {
+        NativePacketRecord(
+            identifier: 1,
+            packetNumber: 1,
+            timestamp: Date(timeIntervalSince1970: 1),
+            rawBytes: Data([
+                0x00, 0x11, 0x22, 0x33, 0x44, 0x55,
+                0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
+                0x08, 0x00,
+                0x45, 0x00, 0x00, 0x1c, 0x00, 0x01, 0x00, 0x00,
+                0x40, 0x11, 0x00, 0x00, 192, 168, 0, 1, 192, 168, 0, 2,
+                0x14, 0xe9, 0x00, 0x35, 0x00, 0x08, 0x00, 0x00,
+            ]),
+            originalLength: 42,
+            linkLayerType: Libpcap.dltEthernet,
+            interfaceIdentifier: "test0",
+            interfaceName: "test0",
+            packetComment: nil
         )
     }
 }

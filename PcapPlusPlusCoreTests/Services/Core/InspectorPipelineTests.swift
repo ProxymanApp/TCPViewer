@@ -202,6 +202,26 @@ struct InspectorPipelineTests {
         }
     }
 
+    @Test func multipleOfflineDocumentsTransferWiresharkDetailsWhenSelectionChanges() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let firstURL = directory.appendingPathComponent("first.pcap")
+        let secondURL = directory.appendingPathComponent("second.pcap")
+        try writePCAP(to: firstURL, packets: [makeIPv4UDPPayloadPacket()])
+        try writePCAP(to: secondURL, packets: [makeIPv4DNSResponsePacket()])
+
+        let core = NativeTCPViewerCore()
+        let firstDocument = try await core.openOfflineCaptureDocument(at: firstURL)
+        let secondDocument = try await core.openOfflineCaptureDocument(at: secondURL)
+        let firstPacket = try #require(try await firstDocument.open().first)
+        let secondPacket = try #require(try await secondDocument.open().first)
+
+        #expect(!firstDocument.loadProgress().isPartialResult)
+        #expect(!secondDocument.loadProgress().isPartialResult)
+        #expect(findNode(in: try await firstDocument.inspectPacket(id: firstPacket.id).detailNodes, fieldName: "udp") != nil)
+        #expect(findNode(in: try await secondDocument.inspectPacket(id: secondPacket.id).detailNodes, fieldName: "dns") != nil)
+    }
+
     @Test func bigEndianPcapNgOpensWithSummariesRawBytesAndDetails() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -693,7 +713,7 @@ struct InspectorPipelineTests {
 
             let snapshot = harness.snapshot
             #expect(snapshot.packetCount == checkpoint)
-            #expect(snapshot.backingFileExists)
+            #expect(!snapshot.backingFileExists)
             #expect(snapshot.backingFileSize == UInt64(packet.count * checkpoint))
             #expect(try harness.offset(identifier: 1) == 0)
             #expect(try harness.offset(identifier: UInt64(checkpoint)) == UInt64(packet.count * (checkpoint - 1)))
@@ -715,7 +735,7 @@ struct InspectorPipelineTests {
         }
 
         let backingFilePath = harness.snapshot.backingFilePath
-        #expect(FileManager.default.fileExists(atPath: backingFilePath))
+        #expect(!FileManager.default.fileExists(atPath: backingFilePath))
 
         harness.cleanup()
 
@@ -745,8 +765,7 @@ struct InspectorPipelineTests {
         #expect(try harness.offset(identifier: 2) == UInt64(firstPacket.count))
         #expect(try harness.offset(identifier: 3) == UInt64(firstPacket.count + secondPacket.count))
         #expect(harness.snapshot.backingFileSize == UInt64(firstPacket.count + secondPacket.count + thirdPacket.count))
-        let permissions = try FileManager.default.attributesOfItem(atPath: harness.snapshot.backingFilePath)[.posixPermissions] as? NSNumber
-        #expect((permissions?.intValue ?? 0) & 0o077 == 0)
+        #expect(!FileManager.default.fileExists(atPath: harness.snapshot.backingFilePath))
         #expect(try harness.inspectPacket(identifier: 2).rawBytes == secondPacket)
         #expect(try harness.inspectPacket(identifier: 3).rawBytes == thirdPacket)
 

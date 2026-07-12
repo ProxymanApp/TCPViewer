@@ -11,21 +11,19 @@ import Testing
 
 @Suite(.serialized)
 struct WiresharkSessionCoordinationTests {
-    @Test func offlineSessionKeepsOwnershipUntilReleased() throws {
-        var firstSession: WiresharkEpanSession? = try WiresharkEpanSession()
+    @Test func offlineSessionsTransferOwnershipWithoutReplay() throws {
+        let firstSession = try WiresharkEpanSession()
         let secondSession = try WiresharkEpanSession()
         let firstRecord = makeRecord(identifier: 1)
         let secondRecord = makeRecord(identifier: 2)
 
-        try firstSession?.observe(firstRecord)
-        #expect(try firstSession?.summarize(firstRecord).infoSummary.isEmpty == false)
-        #expect(throws: NSError.self) {
-            try secondSession.observe(secondRecord)
-        }
-
-        firstSession = nil
+        try firstSession.observe(firstRecord)
+        #expect(try firstSession.summarize(firstRecord).infoSummary.isEmpty == false)
 
         try secondSession.observe(secondRecord)
+        #expect(try secondSession.summarize(secondRecord).infoSummary.isEmpty == false)
+        // An explicit operation transfers ownership and rebuilds only the requested session state.
+        #expect(try firstSession.summarize(firstRecord).infoSummary.isEmpty == false)
         #expect(try secondSession.summarize(secondRecord).infoSummary.isEmpty == false)
     }
 
