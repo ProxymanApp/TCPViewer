@@ -84,7 +84,7 @@ typedef struct TCPViewerWiresharkExceptionReport {
     const char *reason;
 } TCPViewerWiresharkExceptionReport;
 
-TCPViewerWiresharkSession *TCPViewerWiresharkSessionCreate(bool disabled, const char *personalConfigurationDirectory);
+TCPViewerWiresharkSession *TCPViewerWiresharkSessionCreate(bool disabled, bool livePriority, const char *personalConfigurationDirectory);
 void TCPViewerWiresharkSessionDestroy(TCPViewerWiresharkSession *session);
 void TCPViewerWiresharkSessionReleaseResources(TCPViewerWiresharkSession *session);
 bool TCPViewerWiresharkSessionIsAvailable(TCPViewerWiresharkSession *session);

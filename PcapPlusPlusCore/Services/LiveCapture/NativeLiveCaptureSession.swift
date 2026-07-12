@@ -116,9 +116,14 @@ struct LivePacketBatchBuffer<Element: Sendable>: Sendable {
 }
 
 struct LivePacketReanalysisQueue<ID: Hashable & Sendable>: Sendable {
+    let maxPendingCount: Int
     private var queuedIDs: [ID] = []
     private var queuedIDSet: Set<ID> = []
     private var readIndex = 0
+
+    init(maxPendingCount: Int = 4_096) {
+        self.maxPendingCount = max(maxPendingCount, 1)
+    }
 
     var isEmpty: Bool {
         pendingCount == 0
@@ -128,10 +133,20 @@ struct LivePacketReanalysisQueue<ID: Hashable & Sendable>: Sendable {
         queuedIDs.count - readIndex
     }
 
-    mutating func enqueue(_ ids: [ID]) {
+    // Keep recent packets when reanalysis falls behind live capture.
+    mutating func enqueue(_ ids: [ID]) -> [ID] {
+        var evictedIDs: [ID] = []
         for id in ids where queuedIDSet.insert(id).inserted {
+            if pendingCount >= maxPendingCount {
+                let evictedID = queuedIDs[readIndex]
+                queuedIDSet.remove(evictedID)
+                readIndex += 1
+                evictedIDs.append(evictedID)
+                compactIfNeeded()
+            }
             queuedIDs.append(id)
         }
+        return evictedIDs
     }
 
     mutating func dequeue(maxCount: Int) -> [ID] {
@@ -223,6 +238,7 @@ private struct LivePacketSummaryText: Equatable {
 private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     private static let maxLivePacketBatchSize = 256
     private static let maxLiveReanalysisBatchSize = 128
+    private static let maxLiveReanalysisPendingCount = 4_096
     private static let livePacketBatchInterval: DispatchTimeInterval = .milliseconds(100)
     private static let liveReanalysisInterval: DispatchTimeInterval = .milliseconds(250)
 
@@ -238,7 +254,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     private var packetBatchBuffer = LivePacketBatchBuffer<PacketSummary>(maxBatchSize: maxLivePacketBatchSize)
     private var packetBatchFlushWorkItem: DispatchWorkItem?
     private var packetReanalysisWorkItem: DispatchWorkItem?
-    private var packetReanalysisQueue = LivePacketReanalysisQueue<PacketSummary.ID>()
+    private var packetReanalysisQueue = LivePacketReanalysisQueue<PacketSummary.ID>(maxPendingCount: maxLiveReanalysisPendingCount)
     private var packetSummaryTextByID: [PacketSummary.ID: LivePacketSummaryText] = [:]
     private var durationStopWorkItem: DispatchWorkItem?
     private var durationStopTimer: LiveCaptureDurationStopTimer?
@@ -300,6 +316,10 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
                 self?.handleError(error)
             }
         }
+    }
+
+    deinit {
+        nativeSession.shutdown()
     }
 
     func start(completion: @escaping TCPViewerVoidCompletion) {
@@ -546,7 +566,10 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
             packetSummaryTextByID[packet.id] = LivePacketSummaryText(packet: packet)
         }
         eventBox.yield(.packetBatch(batch, disposition: .append))
-        packetReanalysisQueue.enqueue(batch.map(\.id))
+        let evictedIDs = packetReanalysisQueue.enqueue(batch.map(\.id))
+        for packetID in evictedIDs {
+            packetSummaryTextByID.removeValue(forKey: packetID)
+        }
         schedulePacketReanalysisIfNeeded()
     }
 
@@ -606,15 +629,13 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
             let updates = descriptors.compactMap { descriptor -> PacketSummaryUpdate? in
                 let packetID = descriptor.packetIdentifier
                 let summaryText = LivePacketSummaryText(update: descriptor)
-                guard let current = packetSummaryTextByID[packetID] else {
-                    packetSummaryTextByID[packetID] = summaryText
+                guard let current = packetSummaryTextByID.removeValue(forKey: packetID) else {
                     return nil
                 }
 
                 guard current != summaryText else {
                     return nil
                 }
-                packetSummaryTextByID[packetID] = summaryText
                 return PacketSummaryUpdate(
                     packetID: packetID,
                     protocolSummary: summaryText.protocolSummary,
@@ -628,6 +649,9 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
             schedulePacketReanalysisIfNeeded()
         } catch {
             // Reanalysis only refines table text; capture delivery should continue if it fails.
+            for packetID in packetIDs {
+                packetSummaryTextByID.removeValue(forKey: packetID)
+            }
         }
     }
 

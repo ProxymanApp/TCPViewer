@@ -72,19 +72,28 @@ struct InspectorPipelineTests {
     @Test func livePacketReanalysisQueueDeduplicatesAndDequeuesByLimit() {
         var queue = LivePacketReanalysisQueue<Int>()
 
-        queue.enqueue([1, 2, 2, 3])
+        _ = queue.enqueue([1, 2, 2, 3])
         #expect(queue.pendingCount == 3)
         #expect(queue.dequeue(maxCount: 2) == [1, 2])
         #expect(queue.pendingCount == 1)
 
-        queue.enqueue([3, 4])
+        _ = queue.enqueue([3, 4])
         #expect(queue.pendingCount == 2)
         #expect(queue.dequeue(maxCount: 10) == [3, 4])
         #expect(queue.isEmpty)
 
-        queue.enqueue([5, 6])
+        _ = queue.enqueue([5, 6])
         queue.discardPending(releasingCapacity: true)
         #expect(queue.dequeue(maxCount: 10).isEmpty)
+    }
+
+    @Test func livePacketReanalysisQueueKeepsRecentPacketsWithinItsBound() {
+        var queue = LivePacketReanalysisQueue<Int>(maxPendingCount: 3)
+
+        #expect(queue.enqueue([1, 2, 3]) == [])
+        #expect(queue.enqueue([4, 5]) == [1, 2])
+        #expect(queue.pendingCount == 3)
+        #expect(queue.dequeue(maxCount: 10) == [3, 4, 5])
     }
 
     @Test func wiresharkUnavailableBackendFailsOpenWithUnavailableFeature() async throws {
@@ -191,6 +200,26 @@ struct InspectorPipelineTests {
             #expect(inspection.decodeStatus.kind == .complete)
             #expect(findNode(in: inspection.detailNodes, fieldName: "udp.length")?.byteRange == PacketByteRange(offset: 38, length: 2))
         }
+    }
+
+    @Test func multipleOfflineDocumentsTransferWiresharkDetailsWhenSelectionChanges() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let firstURL = directory.appendingPathComponent("first.pcap")
+        let secondURL = directory.appendingPathComponent("second.pcap")
+        try writePCAP(to: firstURL, packets: [makeIPv4UDPPayloadPacket()])
+        try writePCAP(to: secondURL, packets: [makeIPv4DNSResponsePacket()])
+
+        let core = NativeTCPViewerCore()
+        let firstDocument = try await core.openOfflineCaptureDocument(at: firstURL)
+        let secondDocument = try await core.openOfflineCaptureDocument(at: secondURL)
+        let firstPacket = try #require(try await firstDocument.open().first)
+        let secondPacket = try #require(try await secondDocument.open().first)
+
+        #expect(!firstDocument.loadProgress().isPartialResult)
+        #expect(!secondDocument.loadProgress().isPartialResult)
+        #expect(findNode(in: try await firstDocument.inspectPacket(id: firstPacket.id).detailNodes, fieldName: "udp") != nil)
+        #expect(findNode(in: try await secondDocument.inspectPacket(id: secondPacket.id).detailNodes, fieldName: "dns") != nil)
     }
 
     @Test func bigEndianPcapNgOpensWithSummariesRawBytesAndDetails() async throws {
@@ -684,7 +713,7 @@ struct InspectorPipelineTests {
 
             let snapshot = harness.snapshot
             #expect(snapshot.packetCount == checkpoint)
-            #expect(snapshot.backingFileExists)
+            #expect(!snapshot.backingFileExists)
             #expect(snapshot.backingFileSize == UInt64(packet.count * checkpoint))
             #expect(try harness.offset(identifier: 1) == 0)
             #expect(try harness.offset(identifier: UInt64(checkpoint)) == UInt64(packet.count * (checkpoint - 1)))
@@ -706,7 +735,7 @@ struct InspectorPipelineTests {
         }
 
         let backingFilePath = harness.snapshot.backingFilePath
-        #expect(FileManager.default.fileExists(atPath: backingFilePath))
+        #expect(!FileManager.default.fileExists(atPath: backingFilePath))
 
         harness.cleanup()
 
@@ -736,6 +765,7 @@ struct InspectorPipelineTests {
         #expect(try harness.offset(identifier: 2) == UInt64(firstPacket.count))
         #expect(try harness.offset(identifier: 3) == UInt64(firstPacket.count + secondPacket.count))
         #expect(harness.snapshot.backingFileSize == UInt64(firstPacket.count + secondPacket.count + thirdPacket.count))
+        #expect(!FileManager.default.fileExists(atPath: harness.snapshot.backingFilePath))
         #expect(try harness.inspectPacket(identifier: 2).rawBytes == secondPacket)
         #expect(try harness.inspectPacket(identifier: 3).rawBytes == thirdPacket)
 

@@ -5,7 +5,6 @@
 //  Created by Proxyman LLC on 28/5/26.
 //
 
-import Darwin
 import Foundation
 
 private let opaquePayloadDecodeReason = "The remaining payload is encrypted, unsupported, or needs stream reassembly."
@@ -20,6 +19,43 @@ struct NativePacketRecord: Sendable {
     let interfaceIdentifier: String?
     let interfaceName: String?
     let packetComment: String?
+    let interfaceID: UInt32
+    let sectionNumber: UInt32
+    let pcapNGTimestampResolution: UInt8?
+    let pcapNGTimestampOffsetSeconds: Int64
+    let pcapNGTimestampRawValue: UInt64?
+
+    init(
+        identifier: UInt64,
+        packetNumber: UInt64,
+        timestamp: Date,
+        rawBytes: Data,
+        originalLength: Int,
+        linkLayerType: Int32,
+        interfaceIdentifier: String?,
+        interfaceName: String?,
+        packetComment: String?,
+        interfaceID: UInt32 = 0,
+        sectionNumber: UInt32 = 0,
+        pcapNGTimestampResolution: UInt8? = nil,
+        pcapNGTimestampOffsetSeconds: Int64 = 0,
+        pcapNGTimestampRawValue: UInt64? = nil
+    ) {
+        self.identifier = identifier
+        self.packetNumber = packetNumber
+        self.timestamp = timestamp
+        self.rawBytes = rawBytes
+        self.originalLength = originalLength
+        self.linkLayerType = linkLayerType
+        self.interfaceIdentifier = interfaceIdentifier
+        self.interfaceName = interfaceName
+        self.packetComment = packetComment
+        self.interfaceID = interfaceID
+        self.sectionNumber = sectionNumber
+        self.pcapNGTimestampResolution = pcapNGTimestampResolution
+        self.pcapNGTimestampOffsetSeconds = pcapNGTimestampOffsetSeconds
+        self.pcapNGTimestampRawValue = pcapNGTimestampRawValue
+    }
 
     var capturedLength: Int {
         rawBytes.count
@@ -70,7 +106,10 @@ enum SwiftPacketDissector {
         dissect(
             record: record,
             disablesWireshark: disablesWireshark,
-            wiresharkRuntimeStatus: SwiftWiresharkRuntime.shared.status,
+            wiresharkRuntimeStatus: SwiftWiresharkRuntimeStatus(
+                isAvailable: false,
+                unavailableReason: "Wireshark libwireshark backend is unavailable."
+            ),
             logger: SwiftWiresharkConsoleLogger()
         )
     }
@@ -191,134 +230,6 @@ enum SwiftPacketDissector {
             logger.error("Packet #\(packetNumber) detail decode failed: \(reason)")
         case .partial, .unsupported:
             logger.warning("Packet #\(packetNumber) detail decode warning: \(reason)")
-        }
-    }
-}
-
-final class SwiftWiresharkRuntime {
-    static let shared = SwiftWiresharkRuntime()
-
-    private(set) var isAvailable = false
-    private(set) var unavailableReason = "Wireshark libwireshark backend is unavailable. Run scripts/bootstrap-wireshark.sh, then rebuild TCP Viewer."
-    private var handles: [UnsafeMutableRawPointer] = []
-    private var wtapCleanup: (@convention(c) () -> Void)?
-    private var epanCleanup: (@convention(c) () -> Void)?
-    private var initializedWiretap = false
-    private var initializedEpan = false
-    private let logger = SwiftWiresharkConsoleLogger()
-
-    var status: SwiftWiresharkRuntimeStatus {
-        SwiftWiresharkRuntimeStatus(isAvailable: isAvailable, unavailableReason: unavailableReason)
-    }
-
-    private init() {
-        loadRuntime()
-    }
-
-    private func loadRuntime() {
-        guard let paths = loadLibrarySet() else {
-            if let errorPointer = dlerror() {
-                unavailableReason = String(cString: errorPointer)
-            }
-            logger.error("Failed to load Wireshark libraries: \(unavailableReason)")
-            return
-        }
-
-        guard let wtapInit: @convention(c) (Bool) -> Void = loadSymbol("wtap_init", from: paths.wiretap),
-              let wtapCleanup: @convention(c) () -> Void = loadSymbol("wtap_cleanup", from: paths.wiretap),
-              let epanInit: @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, Bool) -> Bool = loadSymbol("epan_init", from: paths.wireshark),
-              let epanLoadSettings: @convention(c) () -> UnsafeMutableRawPointer? = loadSymbol("epan_load_settings", from: paths.wireshark),
-              let epanCleanup: @convention(c) () -> Void = loadSymbol("epan_cleanup", from: paths.wireshark),
-              let prefsApplyAll: @convention(c) () -> Void = loadSymbol("prefs_apply_all", from: paths.wireshark) else {
-            unavailableReason = "Wireshark runtime symbols could not be resolved."
-            logger.error(unavailableReason)
-            return
-        }
-
-        self.wtapCleanup = wtapCleanup
-        self.epanCleanup = epanCleanup
-
-        wtapInit(true)
-        initializedWiretap = true
-
-        guard epanInit(nil, nil, true) else {
-            unavailableReason = "Wireshark protocol registry failed to initialize."
-            logger.error(unavailableReason)
-            wtapCleanup()
-            initializedWiretap = false
-            return
-        }
-        initializedEpan = true
-
-        _ = epanLoadSettings()
-        prefsApplyAll()
-
-        isAvailable = true
-        unavailableReason = ""
-    }
-
-    private func loadLibrarySet() -> (wsutil: UnsafeMutableRawPointer, wiretap: UnsafeMutableRawPointer, wireshark: UnsafeMutableRawPointer)? {
-        for directory in libraryDirectories() {
-            guard let wsutil = openLibrary(named: "libwsutil", majorVersion: 17, directory: directory) else {
-                continue
-            }
-            guard let wiretap = openLibrary(named: "libwiretap", majorVersion: 16, directory: directory) else {
-                dlclose(wsutil)
-                continue
-            }
-            guard let wireshark = openLibrary(named: "libwireshark", majorVersion: 19, directory: directory) else {
-                dlclose(wiretap)
-                dlclose(wsutil)
-                continue
-            }
-
-            handles = [wireshark, wiretap, wsutil]
-            return (wsutil, wiretap, wireshark)
-        }
-        return nil
-    }
-
-    private func libraryDirectories() -> [URL?] {
-        let frameworkBundle = Bundle(for: SwiftWiresharkRuntime.self)
-        return [
-            frameworkBundle.bundleURL.appendingPathComponent("Frameworks", isDirectory: true),
-            Bundle.main.privateFrameworksURL,
-            Bundle.main.executableURL?.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Frameworks", isDirectory: true),
-            nil,
-        ]
-    }
-
-    private func openLibrary(named baseName: String, majorVersion: Int, directory: URL?) -> UnsafeMutableRawPointer? {
-        let candidateNames = [
-            "\(baseName).\(majorVersion).dylib",
-            "\(baseName).dylib",
-        ]
-
-        for candidateName in candidateNames {
-            let candidatePath = directory?.appendingPathComponent(candidateName).path ?? candidateName
-            if let handle = dlopen(candidatePath, RTLD_NOW | RTLD_LOCAL) {
-                return handle
-            }
-        }
-        return nil
-    }
-
-    private func loadSymbol<T>(_ name: String, from handle: UnsafeMutableRawPointer) -> T? {
-        guard let symbol = dlsym(handle, name) else {
-            return nil
-        }
-        return unsafeBitCast(symbol, to: T.self)
-    }
-
-    deinit {
-        if initializedEpan {
-            epanCleanup?()
-        }
-        if initializedWiretap {
-            wtapCleanup?()
-        }
-        for handle in handles {
-            dlclose(handle)
         }
     }
 }

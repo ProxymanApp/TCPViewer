@@ -57,6 +57,12 @@ constexpr const char *kBackendUnavailableReason =
 constexpr const char *kBackendDisabledReason =
     "Wireshark libwireshark backend is disabled for this capture.";
 constexpr uint32_t kUnknownFrameNumber = 0;
+constexpr size_t kMaximumInspectorByteSources = 32;
+constexpr size_t kMaximumInspectorByteSourceBytes = 16 * 1024 * 1024;
+constexpr size_t kMaximumInspectorRawValueBytes = 4 * 1024;
+constexpr size_t kMaximumInspectorNodes = 20 * 1024;
+constexpr size_t kMaximumInspectorDepth = 128;
+constexpr size_t kMaximumInspectorTextLength = 16 * 1024;
 
 enum class NodeKind {
     Layer,
@@ -110,20 +116,6 @@ struct WiresharkDissectionResult {
     std::vector<WiresharkByteSource> byteSources;
     std::vector<DetailNode> nodes;
     std::string sniDomainName;
-};
-
-struct PacketSnapshot {
-    uint64_t packetIdentifier = 0;
-    std::vector<uint8_t> bytes;
-    size_t capturedLength = 0;
-    size_t originalLength = 0;
-    int32_t linkLayerType = 1;
-    int64_t timestampSeconds = 0;
-    int32_t timestampNanoseconds = 0;
-    std::string interfaceName;
-    std::string packetComment;
-    uint32_t interfaceID = 0;
-    uint32_t sectionNumber = 0;
 };
 
 struct PacketContextView {
@@ -560,17 +552,6 @@ struct WiresharkSourceSet {
     std::unordered_map<std::string, size_t> indexByID;
 };
 
-uint32_t FrameNumberForContext(const PacketContextView &context, uint64_t fallbackFrameNumber)
-{
-    if (context.packetIdentifier > 0 && context.packetIdentifier <= std::numeric_limits<uint32_t>::max()) {
-        return static_cast<uint32_t>(context.packetIdentifier);
-    }
-    if (fallbackFrameNumber > 0 && fallbackFrameNumber <= std::numeric_limits<uint32_t>::max()) {
-        return static_cast<uint32_t>(fallbackFrameNumber);
-    }
-    return kUnknownFrameNumber;
-}
-
 std::string StripByteCountSuffix(std::string label)
 {
     const auto suffixStart = label.rfind(" (");
@@ -626,7 +607,11 @@ WiresharkSourceSet ExtractByteSources(GSList *dataSources)
 {
     WiresharkSourceSet sourceSet;
     unsigned index = 0;
+    size_t remainingBytes = kMaximumInspectorByteSourceBytes;
     for (GSList *item = dataSources; item != nullptr; item = item->next) {
+        if (sourceSet.sources.size() >= kMaximumInspectorByteSources || remainingBytes == 0) {
+            break;
+        }
         auto *source = static_cast<data_source *>(item->data);
         tvbuff_t *tvb = get_data_source_tvb(source);
         if (tvb == nullptr) {
@@ -644,11 +629,12 @@ WiresharkSourceSet ExtractByteSources(GSList *dataSources)
         byteSource.identifier = UniqueSourceIdentifier(baseIdentifier, sourceSet);
         byteSource.label = label.empty() ? (index == 0 ? "Frame" : "Bytes") : label;
 
-        const unsigned length = tvb_captured_length(tvb);
-        if (length > 0) {
+        const size_t length = std::min(static_cast<size_t>(tvb_captured_length(tvb)), remainingBytes);
+        if (length > 0 && length <= static_cast<size_t>(std::numeric_limits<int>::max())) {
             const uint8_t *bytes = tvb_get_ptr(tvb, 0, static_cast<int>(length));
             if (bytes != nullptr) {
                 byteSource.bytes.assign(bytes, bytes + length);
+                remainingBytes -= length;
             }
         }
 
@@ -679,7 +665,22 @@ std::string RawValueForRange(const WiresharkSourceSet &sourceSet, const ByteRang
     if (range.offset > bytes.size() || range.length > bytes.size() - range.offset) {
         return "";
     }
-    return HexBytes(bytes.data() + range.offset, range.length);
+    const size_t displayedLength = std::min(range.length, kMaximumInspectorRawValueBytes);
+    auto value = HexBytes(bytes.data() + range.offset, displayedLength);
+    if (displayedLength < range.length) {
+        value += " … (truncated)";
+    }
+    return value;
+}
+
+std::string TruncateInspectorText(std::string value)
+{
+    if (value.size() <= kMaximumInspectorTextLength) {
+        return value;
+    }
+    value.resize(kMaximumInspectorTextLength);
+    value += "…";
+    return value;
 }
 
 std::string TrimDisplayValue(std::string value)
@@ -793,23 +794,54 @@ NodeKind KindForField(const field_info *field, NodeSeverity severity)
     return NodeKind::Field;
 }
 
-std::optional<DetailNode> MapProtoNode(proto_node *protoNode, const WiresharkSourceSet &sourceSet, uint64_t &sequence)
+struct InspectorTreeBudget {
+    size_t remainingNodes = kMaximumInspectorNodes;
+    bool reportedTruncation = false;
+};
+
+std::optional<DetailNode> InspectorTruncationNode(InspectorTreeBudget &budget, uint64_t &sequence)
+{
+    if (budget.reportedTruncation) {
+        return std::nullopt;
+    }
+    budget.reportedTruncation = true;
+    DetailNode node;
+    node.id = "tcpviewer.inspector.truncated." + std::to_string(sequence++);
+    node.title = "Inspector output truncated";
+    node.fieldName = "tcpviewer.inspector.truncated";
+    node.displayValue = "Wireshark returned more detail than TCP Viewer can safely display.";
+    node.kind = NodeKind::Warning;
+    node.severity = NodeSeverity::Warning;
+    return node;
+}
+
+std::optional<DetailNode> MapProtoNode(
+    proto_node *protoNode,
+    const WiresharkSourceSet &sourceSet,
+    uint64_t &sequence,
+    InspectorTreeBudget &budget,
+    size_t depth
+)
 {
     // Wireshark frees proto_tree data with the epan dissector, so copy every field now.
+    if (depth >= kMaximumInspectorDepth || budget.remainingNodes == 0) {
+        return InspectorTruncationNode(budget, sequence);
+    }
     field_info *field = PNODE_FINFO(protoNode);
     if (field == nullptr || field->hfinfo == nullptr || FI_GET_FLAG(field, FI_HIDDEN)) {
         return std::nullopt;
     }
+    budget.remainingNodes -= 1;
 
     size_t valueOffset = 0;
     const std::string label = LabelForField(field, valueOffset);
     const header_field_info *header = field->hfinfo;
     DetailNode node;
     node.fieldName = header->abbrev != nullptr ? header->abbrev : "";
-    node.title = header->name != nullptr ? header->name : label;
-    node.displayValue = valueOffset < label.size() ? TrimDisplayValue(label.substr(valueOffset)) : "";
+    node.title = TruncateInspectorText(header->name != nullptr ? header->name : label);
+    node.displayValue = valueOffset < label.size() ? TruncateInspectorText(TrimDisplayValue(label.substr(valueOffset))) : "";
     if (node.displayValue.empty() && label != node.title) {
-        node.displayValue = TrimDisplayValue(label);
+        node.displayValue = TruncateInspectorText(TrimDisplayValue(label));
     }
     node.id = node.fieldName.empty() ? "wireshark.node." + std::to_string(sequence) : node.fieldName + "." + std::to_string(sequence);
     sequence += 1;
@@ -825,8 +857,11 @@ std::optional<DetailNode> MapProtoNode(proto_node *protoNode, const WiresharkSou
     }
 
     for (proto_node *child = protoNode->first_child; child != nullptr; child = child->next) {
-        if (auto childNode = MapProtoNode(child, sourceSet, sequence)) {
+        if (auto childNode = MapProtoNode(child, sourceSet, sequence, budget, depth + 1)) {
             node.children.push_back(std::move(*childNode));
+        }
+        if (budget.remainingNodes == 0) {
+            break;
         }
     }
     return node;
@@ -836,12 +871,16 @@ std::vector<DetailNode> MapProtoTree(proto_tree *tree, const WiresharkSourceSet 
 {
     std::vector<DetailNode> nodes;
     uint64_t sequence = 1;
+    InspectorTreeBudget budget;
     if (tree == nullptr) {
         return nodes;
     }
     for (proto_node *child = tree->first_child; child != nullptr; child = child->next) {
-        if (auto node = MapProtoNode(child, sourceSet, sequence)) {
+        if (auto node = MapProtoNode(child, sourceSet, sequence, budget, 0)) {
             nodes.push_back(std::move(*node));
+        }
+        if (budget.remainingNodes == 0) {
+            break;
         }
     }
     return nodes;
@@ -893,46 +932,6 @@ PacketContextView ContextViewFromC(const TCPViewerWiresharkPacketContext *contex
     view.interfaceID = context->interfaceID;
     view.sectionNumber = context->sectionNumber;
     return view;
-}
-
-PacketContextView ContextViewFromSnapshot(const PacketSnapshot &snapshot)
-{
-    PacketContextView view;
-    view.packetIdentifier = snapshot.packetIdentifier;
-    view.bytes = snapshot.bytes.data();
-    view.capturedLength = snapshot.capturedLength;
-    view.originalLength = snapshot.originalLength;
-    view.linkLayerType = snapshot.linkLayerType;
-    view.timestampSeconds = snapshot.timestampSeconds;
-    view.timestampNanoseconds = snapshot.timestampNanoseconds;
-    if (!snapshot.interfaceName.empty()) {
-        view.interfaceName = snapshot.interfaceName;
-    }
-    if (!snapshot.packetComment.empty()) {
-        view.packetComment = snapshot.packetComment;
-    }
-    view.interfaceID = snapshot.interfaceID;
-    view.sectionNumber = snapshot.sectionNumber;
-    return view;
-}
-
-PacketSnapshot SnapshotFromContext(const PacketContextView &context, uint32_t frameNumber)
-{
-    PacketSnapshot snapshot;
-    snapshot.packetIdentifier = frameNumber;
-    if (context.bytes != nullptr && context.capturedLength > 0) {
-        snapshot.bytes.assign(context.bytes, context.bytes + context.capturedLength);
-    }
-    snapshot.capturedLength = context.capturedLength;
-    snapshot.originalLength = context.originalLength;
-    snapshot.linkLayerType = context.linkLayerType;
-    snapshot.timestampSeconds = context.timestampSeconds;
-    snapshot.timestampNanoseconds = context.timestampNanoseconds;
-    snapshot.interfaceName = context.interfaceName.value_or("");
-    snapshot.packetComment = context.packetComment.value_or("");
-    snapshot.interfaceID = context.interfaceID;
-    snapshot.sectionNumber = context.sectionNumber;
-    return snapshot;
 }
 
 TCPViewerWiresharkByteRange *CopyByteRange(const std::optional<ByteRange> &range)
@@ -1168,12 +1167,13 @@ struct TCPViewerWiresharkSession {
     nstime_t elapsedTime = NSTIME_INIT_ZERO;
     frame_data referenceFrame{};
     uint32_t cumulativeBytes = 0;
-    std::vector<PacketSnapshot> observedPackets;
     std::unordered_set<uint32_t> storedFrameNumbers;
     std::unordered_set<uint32_t> activeFrameNumbers;
+    std::unordered_map<uint64_t, uint32_t> frameNumberByPacketIdentifier;
     std::deque<WiresharkCriticalException> pendingCriticalExceptions;
     std::string personalConfigurationDirectory;
     bool disabled = false;
+    bool livePriority = false;
     bool firstPassFinished = false;
     bool backendAvailable = false;
 
@@ -1183,8 +1183,9 @@ struct TCPViewerWiresharkSession {
         return session;
     }
 
-    TCPViewerWiresharkSession(bool disablesWireshark, const char *personalConfigurationDirectory)
+    TCPViewerWiresharkSession(bool disablesWireshark, bool hasLivePriority, const char *personalConfigurationDirectory)
     {
+        livePriority = hasLivePriority;
         this->personalConfigurationDirectory = personalConfigurationDirectory == nullptr ? "" : personalConfigurationDirectory;
         if (disablesWireshark) {
             disabled = true;
@@ -1256,7 +1257,9 @@ struct TCPViewerWiresharkSession {
 
     void resetActiveFrameStateLocked()
     {
+        storedFrameNumbers.clear();
         activeFrameNumbers.clear();
+        frameNumberByPacketIdentifier.clear();
         nstime_set_zero(&elapsedTime);
         referenceFrame = frame_data{};
         cumulativeBytes = 0;
@@ -1290,8 +1293,16 @@ struct TCPViewerWiresharkSession {
     bool initializeWiresharkResourcesLocked()
     {
         if (auto *active = activeSession(); active != nullptr && active != this) {
+            if (active->livePriority) {
+                unavailableReason = "Wireshark is busy with another capture; this packet uses the built-in fallback dissector.";
+                return false;
+            }
+            // Switching offline documents is bounded to explicit work and never replays the previous capture.
             std::lock_guard<std::mutex> activeLock(active->mutex);
-            active->releaseWiresharkResourcesLocked("Wireshark session is inactive until this capture is inspected again.", false);
+            const char *reason = livePriority
+                ? "Wireshark details were released because a live capture started."
+                : "Wireshark details were released because another offline capture became active.";
+            active->releaseWiresharkResourcesLocked(reason, false);
         }
 
         provider = std::make_unique<packet_provider_data>();
@@ -1343,6 +1354,7 @@ struct TCPViewerWiresharkSession {
 
         activeSession() = this;
         resetActiveFrameStateLocked();
+        firstPassFinished = false;
         return true;
     }
 
@@ -1393,29 +1405,6 @@ struct TCPViewerWiresharkSession {
         return true;
     }
 
-    bool replayFirstPassPacketsLocked()
-    {
-        const bool shouldFinishFirstPass = firstPassFinished;
-        firstPassFinished = false;
-
-        for (const auto &snapshot : observedPackets) {
-            const auto context = ContextViewFromSnapshot(snapshot);
-            if (!appendFirstPassPacketLocked(context, static_cast<uint32_t>(snapshot.packetIdentifier))) {
-                firstPassFinished = shouldFinishFirstPass;
-                return false;
-            }
-        }
-
-        if (shouldFinishFirstPass) {
-            if (!finishActiveFirstPassLocked()) {
-                firstPassFinished = shouldFinishFirstPass;
-                return false;
-            }
-        }
-        firstPassFinished = shouldFinishFirstPass;
-        return true;
-    }
-
     bool ensureActiveSessionLocked()
     {
         if (disabled) {
@@ -1433,10 +1422,6 @@ struct TCPViewerWiresharkSession {
         if (!initializeWiresharkResourcesLocked()) {
             return false;
         }
-        if (!replayFirstPassPacketsLocked()) {
-            releaseWiresharkResourcesLocked(unavailableReason, true);
-            return false;
-        }
         unavailableReason.clear();
         return true;
     }
@@ -1446,14 +1431,15 @@ struct TCPViewerWiresharkSession {
         if (disabled || !backendAvailable) {
             return false;
         }
-        const uint32_t frameNumber = FrameNumberForContext(context, observedPackets.size() + 1);
-        if (frameNumber == kUnknownFrameNumber) {
+        if (frameNumberByPacketIdentifier.find(context.packetIdentifier) != frameNumberByPacketIdentifier.end()) {
+            return ensureActiveSessionLocked();
+        }
+        const uint64_t nextFrameNumber = storedFrameNumbers.size() + 1;
+        if (nextFrameNumber > std::numeric_limits<uint32_t>::max()) {
             unavailableReason = "Wireshark requires a 32-bit frame number for dissection state.";
             return false;
         }
-        if (storedFrameNumbers.find(frameNumber) != storedFrameNumbers.end()) {
-            return ensureActiveSessionLocked();
-        }
+        const auto frameNumber = static_cast<uint32_t>(nextFrameNumber);
         if (firstPassFinished) {
             unavailableReason = "Wireshark first-pass state is already finalized for this packet set.";
             return false;
@@ -1465,8 +1451,8 @@ struct TCPViewerWiresharkSession {
             return false;
         }
 
-        observedPackets.push_back(SnapshotFromContext(context, frameNumber));
         storedFrameNumbers.insert(frameNumber);
+        frameNumberByPacketIdentifier[context.packetIdentifier] = frameNumber;
         return true;
     }
 
@@ -1505,15 +1491,15 @@ struct TCPViewerWiresharkSession {
             return result;
         }
 
-        const uint32_t expectedFrameNumber = FrameNumberForContext(context, observedPackets.size());
-        if (expectedFrameNumber != kUnknownFrameNumber && activeFrameNumbers.find(expectedFrameNumber) == activeFrameNumbers.end() &&
-            !observePacketLocked(context)) {
+        auto frameNumberMatch = frameNumberByPacketIdentifier.find(context.packetIdentifier);
+        if (frameNumberMatch == frameNumberByPacketIdentifier.end() && !observePacketLocked(context)) {
             result.fallbackReason = unavailableReason;
             return result;
         }
+        frameNumberMatch = frameNumberByPacketIdentifier.find(context.packetIdentifier);
 
         MergeInterfaceMetadata(*provider, context);
-        const uint32_t frameNumber = FrameNumberForContext(context, observedPackets.size());
+        const uint32_t frameNumber = frameNumberMatch == frameNumberByPacketIdentifier.end() ? kUnknownFrameNumber : frameNumberMatch->second;
         frame_data *frame = frameNumber == kUnknownFrameNumber ? nullptr : frame_data_sequence_find(provider->frames, frameNumber);
         if (frame == nullptr) {
             result.fallbackReason = "Wireshark first-pass frame state was not available for this packet.";
@@ -1637,9 +1623,9 @@ struct TCPViewerWiresharkSession {
     }
 };
 
-TCPViewerWiresharkSession *TCPViewerWiresharkSessionCreate(bool disabled, const char *personalConfigurationDirectory)
+TCPViewerWiresharkSession *TCPViewerWiresharkSessionCreate(bool disabled, bool livePriority, const char *personalConfigurationDirectory)
 {
-    return new TCPViewerWiresharkSession(disabled, personalConfigurationDirectory);
+    return new TCPViewerWiresharkSession(disabled, livePriority, personalConfigurationDirectory);
 }
 
 void TCPViewerWiresharkSessionDestroy(TCPViewerWiresharkSession *session)

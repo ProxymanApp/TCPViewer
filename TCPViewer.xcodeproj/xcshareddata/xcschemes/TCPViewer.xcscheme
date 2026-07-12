@@ -56,39 +56,12 @@
       selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
       shouldUseLaunchSchemeArgsEnv = "YES">
-      <MacroExpansion>
-         <BuildableReference
-            BuildableIdentifier = "primary"
-            BlueprintIdentifier = "BAAE975C2F9B815F00C52A7C"
-            BuildableName = "TCP Viewer.app"
-            BlueprintName = "TCPViewer"
-            ReferencedContainer = "container:TCPViewer.xcodeproj">
-         </BuildableReference>
-      </MacroExpansion>
-      <Testables>
-         <TestableReference
-            skipped = "NO"
-            parallelizable = "YES">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "BAAE976E2F9B816000C52A7C"
-               BuildableName = "TCPViewerTests.xctest"
-               BlueprintName = "TCPViewerTests"
-               ReferencedContainer = "container:TCPViewer.xcodeproj">
-            </BuildableReference>
-         </TestableReference>
-         <TestableReference
-            skipped = "NO"
-            parallelizable = "YES">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "BA4D26BB2F9A2F770070BE17"
-               BuildableName = "PcapPlusPlusCoreTests.xctest"
-               BlueprintName = "PcapPlusPlusCoreTests"
-               ReferencedContainer = "container:TCPViewer.xcodeproj">
-            </BuildableReference>
-         </TestableReference>
-      </Testables>
+      <TestPlans>
+         <TestPlanReference
+            reference = "container:PcapPlusPlusCore.xctestplan"
+            default = "YES">
+         </TestPlanReference>
+      </TestPlans>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"

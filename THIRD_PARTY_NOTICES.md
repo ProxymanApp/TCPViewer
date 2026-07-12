@@ -10,8 +10,8 @@ distributed as GPL-2.0-or-later as a whole. Keep `COPYING`,
 ## Wireshark
 
 - Source: https://gitlab.com/wireshark/wireshark
-- Pinned tag: `v4.6.4`
-- Pinned peeled commit: `93282876538d78a2927108dd71ee0ff370aedb0a`
+- Pinned tag: `v4.6.6`
+- Pinned peeled commit: `3a22c3ef473d3f9c556d1fb13e3088c693d4fa96`
 - License: GPL-2.0-or-later
 - License text: `Vendor/Wireshark/COPYING`
 - Local source path: `Vendor/Wireshark`

@@ -112,6 +112,9 @@ public struct CaptureOptions: Sendable, Codable, Hashable {
         guard snapshotLength > 0 else {
             throw TCPViewerCoreError(code: .invalidCaptureOptions, message: "Snapshot length must be greater than zero.")
         }
+        guard snapshotLength <= Int(Int32.max) else {
+            throw TCPViewerCoreError(code: .invalidCaptureOptions, message: "Snapshot length is too large for libpcap.")
+        }
 
         guard kernelBufferSizeBytes >= 0 else {
             throw TCPViewerCoreError(code: .invalidCaptureOptions, message: "Kernel buffer size cannot be negative.")
@@ -119,6 +122,9 @@ public struct CaptureOptions: Sendable, Codable, Hashable {
 
         guard readTimeoutMilliseconds >= 0 else {
             throw TCPViewerCoreError(code: .invalidCaptureOptions, message: "Read timeout cannot be negative.")
+        }
+        guard readTimeoutMilliseconds <= Int(Int32.max) else {
+            throw TCPViewerCoreError(code: .invalidCaptureOptions, message: "Read timeout is too large for libpcap.")
         }
 
         switch stopCondition {

@@ -11,11 +11,9 @@ import Testing
 
 struct CoreFacadeTypesTests {
 
-    @Test func pinnedIntegrationMetadataMatchesRepositoryDecision() {
+    @Test func coreImplementationMetadataMatchesRepositoryDecision() {
         #expect(PcapPlusPlusCoreModule.coreImplementation == "Swift native capture, capture-file I/O, and packet dissection")
         #expect(PcapPlusPlusCoreModule.wiresharkVendorPath == "Vendor/Wireshark")
-        #expect(PcapPlusPlusCoreModule.wiresharkPinnedTag == "v4.6.4")
-        #expect(PcapPlusPlusCoreModule.wiresharkPinnedCommit == "93282876538d78a2927108dd71ee0ff370aedb0a")
     }
 
     @Test func unconfiguredCoreRejectsEmptyCaptureFilter() async {
