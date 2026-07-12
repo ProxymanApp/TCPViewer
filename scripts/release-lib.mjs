@@ -326,6 +326,42 @@ export function normalizeBetaDMGCustomName(value) {
   return normalizeFileNameSegment(normalized, "Beta DMG custom name");
 }
 
+export function makeHomebrewCaskBranchName({ version, buildNumber }) {
+  const safeVersion = normalizeFileNameSegment(version, "Homebrew Cask version");
+  const safeBuildNumber = normalizeFileNameSegment(buildNumber, "Homebrew Cask build number");
+  return `tcpviewer-${safeVersion}-${safeBuildNumber}`;
+}
+
+export function parseHomebrewCaskVersion(content) {
+  const match = String(content).match(/^  version "([^"]+),([^"]+)"$/m);
+  if (!match) {
+    throw new Error("TCP Viewer Homebrew Cask must contain one version with a version and build number.");
+  }
+
+  return { version: match[1], buildNumber: match[2] };
+}
+
+export function updateHomebrewCaskContent(content, { version, buildNumber, sha256 }) {
+  const current = String(content);
+  parseHomebrewCaskVersion(current);
+  const safeVersion = normalizeFileNameSegment(version, "Homebrew Cask version");
+  const safeBuildNumber = normalizeFileNameSegment(buildNumber, "Homebrew Cask build number");
+  const safeSHA256 = String(sha256 ?? "").trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(safeSHA256)) {
+    throw new Error("Homebrew Cask SHA-256 must contain 64 hexadecimal characters.");
+  }
+
+  const versionMatches = current.match(/^  version ".*"$/gm) ?? [];
+  const shaMatches = current.match(/^  sha256 ".*"$/gm) ?? [];
+  if (versionMatches.length !== 1 || shaMatches.length !== 1) {
+    throw new Error("TCP Viewer Homebrew Cask must contain exactly one version and one SHA-256 stanza.");
+  }
+
+  return current
+    .replace(versionMatches[0], `  version "${safeVersion},${safeBuildNumber}"`)
+    .replace(shaMatches[0], `  sha256 "${safeSHA256}"`);
+}
+
 export function makeR2ObjectKey({ releaseType, version, buildNumber, timestamp, fileName }) {
   const safeFileName = validateDMGFileName(fileName ?? makeDMGFileName({ version, buildNumber }));
 

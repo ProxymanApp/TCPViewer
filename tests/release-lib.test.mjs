@@ -11,6 +11,7 @@ import {
   makeBetaDMGFileName,
   makeDMGFileName,
   makeGitHubReleaseTagName,
+  makeHomebrewCaskBranchName,
   makeR2ObjectURL,
   makeR2ObjectKey,
   makeR2StorageObjectKey,
@@ -20,6 +21,7 @@ import {
   normalizeReleaseBackendURL,
   normalizeSparklePrivateKey,
   parseEnvFile,
+  parseHomebrewCaskVersion,
   parseReleaseNotes,
   parseSparkleSignatureOutput,
   publicR2URL,
@@ -29,7 +31,8 @@ import {
   releaseNotesToMarkdown,
   releaseNotesToHTML,
   requiredEnvNames,
-  signR2Request
+  signR2Request,
+  updateHomebrewCaskContent
 } from "../scripts/release-lib.mjs";
 
 test("parses and validates release notes", () => {
@@ -180,6 +183,36 @@ test("builds versioned DMG file names", () => {
   );
 });
 
+test("updates only Homebrew Cask release metadata", () => {
+  const cask = [
+    'cask "tcpviewer" do',
+    '  version "1.9.0,30"',
+    `  sha256 "${"a".repeat(64)}"`,
+    "",
+    '  app "TCP Viewer.app"',
+    "end",
+    ""
+  ].join("\n");
+  const updated = updateHomebrewCaskContent(cask, {
+    version: "1.10.0",
+    buildNumber: "31",
+    sha256: "B".repeat(64)
+  });
+
+  assert.deepEqual(parseHomebrewCaskVersion(updated), { version: "1.10.0", buildNumber: "31" });
+  assert.match(updated, new RegExp(`sha256 "${"b".repeat(64)}"`));
+  assert.match(updated, /app "TCP Viewer\.app"/);
+  assert.equal(makeHomebrewCaskBranchName({ version: "1.10.0", buildNumber: "31" }), "tcpviewer-1.10.0-31");
+  assert.throws(
+    () => updateHomebrewCaskContent(cask, { version: "../1.10.0", buildNumber: "31", sha256: "b".repeat(64) }),
+    /Homebrew Cask version/
+  );
+  assert.throws(
+    () => updateHomebrewCaskContent(cask, { version: "1.10.0", buildNumber: "31", sha256: "invalid" }),
+    /SHA-256/
+  );
+});
+
 test("parses xcconfig-style env files and redacts secrets", () => {
   const parsed = parseEnvFile([
     "TCPVIEWER_APPCAST_URL=https:/$()/updates.example.com/appcast.xml",
@@ -218,7 +251,8 @@ test("documents required release env values with safe placeholders", () => {
   const documentedNames = [
     ...requiredEnvNames("production"),
     "TCPVIEWER_PUBLISH_RELEASE_TO_BACKEND",
-    ...releaseBackendRequiredEnvNames
+    ...releaseBackendRequiredEnvNames,
+    "TCPVIEWER_HOMEBREW_CASK_REPO"
   ];
 
   assert.doesNotMatch(content, /^\s*\/\//m);

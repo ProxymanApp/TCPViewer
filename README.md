@@ -85,7 +85,11 @@ For production releases, add a matching entry to `ReleaseNote.json`, then run:
 npm run release
 ```
 
-Choose `beta` or `production` when prompted. Production releases also create the Sparkle appcast, push the `v<version>` tag, and publish the GitHub release. Artifacts are written under:
+Choose `beta` or `production` when prompted. Production releases also create the Sparkle appcast, push the `v<version>` tag, and publish the GitHub release. They can optionally update `tcpviewer.rb` in the configured `TCPVIEWER_HOMEBREW_CASK_REPO` checkout and open a pull request from `ProxymanApp/homebrew-cask` to `Homebrew/homebrew-cask`. The checkout must be clean, on `master`, and in sync with `origin/master` before the release starts.
+
+For non-interactive production releases, pass `--bump-homebrew` to enable the cask PR or `--no-bump-homebrew` to skip it. `--yes` skips the Homebrew update unless `--bump-homebrew` is also present.
+
+Artifacts are written under:
 
 ```bash
 ~/Desktop/tcpviewer-production/
