@@ -182,7 +182,7 @@
         "Fix packet copy edge cases."
       ]
     },
-        {
+    {
       "version": "1.8.1",
       "title": "TCP Viewer 1.8.1: Improve helper tool connection and error handling",
       "features": [
@@ -193,6 +193,22 @@
       "bugs": [
         "Fix few top crashes from Sentry.",
         "Sometiomes, TCPViewer could not connect to the helper tool"
+      ]
+    },
+    {
+      "version": "1.9.0",
+      "title": "TCP Viewer 1.9.0: Optimize memory usage and improve Wireshark performance",
+      "features": [
+        "Show New Updates counts in the toolbar"
+      ],
+      "improvements": [
+        "Bring the Pin menu item to the first position in the context menu.",
+        "Optimized the capture data and reduce memory usage.",
+        "Improve Wireshark packet detail reliability.",
+        "Update the Core to the latest Wireshark version."
+      ],
+      "bugs": [
+        "Fix capture and packet detail edge cases."
       ]
     }
   ]
