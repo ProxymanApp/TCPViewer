@@ -20,6 +20,11 @@ struct WiresharkPacketInspectionFields {
     let sniDomainName: String?
 }
 
+enum WiresharkSessionPurpose {
+    case offline
+    case live
+}
+
 struct WiresharkRuntimeConfiguration {
     private static let appFolderName = "TCPViewer"
     private static let settingsFolderName = "settings"
@@ -58,17 +63,18 @@ final class WiresharkEpanSession {
 
     init(
         disabled: Bool = false,
+        purpose: WiresharkSessionPurpose = .offline,
         criticalExceptionLogger: WiresharkCriticalExceptionLogger = .shared,
         runtimeConfiguration: WiresharkRuntimeConfiguration = WiresharkRuntimeConfiguration()
     ) throws {
         self.criticalExceptionLogger = criticalExceptionLogger
         let createdHandle: OpaquePointer?
         if disabled {
-            createdHandle = TCPViewerWiresharkSessionCreate(true, nil)
+            createdHandle = TCPViewerWiresharkSessionCreate(true, purpose == .live, nil)
         } else {
             let configurationDirectory = try runtimeConfiguration.createPersonalConfigurationDirectoryIfNeeded()
             createdHandle = configurationDirectory.path.withCString { path in
-                TCPViewerWiresharkSessionCreate(false, path)
+                TCPViewerWiresharkSessionCreate(false, purpose == .live, path)
             }
         }
 
@@ -180,8 +186,8 @@ final class WiresharkEpanSession {
                     context.timestampNanoseconds = Int32(max(0, min(999_999_999, (interval - seconds) * 1_000_000_000)))
                     context.interfaceName = interfaceNamePointer
                     context.packetComment = packetCommentPointer
-                    context.interfaceID = 0
-                    context.sectionNumber = 0
+                    context.interfaceID = record.interfaceID
+                    context.sectionNumber = record.sectionNumber
                     return try withUnsafePointer(to: &context, body)
                 }
             }

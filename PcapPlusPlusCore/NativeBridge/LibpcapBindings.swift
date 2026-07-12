@@ -76,6 +76,13 @@ struct pcap_stat {
     var ps_ifdrop: UInt32 = 0
 }
 
+enum LibpcapPacketReadResult {
+    case packet(header: pcap_pkthdr, bytes: Data)
+    case timeout
+    case stopped
+    case failure(String)
+}
+
 enum Libpcap {
     static let dltNull: Int32 = 0
     static let dltEthernet: Int32 = 1
@@ -155,19 +162,29 @@ enum Libpcap {
         }
     }
 
-    static func nextPacket(from handle: OpaquePointer) -> (header: pcap_pkthdr, bytes: Data)? {
+    // Preserve every pcap_next_ex outcome so fatal reads cannot become a retry loop.
+    static func nextPacket(from handle: OpaquePointer) -> LibpcapPacketReadResult {
         var headerPointer: UnsafePointer<pcap_pkthdr>?
         var dataPointer: UnsafePointer<UInt8>?
-        let result = pcap_next_ex(handle, &headerPointer, &dataPointer)
-        guard result == 1,
-              let headerPointer,
-              let dataPointer else {
-            return nil
-        }
+        let status = pcap_next_ex(handle, &headerPointer, &dataPointer)
 
-        let header = headerPointer.pointee
-        let bytes = Data(bytes: dataPointer, count: Int(header.caplen))
-        return (header, bytes)
+        switch status {
+        case 1:
+            guard let headerPointer, let dataPointer else {
+                return .failure("libpcap returned a packet without packet data.")
+            }
+            let header = headerPointer.pointee
+            return .packet(
+                header: header,
+                bytes: Data(bytes: dataPointer, count: Int(header.caplen))
+            )
+        case 0:
+            return .timeout
+        case -2:
+            return .stopped
+        default:
+            return .failure(pcapError(handle))
+        }
     }
 
     static func stats(for handle: OpaquePointer) -> pcap_stat? {
