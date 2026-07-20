@@ -8,6 +8,13 @@
 import AppKit
 import SwiftUI
 
+private enum TCPViewerMCPSettingsLayout {
+    static let paneHeight: CGFloat = 760
+    static let commandHeight: CGFloat = 48
+    static let manualConfigurationHeight: CGFloat = 170
+    static let manualConfigurationFontSize: CGFloat = 11
+}
+
 struct TCPViewerMCPSettingsView: View {
     let configuration: AppConfiguration
     let server: TCPViewerMCPHTTPServer
@@ -49,7 +56,10 @@ struct TCPViewerMCPSettingsView: View {
             .padding(.vertical, 26)
             .padding(.horizontal, TCPViewerSettingsLayout.horizontalPadding)
         }
-        .frame(width: TCPViewerSettingsLayout.windowWidth, height: 610)
+        .frame(
+            width: TCPViewerSettingsLayout.windowWidth,
+            height: TCPViewerMCPSettingsLayout.paneHeight
+        )
         .onAppear {
             refreshState()
             startObserving()
@@ -120,12 +130,20 @@ struct TCPViewerMCPSettingsView: View {
             HStack(alignment: .top, spacing: 10) {
                 ScrollView([.horizontal, .vertical]) {
                     Text(installConfiguration.text(for: selectedClient))
-                        .font(.system(.callout, design: .monospaced).weight(.semibold))
+                        .font(selectedClient == .manual
+                            ? .system(
+                                size: TCPViewerMCPSettingsLayout.manualConfigurationFontSize,
+                                weight: .regular,
+                                design: .monospaced
+                            )
+                            : .system(.callout, design: .monospaced).weight(.semibold))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(10)
                 }
-                .frame(height: selectedClient == .manual ? 118 : 48)
+                .frame(height: selectedClient == .manual
+                    ? TCPViewerMCPSettingsLayout.manualConfigurationHeight
+                    : TCPViewerMCPSettingsLayout.commandHeight)
                 .background(.background.secondary, in: RoundedRectangle(cornerRadius: 7))
                 .overlay {
                     RoundedRectangle(cornerRadius: 7)
