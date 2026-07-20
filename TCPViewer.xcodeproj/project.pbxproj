@@ -10,6 +10,8 @@
 		BA4D26BD2F9A2F770070BE17 /* PcapPlusPlusCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BA4D26B42F9A2F760070BE17 /* PcapPlusPlusCore.framework */; };
 		BA5E00012FA800000070BE17 /* Sentry in Frameworks */ = {isa = PBXBuildFile; productRef = BA5E00032FA800000070BE17 /* Sentry */; };
 		BA9F00012FBF00000070BE17 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = BA9F00032FBF00000070BE17 /* ZIPFoundation */; };
+		BAMC0001300F00000070BE17 /* MCP in Frameworks */ = {isa = PBXBuildFile; productRef = BAMC0002300F00000070BE17 /* MCP */; };
+		BAMC0003300F00000070BE17 /* tcpviewer-mcp in Copy MCP Executable */ = {isa = PBXBuildFile; fileRef = BA63DEFA300E7E7700530A67 /* tcpviewer-mcp */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 		BAPM00012F9D00000070BE17 /* PcapPlusPlusCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BA4D26B42F9A2F760070BE17 /* PcapPlusPlusCore.framework */; };
 		BAPM00022F9D00000070BE17 /* HexFiend.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BA7A10022F9B00000070BE17 /* HexFiend.framework */; };
 		BAPM00032F9D00000070BE17 /* PcapPlusPlusCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = BA4D26B42F9A2F760070BE17 /* PcapPlusPlusCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -35,6 +37,13 @@
 			proxyType = 1;
 			remoteGlobalIDString = BAAE975C2F9B815F00C52A7C;
 			remoteInfo = TCPViewer;
+		};
+		BAMC0004300F00000070BE17 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = BA4D267D2F9A2F490070BE17 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = BA63DEF9300E7E7700530A67;
+			remoteInfo = "tcpviewer-mcp";
 		};
 		BAPM00102F9D00000070BE17 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -68,6 +77,17 @@
 			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 1;
+		};
+		BAMC0005300F00000070BE17 /* Copy MCP Executable */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 6;
+			files = (
+				BAMC0003300F00000070BE17 /* tcpviewer-mcp in Copy MCP Executable */,
+			);
+			name = "Copy MCP Executable";
+			runOnlyForDeploymentPostprocessing = 0;
 		};
 		BAPM00202F9D00000070BE17 /* Embed Frameworks */ = {
 			isa = PBXCopyFilesBuildPhase;
@@ -173,6 +193,11 @@
 			path = TCPViewerHelperTool;
 			sourceTree = "<group>";
 		};
+		BAMC0006300F00000070BE17 /* TCPViewerMCPShared */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = TCPViewerMCPShared;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -195,6 +220,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				BAMC0001300F00000070BE17 /* MCP in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -242,6 +268,7 @@
 				BACE000D2F9C00000070BE17 /* NetworkHelperLaunchDaemons */,
 				BA7A10032F9B00000070BE17 /* Vendor */,
 				BA63DEFB300E7E7700530A67 /* tcpviewer-mcp */,
+				BAMC0006300F00000070BE17 /* TCPViewerMCPShared */,
 				BA4D26862F9A2F490070BE17 /* Products */,
 				BAAE97052F9B810400C52A7C /* Recovered References */,
 			);
@@ -363,9 +390,11 @@
 			);
 			fileSystemSynchronizedGroups = (
 				BA63DEFB300E7E7700530A67 /* tcpviewer-mcp */,
+				BAMC0006300F00000070BE17 /* TCPViewerMCPShared */,
 			);
 			name = "tcpviewer-mcp";
 			packageProductDependencies = (
+				BAMC0002300F00000070BE17 /* MCP */,
 			);
 			productName = "tcpviewer-mcp";
 			productReference = BA63DEFA300E7E7700530A67 /* tcpviewer-mcp */;
@@ -384,15 +413,18 @@
 				BAOS00012FA400000070BE17 /* Stage Open Source Notices */,
 				BAPM00212F9D00000070BE17 /* Copy Network Helper Executable */,
 				BAPM00222F9D00000070BE17 /* Copy Network Helper LaunchDaemon */,
+				BAMC0005300F00000070BE17 /* Copy MCP Executable */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 				BAPM00302F9D00000070BE17 /* PBXTargetDependency */,
 				BAPM00312F9D00000070BE17 /* PBXTargetDependency */,
+				BAMC0007300F00000070BE17 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				BAAE975E2F9B815F00C52A7C /* TCPViewer */,
+				BAMC0006300F00000070BE17 /* TCPViewerMCPShared */,
 			);
 			name = TCPViewer;
 			packageProductDependencies = (
@@ -491,6 +523,7 @@
 				47F2E4C3668133A54F097208 /* XCRemoteSwiftPackageReference "Sparkle" */,
 				BA5E00022FA800000070BE17 /* XCRemoteSwiftPackageReference "sentry-cocoa" */,
 				BA9F00022FBF00000070BE17 /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
+				BAMC0008300F00000070BE17 /* XCRemoteSwiftPackageReference "swift-sdk" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = BA4D26862F9A2F490070BE17 /* Products */;
@@ -581,6 +614,7 @@
 				"$(PROJECT_DIR)/Vendor/Wireshark/COPYING",
 				"$(PROJECT_DIR)/Vendor/Wireshark/README.md",
 				"$(PROJECT_DIR)/Vendor/HexFiend/License.txt",
+				"$(PROJECT_DIR)/ThirdPartyLicenses/MCP-Swift-SDK-LICENSE.txt",
 				"$(PROJECT_DIR)/scripts/stage-open-source-notices.sh",
 			);
 			name = "Stage Open Source Notices";
@@ -737,6 +771,11 @@
 			isa = PBXTargetDependency;
 			target = BAAE975C2F9B815F00C52A7C /* TCPViewer */;
 			targetProxy = BAAE97702F9B816000C52A7C /* PBXContainerItemProxy */;
+		};
+		BAMC0007300F00000070BE17 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = BA63DEF9300E7E7700530A67 /* tcpviewer-mcp */;
+			targetProxy = BAMC0004300F00000070BE17 /* PBXContainerItemProxy */;
 		};
 		BAPM00302F9D00000070BE17 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
@@ -1065,15 +1104,19 @@
 			buildSettings = {
 				AUTOMATION_APPLE_EVENTS = NO;
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = 3X57WP8E8V;
-				ENABLE_HARDENED_RUNTIME = NO;
+				DEVELOPMENT_TEAM = "$(TCPVIEWER_DEVELOPMENT_TEAM)";
+				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
 				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
 				ENABLE_RESOURCE_ACCESS_CAMERA = NO;
 				ENABLE_RESOURCE_ACCESS_CONTACTS = NO;
 				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
 				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
-				MACOSX_DEPLOYMENT_TARGET = 26.5;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-fsanitize=undefined",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = "com.proxyman.tcpviewer-mcp";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
@@ -1084,7 +1127,7 @@
 				RUNTIME_EXCEPTION_DISABLE_LIBRARY_VALIDATION = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.0;
 			};
 			name = Debug;
 		};
@@ -1093,15 +1136,15 @@
 			buildSettings = {
 				AUTOMATION_APPLE_EVENTS = NO;
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = 3X57WP8E8V;
-				ENABLE_HARDENED_RUNTIME = NO;
+				DEVELOPMENT_TEAM = "$(TCPVIEWER_DEVELOPMENT_TEAM)";
+				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
 				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
 				ENABLE_RESOURCE_ACCESS_CAMERA = NO;
 				ENABLE_RESOURCE_ACCESS_CONTACTS = NO;
 				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
 				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
-				MACOSX_DEPLOYMENT_TARGET = 26.5;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.proxyman.tcpviewer-mcp";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
@@ -1112,7 +1155,7 @@
 				RUNTIME_EXCEPTION_DISABLE_LIBRARY_VALIDATION = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 6.0;
 			};
 			name = Release;
 		};
@@ -1415,6 +1458,14 @@
 				version = 0.9.20;
 			};
 		};
+		BAMC0008300F00000070BE17 /* XCRemoteSwiftPackageReference "swift-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/modelcontextprotocol/swift-sdk.git";
+			requirement = {
+				kind = exactVersion;
+				version = 0.12.1;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -1432,6 +1483,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = BA9F00022FBF00000070BE17 /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
 			productName = ZIPFoundation;
+		};
+		BAMC0002300F00000070BE17 /* MCP */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = BAMC0008300F00000070BE17 /* XCRemoteSwiftPackageReference "swift-sdk" */;
+			productName = MCP;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

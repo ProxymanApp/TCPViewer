@@ -19,6 +19,8 @@ struct AppConfigurationTests {
         #expect(configuration.packetFontSize == AppConfiguration.defaultPacketFontSize)
         #expect(configuration.appearanceTheme == .system)
         #expect(configuration.confirmsBeforeQuitting)
+        #expect(!configuration.isMCPServerEnabled)
+        #expect(configuration.mcpRedactsSensitiveData)
     }
 
     @Test func persistsPrivacyAndAppearanceSettings() {
@@ -31,6 +33,8 @@ struct AppConfigurationTests {
         configuration.packetFontSize = 16
         configuration.appearanceTheme = .dark
         configuration.confirmsBeforeQuitting = false
+        configuration.isMCPServerEnabled = true
+        configuration.mcpRedactsSensitiveData = false
 
         let reloadedConfiguration = AppConfiguration(defaults: defaults)
         #expect(!reloadedConfiguration.sharesAnalytics)
@@ -39,6 +43,8 @@ struct AppConfigurationTests {
         #expect(reloadedConfiguration.packetFontSize == 16)
         #expect(reloadedConfiguration.appearanceTheme == .dark)
         #expect(!reloadedConfiguration.confirmsBeforeQuitting)
+        #expect(reloadedConfiguration.isMCPServerEnabled)
+        #expect(!reloadedConfiguration.mcpRedactsSensitiveData)
     }
 
     @Test func clampsInvalidFontSizes() {
@@ -86,10 +92,14 @@ struct AppConfigurationTests {
     @Test func resetToDefaultsRestoresQuitConfirmation() {
         let configuration = AppConfiguration(defaults: Self.makeUserDefaults())
         configuration.confirmsBeforeQuitting = false
+        configuration.isMCPServerEnabled = true
+        configuration.mcpRedactsSensitiveData = false
 
         configuration.resetToDefaults()
 
         #expect(configuration.confirmsBeforeQuitting)
+        #expect(!configuration.isMCPServerEnabled)
+        #expect(configuration.mcpRedactsSensitiveData)
     }
 
     @Test func invalidThemeFallsBackToSystem() {

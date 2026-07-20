@@ -34,6 +34,11 @@ final class TCPViewerSettingsWindowController: NSWindowController {
             viewController: Self.makeHostingController(rootView: TCPViewerHelperToolSettingsView(manager: networkHelperToolManager))
         ))
         tabViewController.addTabViewItem(Self.makeTab(
+            title: "MCP",
+            systemImage: "cpu.fill",
+            viewController: Self.makeHostingController(rootView: TCPViewerMCPSettingsView(configuration: configuration))
+        ))
+        tabViewController.addTabViewItem(Self.makeTab(
             title: "More Apps",
             systemImage: "square.grid.2x2.fill",
             viewController: Self.makeHostingController(rootView: TCPViewerMoreAppsSettingsView())

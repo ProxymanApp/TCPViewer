@@ -9,8 +9,8 @@ import AppKit
 import SwiftUI
 
 enum TCPViewerSettingsLayout {
-    static let windowWidth: CGFloat = 600
-    static let paneWidth: CGFloat = 460
+    static let windowWidth: CGFloat = 720
+    static let paneWidth: CGFloat = 650
     static let verticalPadding: CGFloat = 30
     static let horizontalPadding: CGFloat = 28
     static let rowTitleWidth: CGFloat = 116

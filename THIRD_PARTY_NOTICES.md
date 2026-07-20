@@ -33,6 +33,17 @@ still GPL-covered and are not LGPL.
 
 HexFiend provides the embedded packet hex viewer framework.
 
+## Model Context Protocol Swift SDK
+
+- Source: https://github.com/modelcontextprotocol/swift-sdk
+- Pinned version: `0.12.1`
+- License: Apache-2.0 and MIT during the upstream licensing transition;
+  documentation is CC-BY-4.0
+- License text: `ThirdPartyLicenses/MCP-Swift-SDK-LICENSE.txt`
+
+The MCP Swift SDK implements the standard stdio Model Context Protocol server
+used by TCP Viewer's bundled `tcpviewer-mcp` executable.
+
 ## Transitive Runtime Libraries
 
 `scripts/bootstrap-wireshark-deps.sh` builds Wireshark's non-system runtime

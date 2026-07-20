@@ -55,6 +55,7 @@ copy_notice "$PROJECT_DIR/THIRD_PARTY_NOTICES.md" "THIRD_PARTY_NOTICES.md"
 copy_notice "$PROJECT_DIR/Vendor/Wireshark/COPYING" "Wireshark-COPYING.txt"
 copy_notice "$PROJECT_DIR/Vendor/Wireshark/README.md" "Wireshark-README.md"
 copy_notice "$PROJECT_DIR/Vendor/HexFiend/License.txt" "HexFiend-LICENSE.txt"
+copy_notice "$PROJECT_DIR/ThirdPartyLicenses/MCP-Swift-SDK-LICENSE.txt" "MCP-Swift-SDK-LICENSE.txt"
 write_runtime_manifest
 
 mkdir -p "$(dirname "$STAMP_FILE")"
