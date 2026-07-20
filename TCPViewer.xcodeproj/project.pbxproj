@@ -60,6 +60,15 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
+		BA63DEF8300E7E7700530A67 /* CopyFiles */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = /usr/share/man/man1/;
+			dstSubfolderSpec = 0;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 1;
+		};
 		BAPM00202F9D00000070BE17 /* Embed Frameworks */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
@@ -100,6 +109,7 @@
 		BA4D26B42F9A2F760070BE17 /* PcapPlusPlusCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = PcapPlusPlusCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		BA4D26BC2F9A2F770070BE17 /* PcapPlusPlusCoreTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PcapPlusPlusCoreTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		BA4D2DD82F9B3EF50070BE17 /* PcapPlusPlusCore.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; path = PcapPlusPlusCore.xctestplan; sourceTree = "<group>"; };
+		BA63DEFA300E7E7700530A67 /* tcpviewer-mcp */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "tcpviewer-mcp"; sourceTree = BUILT_PRODUCTS_DIR; };
 		BA7A10022F9B00000070BE17 /* HexFiend.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = HexFiend.framework; path = Vendor/HexFiend/HexFiend.framework; sourceTree = "<group>"; };
 		BAAE975D2F9B815F00C52A7C /* TCP Viewer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "TCP Viewer.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		BAAE976F2F9B816000C52A7C /* TCPViewerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TCPViewerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -135,6 +145,11 @@
 		BA4D26C22F9A2F770070BE17 /* PcapPlusPlusCoreTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = PcapPlusPlusCoreTests;
+			sourceTree = "<group>";
+		};
+		BA63DEFB300E7E7700530A67 /* tcpviewer-mcp */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "tcpviewer-mcp";
 			sourceTree = "<group>";
 		};
 		BAAE975E2F9B815F00C52A7C /* TCPViewer */ = {
@@ -173,6 +188,13 @@
 			buildActionMask = 2147483647;
 			files = (
 				BA4D26BD2F9A2F770070BE17 /* PcapPlusPlusCore.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BA63DEF7300E7E7700530A67 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -219,6 +241,7 @@
 				BACE000B2F9C00000070BE17 /* TCPViewerHelperTool */,
 				BACE000D2F9C00000070BE17 /* NetworkHelperLaunchDaemons */,
 				BA7A10032F9B00000070BE17 /* Vendor */,
+				BA63DEFB300E7E7700530A67 /* tcpviewer-mcp */,
 				BA4D26862F9A2F490070BE17 /* Products */,
 				BAAE97052F9B810400C52A7C /* Recovered References */,
 			);
@@ -232,6 +255,7 @@
 				BACE00022F9C00000070BE17 /* com.proxyman.tcpviewer.helpertool */,
 				BAAE975D2F9B815F00C52A7C /* TCP Viewer.app */,
 				BAAE976F2F9B816000C52A7C /* TCPViewerTests.xctest */,
+				BA63DEFA300E7E7700530A67 /* tcpviewer-mcp */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -325,6 +349,28 @@
 			productReference = BA4D26BC2F9A2F770070BE17 /* PcapPlusPlusCoreTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		BA63DEF9300E7E7700530A67 /* tcpviewer-mcp */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BA63DF00300E7E7700530A67 /* Build configuration list for PBXNativeTarget "tcpviewer-mcp" */;
+			buildPhases = (
+				BA63DEF6300E7E7700530A67 /* Sources */,
+				BA63DEF7300E7E7700530A67 /* Frameworks */,
+				BA63DEF8300E7E7700530A67 /* CopyFiles */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				BA63DEFB300E7E7700530A67 /* tcpviewer-mcp */,
+			);
+			name = "tcpviewer-mcp";
+			packageProductDependencies = (
+			);
+			productName = "tcpviewer-mcp";
+			productReference = BA63DEFA300E7E7700530A67 /* tcpviewer-mcp */;
+			productType = "com.apple.product-type.tool";
+		};
 		BAAE975C2F9B815F00C52A7C /* TCPViewer */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = BAAE97882F9B816000C52A7C /* Build configuration list for PBXNativeTarget "TCPViewer" */;
@@ -408,7 +454,7 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 2640;
+				LastSwiftUpdateCheck = 2650;
 				LastUpgradeCheck = 2640;
 				TargetAttributes = {
 					BA4D26B32F9A2F760070BE17 = {
@@ -416,6 +462,9 @@
 					};
 					BA4D26BB2F9A2F770070BE17 = {
 						CreatedOnToolsVersion = 26.4.1;
+					};
+					BA63DEF9300E7E7700530A67 = {
+						CreatedOnToolsVersion = 26.5;
 					};
 					BAAE975C2F9B815F00C52A7C = {
 						CreatedOnToolsVersion = 26.4.1;
@@ -453,6 +502,7 @@
 				BA4D26B32F9A2F760070BE17 /* PcapPlusPlusCore */,
 				BA4D26BB2F9A2F770070BE17 /* PcapPlusPlusCoreTests */,
 				BACE00082F9C00000070BE17 /* TCPViewerHelperTool */,
+				BA63DEF9300E7E7700530A67 /* tcpviewer-mcp */,
 			);
 		};
 /* End PBXProject section */
@@ -641,6 +691,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		BA4D26B82F9A2F770070BE17 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BA63DEF6300E7E7700530A67 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -1003,6 +1060,62 @@
 			};
 			name = Release;
 		};
+		BA63DEFE300E7E7700530A67 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				AUTOMATION_APPLE_EVENTS = NO;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 3X57WP8E8V;
+				ENABLE_HARDENED_RUNTIME = NO;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
+				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
+				ENABLE_RESOURCE_ACCESS_CAMERA = NO;
+				ENABLE_RESOURCE_ACCESS_CONTACTS = NO;
+				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
+				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
+				MACOSX_DEPLOYMENT_TARGET = 26.5;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.proxyman.tcpviewer-mcp";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
+				RUNTIME_EXCEPTION_ALLOW_JIT = NO;
+				RUNTIME_EXCEPTION_ALLOW_UNSIGNED_EXECUTABLE_MEMORY = NO;
+				RUNTIME_EXCEPTION_DEBUGGING_TOOL = NO;
+				RUNTIME_EXCEPTION_DISABLE_EXECUTABLE_PAGE_PROTECTION = NO;
+				RUNTIME_EXCEPTION_DISABLE_LIBRARY_VALIDATION = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		BA63DEFF300E7E7700530A67 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				AUTOMATION_APPLE_EVENTS = NO;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 3X57WP8E8V;
+				ENABLE_HARDENED_RUNTIME = NO;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
+				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
+				ENABLE_RESOURCE_ACCESS_CAMERA = NO;
+				ENABLE_RESOURCE_ACCESS_CONTACTS = NO;
+				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
+				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
+				MACOSX_DEPLOYMENT_TARGET = 26.5;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.proxyman.tcpviewer-mcp";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
+				RUNTIME_EXCEPTION_ALLOW_JIT = NO;
+				RUNTIME_EXCEPTION_ALLOW_UNSIGNED_EXECUTABLE_MEMORY = NO;
+				RUNTIME_EXCEPTION_DEBUGGING_TOOL = NO;
+				RUNTIME_EXCEPTION_DISABLE_EXECUTABLE_PAGE_PROTECTION = NO;
+				RUNTIME_EXCEPTION_DISABLE_LIBRARY_VALIDATION = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
 		BAAE97812F9B816000C52A7C /* Debug */ = {
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = BAE100012FA300000070BE17 /* TCPViewer.shared.xcconfig */;
@@ -1235,6 +1348,15 @@
 			buildConfigurations = (
 				BA4D26CE2F9A2F770070BE17 /* Debug */,
 				BA4D26CF2F9A2F770070BE17 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		BA63DF00300E7E7700530A67 /* Build configuration list for PBXNativeTarget "tcpviewer-mcp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BA63DEFE300E7E7700530A67 /* Debug */,
+				BA63DEFF300E7E7700530A67 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
