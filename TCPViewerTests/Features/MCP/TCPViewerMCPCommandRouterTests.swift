@@ -80,7 +80,17 @@ struct TCPViewerMCPCommandRouterTests {
         ])
         #expect(boundedPackets.value("scanned_count") == .int(1))
         #expect(boundedPackets.value("total_packet_count") == .int(2))
+        #expect(boundedPackets.value("next_scan_offset") == .int(1))
         #expect(boundedPackets.value("has_more_unscanned_packets") == .bool(true))
+
+        let nextWindow = await routeMCP(router, command: .queryPackets, params: [
+            "order": .string("oldest"),
+            "scan_limit": .int(1),
+            "scan_offset": .int(1),
+        ])
+        #expect(nextWindow.value("packets")?.arrayValue?.first?.objectValue?["id"] == .string("2"))
+        #expect(nextWindow.value("next_scan_offset") == .null)
+        #expect(nextWindow.value("has_more_unscanned_packets") == .bool(false))
 
         let summary = await routeMCP(router, command: .summarizeCapture)
         #expect(summary.value("matched_packet_count") == .int(2))

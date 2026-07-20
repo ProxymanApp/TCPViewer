@@ -614,7 +614,15 @@
 				"$(PROJECT_DIR)/Vendor/Wireshark/COPYING",
 				"$(PROJECT_DIR)/Vendor/Wireshark/README.md",
 				"$(PROJECT_DIR)/Vendor/HexFiend/License.txt",
+				"$(PROJECT_DIR)/ThirdPartyLicenses/EventSource-LICENSE.md",
 				"$(PROJECT_DIR)/ThirdPartyLicenses/MCP-Swift-SDK-LICENSE.txt",
+				"$(PROJECT_DIR)/ThirdPartyLicenses/SwiftAtomics-LICENSE.txt",
+				"$(PROJECT_DIR)/ThirdPartyLicenses/SwiftCollections-LICENSE.txt",
+				"$(PROJECT_DIR)/ThirdPartyLicenses/SwiftLog-LICENSE.txt",
+				"$(PROJECT_DIR)/ThirdPartyLicenses/SwiftLog-NOTICE.txt",
+				"$(PROJECT_DIR)/ThirdPartyLicenses/SwiftNIO-LICENSE.txt",
+				"$(PROJECT_DIR)/ThirdPartyLicenses/SwiftNIO-NOTICE.txt",
+				"$(PROJECT_DIR)/ThirdPartyLicenses/SwiftSystem-LICENSE.txt",
 				"$(PROJECT_DIR)/scripts/stage-open-source-notices.sh",
 			);
 			name = "Stage Open Source Notices";

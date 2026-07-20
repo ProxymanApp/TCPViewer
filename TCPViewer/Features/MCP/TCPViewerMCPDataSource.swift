@@ -32,6 +32,7 @@ struct TCPViewerMCPWorkspaceSnapshot: Sendable {
 protocol TCPViewerMCPDataSource: AnyObject {
     func mcpWorkspaceSnapshot(
         packetLimit: Int,
+        packetOffset: Int,
         packetOrder: TCPViewerMCPPacketOrder
     ) -> TCPViewerMCPWorkspaceSnapshot
     func mcpInspectPacket(
@@ -58,7 +59,30 @@ protocol TCPViewerMCPDataSource: AnyObject {
 
 extension TCPViewerMCPDataSource {
     func mcpWorkspaceSnapshot() -> TCPViewerMCPWorkspaceSnapshot {
-        mcpWorkspaceSnapshot(packetLimit: 0, packetOrder: .recent)
+        mcpWorkspaceSnapshot(packetLimit: 0, packetOffset: 0, packetOrder: .recent)
+    }
+}
+
+enum TCPViewerMCPPacketWindow {
+    // Copy one bounded prefix or suffix window after skipping packets in the requested order.
+    static func packets(
+        from packets: [PacketSummary],
+        offset: Int,
+        limit: Int,
+        order: TCPViewerMCPPacketOrder
+    ) -> [PacketSummary] {
+        let skippedCount = min(max(offset, 0), packets.count)
+        let boundedLimit = max(limit, 0)
+        switch order {
+        case .recent:
+            let endIndex = packets.count - skippedCount
+            let count = min(boundedLimit, endIndex)
+            return Array(packets[(endIndex - count)..<endIndex])
+        case .oldest:
+            let startIndex = skippedCount
+            let count = min(boundedLimit, packets.count - startIndex)
+            return Array(packets[startIndex..<(startIndex + count)])
+        }
     }
 }
 
@@ -80,17 +104,17 @@ extension NetworkInspectorViewModel: TCPViewerMCPDataSource {
     // Copy only the requested packet window so live appends never clone the full capture.
     func mcpWorkspaceSnapshot(
         packetLimit: Int,
+        packetOffset: Int,
         packetOrder: TCPViewerMCPPacketOrder
     ) -> TCPViewerMCPWorkspaceSnapshot {
         let base = snapshot.base
         let boundedLimit = max(0, min(packetLimit, TCPViewerMCPPacketQuery.maximumScanLimit))
-        let packets: [PacketSummary]
-        switch packetOrder {
-        case .recent:
-            packets = Array(base.packetIngestState.packets.suffix(boundedLimit))
-        case .oldest:
-            packets = Array(base.packetIngestState.packets.prefix(boundedLimit))
-        }
+        let packets = TCPViewerMCPPacketWindow.packets(
+            from: base.packetIngestState.packets,
+            offset: packetOffset,
+            limit: boundedLimit,
+            order: packetOrder
+        )
         return TCPViewerMCPWorkspaceSnapshot(
             packets: packets,
             totalPacketCount: base.packetIngestState.packets.count,
@@ -164,15 +188,12 @@ extension NetworkInspectorViewModel: TCPViewerMCPDataSource {
                 completion(.failure(TCPViewerMCPDataSourceError.invalidState("TCP Viewer window closed while capture was starting.")))
                 return
             }
-            if let error = self.snapshot.base.sessionState.lastError {
-                completion(.failure(error))
-            } else if self.snapshot.base.sessionState.canStop {
-                completion(.success(()))
-            } else {
-                completion(.failure(TCPViewerMCPDataSourceError.invalidState(
-                    self.snapshot.base.sessionState.statusMessage
-                )))
-            }
+            self.finishMCPControl(
+                expectedPhase: .running,
+                transitionalPhases: [.starting],
+                deadline: .now() + 5,
+                completion: completion
+            )
         }
     }
 
@@ -186,7 +207,12 @@ extension NetworkInspectorViewModel: TCPViewerMCPDataSource {
                 completion(.failure(TCPViewerMCPDataSourceError.invalidState("TCP Viewer window closed while capture was pausing.")))
                 return
             }
-            self.finishMCPControl(expectedPhase: "paused", completion: completion)
+            self.finishMCPControl(
+                expectedPhase: .paused,
+                transitionalPhases: [.running],
+                deadline: .now() + 5,
+                completion: completion
+            )
         }
     }
 
@@ -200,7 +226,12 @@ extension NetworkInspectorViewModel: TCPViewerMCPDataSource {
                 completion(.failure(TCPViewerMCPDataSourceError.invalidState("TCP Viewer window closed while capture was resuming.")))
                 return
             }
-            self.finishMCPControl(expectedPhase: "running", completion: completion)
+            self.finishMCPControl(
+                expectedPhase: .running,
+                transitionalPhases: [.paused],
+                deadline: .now() + 5,
+                completion: completion
+            )
         }
     }
 
@@ -214,7 +245,12 @@ extension NetworkInspectorViewModel: TCPViewerMCPDataSource {
                 completion(.failure(TCPViewerMCPDataSourceError.invalidState("TCP Viewer window closed while capture was stopping.")))
                 return
             }
-            self.finishMCPControl(expectedPhase: "stopped", completion: completion)
+            self.finishMCPControl(
+                expectedPhase: .stopped,
+                transitionalPhases: [.running, .paused, .stopping],
+                deadline: .now() + 5,
+                completion: completion
+            )
         }
     }
 
@@ -236,14 +272,34 @@ extension NetworkInspectorViewModel: TCPViewerMCPDataSource {
         return .success(())
     }
 
+    // Wait for the controller's deferred phase event to reach the view-model snapshot.
     private func finishMCPControl(
-        expectedPhase: String,
+        expectedPhase: CaptureSessionState.Phase,
+        transitionalPhases: Set<CaptureSessionState.Phase>,
+        deadline: DispatchTime,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
         if let error = snapshot.base.sessionState.lastError {
             completion(.failure(error))
-        } else if snapshot.base.sessionState.phase.rawValue == expectedPhase {
+        } else if snapshot.base.sessionState.phase == expectedPhase {
             completion(.success(()))
+        } else if transitionalPhases.contains(snapshot.base.sessionState.phase),
+                  DispatchTime.now() < deadline {
+            // Controller completions precede phase events, so wait for the coalesced view-model snapshot.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self] in
+                guard let self else {
+                    completion(.failure(TCPViewerMCPDataSourceError.invalidState(
+                        "TCP Viewer window closed before the capture state was updated."
+                    )))
+                    return
+                }
+                self.finishMCPControl(
+                    expectedPhase: expectedPhase,
+                    transitionalPhases: transitionalPhases,
+                    deadline: deadline,
+                    completion: completion
+                )
+            }
         } else {
             completion(.failure(TCPViewerMCPDataSourceError.invalidState(
                 snapshot.base.sessionState.statusMessage

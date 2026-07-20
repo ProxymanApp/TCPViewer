@@ -384,6 +384,7 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
             withDataSource(completion: completion) { source in
                 let snapshot = source.mcpWorkspaceSnapshot(
                     packetLimit: query.scanLimit,
+                    packetOffset: query.scanOffset,
                     packetOrder: query.order
                 )
                 let selection = self.exportSelection(
@@ -544,6 +545,7 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
         withDataSource(completion: completion) { source in
             let snapshot = source.mcpWorkspaceSnapshot(
                 packetLimit: query.scanLimit,
+                packetOffset: query.scanOffset,
                 packetOrder: query.order
             )
             let redactsSensitiveData = self.redactionEnabled()
@@ -643,6 +645,8 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
             "total_packet_count": .int(result.totalPacketCount),
             "offset": .int(result.offset),
             "next_offset": result.nextOffset.map(TCPViewerMCPValue.int) ?? .null,
+            "scan_offset": .int(result.scanOffset),
+            "next_scan_offset": result.nextScanOffset.map(TCPViewerMCPValue.int) ?? .null,
             "has_more_unscanned_packets": .bool(result.hasMoreUnscannedPackets),
         ]
     }
@@ -686,7 +690,17 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
             "matched_packet_count": .int(matchedCount),
             "scanned_packet_count": .int(scannedCount),
             "total_packet_count": .int(snapshot.totalPacketCount),
-            "has_more_unscanned_packets": .bool(scannedCount < snapshot.totalPacketCount),
+            "scan_offset": .int(query.scanOffset),
+            "next_scan_offset": nextScanOffset(
+                totalPacketCount: snapshot.totalPacketCount,
+                scanOffset: query.scanOffset,
+                scannedCount: scannedCount
+            ).map(TCPViewerMCPValue.int) ?? .null,
+            "has_more_unscanned_packets": .bool(hasMorePackets(
+                totalPacketCount: snapshot.totalPacketCount,
+                scanOffset: query.scanOffset,
+                scannedCount: scannedCount
+            )),
             "captured_byte_count": .int(capturedBytes),
             "protocols": countValues(protocolCounts),
             "domains": countValues(domainCounts),
@@ -733,7 +747,37 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
                 break
             }
         }
-        return (ids, matchedBeyondLimit || scannedCount < totalPacketCount)
+        return (
+            ids,
+            matchedBeyondLimit || hasMorePackets(
+                totalPacketCount: totalPacketCount,
+                scanOffset: query.scanOffset,
+                scannedCount: scannedCount
+            )
+        )
+    }
+
+    // Report whether another bounded scan window exists in the selected order.
+    private func hasMorePackets(
+        totalPacketCount: Int,
+        scanOffset: Int,
+        scannedCount: Int
+    ) -> Bool {
+        let remainingAfterOffset = max(0, totalPacketCount - min(scanOffset, totalPacketCount))
+        return scannedCount < remainingAfterOffset
+    }
+
+    // Advance by the actual scanned count so the final short window terminates cleanly.
+    private func nextScanOffset(
+        totalPacketCount: Int,
+        scanOffset: Int,
+        scannedCount: Int
+    ) -> Int? {
+        hasMorePackets(
+            totalPacketCount: totalPacketCount,
+            scanOffset: scanOffset,
+            scannedCount: scannedCount
+        ) ? scanOffset + scannedCount : nil
     }
 
     private func hasPacketSelection(_ request: TCPViewerMCPRequest) -> Bool {

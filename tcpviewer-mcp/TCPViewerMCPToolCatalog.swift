@@ -228,6 +228,10 @@ enum TCPViewerMCPToolCatalog {
             ),
             "stream_id": integerProperty("TCP or UDP stream ID.", minimum: 0, maximum: Int(UInt32.max)),
             "scan_limit": integerProperty("Maximum packets scanned, capped at 100000.", minimum: 1, maximum: 100_000),
+            "scan_offset": integerProperty(
+                "Packets to skip from the selected edge before scanning. Use next_scan_offset to traverse bounded windows.",
+                minimum: 0
+            ),
             "order": enumProperty(["recent", "oldest"], description: "Scan newest or oldest packets first."),
         ]
         if includePagination {

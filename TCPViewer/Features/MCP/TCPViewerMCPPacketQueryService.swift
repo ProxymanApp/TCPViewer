@@ -81,6 +81,7 @@ struct TCPViewerMCPPacketQuery {
     let domains: [String]
     let packetIDs: Set<PacketSummary.ID>
     let streamID: UInt32?
+    let scanOffset: Int
     let offset: Int
     let limit: Int
     let scanLimit: Int
@@ -94,6 +95,8 @@ struct TCPViewerMCPPacketQueryResult {
     let matchedPacketCount: Int
     let offset: Int
     let nextOffset: Int?
+    let scanOffset: Int
+    let nextScanOffset: Int?
     let hasMoreUnscannedPackets: Bool
 }
 
@@ -137,7 +140,16 @@ enum TCPViewerMCPPacketQueryService {
             throw TCPViewerMCPPacketQueryError.invalidParameter("scan_limit must be greater than zero.")
         }
 
-        let filters = try parseFilters(request.array("filters") ?? [])
+        let filterValues: [TCPViewerMCPValue]
+        if let rawFilters = request.value("filters") {
+            guard let values = rawFilters.arrayValue else {
+                throw TCPViewerMCPPacketQueryError.invalidParameter("filters must be an array of objects.")
+            }
+            filterValues = values
+        } else {
+            filterValues = []
+        }
+        let filters = try parseFilters(filterValues)
         let protocols = try stringArray(
             request.value("protocols"),
             parameter: "protocols",
@@ -173,6 +185,18 @@ enum TCPViewerMCPPacketQueryService {
         } else {
             streamID = nil
         }
+        let scanOffset: Int
+        if let rawScanOffset = request.value("scan_offset") {
+            guard let value = rawScanOffset.intValue else {
+                throw TCPViewerMCPPacketQueryError.invalidParameter("scan_offset must be an integer.")
+            }
+            scanOffset = value
+        } else {
+            scanOffset = 0
+        }
+        guard scanOffset >= 0 else {
+            throw TCPViewerMCPPacketQueryError.invalidParameter("scan_offset must be zero or greater.")
+        }
 
         return TCPViewerMCPPacketQuery(
             filters: filters,
@@ -181,6 +205,7 @@ enum TCPViewerMCPPacketQueryService {
             domains: domains,
             packetIDs: Set(packetIDs),
             streamID: streamID,
+            scanOffset: scanOffset,
             offset: offset,
             limit: min(requestedLimit, TCPViewerMCPPacketQuery.maximumLimit),
             scanLimit: min(requestedScanLimit, TCPViewerMCPPacketQuery.maximumScanLimit),
@@ -223,6 +248,12 @@ enum TCPViewerMCPPacketQueryService {
         }
 
         let consumedCount = query.offset + results.count
+        let remainingAfterOffset = max(
+            0,
+            resolvedTotalPacketCount - min(query.scanOffset, resolvedTotalPacketCount)
+        )
+        let hasMoreUnscannedPackets = scannedCount < remainingAfterOffset
+        let nextScanOffset = hasMoreUnscannedPackets ? query.scanOffset + scannedCount : nil
         return TCPViewerMCPPacketQueryResult(
             packets: results,
             totalPacketCount: resolvedTotalPacketCount,
@@ -230,7 +261,9 @@ enum TCPViewerMCPPacketQueryService {
             matchedPacketCount: matchedCount,
             offset: query.offset,
             nextOffset: consumedCount < matchedCount ? consumedCount : nil,
-            hasMoreUnscannedPackets: scannedCount < resolvedTotalPacketCount
+            scanOffset: query.scanOffset,
+            nextScanOffset: nextScanOffset,
+            hasMoreUnscannedPackets: hasMoreUnscannedPackets
         )
     }
 

@@ -5,6 +5,7 @@
 //  Created by Proxyman LLC on 20/7/26.
 //
 
+import Foundation
 import Testing
 @testable import TCPViewer
 
@@ -62,6 +63,31 @@ struct TCPViewerMCPSensitiveDataRedactorTests {
         #expect(redacted?["nested"]?.objectValue?["client_secret"] == .string(TCPViewerMCPSensitiveDataRedactor.placeholder))
         #expect(redacted?["api_secret_value"] == .string(TCPViewerMCPSensitiveDataRedactor.placeholder))
         #expect(redacted?["sessionToken"] == .string(TCPViewerMCPSensitiveDataRedactor.placeholder))
+    }
+
+    @Test func redactsEveryJSONValueTypeAndEscapedStrings() throws {
+        let input = #"{"password":1234,"token":true,"private_key":null,"credentials":["one","two"],"client_secret":{"nested":"value"},"safe":42,"escaped_secret":"quote: \"hidden\""}"#
+
+        let output = redactor.redact(input)
+        let value = try JSONDecoder().decode(TCPViewerMCPValue.self, from: Data(output.utf8)).objectValue
+
+        #expect(value?["password"] == .string(TCPViewerMCPSensitiveDataRedactor.placeholder))
+        #expect(value?["token"] == .string(TCPViewerMCPSensitiveDataRedactor.placeholder))
+        #expect(value?["private_key"] == .string(TCPViewerMCPSensitiveDataRedactor.placeholder))
+        #expect(value?["credentials"] == .string(TCPViewerMCPSensitiveDataRedactor.placeholder))
+        #expect(value?["client_secret"] == .string(TCPViewerMCPSensitiveDataRedactor.placeholder))
+        #expect(value?["escaped_secret"] == .string(TCPViewerMCPSensitiveDataRedactor.placeholder))
+        #expect(value?["safe"] == .int(42))
+    }
+
+    @Test func redactsPrimitiveCredentialsInsideSurroundingText() {
+        let input = #"payload={"password":1234,"token":false,"safe":42}"#
+
+        let output = redactor.redact(input)
+
+        #expect(!output.contains("1234"))
+        #expect(!output.contains("false"))
+        #expect(output.contains("safe\":42"))
     }
 
     @Test func sensitiveNameMatchingHandlesCommonSpellingVariantsAndRejectsSafeNames() {

@@ -32,7 +32,6 @@ final class TCPViewerMCPHTTPServer {
     }
 
     private enum Limit {
-        static let maximumConnections = 16
         static let receiveChunkByteCount = 64 * 1_024
         static let requestTimeout: TimeInterval = 15
         static let maximumRequestByteCount = TCPViewerMCPHTTPParser.maximumHeaderByteCount +
@@ -44,6 +43,7 @@ final class TCPViewerMCPHTTPServer {
     private let queue: DispatchQueue
     private let commandTimeout: TimeInterval
     private let maximumResponseByteCount: Int
+    private let maximumConnections: Int
     private let lock = NSLock()
     private var storedState: TCPViewerMCPHTTPServerState = .stopped
     private var listener: NWListener?
@@ -56,15 +56,18 @@ final class TCPViewerMCPHTTPServer {
         handshakeStore: TCPViewerMCPHandshakeStore = TCPViewerMCPHandshakeStore(),
         queue: DispatchQueue = DispatchQueue(label: "com.proxyman.tcpviewer.mcp.http", qos: .userInitiated),
         commandTimeout: TimeInterval = 115,
-        maximumResponseByteCount: Int = 16 * 1_024 * 1_024
+        maximumResponseByteCount: Int = 16 * 1_024 * 1_024,
+        maximumConnections: Int = 16
     ) {
         precondition(commandTimeout > 0)
         precondition(maximumResponseByteCount > 0)
+        precondition(maximumConnections > 0)
         self.router = router
         self.handshakeStore = handshakeStore
         self.queue = queue
         self.commandTimeout = commandTimeout
         self.maximumResponseByteCount = maximumResponseByteCount
+        self.maximumConnections = maximumConnections
     }
 
     var state: TCPViewerMCPHTTPServerState {
@@ -194,7 +197,8 @@ final class TCPViewerMCPHTTPServer {
             connection.cancel()
             return
         }
-        guard connections.count < Limit.maximumConnections else {
+        guard connections.count < maximumConnections else {
+            connection.start(queue: queue)
             sendResponse(
                 statusCode: 503,
                 response: .failure("The MCP server is busy. Try again shortly."),

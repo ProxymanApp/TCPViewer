@@ -50,6 +50,20 @@ struct TCPViewerMCPNodeIntegrationTests {
         #expect(result["detailPacketID"] as? String == "4242")
     }
 
+    @Test func nodeDiscoveryUsesExecutableFromPATH() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TCPViewerMCPNodePATH-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let executable = directory.appendingPathComponent("node")
+        try Data("#!/bin/sh\n".utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+
+        let resolved = try nodeExecutableURL(environment: ["PATH": directory.path])
+
+        #expect(resolved == executable)
+    }
+
     private func bundledExecutableURL() throws -> URL {
         let candidates = [
             Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/tcpviewer-mcp"),
@@ -165,12 +179,21 @@ struct TCPViewerMCPNodeIntegrationTests {
         return object
     }
 
-    private func nodeExecutableURL() throws -> URL {
+    // Resolve the test runner's PATH before common fallback installation locations.
+    private func nodeExecutableURL(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws -> URL {
         let fileManager = FileManager.default
-        var candidates = [
+        var candidates: [URL] = []
+        if let searchPath = environment["PATH"] {
+            candidates.append(contentsOf: searchPath.split(separator: ":").map {
+                URL(fileURLWithPath: String($0), isDirectory: true).appendingPathComponent("node")
+            })
+        }
+        candidates.append(contentsOf: [
             URL(fileURLWithPath: "/opt/homebrew/bin/node"),
             URL(fileURLWithPath: "/usr/local/bin/node"),
-        ]
+        ])
         let versionsURL = fileManager.homeDirectoryForCurrentUser
             .appendingPathComponent(".nvm/versions/node", isDirectory: true)
         if let versions = try? fileManager.contentsOfDirectory(

@@ -140,15 +140,15 @@ final class TCPViewerMCPFakeDataSource: TCPViewerMCPDataSource {
 
     func mcpWorkspaceSnapshot(
         packetLimit: Int,
+        packetOffset: Int,
         packetOrder: TCPViewerMCPPacketOrder
     ) -> TCPViewerMCPWorkspaceSnapshot {
-        let selectedPackets: [PacketSummary]
-        switch packetOrder {
-        case .recent:
-            selectedPackets = Array(packets.suffix(packetLimit))
-        case .oldest:
-            selectedPackets = Array(packets.prefix(packetLimit))
-        }
+        let selectedPackets = TCPViewerMCPPacketWindow.packets(
+            from: packets,
+            offset: packetOffset,
+            limit: packetLimit,
+            order: packetOrder
+        )
         return TCPViewerMCPWorkspaceSnapshot(
             packets: selectedPackets,
             totalPacketCount: packets.count,

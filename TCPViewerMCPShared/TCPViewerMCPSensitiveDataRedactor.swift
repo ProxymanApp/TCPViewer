@@ -85,7 +85,7 @@ final class TCPViewerMCPSensitiveDataRedactor: @unchecked Sendable {
                 #"$1$2=<redacted>"#
             ),
             (
-                #"(?i)(\"[^\"]*(?:token|secret|password|passwd|passphrase|pwd|api[_-]?key|private[_-]?key|client[_-]?secret)[^\"]*\"\s*:\s*)\"[^\"]*\""#,
+                #"(?i)(\"(?:\\.|[^\"\\])*(?:token|secret|password|passwd|passphrase|pwd|api[_-]?key|private[_-]?key|client[_-]?secret|credential|authorization|cookie|session[_-]?(?:id|token)|signing[_-]?key)(?:\\.|[^\"\\])*\"\s*:\s*)(?:\"(?:\\.|[^\"\\])*\"|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)"#,
                 #"$1\"<redacted>\""#
             ),
             (
@@ -116,7 +116,7 @@ final class TCPViewerMCPSensitiveDataRedactor: @unchecked Sendable {
 
     // Apply all credential-oriented patterns without hiding normal packet metadata.
     func redact(_ text: String) -> String {
-        var output = text
+        var output = redactedStructuredJSON(text) ?? text
         for replacement in replacements {
             output = replacement.expression.stringByReplacingMatches(
                 in: output,
@@ -196,5 +196,23 @@ final class TCPViewerMCPSensitiveDataRedactor: @unchecked Sendable {
             .lowercased()
             .replacingOccurrences(of: "_", with: "-")
             .replacingOccurrences(of: " ", with: "-")
+    }
+
+    // Parse complete JSON bodies so sensitive keys protect values of every JSON type.
+    private func redactedStructuredJSON(_ text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = trimmed.first,
+              let last = trimmed.last,
+              (first == "{" && last == "}") || (first == "[" && last == "]"),
+              let data = trimmed.data(using: .utf8),
+              let value = try? JSONDecoder().decode(TCPViewerMCPValue.self, from: data) else {
+            return nil
+        }
+        let redactedValue = redact(value)
+        guard redactedValue != value,
+              let encoded = try? JSONEncoder().encode(redactedValue) else {
+            return nil
+        }
+        return String(data: encoded, encoding: .utf8)
     }
 }

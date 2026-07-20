@@ -102,10 +102,40 @@ struct TCPViewerMCPHTTPServerTests {
         #expect(!oversized.response.success)
     }
 
+    @Test func saturatedServerStartsConnectionAndReturnsServiceUnavailable() async throws {
+        let router = TCPViewerMCPSignalingNeverCompletingRouter()
+        let fixture = try await startFixture(
+            router: router,
+            commandTimeout: 5,
+            maximumConnections: 1
+        )
+        defer { fixture.server.stop() }
+        let body = TCPViewerMCPRequest(command: TCPViewerMCPCommand.getAppStatus.rawValue)
+        var firstRequest = URLRequest(url: URL(string: "http://127.0.0.1:\(fixture.handshake.port)/mcp")!)
+        firstRequest.httpMethod = "POST"
+        firstRequest.httpBody = try JSONEncoder().encode(body)
+        firstRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        firstRequest.setValue("Bearer \(fixture.handshake.token)", forHTTPHeaderField: "Authorization")
+        let firstTask = URLSession.shared.dataTask(with: firstRequest)
+        firstTask.resume()
+        defer { firstTask.cancel() }
+        try await waitUntil(timeout: 2) { router.didReceiveRequest }
+
+        let overloaded = try await request(
+            port: fixture.handshake.port,
+            token: fixture.handshake.token,
+            body: body
+        )
+
+        #expect(overloaded.status == 503)
+        #expect(!overloaded.response.success)
+    }
+
     private func startFixture(
         router: (any TCPViewerMCPCommandRouting)? = nil,
         commandTimeout: TimeInterval = 115,
-        maximumResponseByteCount: Int = 16 * 1_024 * 1_024
+        maximumResponseByteCount: Int = 16 * 1_024 * 1_024,
+        maximumConnections: Int = 16
     ) async throws -> HTTPServerFixture {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("TCPViewerMCPHTTPServer-\(UUID().uuidString)")
         let handshakeURL = directory.appendingPathComponent("handshake.json")
@@ -117,7 +147,8 @@ struct TCPViewerMCPHTTPServerTests {
             handshakeStore: TCPViewerMCPHandshakeStore(fileURL: handshakeURL),
             queue: DispatchQueue(label: "TCPViewerMCPHTTPServerTests.\(UUID().uuidString)"),
             commandTimeout: commandTimeout,
-            maximumResponseByteCount: maximumResponseByteCount
+            maximumResponseByteCount: maximumResponseByteCount,
+            maximumConnections: maximumConnections
         )
         server.start()
         try await waitUntil(timeout: 5) {
@@ -185,6 +216,23 @@ final class TCPViewerMCPRecordingRouter: TCPViewerMCPCommandRouting {
 
 private final class TCPViewerMCPNeverCompletingRouter: TCPViewerMCPCommandRouting {
     func route(_ request: TCPViewerMCPRequest, completion: @escaping (TCPViewerMCPResponse) -> Void) {}
+}
+
+private final class TCPViewerMCPSignalingNeverCompletingRouter: TCPViewerMCPCommandRouting, @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedDidReceiveRequest = false
+
+    var didReceiveRequest: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedDidReceiveRequest
+    }
+
+    func route(_ request: TCPViewerMCPRequest, completion: @escaping (TCPViewerMCPResponse) -> Void) {
+        lock.lock()
+        storedDidReceiveRequest = true
+        lock.unlock()
+    }
 }
 
 private enum TCPViewerMCPHTTPServerTestError: Error {

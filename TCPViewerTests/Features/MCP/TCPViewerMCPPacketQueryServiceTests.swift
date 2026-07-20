@@ -130,12 +130,56 @@ struct TCPViewerMCPPacketQueryServiceTests {
         #expect(TCPViewerMCPPacketQueryService.execute(oldest, packets: packets).packets.map(\.id) == [1, 2, 3])
     }
 
+    @Test func scanCursorTraversesBoundedRecentAndOldestWindows() throws {
+        let packets = (1...10).map { makeMCPPacket(id: UInt64($0)) }
+        let recent = try TCPViewerMCPPacketQueryService.query(from: TCPViewerMCPRequest(
+            command: "query_packets",
+            params: ["scan_limit": .int(3), "scan_offset": .int(3)]
+        ))
+        let recentWindow = TCPViewerMCPPacketWindow.packets(
+            from: packets,
+            offset: recent.scanOffset,
+            limit: recent.scanLimit,
+            order: recent.order
+        )
+        let recentResult = TCPViewerMCPPacketQueryService.execute(
+            recent,
+            packets: recentWindow,
+            totalPacketCount: packets.count
+        )
+        let oldest = try TCPViewerMCPPacketQueryService.query(from: TCPViewerMCPRequest(
+            command: "query_packets",
+            params: ["scan_limit": .int(4), "scan_offset": .int(6), "order": .string("oldest")]
+        ))
+        let oldestWindow = TCPViewerMCPPacketWindow.packets(
+            from: packets,
+            offset: oldest.scanOffset,
+            limit: oldest.scanLimit,
+            order: oldest.order
+        )
+        let oldestResult = TCPViewerMCPPacketQueryService.execute(
+            oldest,
+            packets: oldestWindow,
+            totalPacketCount: packets.count
+        )
+
+        #expect(recentResult.packets.map(\.id) == [7, 6, 5])
+        #expect(recentResult.scanOffset == 3)
+        #expect(recentResult.nextScanOffset == 6)
+        #expect(recentResult.hasMoreUnscannedPackets)
+        #expect(oldestResult.packets.map(\.id) == [7, 8, 9, 10])
+        #expect(oldestResult.nextScanOffset == nil)
+        #expect(!oldestResult.hasMoreUnscannedPackets)
+    }
+
     @Test func rejectsInvalidParametersAndCapsOversizedScan() throws {
         let invalidRequests: [[String: TCPViewerMCPValue]] = [
             ["offset": .int(-1)],
             ["offset": .int(TCPViewerMCPPacketQuery.maximumOffset + 1)],
             ["limit": .int(0)],
             ["scan_limit": .int(0)],
+            ["scan_offset": .int(-1)],
+            ["scan_offset": .string("1")],
             ["combination": .string("xor")],
             ["order": .string("random")],
             ["protocols": .string("tcp")],
@@ -147,6 +191,7 @@ struct TCPViewerMCPPacketQueryServiceTests {
             ["packet_ids": .array([.string("-1")])],
             ["stream_id": .int(-1)],
             ["filters": .array([.string("bad")])],
+            ["filters": .string("bad")],
             ["filters": .array([.object(["field": .string("unknown"), "value": .string("x")])])],
             ["filters": .array([.object(["field": .string("info"), "operator": .string("bad"), "value": .string("x")])])],
             ["filters": .array([.object(["field": .string("info")])])],
