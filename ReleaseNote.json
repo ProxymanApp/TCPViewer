@@ -210,6 +210,17 @@
       "bugs": [
         "Fix capture and packet detail edge cases."
       ]
+    },
+        {
+      "version": "1.10.0",
+      "title": "TCP Viewer 1.10.0: Introduce the MCP for Codex and Claude Code",
+      "features": [
+        "Introduce the MCP for Codex and Claude Code: Faster to use and more efficient"
+      ],
+      "improvements": [
+      ],
+      "bugs": [
+      ]
     }
   ]
 }
