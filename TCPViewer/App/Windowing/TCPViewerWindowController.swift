@@ -38,6 +38,7 @@ final class TCPViewerWindowController: NSWindowController {
         window.isReleasedWhenClosed = false
         super.init(window: window)
         self.rootViewController.delegate = self
+        TCPViewerMCPServiceProvider.shared.register(source: rootViewController.viewModel, window: window)
         setupToolbar()
         setupQuickFilters()
         observeLicenseStatusChanges()

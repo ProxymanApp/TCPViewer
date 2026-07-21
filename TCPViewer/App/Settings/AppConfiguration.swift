@@ -49,6 +49,8 @@ final class AppConfiguration: NSObject {
         static let usesMonospacedPacketFont = "TCPViewer.settings.appearance.usesMonospacedPacketFont"
         static let appearanceTheme = "TCPViewer.settings.appearance.theme"
         static let confirmsBeforeQuitting = "TCPViewer.settings.quit.confirmsBeforeQuitting"
+        static let isMCPServerEnabled = "TCPViewer.settings.mcp.serverEnabled"
+        static let mcpRedactsSensitiveData = "TCPViewer.settings.mcp.redactsSensitiveData"
     }
 
     private let defaults: UserDefaults
@@ -108,6 +110,16 @@ final class AppConfiguration: NSObject {
         set { persist(newValue, forKey: Key.confirmsBeforeQuitting) }
     }
 
+    var isMCPServerEnabled: Bool {
+        get { defaults.bool(forKey: Key.isMCPServerEnabled) }
+        set { persist(newValue, forKey: Key.isMCPServerEnabled) }
+    }
+
+    var mcpRedactsSensitiveData: Bool {
+        get { defaults.bool(forKey: Key.mcpRedactsSensitiveData) }
+        set { persist(newValue, forKey: Key.mcpRedactsSensitiveData) }
+    }
+
     // Apply the selected app appearance while keeping System mode delegated to macOS.
     func applyAppearance(to application: NSApplication = .shared) {
         let name = appearanceTheme.appearanceName
@@ -136,6 +148,8 @@ final class AppConfiguration: NSObject {
         defaults.removeObject(forKey: Key.usesMonospacedPacketFont)
         defaults.removeObject(forKey: Key.appearanceTheme)
         defaults.removeObject(forKey: Key.confirmsBeforeQuitting)
+        defaults.removeObject(forKey: Key.isMCPServerEnabled)
+        defaults.removeObject(forKey: Key.mcpRedactsSensitiveData)
         interfaceSelectionHistory.clear()
         registerDefaults()
         notifyChange()
@@ -158,6 +172,8 @@ final class AppConfiguration: NSObject {
             Key.usesMonospacedPacketFont: true,
             Key.appearanceTheme: AppAppearanceTheme.system.rawValue,
             Key.confirmsBeforeQuitting: true,
+            Key.isMCPServerEnabled: false,
+            Key.mcpRedactsSensitiveData: true,
         ])
     }
 

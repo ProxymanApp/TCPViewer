@@ -65,6 +65,49 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.visiblePacketCount == 0)
     }
 
+    @Test func mcpCaptureControlsCompleteAfterAppliedPhaseEvents() async {
+        let liveSession = InspectorFakeLiveSession()
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                liveSession: liveSession
+            )),
+            userDefaults: isolatedDefaults()
+        )
+        await viewModel.performInitialLoadIfNeeded()
+        await waitUntil { viewModel.snapshot.base.sessionState.canStart }
+
+        let start = await performMCPControl(
+            { completion in
+                viewModel.mcpStartCapture(interfaceID: nil, captureFilter: nil, completion: completion)
+            },
+            applying: .liveStateChanged(phase: .running, message: "Capture running."),
+            on: liveSession
+        )
+        let pause = await performMCPControl(
+            viewModel.mcpPauseCapture,
+            applying: .liveStateChanged(phase: .paused, message: "Capture paused."),
+            on: liveSession
+        )
+        let resume = await performMCPControl(
+            viewModel.mcpResumeCapture,
+            applying: .liveStateChanged(phase: .running, message: "Capture resumed."),
+            on: liveSession
+        )
+        let stop = await performMCPControl(
+            viewModel.mcpStopCapture,
+            applying: .liveStateChanged(phase: .stopped, message: "Capture stopped."),
+            on: liveSession
+        )
+
+        for result in [start, pause, resume, stop] {
+            if case .failure(let error) = result {
+                Issue.record("MCP capture control unexpectedly failed: \(error.localizedDescription)")
+            }
+        }
+        #expect(viewModel.snapshot.base.sessionState.phase == .stopped)
+    }
+
     @Test func restartingLiveCaptureClearsPreviousPacketsAndInspection() async {
         let packet = makePacket(packetNumber: 1, source: .live, transportHint: .tcp)
         let liveSession = InspectorFakeLiveSession()
@@ -3227,6 +3270,22 @@ struct NetworkInspectorViewModelTests {
             ],
             decodeStatus: packet.decodeStatus
         )
+    }
+
+    // Apply the phase event after the operation callback to reproduce native control ordering.
+    private func performMCPControl(
+        _ action: (@escaping (Result<Void, Error>) -> Void) -> Void,
+        applying event: PacketIngestEvent,
+        on liveSession: InspectorFakeLiveSession
+    ) async -> Result<Void, Error> {
+        await withCheckedContinuation { continuation in
+            action { result in
+                continuation.resume(returning: result)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) {
+                liveSession.send(event)
+            }
+        }
     }
 
     private func waitUntil(

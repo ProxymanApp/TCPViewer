@@ -23,6 +23,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private weak var checkForUpdatesMenuItem: NSMenuItem?
     private weak var licenseMenuItem: NSMenuItem?
     private var licenseStatusObserver: NSObjectProtocol?
+    private var configurationObserver: NSObjectProtocol?
     private lazy var sentryService = TCPViewerSentryService(configuration: appConfiguration)
     private lazy var factoryResetService = TCPViewerFactoryResetService(helperToolManager: networkHelperToolManager)
     private var isHandlingTermination = false
@@ -41,6 +42,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         sentryService.start()
         appConfiguration.applyAppearance()
         observeLicenseStatusChanges()
+        observeConfigurationChanges()
         wireAboutMenu()
         wirePreferencesMenu()
         wireUpdatesMenu()
@@ -49,6 +51,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         wireFilterMenu()
         wireHelpMenu()
         verifyLicenseAtLaunch()
+        updateMCPServerAvailability()
         networkHelperToolManager.refreshStatusForLaunch()
         #if DEBUG
         openUntitledDocumentAfterIgnoringDebugLaunchFilesIfNeeded()
@@ -80,6 +83,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ aNotification: Notification) {
+        TCPViewerMCPHTTPServer.shared.stop()
+        if let licenseStatusObserver {
+            NotificationCenter.default.removeObserver(licenseStatusObserver)
+        }
+        if let configurationObserver {
+            NotificationCenter.default.removeObserver(configurationObserver)
+        }
     }
 
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
@@ -826,6 +836,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             queue: .main
         ) { [weak self] _ in
             self?.updateLicenseMenuItemTitle()
+            self?.updateMCPServerAvailability()
+        }
+    }
+
+    // Keep the PRO-only loopback server aligned with license and user preference changes.
+    private func observeConfigurationChanges() {
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: AppConfiguration.didChangeNotification,
+            object: appConfiguration,
+            queue: .main
+        ) { [weak self] _ in
+            self?.updateMCPServerAvailability()
+        }
+    }
+
+    private func updateMCPServerAvailability() {
+        if appConfiguration.isMCPServerEnabled && TCPViewerLicenseService.shared.isLicenseAuthorized {
+            TCPViewerMCPHTTPServer.shared.start()
+        } else {
+            TCPViewerMCPHTTPServer.shared.stop()
         }
     }
 

@@ -16,6 +16,8 @@ final class TCPViewerSettingsWindowController: NSWindowController {
         configuration: AppConfiguration,
         networkHelperToolManager: any TCPViewerNetworkHelperToolManaging
     ) {
+        var resizeForMCPContentChange: (() -> Void)?
+
         tabViewController.title = "Settings"
         tabViewController.tabStyle = .toolbar
         tabViewController.addTabViewItem(Self.makeTab(
@@ -34,6 +36,16 @@ final class TCPViewerSettingsWindowController: NSWindowController {
             viewController: Self.makeHostingController(rootView: TCPViewerHelperToolSettingsView(manager: networkHelperToolManager))
         ))
         tabViewController.addTabViewItem(Self.makeTab(
+            title: "MCP",
+            systemImage: "cpu.fill",
+            viewController: Self.makeHostingController(rootView: TCPViewerMCPSettingsView(
+                configuration: configuration,
+                onPreferredHeightChange: {
+                    resizeForMCPContentChange?()
+                }
+            ))
+        ))
+        tabViewController.addTabViewItem(Self.makeTab(
             title: "More Apps",
             systemImage: "square.grid.2x2.fill",
             viewController: Self.makeHostingController(rootView: TCPViewerMoreAppsSettingsView())
@@ -50,6 +62,9 @@ final class TCPViewerSettingsWindowController: NSWindowController {
         }
 
         super.init(window: window)
+        resizeForMCPContentChange = { [weak self] in
+            self?.resizeWindowToSelectedTab()
+        }
         tabViewController.onSelectionChanged = { [weak self] in
             self?.resizeWindowToSelectedTab()
         }
@@ -80,6 +95,7 @@ final class TCPViewerSettingsWindowController: NSWindowController {
 
         window.title = "Settings"
         tabViewController.view.layoutSubtreeIfNeeded()
+        selectedView.layoutSubtreeIfNeeded()
         if selectedView.frame.height > 0 {
             tabChromeHeight = max(0, tabViewController.view.bounds.height - selectedView.frame.height)
         }

@@ -33,6 +33,31 @@ still GPL-covered and are not LGPL.
 
 HexFiend provides the embedded packet hex viewer framework.
 
+## Model Context Protocol Swift SDK
+
+- Source: https://github.com/modelcontextprotocol/swift-sdk
+- Pinned version: `0.12.1`
+- License: Apache-2.0 and MIT during the upstream licensing transition;
+  documentation is CC-BY-4.0
+- License text: `ThirdPartyLicenses/MCP-Swift-SDK-LICENSE.txt`
+
+The MCP Swift SDK implements the standard stdio Model Context Protocol server
+used by TCP Viewer's bundled `tcpviewer-mcp` executable.
+
+### MCP Swift SDK runtime dependencies
+
+The bundled executable also incorporates these pinned Swift Package Manager
+dependencies and includes their upstream license and NOTICE files:
+
+- EventSource `1.4.1` (MIT): `ThirdPartyLicenses/EventSource-LICENSE.md`
+- Swift System `1.7.4` (Apache-2.0): `ThirdPartyLicenses/SwiftSystem-LICENSE.txt`
+- Swift Atomics `1.3.1` (Apache-2.0): `ThirdPartyLicenses/SwiftAtomics-LICENSE.txt`
+- Swift Collections `1.6.0` (Apache-2.0): `ThirdPartyLicenses/SwiftCollections-LICENSE.txt`
+- SwiftNIO `2.101.3` (Apache-2.0): `ThirdPartyLicenses/SwiftNIO-LICENSE.txt`
+  and `ThirdPartyLicenses/SwiftNIO-NOTICE.txt`
+- SwiftLog `1.14.0` (Apache-2.0): `ThirdPartyLicenses/SwiftLog-LICENSE.txt`
+  and `ThirdPartyLicenses/SwiftLog-NOTICE.txt`
+
 ## Transitive Runtime Libraries
 
 `scripts/bootstrap-wireshark-deps.sh` builds Wireshark's non-system runtime
