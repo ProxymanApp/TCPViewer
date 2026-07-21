@@ -9,10 +9,10 @@ import AppKit
 import SwiftUI
 
 private enum TCPViewerMCPSettingsLayout {
-    static let paneHeight: CGFloat = 760
-    static let commandHeight: CGFloat = 48
-    static let manualConfigurationHeight: CGFloat = 170
+    static let commandHeight: CGFloat = 96
+    static let manualConfigurationHeight: CGFloat = 200
     static let manualConfigurationFontSize: CGFloat = 11
+    static let configurationPadding: CGFloat = 10
 }
 
 struct TCPViewerMCPSettingsView: View {
@@ -28,15 +28,18 @@ struct TCPViewerMCPSettingsView: View {
     @State private var observers: [NSObjectProtocol] = []
 
     private let installConfiguration: TCPViewerMCPInstallConfiguration
+    private let onPreferredHeightChange: () -> Void
 
     init(
         configuration: AppConfiguration,
         server: TCPViewerMCPHTTPServer = .shared,
-        installConfiguration: TCPViewerMCPInstallConfiguration = TCPViewerMCPInstallConfiguration()
+        installConfiguration: TCPViewerMCPInstallConfiguration = TCPViewerMCPInstallConfiguration(),
+        onPreferredHeightChange: @escaping () -> Void = {}
     ) {
         self.configuration = configuration
         self.server = server
         self.installConfiguration = installConfiguration
+        self.onPreferredHeightChange = onPreferredHeightChange
         self._isServerEnabled = State(initialValue: configuration.isMCPServerEnabled)
         self._redactsSensitiveData = State(initialValue: configuration.mcpRedactsSensitiveData)
         self._isLicenseAuthorized = State(initialValue: TCPViewerLicenseService.shared.isLicenseAuthorized)
@@ -44,22 +47,18 @@ struct TCPViewerMCPSettingsView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                serverSection
-                Divider()
-                privacySection
-                Divider()
-                aboutSection
-            }
-            .frame(width: TCPViewerSettingsLayout.paneWidth, alignment: .leading)
-            .padding(.vertical, 26)
-            .padding(.horizontal, TCPViewerSettingsLayout.horizontalPadding)
+        VStack(alignment: .leading, spacing: 22) {
+            serverSection
+            Divider()
+            privacySection
+            Divider()
+            aboutSection
         }
-        .frame(
-            width: TCPViewerSettingsLayout.windowWidth,
-            height: TCPViewerMCPSettingsLayout.paneHeight
-        )
+        .frame(width: TCPViewerSettingsLayout.paneWidth, alignment: .leading)
+        .padding(.vertical, 26)
+        .padding(.horizontal, TCPViewerSettingsLayout.horizontalPadding)
+        .frame(width: TCPViewerSettingsLayout.windowWidth)
+        .fixedSize(horizontal: false, vertical: true)
         .onAppear {
             refreshState()
             startObserving()
@@ -72,6 +71,16 @@ struct TCPViewerMCPSettingsView: View {
         }
         .onChange(of: redactsSensitiveData) { _, newValue in
             configuration.mcpRedactsSensitiveData = newValue
+            requestPreferredHeightUpdate()
+        }
+        .onChange(of: selectedClient) { _, _ in
+            requestPreferredHeightUpdate()
+        }
+        .onChange(of: isLicenseAuthorized) { _, _ in
+            requestPreferredHeightUpdate()
+        }
+        .onChange(of: serverState) { _, _ in
+            requestPreferredHeightUpdate()
         }
     }
 
@@ -128,27 +137,28 @@ struct TCPViewerMCPSettingsView: View {
             .frame(maxWidth: 470)
 
             HStack(alignment: .top, spacing: 10) {
-                ScrollView([.horizontal, .vertical]) {
-                    Text(installConfiguration.text(for: selectedClient))
-                        .font(selectedClient == .manual
-                            ? .system(
-                                size: TCPViewerMCPSettingsLayout.manualConfigurationFontSize,
-                                weight: .regular,
-                                design: .monospaced
-                            )
-                            : .system(.callout, design: .monospaced).weight(.semibold))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(10)
-                }
-                .frame(height: selectedClient == .manual
-                    ? TCPViewerMCPSettingsLayout.manualConfigurationHeight
-                    : TCPViewerMCPSettingsLayout.commandHeight)
-                .background(.background.secondary, in: RoundedRectangle(cornerRadius: 7))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 7)
-                        .stroke(.separator, lineWidth: 1)
-                }
+                Text(installConfiguration.text(for: selectedClient))
+                    .font(selectedClient == .manual
+                        ? .system(
+                            size: TCPViewerMCPSettingsLayout.manualConfigurationFontSize,
+                            weight: .regular,
+                            design: .monospaced
+                        )
+                        : .system(.callout, design: .monospaced).weight(.semibold))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(
+                        maxWidth: .infinity,
+                        minHeight: configurationTextHeight,
+                        alignment: .topLeading
+                    )
+                    .padding(TCPViewerMCPSettingsLayout.configurationPadding)
+                    .frame(height: configurationHeight, alignment: .topLeading)
+                    .background(.background.secondary, in: RoundedRectangle(cornerRadius: 7))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 7)
+                            .stroke(.separator, lineWidth: 1)
+                    }
 
                 Button {
                     copyConfiguration()
@@ -160,6 +170,23 @@ struct TCPViewerMCPSettingsView: View {
             Text(installConfiguration.detail(for: selectedClient))
                 .font(.callout)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    private var configurationHeight: CGFloat {
+        selectedClient == .manual
+            ? TCPViewerMCPSettingsLayout.manualConfigurationHeight
+            : TCPViewerMCPSettingsLayout.commandHeight
+    }
+
+    private var configurationTextHeight: CGFloat {
+        configurationHeight - (TCPViewerMCPSettingsLayout.configurationPadding * 2)
+    }
+
+    // Wait for SwiftUI to apply the new layout before AppKit reads the fitting size.
+    private func requestPreferredHeightUpdate() {
+        DispatchQueue.main.async {
+            onPreferredHeightChange()
         }
     }
 
