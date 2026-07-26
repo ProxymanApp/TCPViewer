@@ -62,20 +62,28 @@ final class PacketHighlightRowView: NSTableRowView {
 }
 
 enum PacketHighlightPalette {
-    // Use stronger translucent system colors in dark mode and for selected rows.
+    // Resolve an opaque adaptive shade so AppKit's blue selection cannot cover or mix with it.
     static func backgroundColor(
         for color: PacketHighlightColor,
         isSelected: Bool,
         appearance: NSAppearance
     ) -> NSColor {
         let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        let alpha: CGFloat
+        let tintFraction: CGFloat
         if isSelected {
-            alpha = isDark ? 0.48 : 0.34
+            tintFraction = isDark ? 0.46 : 0.34
         } else {
-            alpha = isDark ? 0.30 : 0.20
+            tintFraction = isDark ? 0.32 : 0.22
         }
-        return color.appKitColor.withAlphaComponent(alpha)
+
+        var resolvedColor = color.appKitColor
+        appearance.performAsCurrentDrawingAppearance {
+            resolvedColor = NSColor.controlBackgroundColor.blended(
+                withFraction: tintFraction,
+                of: color.appKitColor
+            ) ?? color.appKitColor
+        }
+        return resolvedColor
     }
 
     static func accentColor(for color: PacketHighlightColor, appearance: NSAppearance) -> NSColor {
@@ -84,7 +92,18 @@ enum PacketHighlightPalette {
     }
 }
 
-final class PacketTextCell: NSTextFieldCell {
+class PacketHighlightTextFieldCell: NSTextFieldCell {
+    // Fill the complete cell so adjacent highlighted columns form one continuous row.
+    override func draw(withFrame cellFrame: NSRect, in controlView: NSView) {
+        if drawsBackground, let backgroundColor {
+            backgroundColor.setFill()
+            cellFrame.fill()
+        }
+        super.draw(withFrame: cellFrame, in: controlView)
+    }
+}
+
+final class PacketTextCell: PacketHighlightTextFieldCell {
     private static let leftPadding: CGFloat = 5
     private static let rightPadding: CGFloat = 4
 
@@ -112,7 +131,13 @@ final class PacketTextCell: NSTextFieldCell {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func configure(style: Style, textStyle: PacketTextStyle, configuration: AppConfiguration) {
+    func configure(
+        style: Style,
+        textStyle: PacketTextStyle,
+        isSelected: Bool,
+        appearance: NSAppearance,
+        configuration: AppConfiguration
+    ) {
         font = configuration.packetFont(weight: .regular)
 
         switch style {
@@ -123,6 +148,7 @@ final class PacketTextCell: NSTextFieldCell {
         case .warning:
             textColor = .systemOrange
         }
+        applyHighlightBackground(textStyle, isSelected: isSelected, appearance: appearance)
         applyStrikethrough(textStyle.isStrikethrough)
     }
 
@@ -146,7 +172,7 @@ final class PacketTextCell: NSTextFieldCell {
     }
 }
 
-final class PacketProtocolCell: NSTextFieldCell {
+final class PacketProtocolCell: PacketHighlightTextFieldCell {
     private var protocolText = ""
     private var severity: PacketSeverity = .normal
     private var isStrikethrough = false
@@ -174,6 +200,8 @@ final class PacketProtocolCell: NSTextFieldCell {
         protocolText: String,
         severity: PacketSeverity,
         textStyle: PacketTextStyle,
+        isSelected: Bool,
+        appearance: NSAppearance,
         configuration: AppConfiguration
     ) {
         self.protocolText = protocolText
@@ -182,6 +210,7 @@ final class PacketProtocolCell: NSTextFieldCell {
         stringValue = protocolText
         font = configuration.packetFont(weight: .semibold)
         textColor = textColor(for: protocolText, severity: severity)
+        applyHighlightBackground(textStyle, isSelected: isSelected, appearance: appearance)
     }
 
     override func copy(with zone: NSZone? = nil) -> Any {
@@ -308,7 +337,7 @@ enum PacketProtocolPalette {
     }
 }
 
-final class PacketClientCell: NSTextFieldCell {
+final class PacketClientCell: PacketHighlightTextFieldCell {
     private static let iconCache = PacketClientIconCache()
     private static let horizontalPadding: CGFloat = 6
     private static let iconSize: CGFloat = 16
@@ -339,12 +368,15 @@ final class PacketClientCell: NSTextFieldCell {
         displayName: String,
         iconFilePath: String?,
         textStyle: PacketTextStyle,
+        isSelected: Bool,
+        appearance: NSAppearance,
         configuration: AppConfiguration
     ) {
         self.iconFilePath = PacketClientIconCache.normalizedIconPath(iconFilePath)
         stringValue = displayName
         font = configuration.packetFont(weight: .regular)
         textColor = .secondaryLabelColor
+        applyHighlightBackground(textStyle, isSelected: isSelected, appearance: appearance)
         applyStrikethrough(textStyle.isStrikethrough)
     }
 
@@ -404,6 +436,26 @@ final class PacketClientCell: NSTextFieldCell {
 }
 
 private extension NSTextFieldCell {
+    // Paint highlights through cells because the packet table uses AppKit's cell-based mode.
+    func applyHighlightBackground(
+        _ textStyle: PacketTextStyle,
+        isSelected: Bool,
+        appearance: NSAppearance
+    ) {
+        guard let highlightColor = textStyle.highlightColor else {
+            drawsBackground = false
+            backgroundColor = .clear
+            return
+        }
+
+        backgroundColor = PacketHighlightPalette.backgroundColor(
+            for: highlightColor,
+            isSelected: isSelected,
+            appearance: appearance
+        )
+        drawsBackground = true
+    }
+
     // Rebuild attributed text after fonts and colors are configured for a reused cell.
     func applyStrikethrough(_ isEnabled: Bool) {
         guard isEnabled else {

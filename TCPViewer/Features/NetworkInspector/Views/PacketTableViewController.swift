@@ -1044,6 +1044,7 @@ extension PacketTableViewController: NSTableViewDataSource, NSTableViewDelegate 
         }
 
         let packetRow = rows[row]
+        let isSelected = tableView.selectedRowIndexes.contains(row)
         if let rowView = tableView.rowView(atRow: row, makeIfNecessary: false) as? PacketHighlightRowView {
             rowView.highlightColor = packetRow.textStyle.highlightColor
             rowView.needsDisplay = true
@@ -1053,6 +1054,8 @@ extension PacketTableViewController: NSTableViewDataSource, NSTableViewDelegate 
                 protocolText: packetRow.protocolText,
                 severity: packetRow.severity,
                 textStyle: packetRow.textStyle,
+                isSelected: isSelected,
+                appearance: tableView.effectiveAppearance,
                 configuration: configuration
             )
         } else if let cell = cell as? PacketClientCell {
@@ -1060,12 +1063,16 @@ extension PacketTableViewController: NSTableViewDataSource, NSTableViewDelegate 
                 displayName: packetRow.clientText,
                 iconFilePath: packetRow.clientIconFilePath,
                 textStyle: packetRow.textStyle,
+                isSelected: isSelected,
+                appearance: tableView.effectiveAppearance,
                 configuration: configuration
             )
         } else if let cell = cell as? PacketTextCell {
             cell.configure(
                 style: textStyle(for: column, in: packetRow),
                 textStyle: packetRow.textStyle,
+                isSelected: isSelected,
+                appearance: tableView.effectiveAppearance,
                 configuration: configuration
             )
         }

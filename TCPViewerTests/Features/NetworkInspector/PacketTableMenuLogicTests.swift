@@ -325,14 +325,70 @@ struct PacketTableMenuLogicTests {
                 appearance: appearance
             )
 
-            #expect(selectedColor.alphaComponent > regularColor.alphaComponent)
-            #expect(selectedColor.alphaComponent < 0.5)
+            #expect(regularColor.alphaComponent == 1)
+            #expect(selectedColor.alphaComponent == 1)
+            #expect(selectedColor != regularColor)
         }
 
         let rowView = PacketHighlightRowView()
         rowView.highlightColor = .green
         rowView.isSelected = true
         #expect(rowView.interiorBackgroundStyle == .normal)
+    }
+
+    @MainActor
+    @Test func cellBasedPacketTablePaintsSelectedHighlightColor() throws {
+        let defaults = Self.makeUserDefaults()
+        let controller = PacketTableViewController(configuration: AppConfiguration(defaults: defaults))
+        controller.loadViewIfNeeded()
+        let tableView = try Self.tableView(in: controller)
+        let packet = makePacket(packetNumber: 1).applying(
+            textStyle: PacketTextStyle(highlightColor: .red)
+        )
+        controller.render(snapshot: makeSnapshot(packets: [packet]))
+        tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+
+        let column = try #require(tableView.tableColumns.first)
+        let cell = try #require(column.dataCell as? PacketTextCell)
+        controller.tableView(tableView, willDisplayCell: cell, for: column, row: 0)
+        let backgroundColor = try #require(cell.backgroundColor)
+        let color = try #require(backgroundColor.usingColorSpace(.deviceRGB))
+
+        #expect(cell.drawsBackground)
+        #expect(color.alphaComponent == 1)
+        #expect(color.redComponent > color.greenComponent)
+        #expect(color.redComponent > color.blueComponent)
+
+        let edgeColor = try Self.renderedEdgeColor(of: cell)
+        #expect(edgeColor.redComponent > edgeColor.greenComponent)
+        #expect(edgeColor.redComponent > edgeColor.blueComponent)
+    }
+
+    private func makeSnapshot(packets: [PacketSummary]) -> NetworkInspectorSnapshot {
+        var base = TCPViewerWindowSnapshot.foundation
+        base.packetIngestState.replace(with: packets, source: .live)
+        let rows = packets.map(PacketTableRow.init(packet:))
+        let visibleIndex = Dictionary(uniqueKeysWithValues: rows.enumerated().map { ($1.id, $0) })
+        let content = PacketTableContent(
+            displayFilter: PacketDisplayFilter(""),
+            displayFilterChips: [],
+            store: PacketTableRowStore(rows: rows, visiblePacketRowIndexByID: visibleIndex),
+            generation: 1,
+            updatePlan: .reload,
+            malformedPacketCount: 0
+        )
+        return NetworkInspectorSnapshot.make(
+            base: base,
+            selectedSidebar: .liveCapture,
+            selectedSourceListSelection: .allPackets,
+            sourceListSnapshot: .empty,
+            sourceListFilterText: "",
+            workspaceMode: .packets,
+            inspectorTab: .summary,
+            isInspectorVisible: true,
+            displayFilterText: "",
+            packetTableContent: content
+        )
     }
 
     private func makePacket(
@@ -385,6 +441,32 @@ struct PacketTableMenuLogicTests {
     private static func tableView(in controller: PacketTableViewController) throws -> NSTableView {
         let scrollView = try #require(controller.view as? NSScrollView)
         return try #require(scrollView.documentView as? NSTableView)
+    }
+
+    @MainActor
+    private static func renderedEdgeColor(of cell: NSCell) throws -> NSColor {
+        let size = NSSize(width: 80, height: 24)
+        let bitmap = try #require(NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(size.width),
+            pixelsHigh: Int(size.height),
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ))
+        let context = try #require(NSGraphicsContext(bitmapImageRep: bitmap))
+        let frame = NSRect(origin: .zero, size: size)
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        cell.draw(withFrame: frame, in: NSView(frame: frame))
+        NSGraphicsContext.restoreGraphicsState()
+
+        return try #require(bitmap.colorAt(x: 1, y: 1)?.usingColorSpace(.deviceRGB))
     }
 
     @MainActor
