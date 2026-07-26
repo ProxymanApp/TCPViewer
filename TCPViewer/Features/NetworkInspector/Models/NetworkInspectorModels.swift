@@ -180,6 +180,8 @@ struct PacketTableRow: Identifiable, Sendable, Hashable {
     let interfaceText: String
     let lengthText: String
     let summaryText: String
+    let comment: String?
+    let commentText: String
     let tags: [PacketTag]
     let severity: PacketSeverity
     let textStyle: PacketTextStyle
@@ -235,6 +237,11 @@ struct PacketTableRow: Identifiable, Sendable, Hashable {
         self.interfaceText = (packet.captureMetadata.interfaceName ?? packet.interfaceID ?? "-").tcpviewerNativeCopy
         self.lengthText = NetworkInspectorFormatters.byteCount(packet.capturedLength)
         self.summaryText = packet.infoSummary.tcpviewerNativeCopy
+        self.comment = packet.resolvedComment?.tcpviewerNativeCopy
+        self.commentText = (packet.resolvedComment ?? "")
+            .components(separatedBy: .newlines)
+            .joined(separator: " ")
+            .tcpviewerNativeCopy
         self.tags = NetworkInspectorFormatters.tags(for: packet)
         self.severity = NetworkInspectorFormatters.severity(for: packet)
         self.textStyle = packet.resolvedTextStyle
@@ -309,6 +316,8 @@ struct PacketTableRow: Identifiable, Sendable, Hashable {
             summaryText
         case .tags:
             tagText
+        case .comment:
+            commentText
         case .unknown:
             ""
         }

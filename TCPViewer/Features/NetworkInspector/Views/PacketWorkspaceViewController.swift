@@ -17,6 +17,11 @@ protocol PacketWorkspaceViewControllerDelegate: AnyObject {
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestSavePackets identifiers: [PacketSummary.ID])
     func packetWorkspaceViewController(
         _ controller: PacketWorkspaceViewController,
+        didRequestSetComment comment: String,
+        onPackets identifiers: [PacketSummary.ID]
+    )
+    func packetWorkspaceViewController(
+        _ controller: PacketWorkspaceViewController,
         didRequestApplyTextStyle mutation: PacketTextStyleMutation,
         toPackets identifiers: [PacketSummary.ID]
     )
@@ -385,6 +390,18 @@ extension PacketWorkspaceViewController: PacketTableViewControllerDelegate {
 
     func packetTableViewController(_ controller: PacketTableViewController, didRequestSavePackets identifiers: [PacketSummary.ID]) {
         delegate?.packetWorkspaceViewController(self, didRequestSavePackets: identifiers)
+    }
+
+    func packetTableViewController(
+        _ controller: PacketTableViewController,
+        didRequestSetComment comment: String,
+        onPackets identifiers: [PacketSummary.ID]
+    ) {
+        delegate?.packetWorkspaceViewController(
+            self,
+            didRequestSetComment: comment,
+            onPackets: identifiers
+        )
     }
 
     func packetTableViewController(

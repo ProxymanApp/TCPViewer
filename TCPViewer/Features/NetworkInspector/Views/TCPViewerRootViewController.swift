@@ -1295,6 +1295,14 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
 
     func packetWorkspaceViewController(
         _ controller: PacketWorkspaceViewController,
+        didRequestSetComment comment: String,
+        onPackets identifiers: [PacketSummary.ID]
+    ) {
+        viewModel.setPacketComment(comment, onPackets: identifiers)
+    }
+
+    func packetWorkspaceViewController(
+        _ controller: PacketWorkspaceViewController,
         didRequestApplyTextStyle mutation: PacketTextStyleMutation,
         toPackets identifiers: [PacketSummary.ID]
     ) {

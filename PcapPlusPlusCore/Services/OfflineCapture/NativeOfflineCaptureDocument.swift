@@ -284,6 +284,7 @@ private final class NativeOfflineCaptureDocumentState: @unchecked Sendable {
                         to: url,
                         format: format.rawValue,
                         textStylesByPacketID: metadata.textStylesByPacketID,
+                        commentsByPacketID: metadata.commentsByPacketID,
                         progressHandler: { exportedPacketCount, totalPacketCount in
                             progress?(PacketExportProgress(
                                 exportedPacketCount: Int(exportedPacketCount),

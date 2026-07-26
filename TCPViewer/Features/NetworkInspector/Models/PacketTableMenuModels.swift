@@ -30,6 +30,7 @@ enum PacketTableColumnRole: String, Equatable, Sendable {
     case length
     case summary
     case tags
+    case comment
     case unknown
 
     static let visibleColumnIdentifiers = PacketTableColumnService.defaultDefinitions
@@ -57,6 +58,10 @@ struct PacketTableMenuState: Equatable {
     let styleEnabled: Bool
     let exportEnabled: Bool
     let deleteEnabled: Bool
+
+    var commentEnabled: Bool {
+        !targetRows.isEmpty
+    }
 
     static let empty = PacketTableMenuState(
         targetRows: [],

@@ -2134,11 +2134,12 @@ struct NetworkInspectorViewModelTests {
         #expect(document.exportRequests.first?.2 == .pcapng)
     }
 
-    @Test func packetExportSnapshotsComposedTextStyles() async {
+    @Test func packetExportSnapshotsComposedTextStylesAndComment() async {
         let packet = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp)
+        let secondPacket = makePacket(packetNumber: 2, source: .offline, transportHint: .tcp)
         let document = InspectorFakeDocument(
             url: URL(fileURLWithPath: "/tmp/style-export-source.pcapng"),
-            packets: [packet]
+            packets: [packet, secondPacket]
         )
         let viewModel = NetworkInspectorViewModel(
             services: TCPViewerServiceRegistry(core: InspectorFakeCore(
@@ -2149,17 +2150,22 @@ struct NetworkInspectorViewModelTests {
         )
 
         await viewModel.openDocument(at: document.currentURL())
-        await waitUntil { viewModel.snapshot.packetRows.count == 1 }
+        await waitUntil { viewModel.snapshot.packetRows.count == 2 }
         viewModel.applyTextStyleMutation(.setHighlightColor(.purple), toPackets: [packet.id])
         viewModel.applyTextStyleMutation(.toggleStrikethrough, toPackets: [packet.id])
+        viewModel.setPacketComment(
+            "\n Review these packets \n",
+            onPackets: [packet.id, secondPacket.id]
+        )
 
         #expect(viewModel.snapshot.packetRows.first?.textStyle == PacketTextStyle(
             highlightColor: .purple,
             isStrikethrough: true
         ))
+        #expect(viewModel.snapshot.packetRows.map(\.comment) == ["Review these packets", "Review these packets"])
 
         let result = await viewModel.exportPackets(
-            [packet.id],
+            [packet.id, secondPacket.id],
             to: URL(fileURLWithPath: "/tmp/style-export.pcapng"),
             format: .pcapng
         )
@@ -2172,6 +2178,8 @@ struct NetworkInspectorViewModelTests {
             highlightColor: .purple,
             isStrikethrough: true
         ))
+        #expect(document.exportMetadataRequests.first?.commentsByPacketID[packet.id] == "Review these packets")
+        #expect(document.exportMetadataRequests.first?.commentsByPacketID[secondPacket.id] == "Review these packets")
     }
 
     @Test func clearTablePacketsRemovesOnlyVisibleRows() async {

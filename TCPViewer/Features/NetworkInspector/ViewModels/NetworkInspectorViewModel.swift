@@ -1410,9 +1410,45 @@ final class NetworkInspectorViewModel {
             return
         }
 
+        let targets = packetAnnotationMutationTargets(for: packetIDs)
+
+        do {
+            _ = try savedPacketService.applyTextStyleMutation(mutation, packetIDs: targets.savedPacketIDs)
+        } catch {
+            packetExportService.presentFailure(error, title: "Style Update Failed")
+            return
+        }
+        controller.applyTextStyleMutation(mutation, packetIDs: targets.activePacketIDs)
+        rebuildSnapshot()
+    }
+
+    // Store one sanitized comment in both active and matching saved packet copies.
+    func setPacketComment(_ comment: String, onPackets identifiers: [PacketSummary.ID]) {
+        let sanitizedComment = PacketComment.sanitized(comment)
+        let packetIDs = Set(identifiers)
+        guard !sanitizedComment.isEmpty, !packetIDs.isEmpty else {
+            return
+        }
+
+        let targets = packetAnnotationMutationTargets(for: packetIDs)
+        do {
+            _ = try savedPacketService.setCustomComment(
+                sanitizedComment,
+                packetIDs: targets.savedPacketIDs
+            )
+        } catch {
+            packetExportService.presentFailure(error, title: "Comment Update Failed")
+            return
+        }
+        controller.setCustomComment(sanitizedComment, packetIDs: targets.activePacketIDs)
+        rebuildSnapshot()
+    }
+
+    private func packetAnnotationMutationTargets(
+        for packetIDs: Set<PacketSummary.ID>
+    ) -> (savedPacketIDs: Set<PacketSummary.ID>, activePacketIDs: Set<PacketSummary.ID>) {
         let ingestState = controller.snapshot.packetIngestState
-        let savedRecords = savedPacketService.records()
-        let matchingCurrentSavedIDs = Set(savedRecords.compactMap { record -> PacketSummary.ID? in
+        let matchingCurrentSavedIDs = Set(savedPacketService.records().compactMap { record -> PacketSummary.ID? in
             guard packetIDs.contains(record.packet.id),
                   record.backingIdentity == ingestState.backingIdentity,
                   let activePacket = ingestState.packet(withID: record.packet.id),
@@ -1421,17 +1457,10 @@ final class NetworkInspectorViewModel {
             }
             return record.packet.id
         })
-        let savedPacketIDs = selectedSourceListSelection == .saved ? packetIDs : matchingCurrentSavedIDs
-        let activePacketIDs = selectedSourceListSelection == .saved ? matchingCurrentSavedIDs : packetIDs
-
-        do {
-            _ = try savedPacketService.applyTextStyleMutation(mutation, packetIDs: savedPacketIDs)
-        } catch {
-            packetExportService.presentFailure(error, title: "Style Update Failed")
-            return
+        if selectedSourceListSelection == .saved {
+            return (packetIDs, matchingCurrentSavedIDs)
         }
-        controller.applyTextStyleMutation(mutation, packetIDs: activePacketIDs)
-        rebuildSnapshot()
+        return (matchingCurrentSavedIDs, packetIDs)
     }
 
     func deletePackets(_ identifiers: [PacketSummary.ID]) {
@@ -1625,13 +1654,18 @@ final class NetworkInspectorViewModel {
             }
         }
         var styles: [PacketSummary.ID: PacketTextStyle] = [:]
+        var comments: [PacketSummary.ID: String] = [:]
         styles.reserveCapacity(identifiers.count)
+        comments.reserveCapacity(identifiers.count)
         for identifier in identifiers {
             if let packet = savedPacketsByID[identifier] ?? ingestState.packet(withID: identifier) {
                 styles[identifier] = packet.resolvedTextStyle
+                if let comment = packet.resolvedComment {
+                    comments[identifier] = comment
+                }
             }
         }
-        return PacketExportMetadata(textStylesByPacketID: styles)
+        return PacketExportMetadata(textStylesByPacketID: styles, commentsByPacketID: comments)
     }
 
     private func validatedExportPacketIDs(

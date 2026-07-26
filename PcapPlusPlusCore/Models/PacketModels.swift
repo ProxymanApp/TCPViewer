@@ -314,6 +314,7 @@ public struct PacketSummary: Identifiable, Sendable, Codable, Hashable {
     public let sniDomainName: String?
     public let client: PacketClient?
     public let textStyle: PacketTextStyle?
+    public let customComment: String?
 
     public init(
         id: UInt64? = nil,
@@ -336,7 +337,8 @@ public struct PacketSummary: Identifiable, Sendable, Codable, Hashable {
         captureMetadata: PacketCaptureMetadata,
         sniDomainName: String? = nil,
         client: PacketClient? = nil,
-        textStyle: PacketTextStyle? = nil
+        textStyle: PacketTextStyle? = nil,
+        customComment: String? = nil
     ) {
         self.id = id ?? packetNumber
         self.packetNumber = packetNumber
@@ -359,10 +361,16 @@ public struct PacketSummary: Identifiable, Sendable, Codable, Hashable {
         self.sniDomainName = sniDomainName
         self.client = client
         self.textStyle = textStyle?.isPlain == true ? nil : textStyle
+        let sanitizedComment = customComment.map(PacketComment.sanitized)
+        self.customComment = sanitizedComment?.isEmpty == false ? sanitizedComment : nil
     }
 
     public var resolvedTextStyle: PacketTextStyle {
         textStyle ?? .plain
+    }
+
+    public var resolvedComment: String? {
+        customComment ?? captureMetadata.packetComment
     }
 }
 

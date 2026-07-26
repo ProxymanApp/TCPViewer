@@ -34,6 +34,7 @@ struct PacketTableMenuLogicTests {
         #expect(state.pinEnabled)
         #expect(state.saveEnabled)
         #expect(state.styleEnabled)
+        #expect(state.commentEnabled)
         #expect(state.exportEnabled)
         #expect(state.deleteEnabled)
     }
@@ -54,6 +55,7 @@ struct PacketTableMenuLogicTests {
         #expect(state.targetRows == [1])
         #expect(state.clickedColumn == .source)
         #expect(state.pinEnabled)
+        #expect(state.commentEnabled)
         #expect(state.exportEnabled)
     }
 
@@ -93,6 +95,16 @@ struct PacketTableMenuLogicTests {
         10.0.0.1
         "Hello, world"
         """)
+    }
+
+    @Test func commentColumnFlattensMultilineTextForOneLineRendering() {
+        let row = PacketTableRow(packet: makePacket(
+            packetNumber: 1,
+            customComment: "First line\nSecond line"
+        ))
+
+        #expect(row.comment == "First line\nSecond line")
+        #expect(row.text(for: .comment) == "First line Second line")
     }
 
     @Test func copyFormatterSupportsRowsAsFormatsForMultipleSelections() throws {
@@ -238,7 +250,7 @@ struct PacketTableMenuLogicTests {
 
         #expect(customColumns.count == 1)
         #expect(!customColumn.isHidden)
-        #expect(tableView.tableColumns.last?.identifier.rawValue == "custom.field.ip.src")
+        #expect(tableView.tableColumns.suffix(2).map { $0.identifier.rawValue } == ["custom.field.ip.src", "comment"])
 
         let restoredController = PacketTableViewController(configuration: AppConfiguration(defaults: defaults))
         restoredController.loadViewIfNeeded()
@@ -247,7 +259,7 @@ struct PacketTableMenuLogicTests {
             withIdentifier: NSUserInterfaceItemIdentifier("custom.field.ip.src")
         ))
 
-        #expect(restoredTableView.tableColumns.last?.identifier.rawValue == "custom.field.ip.src")
+        #expect(restoredTableView.tableColumns.suffix(2).map { $0.identifier.rawValue } == ["custom.field.ip.src", "comment"])
         #expect(!restoredCustomColumn.isHidden)
 
         restoredController.resetPacketTableColumnsFromMenu(nil)
@@ -285,6 +297,7 @@ struct PacketTableMenuLogicTests {
         let copyRowsAsItem = try #require(menu.items.first { $0.title == "Copy Rows As" })
         let copyRowsAsSubmenu = try #require(copyRowsAsItem.submenu)
         let highlightItem = try #require(menu.items.first { $0.title == "Highlight" })
+        let commentItem = try #require(menu.items.first { $0.title == "Add Comment…" })
         let highlightSubmenu = try #require(highlightItem.submenu)
         let copyRowsAsTitles = copyRowsAsSubmenu.items.compactMap { item in
             item.isSeparatorItem ? nil : item.title
@@ -302,10 +315,43 @@ struct PacketTableMenuLogicTests {
         #expect(highlightSubmenu.items.first { $0.title == "Strikethrough" }?.keyEquivalent == "/")
         #expect(highlightSubmenu.items.first { $0.title == "Reset" }?.keyEquivalent == "0")
         #expect(menu.items.contains { $0.title == "Pin" && $0.submenu == nil })
+        #expect(commentItem.isEnabled)
+        #expect(commentItem.keyEquivalent == PacketCommentShortcut.keyEquivalent)
+        #expect(commentItem.keyEquivalentModifierMask == PacketCommentShortcut.modifierMask)
         let highlightIndex = try #require(menu.items.firstIndex(where: { $0.title == "Highlight" }))
-        #expect(highlightIndex > 0 && menu.items[highlightIndex - 1].isSeparatorItem)
+        #expect(highlightIndex > 0 && menu.items[highlightIndex - 1].title == "Add Comment…")
         #expect(!items.isEmpty)
         #expect(items.allSatisfy { item in item.toolTip?.isEmpty == false })
+    }
+
+    @Test func commentShortcutMatchesOnlyOptionCommandM() throws {
+        let matchingEvent = try #require(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.command, .option],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "m",
+            charactersIgnoringModifiers: "m",
+            isARepeat: false,
+            keyCode: 46
+        ))
+        let conflictingEvent = try #require(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.command, .shift],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "M",
+            charactersIgnoringModifiers: "m",
+            isARepeat: false,
+            keyCode: 46
+        ))
+
+        #expect(PacketCommentShortcut.matches(matchingEvent))
+        #expect(!PacketCommentShortcut.matches(conflictingEvent))
     }
 
     @MainActor
@@ -396,7 +442,8 @@ struct PacketTableMenuLogicTests {
         packetNumber: UInt64,
         infoSummary: String? = nil,
         sniDomainName: String? = nil,
-        client: PacketClient? = nil
+        client: PacketClient? = nil,
+        customComment: String? = nil
     ) -> PacketSummary {
         PacketSummary(
             packetNumber: packetNumber,
@@ -416,7 +463,8 @@ struct PacketTableMenuLogicTests {
             decodeStatus: PacketDecodeStatus(kind: .complete),
             captureMetadata: PacketCaptureMetadata(linkType: .ethernet, isTruncated: false),
             sniDomainName: sniDomainName,
-            client: client
+            client: client,
+            customComment: customComment
         )
     }
 
@@ -504,6 +552,7 @@ private final class MenuActionHandler: NSObject, PacketTableContextMenuActionHan
     func copyCellFromMenu(_ sender: Any?) {}
     func pinRowsFromMenu(_ sender: Any?) {}
     func saveRowsFromMenu(_ sender: Any?) {}
+    func addPacketCommentFromMenu(_ sender: Any?) {}
     func setPacketHighlightColorFromMenu(_ sender: Any?) {}
     func togglePacketStrikethroughFromMenu(_ sender: Any?) {}
     func resetPacketTextStyleFromMenu(_ sender: Any?) {}

@@ -105,6 +105,25 @@ struct PcapNGFidelityTests {
         #expect(exportedBytes.range(of: Data("[TCPViewer:text-style:v2:indigo:1]".utf8)) != nil)
     }
 
+    @Test func pcapNGExportMetadataOverridesAndRoundTripsPacketComment() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TCPViewer-PcapNGComment-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("commented.pcapng")
+        let record = makeRecord(identifier: 4, linkLayerType: Libpcap.dltEthernet)
+        let comment = "First line\nSecond line"
+
+        try NativeCaptureFile.write(
+            records: [record],
+            to: url,
+            format: .pcapng,
+            commentsByPacketID: [record.identifier: comment]
+        )
+
+        #expect(try NativeCaptureFile.load(from: url).records[0].packetComment == comment)
+    }
+
     @Test func pcapNGPreservesPlainCommentsThatLookLikeStyleMetadata() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("TCPViewer-PcapNGStyleComment-\(UUID().uuidString)", isDirectory: true)
@@ -173,6 +192,28 @@ struct PcapNGFidelityTests {
         #expect(styleMetadata.last == 0x89)
         #expect(capture.records.map(\.textStyle) == [style])
         #expect(capture.records[0].rawBytes == record.rawBytes)
+    }
+
+    @Test func pcapExportKeepsCanonicalBytesAndRoundTripsCommentInFileMetadata() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TCPViewer-PcapComment-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let plainURL = directory.appendingPathComponent("plain.pcap")
+        let commentedURL = directory.appendingPathComponent("commented.pcap")
+        let record = makeRecord(identifier: 1, linkLayerType: Libpcap.dltEthernet)
+        let comment = "Review this packet\nIt may be retried"
+
+        try NativeCaptureFile.write(records: [record], to: plainURL, format: .pcap)
+        try NativeCaptureFile.write(
+            records: [record],
+            to: commentedURL,
+            format: .pcap,
+            commentsByPacketID: [record.identifier: comment]
+        )
+
+        #expect(try Data(contentsOf: plainURL) == Data(contentsOf: commentedURL))
+        #expect(try NativeCaptureFile.load(from: commentedURL).records[0].packetComment == comment)
     }
 
     @Test func pcapTextStyleBinaryCodesRemainStable() {

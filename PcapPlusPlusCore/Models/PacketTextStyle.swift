@@ -68,11 +68,16 @@ public enum PacketTextStyleMutation: Sendable, Hashable {
 
 public struct PacketExportMetadata: Sendable {
     public let textStylesByPacketID: [PacketSummary.ID: PacketTextStyle]
+    public let commentsByPacketID: [PacketSummary.ID: String]
 
     public static let empty = PacketExportMetadata()
 
-    public init(textStylesByPacketID: [PacketSummary.ID: PacketTextStyle] = [:]) {
+    public init(
+        textStylesByPacketID: [PacketSummary.ID: PacketTextStyle] = [:],
+        commentsByPacketID: [PacketSummary.ID: String] = [:]
+    ) {
         self.textStylesByPacketID = textStylesByPacketID
+        self.commentsByPacketID = commentsByPacketID
     }
 }
 
@@ -100,7 +105,36 @@ public extension PacketSummary {
             captureMetadata: captureMetadata,
             sniDomainName: sniDomainName,
             client: client,
-            textStyle: textStyle
+            textStyle: textStyle,
+            customComment: customComment
+        )
+    }
+
+    // Return a packet copy with a sanitized TCP Viewer comment override.
+    func applying(customComment: String) -> PacketSummary {
+        PacketSummary(
+            id: id,
+            packetNumber: packetNumber,
+            timestamp: timestamp,
+            source: source,
+            interfaceID: interfaceID,
+            transportHint: transportHint,
+            protocolSummary: protocolSummary,
+            endpoints: endpoints,
+            originalLength: originalLength,
+            capturedLength: capturedLength,
+            streamID: streamID,
+            direction: direction,
+            tcpFlags: tcpFlags,
+            tcpPayloadLength: tcpPayloadLength,
+            infoSummary: infoSummary,
+            layers: layers,
+            decodeStatus: decodeStatus,
+            captureMetadata: captureMetadata,
+            sniDomainName: sniDomainName,
+            client: client,
+            textStyle: textStyle,
+            customComment: customComment
         )
     }
 }

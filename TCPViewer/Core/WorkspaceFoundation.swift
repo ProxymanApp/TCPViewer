@@ -326,6 +326,42 @@ struct PacketIngestState: Sendable, Equatable {
         return updatedIDs
     }
 
+    // Update indexed comments without scanning the full live-capture packet list.
+    @discardableResult
+    mutating func setCustomComment(
+        _ comment: String,
+        packetIDs: Set<PacketSummary.ID>
+    ) -> [PacketSummary.ID] {
+        let sanitizedComment = PacketComment.sanitized(comment)
+        guard !sanitizedComment.isEmpty else {
+            return []
+        }
+
+        var updatedIDs: [PacketSummary.ID] = []
+        updatedIDs.reserveCapacity(packetIDs.count)
+        for packetID in packetIDs {
+            guard let packetIndex = packetIndexByID[packetID] else {
+                continue
+            }
+            let packet = packets[packetIndex]
+            guard packet.customComment != sanitizedComment else {
+                continue
+            }
+            packets[packetIndex] = packet.applying(customComment: sanitizedComment)
+            updatedIDs.append(packetID)
+        }
+
+        guard !updatedIDs.isEmpty else {
+            lastMutation = .none
+            return []
+        }
+
+        updatedIDs.sort()
+        packetRevision &+= 1
+        lastMutation = .metadataUpdate(packetIDs: updatedIDs)
+        return updatedIDs
+    }
+
     // Append a batch and fold metadata updates that target older packets into a single mutation,
     // so consumers can take their cheap append paths without a redundant didSet fire.
     mutating func appendAndApplyMetadataUpdates(
@@ -960,6 +996,7 @@ final class TCPViewerWorkspaceController {
         let fileID: ImportedCaptureFileID
         var originalPacketIDs: [PacketSummary.ID]
         var textStylesByOriginalPacketID: [PacketSummary.ID: PacketTextStyle]
+        var commentsByOriginalPacketID: [PacketSummary.ID: String]
     }
 
     weak var delegate: TCPViewerWorkspaceControllerDelegate?
@@ -2105,6 +2142,11 @@ final class TCPViewerWorkspaceController {
                 metadata: PacketExportMetadata(
                     textStylesByPacketID: Dictionary(
                         uniqueKeysWithValues: exportSnapshot.packets.map { ($0.id, $0.resolvedTextStyle) }
+                    ),
+                    commentsByPacketID: Dictionary(
+                        uniqueKeysWithValues: exportSnapshot.packets.compactMap { packet in
+                            packet.resolvedComment.map { (packet.id, $0) }
+                        }
                     )
                 ),
                 progress: progress,
@@ -2138,6 +2180,11 @@ final class TCPViewerWorkspaceController {
             metadata: PacketExportMetadata(
                 textStylesByPacketID: Dictionary(
                     uniqueKeysWithValues: exportSnapshot.packets.map { ($0.id, $0.resolvedTextStyle) }
+                ),
+                commentsByPacketID: Dictionary(
+                    uniqueKeysWithValues: exportSnapshot.packets.compactMap { packet in
+                        packet.resolvedComment.map { (packet.id, $0) }
+                    }
                 )
             ),
             progress: progress,
@@ -2163,11 +2210,15 @@ final class TCPViewerWorkspaceController {
             if groups.last?.fileID == reference.fileID {
                 groups[groups.count - 1].originalPacketIDs.append(reference.originalPacketID)
                 groups[groups.count - 1].textStylesByOriginalPacketID[reference.originalPacketID] = packet.resolvedTextStyle
+                groups[groups.count - 1].commentsByOriginalPacketID[reference.originalPacketID] = packet.resolvedComment
             } else {
                 groups.append(ImportedSessionCaptureExportGroup(
                     fileID: reference.fileID,
                     originalPacketIDs: [reference.originalPacketID],
-                    textStylesByOriginalPacketID: [reference.originalPacketID: packet.resolvedTextStyle]
+                    textStylesByOriginalPacketID: [reference.originalPacketID: packet.resolvedTextStyle],
+                    commentsByOriginalPacketID: packet.resolvedComment.map {
+                        [reference.originalPacketID: $0]
+                    } ?? [:]
                 ))
             }
         }
@@ -2262,7 +2313,10 @@ final class TCPViewerWorkspaceController {
             withIDs: group.originalPacketIDs,
             to: partURL,
             format: .pcapng,
-            metadata: PacketExportMetadata(textStylesByPacketID: group.textStylesByOriginalPacketID),
+            metadata: PacketExportMetadata(
+                textStylesByPacketID: group.textStylesByOriginalPacketID,
+                commentsByPacketID: group.commentsByOriginalPacketID
+            ),
             progress: groupProgress,
             shouldCancel: shouldCancel
         ) { [weak self] result in
@@ -2417,16 +2471,23 @@ final class TCPViewerWorkspaceController {
                 snapshot.documentState.statusMessage = "Exporting \(url.lastPathComponent)..."
                 let originalPacketIDs = importedReferences.map(\.originalPacketID)
                 var remappedStyles: [PacketSummary.ID: PacketTextStyle] = [:]
+                var remappedComments: [PacketSummary.ID: String] = [:]
                 for (identifier, reference) in zip(identifiers, importedReferences) {
                     if let style = metadata.textStylesByPacketID[identifier] {
                         remappedStyles[reference.originalPacketID] = style
+                    }
+                    if let comment = metadata.commentsByPacketID[identifier] {
+                        remappedComments[reference.originalPacketID] = comment
                     }
                 }
                 importedDocument.exportPackets(
                     withIDs: originalPacketIDs,
                     to: url,
                     format: format,
-                    metadata: PacketExportMetadata(textStylesByPacketID: remappedStyles),
+                    metadata: PacketExportMetadata(
+                        textStylesByPacketID: remappedStyles,
+                        commentsByPacketID: remappedComments
+                    ),
                     progress: progress,
                     shouldCancel: cancellationCheck
                 ) { [weak self] result in
@@ -2742,6 +2803,14 @@ final class TCPViewerWorkspaceController {
         }
 
         _ = snapshot.packetIngestState.applyTextStyleMutation(mutation, packetIDs: packetIDs)
+    }
+
+    // Apply a packet comment mutation on main so render snapshots stay consistent.
+    func setCustomComment(_ comment: String, packetIDs: Set<PacketSummary.ID>) {
+        guard !packetIDs.isEmpty else {
+            return
+        }
+        _ = snapshot.packetIngestState.setCustomComment(comment, packetIDs: packetIDs)
     }
 
     #if DEBUG

@@ -153,13 +153,15 @@ final class TCPViewSessionExportService: TCPViewSessionExportWriting {
         TCPViewSessionAnnotations(
             annotations: packets.compactMap { packet in
                 let textStyle = packet.resolvedTextStyle
-                guard packet.captureMetadata.packetComment != nil || !textStyle.isPlain else {
+                guard packet.captureMetadata.packetComment != nil ||
+                        packet.customComment != nil ||
+                        !textStyle.isPlain else {
                     return nil
                 }
                 return TCPViewSessionPacketAnnotation(
                     packetID: packet.id,
                     packetComment: packet.captureMetadata.packetComment,
-                    customComment: nil,
+                    customComment: packet.customComment,
                     colorHex: textStyle.highlightColor?.sessionColorHex,
                     textStyle: textStyle.isPlain ? nil : textStyle
                 )

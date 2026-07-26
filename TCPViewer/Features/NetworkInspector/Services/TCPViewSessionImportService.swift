@@ -92,15 +92,17 @@ final class TCPViewSessionImportService {
                 clients: sidecars.clientStore,
                 packageDirectoryURL: packageDirectoryURL
             )
-            let annotationStyles = Dictionary(
-                uniqueKeysWithValues: sidecars.annotations.annotations.compactMap { annotation in
-                    annotation.textStyle.map { (annotation.packetID, $0) }
-                }
+            let annotationsByPacketID = Dictionary(
+                uniqueKeysWithValues: sidecars.annotations.annotations.map { ($0.packetID, $0) }
             )
             let packets = TCPViewSessionClientStoreBuilder
                 .rehydratePackets(records: sidecars.packetRecords, clients: sidecars.clientStore)
                 .map { packet in
-                    annotationStyles[packet.id].map(packet.applying(textStyle:)) ?? packet
+                    guard let annotation = annotationsByPacketID[packet.id] else {
+                        return packet
+                    }
+                    let styledPacket = annotation.textStyle.map(packet.applying(textStyle:)) ?? packet
+                    return annotation.customComment.map(styledPacket.applying(customComment:)) ?? styledPacket
                 }
             return TCPViewSessionPackageContents(
                 sourceURL: url,
@@ -284,9 +286,21 @@ final class TCPViewSessionImportService {
         validPacketIDs: Set<PacketSummary.ID>
     ) -> TCPViewSessionAnnotations {
         var seenPacketIDs = Set<PacketSummary.ID>()
-        let sanitized = annotations.annotations.filter { annotation in
-            validPacketIDs.contains(annotation.packetID) &&
-                seenPacketIDs.insert(annotation.packetID).inserted
+        let sanitized = annotations.annotations.compactMap { annotation -> TCPViewSessionPacketAnnotation? in
+            guard validPacketIDs.contains(annotation.packetID),
+                  seenPacketIDs.insert(annotation.packetID).inserted else {
+                return nil
+            }
+            let customComment = annotation.customComment
+                .map(PacketComment.sanitized)
+                .flatMap { $0.isEmpty ? nil : $0 }
+            return TCPViewSessionPacketAnnotation(
+                packetID: annotation.packetID,
+                packetComment: annotation.packetComment,
+                customComment: customComment,
+                colorHex: annotation.colorHex,
+                textStyle: annotation.textStyle
+            )
         }
         return TCPViewSessionAnnotations(annotations: sanitized)
     }
@@ -667,16 +681,23 @@ final class TCPViewSessionOfflineDocument: OfflineCaptureDocumentProviding {
         }
 
         var remappedStyles: [PacketSummary.ID: PacketTextStyle] = [:]
+        var remappedComments: [PacketSummary.ID: String] = [:]
         for (sessionID, innerID) in zip(identifiers, innerIDs) {
             if let style = metadata.textStylesByPacketID[sessionID] {
                 remappedStyles[innerID] = style
+            }
+            if let comment = metadata.commentsByPacketID[sessionID] {
+                remappedComments[innerID] = comment
             }
         }
         innerDocument.exportPackets(
             withIDs: innerIDs,
             to: url,
             format: format,
-            metadata: PacketExportMetadata(textStylesByPacketID: remappedStyles),
+            metadata: PacketExportMetadata(
+                textStylesByPacketID: remappedStyles,
+                commentsByPacketID: remappedComments
+            ),
             progress: progress,
             shouldCancel: shouldCancel,
             completion: completion
