@@ -432,7 +432,24 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
                 DispatchQueue.main.async {
                     switch result {
                     case .success:
-                        completion(.success(["action": .string(action.rawValue), "completed": .bool(true)]))
+                        var response: [String: TCPViewerMCPValue] = [
+                            "action": .string(action.rawValue),
+                            "completed": .bool(true),
+                        ]
+                        if action == .startCapture {
+                            let captureFilter = request.string("capture_filter")
+                            let filterAction: String
+                            if captureFilter == nil {
+                                filterAction = "preserved"
+                            } else if captureFilter?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
+                                filterAction = "cleared"
+                            } else {
+                                filterAction = "set"
+                            }
+                            response["previous_packets_cleared"] = .bool(true)
+                            response["bpf_capture_filter_action"] = .string(filterAction)
+                        }
+                        completion(.success(response))
                     case .failure(let error):
                         completion(self.failure(error))
                     }
@@ -452,6 +469,12 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
                         named: "capture_filter",
                         maximumByteCount: 4_096
                     )
+                    if captureFilter?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+                       request.bool("confirm_bpf_filter") != true {
+                        throw TCPViewerMCPCommandRouterError.invalidParameter(
+                            "capture_filter is a persistent BPF capture filter that excludes nonmatching future traffic; it is not a packet query or TCP Viewer's Filter field. Explain this distinction and obtain explicit user confirmation, then retry with confirm_bpf_filter=true. For filtering packets already captured, use query_packets."
+                        )
+                    }
                     source.mcpStartCapture(
                         interfaceID: interfaceID,
                         captureFilter: captureFilter,
@@ -564,6 +587,7 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
             "capture_phase": .string(snapshot.capturePhase),
             "packet_count": .int(snapshot.totalPacketCount),
             "capture_filter": .string(redactsSensitiveData ? redactor.redact(snapshot.captureFilter) : snapshot.captureFilter),
+            "capture_filter_language": .string("libpcap_bpf"),
             "status": .string(protectedStatus),
             "can_start": .bool(snapshot.canStart),
             "can_pause": .bool(snapshot.canPause),

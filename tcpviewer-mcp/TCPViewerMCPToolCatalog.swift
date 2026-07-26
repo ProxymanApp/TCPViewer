@@ -18,7 +18,7 @@ enum TCPViewerMCPToolCatalog {
         readOnlyTool(
             .getCaptureOverview,
             title: "Get Capture Overview",
-            description: "Get the active capture state, packet and issue counts, interface selection, capture filter, and available controls.",
+            description: "Get the active capture state, packet and issue counts, interface selection, persistent BPF capture filter, and available controls.",
             properties: [:]
         ),
         readOnlyTool(
@@ -30,7 +30,7 @@ enum TCPViewerMCPToolCatalog {
         Tool(
             name: TCPViewerMCPCommand.queryPackets.rawValue,
             title: "Query Packets",
-            description: "Query a bounded packet window with multiple AND/OR filters, protocol, domain, packet ID, or stream constraints. Results are paginated and newest-first by default.",
+            description: "Read and filter packets that TCP Viewer has already captured. Use this by default when the user asks to filter, find, or show packets. It does not change packet capture or TCP Viewer's Filter field. Supports bounded AND/OR filters, protocol, domain, packet ID, and stream constraints; results are paginated and newest-first by default.",
             inputSchema: packetQuerySchema(),
             annotations: readOnlyAnnotations,
             outputSchema: objectOutputSchema
@@ -91,11 +91,19 @@ enum TCPViewerMCPToolCatalog {
         controlTool(
             .startCapture,
             title: "Start Capture",
-            description: "Start live capture, optionally selecting an interface and BPF capture filter.",
+            description: "Start a new live capture and clear packets currently in the active window. capture_filter is a persistent libpcap/BPF capture filter for future packet collection, not a packet query or TCP Viewer's Filter field. Use query_packets for ordinary packet filtering. Before setting a non-empty capture_filter, explain the distinction to the user, obtain explicit confirmation, and pass confirm_bpf_filter=true. Omitting capture_filter preserves the current BPF filter; passing an empty string clears it.",
             properties: [
                 "interface_id": stringProperty("Interface ID from list_interfaces.", maximumLength: 256),
-                "capture_filter": stringProperty("Optional BPF capture filter.", maximumLength: 4_096),
-            ]
+                "capture_filter": stringProperty(
+                    "Persistent libpcap/BPF expression controlling which future packets are collected. Nonmatching packets are not captured. This is not a packet query or the TCP Viewer Filter field. A non-empty value requires confirm_bpf_filter=true; omission preserves the current BPF filter and an empty string clears it.",
+                    maximumLength: 4_096
+                ),
+                "confirm_bpf_filter": .object([
+                    "type": "boolean",
+                    "description": "Set true only after the user explicitly confirms they want the non-empty BPF capture filter, understanding that it excludes nonmatching traffic from capture.",
+                ]),
+            ],
+            destructive: true
         ),
         controlTool(.pauseCapture, title: "Pause Capture", description: "Pause the active live capture.", properties: [:]),
         controlTool(.resumeCapture, title: "Resume Capture", description: "Resume a paused live capture.", properties: [:]),
@@ -163,7 +171,8 @@ enum TCPViewerMCPToolCatalog {
         title: String,
         description: String,
         properties: [String: MCP.Value],
-        required: [String] = []
+        required: [String] = [],
+        destructive: Bool = false
     ) -> Tool {
         Tool(
             name: command.rawValue,
@@ -173,7 +182,7 @@ enum TCPViewerMCPToolCatalog {
             annotations: .init(
                 title: title,
                 readOnlyHint: false,
-                destructiveHint: false,
+                destructiveHint: destructive,
                 idempotentHint: false,
                 openWorldHint: false
             ),
