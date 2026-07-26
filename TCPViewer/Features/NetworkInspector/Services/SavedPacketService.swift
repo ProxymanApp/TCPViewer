@@ -93,6 +93,7 @@ final class SavedPacketService {
         _ mutation: PacketTextStyleMutation,
         packetIDs: Set<PacketSummary.ID>
     ) throws -> Bool {
+        let previousRecords = cachedRecords
         var didChange = false
         for index in cachedRecords.indices where packetIDs.contains(cachedRecords[index].packet.id) {
             let packet = cachedRecords[index].packet
@@ -106,7 +107,13 @@ final class SavedPacketService {
         }
 
         if didChange {
-            try persist()
+            do {
+                try persist()
+            } catch {
+                // Keep the in-memory view consistent with the last durable saved-packet state.
+                cachedRecords = previousRecords
+                throw error
+            }
         }
         return didChange
     }

@@ -1424,7 +1424,12 @@ final class NetworkInspectorViewModel {
         let savedPacketIDs = selectedSourceListSelection == .saved ? packetIDs : matchingCurrentSavedIDs
         let activePacketIDs = selectedSourceListSelection == .saved ? matchingCurrentSavedIDs : packetIDs
 
-        _ = try? savedPacketService.applyTextStyleMutation(mutation, packetIDs: savedPacketIDs)
+        do {
+            _ = try savedPacketService.applyTextStyleMutation(mutation, packetIDs: savedPacketIDs)
+        } catch {
+            packetExportService.presentFailure(error, title: "Style Update Failed")
+            return
+        }
         controller.applyTextStyleMutation(mutation, packetIDs: activePacketIDs)
         rebuildSnapshot()
     }
