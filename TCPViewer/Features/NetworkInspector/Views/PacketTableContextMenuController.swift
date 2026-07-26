@@ -9,10 +9,10 @@ import AppKit
 import PcapPlusPlusCore
 
 enum PacketCommentShortcut {
-    static let keyEquivalent = "m"
-    static let modifierMask: NSEvent.ModifierFlags = [.command, .option]
+    static let keyEquivalent = "l"
+    static let modifierMask: NSEvent.ModifierFlags = [.command]
 
-    // Match only Option-Command-M while ignoring device-specific modifier flags.
+    // Match only Command-L while ignoring device-specific modifier flags.
     static func matches(_ event: NSEvent) -> Bool {
         let relevantFlags = event.modifierFlags.intersection([.command, .option, .shift, .control])
         return relevantFlags == modifierMask &&

@@ -324,11 +324,23 @@ struct PacketTableMenuLogicTests {
         #expect(items.allSatisfy { item in item.toolTip?.isEmpty == false })
     }
 
-    @Test func commentShortcutMatchesOnlyOptionCommandM() throws {
+    @Test func commentShortcutMatchesCommandLWithoutConflictingWithMinimize() throws {
         let matchingEvent = try #require(NSEvent.keyEvent(
             with: .keyDown,
             location: .zero,
-            modifierFlags: [.command, .option],
+            modifierFlags: [.command],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "l",
+            charactersIgnoringModifiers: "l",
+            isARepeat: false,
+            keyCode: 37
+        ))
+        let minimizeEvent = try #require(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [.command],
             timestamp: 0,
             windowNumber: 0,
             context: nil,
@@ -337,21 +349,9 @@ struct PacketTableMenuLogicTests {
             isARepeat: false,
             keyCode: 46
         ))
-        let conflictingEvent = try #require(NSEvent.keyEvent(
-            with: .keyDown,
-            location: .zero,
-            modifierFlags: [.command, .shift],
-            timestamp: 0,
-            windowNumber: 0,
-            context: nil,
-            characters: "M",
-            charactersIgnoringModifiers: "m",
-            isARepeat: false,
-            keyCode: 46
-        ))
 
         #expect(PacketCommentShortcut.matches(matchingEvent))
-        #expect(!PacketCommentShortcut.matches(conflictingEvent))
+        #expect(!PacketCommentShortcut.matches(minimizeEvent))
     }
 
     @MainActor
@@ -366,6 +366,28 @@ struct PacketTableMenuLogicTests {
             )
             #expect(color.alphaComponent == 1)
         }
+    }
+
+    @MainActor
+    @Test func truncatedAttributedCellKeepsTheSameVerticalTextPosition() throws {
+        let configuration = AppConfiguration(defaults: Self.makeUserDefaults())
+        let cell = PacketTextCell()
+        cell.stringValue = "com.tinyspeck.slackmacgap.helper"
+        cell.configure(style: .secondary, textStyle: .plain, configuration: configuration)
+
+        let truncatedRows = try Self.occupiedTextRows(
+            in: cell,
+            width: 160,
+            height: Int(configuration.packetRowHeight)
+        )
+        let fullRows = try Self.occupiedTextRows(
+            in: cell,
+            width: 360,
+            height: Int(configuration.packetRowHeight)
+        )
+
+        #expect(!truncatedRows.isEmpty)
+        #expect(truncatedRows == fullRows)
     }
 
     @MainActor
@@ -490,6 +512,39 @@ struct PacketTableMenuLogicTests {
     private static func tableView(in controller: PacketTableViewController) throws -> NSTableView {
         let scrollView = try #require(controller.view as? NSScrollView)
         return try #require(scrollView.documentView as? NSTableView)
+    }
+
+    @MainActor
+    private static func occupiedTextRows(in cell: NSCell, width: Int, height: Int) throws -> IndexSet {
+        let bitmap = try #require(NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: width,
+            pixelsHigh: height,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ))
+        let context = try #require(NSGraphicsContext(bitmapImageRep: bitmap))
+        let frame = NSRect(x: 0, y: 0, width: width, height: height)
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        NSColor.clear.setFill()
+        frame.fill()
+        cell.draw(withFrame: frame, in: NSView(frame: frame))
+        context.flushGraphics()
+        NSGraphicsContext.restoreGraphicsState()
+
+        let prefixWidth = min(width, 80)
+        return IndexSet((0..<height).filter { y in
+            (0..<prefixWidth).contains { x in
+                (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.1
+            }
+        })
     }
 
     @MainActor

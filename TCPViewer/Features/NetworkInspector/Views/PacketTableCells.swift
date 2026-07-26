@@ -354,24 +354,21 @@ final class PacketClientCell: NSTextFieldCell {
 private extension NSTextFieldCell {
     // Rebuild attributed text after fonts and colors are configured for a reused cell.
     func applyStrikethrough(_ isEnabled: Bool) {
-        guard isEnabled else {
-            attributedStringValue = NSAttributedString(
-                string: stringValue,
-                attributes: [
-                    .font: font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize),
-                    .foregroundColor: textColor ?? NSColor.labelColor,
-                ]
-            )
-            return
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineBreakMode = lineBreakMode
+        var attributes: [NSAttributedString.Key: Any] = [
+            .font: font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize),
+            .foregroundColor: textColor ?? NSColor.labelColor,
+            // Keep AppKit on the same baseline layout path when text is truncated.
+            .paragraphStyle: paragraphStyle,
+        ]
+        if isEnabled {
+            attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
         }
 
         attributedStringValue = NSAttributedString(
             string: stringValue,
-            attributes: [
-                .font: font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize),
-                .foregroundColor: textColor ?? NSColor.labelColor,
-                .strikethroughStyle: NSUnderlineStyle.single.rawValue,
-            ]
+            attributes: attributes
         )
     }
 }
