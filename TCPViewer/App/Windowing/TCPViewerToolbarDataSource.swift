@@ -499,6 +499,7 @@ private final class TCPViewerToolbarViewModel {
     private(set) var helpText = ""
     private(set) var helperError: TCPViewerToolbarHelperError?
     private(set) var isShowingHelperError = false
+    private(set) var bpfCaptureFilter: String?
     private(set) var showsTrialButton = false
 
     // Build toolbar-only presentation state from the root inspector snapshot.
@@ -519,6 +520,7 @@ private final class TCPViewerToolbarViewModel {
         canExport = snapshot.totalPacketCount > 0 && snapshot.base.loadState.progress.phase != .loading
         isInspectorVisible = snapshot.isInspectorVisible
         inspectorPlacement = snapshot.inspectorPlacement
+        bpfCaptureFilter = snapshot.base.filterState.normalizedCaptureFilter
         helperError = Self.helperError(for: viewModel.networkHelperToolSnapshot)
         isShowingHelperError = helperError != nil
         if let helperError {
@@ -653,6 +655,83 @@ private struct TCPViewerToolbarHelperError {
     let message: String
 }
 
+final class TCPViewerBPFFilterPopoverViewController: NSViewController {
+    private let titleLabel = TCPViewerUI.label(
+        "BPF Capture Filter",
+        font: .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
+    )
+    private let explanationLabel = NSTextField(wrappingLabelWithString:
+        "Only packets matching this expression are collected during live capture."
+    )
+    private let expressionScrollView = NSScrollView()
+    private let expressionTextView = NSTextView()
+    private let agentNoteLabel = TCPViewerUI.label(
+        "Updated by MCP agents. This setting is read-only.",
+        font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular),
+        color: .secondaryLabelColor
+    )
+
+    override func loadView() {
+        view = TCPViewerDynamicBackgroundView(backgroundColor: .windowBackgroundColor)
+        setupLayout()
+    }
+
+    // Refresh the read-only expression shown by an already-open popover.
+    func render(expression: String) {
+        expressionTextView.string = expression
+    }
+
+    // Build a compact read-only presentation that still allows copying long filters.
+    private func setupLayout() {
+        preferredContentSize = NSSize(width: 380, height: 190)
+
+        explanationLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        explanationLabel.textColor = .secondaryLabelColor
+        expressionTextView.isEditable = false
+        expressionTextView.isSelectable = true
+        expressionTextView.isRichText = false
+        expressionTextView.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        expressionTextView.textColor = .labelColor
+        expressionTextView.backgroundColor = .textBackgroundColor
+        expressionTextView.textContainerInset = NSSize(width: 7, height: 7)
+        expressionTextView.frame = NSRect(x: 0, y: 0, width: 352, height: 88)
+        expressionTextView.isVerticallyResizable = true
+        expressionTextView.isHorizontallyResizable = false
+        expressionTextView.autoresizingMask = [.width]
+        expressionTextView.textContainer?.widthTracksTextView = true
+        expressionTextView.setAccessibilityLabel("Current BPF capture filter")
+
+        expressionScrollView.borderType = .bezelBorder
+        expressionScrollView.hasVerticalScroller = true
+        expressionScrollView.drawsBackground = true
+        expressionScrollView.documentView = expressionTextView
+        expressionScrollView.translatesAutoresizingMaskIntoConstraints = false
+
+        let stack = NSStackView(views: [
+            titleLabel,
+            explanationLabel,
+            expressionScrollView,
+            agentNoteLabel,
+        ])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        stack.setCustomSpacing(5, after: titleLabel)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 14),
+            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -14),
+            stack.topAnchor.constraint(equalTo: view.topAnchor, constant: 14),
+            stack.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -12),
+            explanationLabel.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            expressionScrollView.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            expressionScrollView.heightAnchor.constraint(equalToConstant: 88),
+        ])
+    }
+}
+
 private final class TCPViewerToolbarStatusView: NSView {
     var onOpenHelperToolScreen: (() -> Void)?
     var onCheckForUpdates: (() -> Void)?
@@ -660,9 +739,13 @@ private final class TCPViewerToolbarStatusView: NSView {
     private let dot = NSView()
     private let statusLabel = TCPViewerUI.label("", font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium), color: .secondaryLabelColor)
     private let emphasizedLabel = TCPViewerUI.label("", font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold))
+    private let bpfFilterButton = NSButton(title: "", target: nil, action: nil)
     private let helperErrorButton = NSButton(title: "Error", target: nil, action: nil)
     private let updateBadgeButton = TCPViewerToolbarUpdateBadgeButton(title: "", target: nil, action: nil)
+    private let bpfFilterPopover = NSPopover()
+    private let bpfFilterPopoverViewController = TCPViewerBPFFilterPopoverViewController()
     private var helperError: TCPViewerToolbarHelperError?
+    private var bpfCaptureFilter: String?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -684,6 +767,13 @@ private final class TCPViewerToolbarStatusView: NSView {
         statusLabel.textColor = viewModel.isShowingHelperError ? .systemRed : .secondaryLabelColor
         emphasizedLabel.stringValue = viewModel.emphasizedText ?? ""
         emphasizedLabel.isHidden = viewModel.isShowingHelperError || viewModel.emphasizedText == nil
+        bpfCaptureFilter = viewModel.bpfCaptureFilter
+        bpfFilterButton.isHidden = viewModel.bpfCaptureFilter == nil
+        if let bpfCaptureFilter {
+            bpfFilterPopoverViewController.render(expression: bpfCaptureFilter)
+        } else {
+            bpfFilterPopover.close()
+        }
         helperError = viewModel.helperError
         helperErrorButton.isHidden = viewModel.helperError == nil
         helperErrorButton.toolTip = viewModel.helperError.map { "\($0.title): \($0.message)" }
@@ -713,19 +803,29 @@ private final class TCPViewerToolbarStatusView: NSView {
         dot.translatesAutoresizingMaskIntoConstraints = false
         statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         emphasizedLabel.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+        configureBPFFilterButton()
         configureHelperErrorButton()
         configureUpdateBadgeButton()
         let flexibleSpacer = NSView()
         flexibleSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         flexibleSpacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let stack = NSStackView(views: [dot, statusLabel, emphasizedLabel, helperErrorButton, flexibleSpacer, updateBadgeButton])
+        let stack = NSStackView(views: [
+            dot,
+            statusLabel,
+            emphasizedLabel,
+            bpfFilterButton,
+            helperErrorButton,
+            flexibleSpacer,
+            updateBadgeButton,
+        ])
         stack.orientation = .horizontal
         stack.alignment = .centerY
         stack.spacing = 6
         stack.setCustomSpacing(10, after: dot)
         stack.setCustomSpacing(4, after: statusLabel)
         stack.setCustomSpacing(8, after: emphasizedLabel)
+        stack.setCustomSpacing(8, after: bpfFilterButton)
         stack.setCustomSpacing(8, after: flexibleSpacer)
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
@@ -735,10 +835,34 @@ private final class TCPViewerToolbarStatusView: NSView {
             heightAnchor.constraint(equalToConstant: 28),
             dot.widthAnchor.constraint(equalToConstant: 8),
             dot.heightAnchor.constraint(equalToConstant: 8),
+            bpfFilterButton.widthAnchor.constraint(equalToConstant: 20),
+            bpfFilterButton.heightAnchor.constraint(equalToConstant: 20),
             stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             stack.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
+    }
+
+    // Configure the warning-colored affordance for the MCP-managed BPF setting.
+    private func configureBPFFilterButton() {
+        bpfFilterButton.target = self
+        bpfFilterButton.action = #selector(bpfFilterButtonPressed(_:))
+        bpfFilterButton.isBordered = false
+        let filterImage = TCPViewerUI.image("line.3.horizontal.decrease.circle.fill")
+        filterImage?.isTemplate = true
+        bpfFilterButton.image = filterImage
+        bpfFilterButton.imagePosition = .imageOnly
+        bpfFilterButton.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
+        bpfFilterButton.contentTintColor = .systemYellow
+        bpfFilterButton.toolTip = "BPF capture filter configured"
+        bpfFilterButton.identifier = NSUserInterfaceItemIdentifier("TCPViewer.BPFFilterIndicator")
+        bpfFilterButton.setAccessibilityLabel("BPF capture filter configured")
+        bpfFilterButton.isHidden = true
+        bpfFilterButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        bpfFilterPopover.behavior = .transient
+        bpfFilterPopover.animates = true
+        bpfFilterPopover.contentViewController = bpfFilterPopoverViewController
     }
 
     private func configureHelperErrorButton() {
@@ -786,6 +910,19 @@ private final class TCPViewerToolbarStatusView: NSView {
         }
 
         onOpenHelperToolScreen?()
+    }
+
+    // Toggle the read-only BPF details without exposing an edit action.
+    @objc private func bpfFilterButtonPressed(_ sender: NSButton) {
+        guard let bpfCaptureFilter else {
+            return
+        }
+        if bpfFilterPopover.isShown {
+            bpfFilterPopover.close()
+        } else {
+            bpfFilterPopoverViewController.render(expression: bpfCaptureFilter)
+            bpfFilterPopover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
+        }
     }
 
     @objc private func updateBadgeButtonPressed(_ sender: NSButton) {

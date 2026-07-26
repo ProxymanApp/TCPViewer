@@ -17,7 +17,9 @@ private enum TCPViewerMCPExecutable {
             name: "tcpviewer-mcp",
             version: version,
             title: "TCP Viewer",
-            instructions: "Inspect and control the active TCP Viewer capture. Packet data is redacted according to TCP Viewer MCP Settings. Raw bytes are blocked while redaction is enabled.",
+            instructions: """
+            Inspect and control the active TCP Viewer capture. Treat requests to filter, find, or show packets as read-only analysis: use query_packets, or direct the user to TCP Viewer's Filter field when they want the packet table filtered. start_capture.capture_filter is different: it is a persistent libpcap/BPF capture filter that controls which future packets are collected, and starting a capture clears the current packet list. Before setting a non-empty BPF capture filter, explain this distinction, obtain the user's explicit confirmation, and set confirm_bpf_filter=true. Omitting capture_filter preserves the current BPF filter; an empty string clears it. Packet data is redacted according to TCP Viewer MCP Settings. Raw bytes are blocked while redaction is enabled.
+            """,
             capabilities: .init(tools: .init(listChanged: false))
         )
 

@@ -688,6 +688,51 @@ struct NetworkInspectorViewModelTests {
         #expect(filterButton.toolTip == "Show or hide packet filters (⌘F)")
     }
 
+    @Test func toolbarStatusShowsYellowBPFFilterIndicatorOnlyForNondefaultFilter() throws {
+        let inspectorViewModel = NetworkInspectorViewModel(userDefaults: isolatedDefaults())
+        let dataSource = TCPViewerToolbarDataSource()
+        let statusItem = try #require(dataSource.toolbar(
+            dataSource.toolbar,
+            itemForItemIdentifier: NSToolbarItem.Identifier("TCPViewer.Status"),
+            willBeInsertedIntoToolbar: true
+        ))
+        let statusView = try #require(statusItem.view)
+        let indicator = try #require(allSubviews(ofType: NSButton.self, in: statusView).first {
+            $0.identifier?.rawValue == "TCPViewer.BPFFilterIndicator"
+        })
+        var snapshot = inspectorViewModel.snapshot
+
+        dataSource.render(snapshot: snapshot, inspectorViewModel: inspectorViewModel, isLicenseAuthorized: true)
+        #expect(indicator.isHidden)
+
+        snapshot.base.filterState.captureFilterText = "  host 1.1.1.1 and port 443  "
+        dataSource.render(snapshot: snapshot, inspectorViewModel: inspectorViewModel, isLicenseAuthorized: true)
+
+        #expect(!indicator.isHidden)
+        #expect(indicator.contentTintColor == NSColor.systemYellow)
+        #expect(indicator.toolTip == "BPF capture filter configured")
+
+        snapshot.base.filterState.captureFilterText = ""
+        dataSource.render(snapshot: snapshot, inspectorViewModel: inspectorViewModel, isLicenseAuthorized: true)
+        #expect(indicator.isHidden)
+    }
+
+    @Test func bpfFilterPopoverShowsSelectableReadOnlyConfigurationAndAgentNote() throws {
+        let controller = TCPViewerBPFFilterPopoverViewController()
+
+        controller.loadViewIfNeeded()
+        controller.render(expression: "host 1.1.1.1 and port 443")
+
+        let textView = try #require(allSubviews(ofType: NSTextView.self, in: controller.view).first)
+        let labels = allSubviews(ofType: NSTextField.self, in: controller.view).map(\.stringValue)
+        #expect(textView.string == "host 1.1.1.1 and port 443")
+        #expect(!textView.isEditable)
+        #expect(textView.isSelectable)
+        #expect(labels.contains("BPF Capture Filter"))
+        #expect(labels.contains("Updated by MCP agents. This setting is read-only."))
+        #expect(allSubviews(ofType: NSButton.self, in: controller.view).isEmpty)
+    }
+
     @Test func statusStripRendersProcessAndCapturedTrafficMetrics() {
         let viewModel = StatusStripViewModel()
         let metrics = TCPViewerStatusMetricsSnapshot(

@@ -48,6 +48,13 @@ struct TCPViewerMCPNodeIntegrationTests {
         #expect(result["packetID"] as? String == "4242")
         #expect(result["packetProtocol"] as? String == "TLS")
         #expect(result["detailPacketID"] as? String == "4242")
+        #expect((result["serverInstructions"] as? String)?.contains("query_packets") == true)
+        #expect((result["serverInstructions"] as? String)?.contains("explicit confirmation") == true)
+        #expect((result["queryDescription"] as? String)?.contains("already captured") == true)
+        #expect((result["startDescription"] as? String)?.contains("persistent libpcap/BPF") == true)
+        #expect((result["captureFilterDescription"] as? String)?.contains("not a packet query") == true)
+        #expect((result["confirmBPFDescription"] as? String)?.contains("explicitly confirms") == true)
+        #expect(result["startDestructiveHint"] as? Bool == true)
     }
 
     @Test func nodeDiscoveryUsesExecutableFromPATH() throws {
@@ -118,13 +125,15 @@ struct TCPViewerMCPNodeIntegrationTests {
           process.exit(2);
         }, 15000);
         (async () => {
-          await request('initialize', {
+          const initialized = await request('initialize', {
             protocolVersion: '2025-11-25',
             capabilities: {},
             clientInfo: { name: 'tcpviewer-node-integration', version: '1.0.0' }
           });
           notify('notifications/initialized');
           const listed = await request('tools/list', {});
+          const queryTool = listed.tools.find(tool => tool.name === 'query_packets');
+          const startTool = listed.tools.find(tool => tool.name === 'start_capture');
           const queried = await request('tools/call', {
             name: 'query_packets',
             arguments: { protocols: ['TLS'], limit: 1 }
@@ -139,7 +148,13 @@ struct TCPViewerMCPNodeIntegrationTests {
             toolNames: listed.tools.map(tool => tool.name),
             packetID: packet.id,
             packetProtocol: packet.protocol,
-            detailPacketID: detailed.structuredContent.packet.packet_id
+            detailPacketID: detailed.structuredContent.packet.packet_id,
+            serverInstructions: initialized.instructions,
+            queryDescription: queryTool.description,
+            startDescription: startTool.description,
+            captureFilterDescription: startTool.inputSchema.properties.capture_filter.description,
+            confirmBPFDescription: startTool.inputSchema.properties.confirm_bpf_filter.description,
+            startDestructiveHint: startTool.annotations.destructiveHint
           }));
           clearTimeout(timeout);
           child.kill('SIGTERM');
@@ -204,7 +219,26 @@ struct TCPViewerMCPNodeIntegrationTests {
                 $0.appendingPathComponent("bin/node")
             })
         }
-        return try #require(candidates.first(where: { fileManager.isExecutableFile(atPath: $0.path) }))
+        return try #require(candidates.first(where: { runnableNode(at: $0, fileManager: fileManager) }))
+    }
+
+    // Ignore stale executable links so integration tests can use another installed Node runtime.
+    private func runnableNode(at url: URL, fileManager: FileManager) -> Bool {
+        guard fileManager.isExecutableFile(atPath: url.path) else {
+            return false
+        }
+        let process = Process()
+        process.executableURL = url
+        process.arguments = ["--version"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus == 0
+        } catch {
+            return false
+        }
     }
 
     private func waitForServer(_ server: TCPViewerMCPHTTPServer, handshakeURL: URL) async throws {

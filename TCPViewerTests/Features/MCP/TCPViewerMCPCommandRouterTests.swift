@@ -62,6 +62,7 @@ struct TCPViewerMCPCommandRouterTests {
         let overview = await routeMCP(router, command: .getCaptureOverview)
         #expect(overview.value("packet_count") == .int(2))
         #expect(overview.value("dropped_packet_count") == .string("3"))
+        #expect(overview.value("capture_filter_language") == .string("libpcap_bpf"))
 
         let interfaces = await routeMCP(router, command: .listInterfaces)
         #expect(interfaces.value("count") == .int(1))
@@ -168,6 +169,7 @@ struct TCPViewerMCPCommandRouterTests {
         let start = await routeMCP(router, command: .startCapture, params: [
             "interface_id": .string("en0"),
             "capture_filter": .string("tcp port 443"),
+            "confirm_bpf_filter": .bool(true),
         ])
         let pause = await routeMCP(router, command: .pauseCapture)
         let resume = await routeMCP(router, command: .resumeCapture)
@@ -175,6 +177,8 @@ struct TCPViewerMCPCommandRouterTests {
         #expect([start, pause, resume, stop].allSatisfy { $0.success })
         #expect(source.startedInterfaceID == "en0")
         #expect(source.startedCaptureFilter == "tcp port 443")
+        #expect(start.value("previous_packets_cleared") == .bool(true))
+        #expect(start.value("bpf_capture_filter_action") == .string("set"))
         #expect(source.paused && source.resumed && source.stopped)
 
         let reveal = await routeMCP(router, command: .revealPacket, params: ["packet_id": .string("2")])
@@ -188,6 +192,26 @@ struct TCPViewerMCPCommandRouterTests {
         let clear = await routeMCP(router, command: .clearPackets, params: ["confirm": .bool(true)])
         #expect(clear.value("cleared_packet_count") == .int(2))
         #expect(source.cleared)
+    }
+
+    @Test func startCaptureRequiresExplicitConfirmationForNonemptyBPFFilter() async {
+        let source = TCPViewerMCPFakeDataSource()
+        let router = makeRouter(source: source, redactsSensitiveData: { false })
+
+        let unconfirmed = await routeMCP(router, command: .startCapture, params: [
+            "capture_filter": .string("host 1.1.1.1 and port 443"),
+        ])
+        #expect(!unconfirmed.success)
+        #expect(unconfirmed.error?.contains("persistent BPF capture filter") == true)
+        #expect(unconfirmed.error?.contains("query_packets") == true)
+        #expect(source.startedCaptureFilter == nil)
+
+        let clear = await routeMCP(router, command: .startCapture, params: [
+            "capture_filter": .string(""),
+        ])
+        #expect(clear.success)
+        #expect(source.startedCaptureFilter == "")
+        #expect(clear.value("bpf_capture_filter_action") == .string("cleared"))
     }
 
     @Test func rejectsUnauthorizedUnknownUnavailableAndInvalidRequests() async {
