@@ -37,6 +37,7 @@ struct PacketTableColumnServiceTests {
             "length",
             "summary",
             "tags",
+            "comment",
         ])
         #expect(service.visibleColumnIdentifiers == PacketTableColumnRole.visibleColumnIdentifiers)
         #expect(service.menuEntries.filter { $0.isVisible }.map(\.identifier) == PacketTableColumnRole.visibleColumnIdentifiers)
@@ -87,9 +88,10 @@ struct PacketTableColumnServiceTests {
 
         service.setCustomColumns(customColumns)
 
-        #expect(service.definitions.suffix(2).map(\.identifier) == [
+        #expect(service.definitions.suffix(3).map(\.identifier) == [
             "custom.field.ip.src",
             "custom.field.tcp.srcport",
+            "comment",
         ])
         #expect(!service.isColumnVisible(identifier: "custom.field.ip.src"))
         #expect(service.setColumnVisibility(identifier: "custom.field.ip.src", isVisible: true))

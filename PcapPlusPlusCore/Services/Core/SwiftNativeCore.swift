@@ -277,6 +277,7 @@ final class PCPPNativeOfflineDocument {
         to url: URL,
         format: String,
         textStylesByPacketID: [PacketSummary.ID: PacketTextStyle] = [:],
+        commentsByPacketID: [PacketSummary.ID: String] = [:],
         progressHandler: PCPPNativePacketExportProgressHandler?,
         cancellationCheck: PCPPNativeCancellationHandler?
     ) throws {
@@ -289,6 +290,7 @@ final class PCPPNativeOfflineDocument {
             to: url,
             format: CaptureFileFormat(exportRawValue: format),
             textStylesByPacketID: textStylesByPacketID,
+            commentsByPacketID: commentsByPacketID,
             progressHandler: progressHandler,
             cancellationCheck: cancellationCheck
         )
@@ -769,6 +771,7 @@ final class PCPPNativeLiveSession {
         to url: URL,
         format: String,
         textStylesByPacketID: [PacketSummary.ID: PacketTextStyle] = [:],
+        commentsByPacketID: [PacketSummary.ID: String] = [:],
         progressHandler: PCPPNativePacketExportProgressHandler?,
         cancellationCheck: PCPPNativeCancellationHandler?
     ) throws {
@@ -781,6 +784,7 @@ final class PCPPNativeLiveSession {
             to: url,
             format: CaptureFileFormat(exportRawValue: format),
             textStylesByPacketID: textStylesByPacketID,
+            commentsByPacketID: commentsByPacketID,
             progressHandler: progressHandler,
             cancellationCheck: cancellationCheck
         )
@@ -1130,6 +1134,7 @@ enum Exporter {
         to url: URL,
         format: CaptureFileFormat,
         textStylesByPacketID: [PacketSummary.ID: PacketTextStyle] = [:],
+        commentsByPacketID: [PacketSummary.ID: String] = [:],
         progressHandler: PCPPNativePacketExportProgressHandler?,
         cancellationCheck: PCPPNativeCancellationHandler?
     ) throws {
@@ -1146,7 +1151,8 @@ enum Exporter {
             records: records,
             to: url,
             format: format,
-            textStylesByPacketID: textStylesByPacketID
+            textStylesByPacketID: textStylesByPacketID,
+            commentsByPacketID: commentsByPacketID
         )
         progressHandler?(UInt(records.count), UInt(records.count))
     }

@@ -118,6 +118,36 @@ final class SavedPacketService {
         return didChange
     }
 
+    // Persist one sanitized comment across the matching saved packet copies.
+    @discardableResult
+    func setCustomComment(_ comment: String, packetIDs: Set<PacketSummary.ID>) throws -> Bool {
+        let sanitizedComment = PacketComment.sanitized(comment)
+        guard !sanitizedComment.isEmpty else {
+            return false
+        }
+
+        let previousRecords = cachedRecords
+        var didChange = false
+        for index in cachedRecords.indices where packetIDs.contains(cachedRecords[index].packet.id) {
+            let packet = cachedRecords[index].packet
+            guard packet.customComment != sanitizedComment else {
+                continue
+            }
+            cachedRecords[index].packet = packet.applying(customComment: sanitizedComment)
+            didChange = true
+        }
+
+        if didChange {
+            do {
+                try persist()
+            } catch {
+                cachedRecords = previousRecords
+                throw error
+            }
+        }
+        return didChange
+    }
+
     private func persist() throws {
         guard !isDocumentScoped else {
             return

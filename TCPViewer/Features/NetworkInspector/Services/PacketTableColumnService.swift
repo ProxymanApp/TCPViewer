@@ -207,6 +207,7 @@ final class PacketTableColumnService {
         .builtIn(.length, title: "Length", defaultWidth: 80, minimumWidth: 68),
         .builtIn(.summary, title: "Summary", defaultWidth: 320, minimumWidth: 120),
         .builtIn(.tags, title: "Tags", defaultWidth: 140, minimumWidth: 90),
+        .builtIn(.comment, title: "Comment", defaultWidth: 320, minimumWidth: 140),
     ]
 
     private(set) var definitions: [PacketTableColumnDefinition]
@@ -251,7 +252,9 @@ final class PacketTableColumnService {
                 minimumWidth: column.minimumWidth
             )
         }
-        let nextDefinitions = Self.uniqueDefinitions(baseDefinitions + customDefinitions)
+        let commentDefinitions = baseDefinitions.filter { $0.role == .comment }
+        let regularDefinitions = baseDefinitions.filter { $0.role != .comment }
+        let nextDefinitions = Self.uniqueDefinitions(regularDefinitions + customDefinitions + commentDefinitions)
         var nextVisibility = Dictionary(
             uniqueKeysWithValues: nextDefinitions.map { definition in
                 (

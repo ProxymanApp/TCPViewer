@@ -160,7 +160,8 @@ struct TCPViewSessionFormatTests {
         let firstStyle = PacketTextStyle(highlightColor: .teal, isStrikethrough: true)
         let packets = [
             Self.makePacket(id: 10, packetNumber: 1, client: Self.client, packetComment: "first comment")
-                .applying(textStyle: firstStyle),
+                .applying(textStyle: firstStyle)
+                .applying(customComment: "TCP Viewer note\nSecond line"),
             Self.makePacket(id: 11, packetNumber: 2, client: Self.client),
         ]
         let snapshot = Self.makeSnapshot(
@@ -200,9 +201,11 @@ struct TCPViewSessionFormatTests {
         #expect(contents.clientStore.clients.count == 1)
         #expect(contents.packets.map(\.client) == [Self.client, Self.client])
         #expect(contents.annotations.annotations.first?.packetComment == "first comment")
+        #expect(contents.annotations.annotations.first?.customComment == "TCP Viewer note\nSecond line")
         #expect(contents.annotations.annotations.first?.colorHex == "#40C8E0")
         #expect(contents.annotations.annotations.first?.textStyle == firstStyle)
         #expect(contents.packets.map(\.resolvedTextStyle) == [firstStyle, .plain])
+        #expect(contents.packets.first?.customComment == "TCP Viewer note\nSecond line")
         #expect(contents.state.importedCaptureFiles.first?.displayName == "source.pcapng")
         #expect(jsonl.split(separator: "\n").count == packets.count)
         #expect(Self.zipPackageContainsRequiredFiles(contents.packageDirectoryURL))

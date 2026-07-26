@@ -8,6 +8,18 @@
 import AppKit
 import PcapPlusPlusCore
 
+enum PacketCommentShortcut {
+    static let keyEquivalent = "l"
+    static let modifierMask: NSEvent.ModifierFlags = [.command]
+
+    // Match only Command-L while ignoring device-specific modifier flags.
+    static func matches(_ event: NSEvent) -> Bool {
+        let relevantFlags = event.modifierFlags.intersection([.command, .option, .shift, .control])
+        return relevantFlags == modifierMask &&
+            event.charactersIgnoringModifiers?.lowercased() == keyEquivalent
+    }
+}
+
 @objc protocol PacketTableContextMenuActionHandling: AnyObject {
     func copyRowsFromMenu(_ sender: Any?)
     func copyRowsAsPlainTextFromMenu(_ sender: Any?)
@@ -18,6 +30,7 @@ import PcapPlusPlusCore
     func copyCellFromMenu(_ sender: Any?)
     func pinRowsFromMenu(_ sender: Any?)
     func saveRowsFromMenu(_ sender: Any?)
+    func addPacketCommentFromMenu(_ sender: Any?)
     func setPacketHighlightColorFromMenu(_ sender: Any?)
     func togglePacketStrikethroughFromMenu(_ sender: Any?)
     func resetPacketTextStyleFromMenu(_ sender: Any?)
@@ -78,6 +91,16 @@ final class PacketTableContextMenuController: NSObject {
         ))
 
         menu.addItem(.separator())
+        let commentItem = item(
+            title: "Add Comment…",
+            action: #selector(PacketTableContextMenuActionHandling.addPacketCommentFromMenu(_:)),
+            keyEquivalent: PacketCommentShortcut.keyEquivalent,
+            isEnabled: state.commentEnabled,
+            toolTip: "Add or edit comments for the targeted packets.",
+            systemSymbolName: "text.bubble"
+        )
+        commentItem.keyEquivalentModifierMask = PacketCommentShortcut.modifierMask
+        menu.addItem(commentItem)
         menu.addItem(highlightMenuItem(state: state))
 
         menu.addItem(.separator())

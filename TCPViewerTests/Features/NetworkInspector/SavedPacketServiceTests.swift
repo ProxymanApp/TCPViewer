@@ -91,6 +91,21 @@ struct SavedPacketServiceTests {
         #expect(service.records() == recordsBeforeMutation)
     }
 
+    @Test func commentMutationSanitizesAndPersistsForSavedPacketRows() throws {
+        let storageURL = temporaryDirectory().appendingPathComponent("Saved.json")
+        let service = SavedPacketService(storageURL: storageURL)
+        let first = makePacket(packetNumber: 1)
+        let second = makePacket(packetNumber: 2)
+        try service.save([first, second])
+
+        let didChange = try service.setCustomComment("\n First line\nSecond line \n", packetIDs: [first.id])
+        let reloaded = SavedPacketService(storageURL: storageURL)
+
+        #expect(didChange)
+        #expect(reloaded.records()[0].packet.customComment == "First line\nSecond line")
+        #expect(reloaded.records()[1].packet.customComment == nil)
+    }
+
     private func temporaryDirectory() -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)

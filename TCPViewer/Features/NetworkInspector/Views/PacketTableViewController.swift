@@ -18,6 +18,11 @@ protocol PacketTableViewControllerDelegate: AnyObject {
     func packetTableViewController(_ controller: PacketTableViewController, didRequestSavePackets identifiers: [PacketSummary.ID])
     func packetTableViewController(
         _ controller: PacketTableViewController,
+        didRequestSetComment comment: String,
+        onPackets identifiers: [PacketSummary.ID]
+    )
+    func packetTableViewController(
+        _ controller: PacketTableViewController,
         didRequestApplyTextStyle mutation: PacketTextStyleMutation,
         toPackets identifiers: [PacketSummary.ID]
     )
@@ -60,6 +65,7 @@ enum PacketTableSelectionSyncPlanner {
 fileprivate protocol PacketTableKeyboardActionHandling: AnyObject {
     func packetTableViewDidRequestCopyRowsFromKeyboard(_ tableView: PacketTableView)
     func packetTableViewDidRequestDeleteFromKeyboard(_ tableView: PacketTableView)
+    func packetTableViewDidRequestAddCommentFromKeyboard(_ tableView: PacketTableView)
     func packetTableView(_ tableView: PacketTableView, didRequestTextStyle mutation: PacketTextStyleMutation)
 }
 
@@ -77,6 +83,10 @@ fileprivate final class PacketTableView: NSTableView {
 
     override func keyDown(with event: NSEvent) {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if PacketCommentShortcut.matches(event) {
+            keyboardActionHandler?.packetTableViewDidRequestAddCommentFromKeyboard(self)
+            return
+        }
         if flags.contains(.command), event.charactersIgnoringModifiers?.lowercased() == "c" {
             copy(nil)
             return
@@ -249,6 +259,7 @@ final class PacketTableViewController: NSViewController {
     private var pendingUserSelection: PendingUserSelection?
     private var clickedRowIndex: Int?
     private var clickedColumnIdentifier: String?
+    private var commentSheetController: PacketCommentSheetViewController?
     private var customColumnWorkQueue: [CustomColumnWorkItem] = []
     private var customColumnWorkQueueHeadIndex = 0
     private var queuedCustomColumnWorkKeys = Set<String>()
@@ -409,6 +420,7 @@ final class PacketTableViewController: NSViewController {
         tableView.autosaveName = Self.columnAutosaveName
         tableView.autosaveTableColumns = false
         restoreColumnLayout(restoredLayout)
+        moveCommentColumnToEnd()
         syncColumnVisibilityFromTable()
 
         scrollView.documentView = tableView
@@ -431,7 +443,9 @@ final class PacketTableViewController: NSViewController {
         column.title = definition.tableTitle
         column.width = CGFloat(definition.defaultWidth)
         column.minWidth = CGFloat(definition.minimumWidth)
-        column.resizingMask = .userResizingMask
+        column.resizingMask = definition.role == .comment
+            ? [.userResizingMask, .autoresizingMask]
+            : .userResizingMask
         column.dataCell = cell(for: definition.cellKind)
         column.isHidden = !columnService.isColumnVisible(identifier: definition.identifier)
         tableView.addTableColumn(column)
@@ -444,6 +458,17 @@ final class PacketTableViewController: NSViewController {
         }
 
         addColumn(definition)
+        moveCommentColumnToEnd()
+    }
+
+    // Keep Comment as the flexible trailing column after built-in and custom columns.
+    private func moveCommentColumnToEnd() {
+        guard let commentIndex = tableView.tableColumns.firstIndex(where: {
+            $0.identifier.rawValue == PacketTableColumnRole.comment.rawValue
+        }), commentIndex != tableView.tableColumns.count - 1 else {
+            return
+        }
+        tableView.moveColumn(commentIndex, toColumn: tableView.tableColumns.count - 1)
     }
 
     private func cell(for kind: PacketTableColumnCellKind) -> NSCell {
@@ -1024,6 +1049,31 @@ final class PacketTableViewController: NSViewController {
         delegate?.packetTableViewController(self, didRequestSavePackets: identifiers)
     }
 
+    @objc func addPacketCommentFromMenu(_ sender: Any?) {
+        let targetRows = targetRows()
+        guard !targetRows.isEmpty else {
+            return
+        }
+        let identifiers = targetRows.map(\.id)
+        let initialComment = targetRows.count == 1 ? targetRows[0].comment : nil
+
+        let sheet = PacketCommentSheetViewController(
+            initialComment: initialComment,
+            packetCount: targetRows.count
+        ) { [weak self] comment in
+            guard let self else {
+                return
+            }
+            self.delegate?.packetTableViewController(
+                self,
+                didRequestSetComment: comment,
+                onPackets: identifiers
+            )
+        }
+        commentSheetController = sheet
+        sheet.show(attachedTo: view.window)
+    }
+
     @objc func setPacketHighlightColorFromMenu(_ sender: Any?) {
         guard let menuItem = sender as? NSMenuItem,
               let rawValue = menuItem.representedObject as? String,
@@ -1147,6 +1197,15 @@ extension PacketTableViewController: NSTableViewDataSource, NSTableViewDelegate 
         saveColumnLayout()
     }
 
+    func tableView(_ tableView: NSTableView, shouldReorderColumn columnIndex: Int, toColumn newColumnIndex: Int) -> Bool {
+        guard let commentIndex = tableView.tableColumns.firstIndex(where: {
+            $0.identifier.rawValue == PacketTableColumnRole.comment.rawValue
+        }) else {
+            return true
+        }
+        return columnIndex != commentIndex && newColumnIndex < commentIndex
+    }
+
     func tableViewColumnDidResize(_ notification: Notification) {
         saveColumnLayout()
     }
@@ -1184,6 +1243,12 @@ extension PacketTableViewController: PacketTableKeyboardActionHandling {
         clickedRowIndex = nil
         clickedColumnIdentifier = nil
         deleteTargetRows()
+    }
+
+    fileprivate func packetTableViewDidRequestAddCommentFromKeyboard(_ tableView: PacketTableView) {
+        clickedRowIndex = nil
+        clickedColumnIdentifier = nil
+        addPacketCommentFromMenu(nil)
     }
 
     fileprivate func packetTableView(_ tableView: PacketTableView, didRequestTextStyle mutation: PacketTextStyleMutation) {

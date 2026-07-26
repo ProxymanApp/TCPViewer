@@ -536,7 +536,8 @@ extension PacketSummary {
             captureMetadata: captureMetadata,
             sniDomainName: sniDomainName,
             client: client,
-            textStyle: textStyle
+            textStyle: textStyle,
+            customComment: customComment
         )
     }
 }
