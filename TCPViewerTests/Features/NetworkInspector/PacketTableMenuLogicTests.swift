@@ -309,35 +309,21 @@ struct PacketTableMenuLogicTests {
     }
 
     @MainActor
-    @Test func highlightedRowPaletteKeepsSelectedColorsVisibleAcrossAppearances() throws {
+    @Test func highlightedRowPaletteResolvesOpaqueColorsAcrossAppearances() throws {
         let lightAppearance = try #require(NSAppearance(named: .aqua))
         let darkAppearance = try #require(NSAppearance(named: .darkAqua))
 
         for appearance in [lightAppearance, darkAppearance] {
-            let regularColor = PacketHighlightPalette.backgroundColor(
+            let color = PacketHighlightPalette.backgroundColor(
                 for: .green,
-                isSelected: false,
                 appearance: appearance
             )
-            let selectedColor = PacketHighlightPalette.backgroundColor(
-                for: .green,
-                isSelected: true,
-                appearance: appearance
-            )
-
-            #expect(regularColor.alphaComponent == 1)
-            #expect(selectedColor.alphaComponent == 1)
-            #expect(selectedColor != regularColor)
+            #expect(color.alphaComponent == 1)
         }
-
-        let rowView = PacketHighlightRowView()
-        rowView.highlightColor = .green
-        rowView.isSelected = true
-        #expect(rowView.interiorBackgroundStyle == .normal)
     }
 
     @MainActor
-    @Test func cellBasedPacketTablePaintsSelectedHighlightColor() throws {
+    @Test func packetTableUsesOneBackgroundAcrossCellsAndFullRow() throws {
         let defaults = Self.makeUserDefaults()
         let controller = PacketTableViewController(configuration: AppConfiguration(defaults: defaults))
         controller.loadViewIfNeeded()
@@ -348,20 +334,35 @@ struct PacketTableMenuLogicTests {
         controller.render(snapshot: makeSnapshot(packets: [packet]))
         tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
 
-        let column = try #require(tableView.tableColumns.first)
-        let cell = try #require(column.dataCell as? PacketTextCell)
-        controller.tableView(tableView, willDisplayCell: cell, for: column, row: 0)
-        let backgroundColor = try #require(cell.backgroundColor)
-        let color = try #require(backgroundColor.usingColorSpace(.deviceRGB))
+        for column in tableView.tableColumns {
+            guard let cell = column.dataCell as? NSTextFieldCell else {
+                continue
+            }
+            controller.tableView(tableView, willDisplayCell: cell, for: column, row: 0)
+            #expect(!cell.drawsBackground)
+        }
 
-        #expect(cell.drawsBackground)
-        #expect(color.alphaComponent == 1)
-        #expect(color.redComponent > color.greenComponent)
-        #expect(color.redComponent > color.blueComponent)
+        tableView.columnAutoresizingStyle = .noColumnAutoresizing
+        let columnsMaxX = tableView.tableColumns.indices
+            .map { tableView.rect(ofColumn: $0).maxX }
+            .max() ?? 0
+        tableView.setFrameSize(NSSize(width: columnsMaxX + 40, height: tableView.rowHeight))
 
-        let edgeColor = try Self.renderedEdgeColor(of: cell)
-        #expect(edgeColor.redComponent > edgeColor.greenComponent)
-        #expect(edgeColor.redComponent > edgeColor.blueComponent)
+        tableView.deselectAll(nil)
+        let rowEdgeColors = try Self.renderedRowEdgeColors(in: tableView, row: 0)
+        for edgeColor in rowEdgeColors {
+            #expect(edgeColor.redComponent > edgeColor.greenComponent)
+            #expect(edgeColor.redComponent > edgeColor.blueComponent)
+        }
+
+        tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        let selectedEdgeColors = try Self.renderedRowEdgeColors(in: tableView, row: 0)
+        let selectedColor = try #require(NSColor.selectedContentBackgroundColor.usingColorSpace(.deviceRGB))
+        for edgeColor in selectedEdgeColors {
+            #expect(abs(edgeColor.redComponent - selectedColor.redComponent) < 0.01)
+            #expect(abs(edgeColor.greenComponent - selectedColor.greenComponent) < 0.01)
+            #expect(abs(edgeColor.blueComponent - selectedColor.blueComponent) < 0.01)
+        }
     }
 
     private func makeSnapshot(packets: [PacketSummary]) -> NetworkInspectorSnapshot {
@@ -444,12 +445,12 @@ struct PacketTableMenuLogicTests {
     }
 
     @MainActor
-    private static func renderedEdgeColor(of cell: NSCell) throws -> NSColor {
-        let size = NSSize(width: 80, height: 24)
+    private static func renderedRowEdgeColors(in tableView: NSTableView, row: Int) throws -> [NSColor] {
+        let rowRect = tableView.rect(ofRow: row)
         let bitmap = try #require(NSBitmapImageRep(
             bitmapDataPlanes: nil,
-            pixelsWide: Int(size.width),
-            pixelsHigh: Int(size.height),
+            pixelsWide: Int(ceil(tableView.bounds.width)),
+            pixelsHigh: Int(ceil(rowRect.height)),
             bitsPerSample: 8,
             samplesPerPixel: 4,
             hasAlpha: true,
@@ -459,14 +460,16 @@ struct PacketTableMenuLogicTests {
             bitsPerPixel: 0
         ))
         let context = try #require(NSGraphicsContext(bitmapImageRep: bitmap))
-        let frame = NSRect(origin: .zero, size: size)
 
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = context
-        cell.draw(withFrame: frame, in: NSView(frame: frame))
+        tableView.drawBackground(inClipRect: rowRect)
         NSGraphicsContext.restoreGraphicsState()
 
-        return try #require(bitmap.colorAt(x: 1, y: 1)?.usingColorSpace(.deviceRGB))
+        let trailingX = max(1, bitmap.pixelsWide - 2)
+        return try [1, trailingX].map { x in
+            try #require(bitmap.colorAt(x: x, y: 1)?.usingColorSpace(.deviceRGB))
+        }
     }
 
     @MainActor

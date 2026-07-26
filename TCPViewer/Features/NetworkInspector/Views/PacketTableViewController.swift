@@ -65,6 +65,7 @@ fileprivate protocol PacketTableKeyboardActionHandling: AnyObject {
 
 fileprivate final class PacketTableView: NSTableView {
     weak var keyboardActionHandler: PacketTableKeyboardActionHandling?
+    var highlightColorProvider: ((Int) -> PacketHighlightColor?)?
 
     @objc func copy(_ sender: Any?) {
         keyboardActionHandler?.packetTableViewDidRequestCopyRowsFromKeyboard(self)
@@ -107,6 +108,71 @@ fileprivate final class PacketTableView: NSTableView {
         super.keyDown(with: event)
     }
 
+    override func drawBackground(inClipRect clipRect: NSRect) {
+        // Paint marked rows across the table bounds, including space outside column cells.
+        super.drawBackground(inClipRect: clipRect)
+        let visibleRows = rows(in: clipRect)
+        guard visibleRows.location != NSNotFound else {
+            return
+        }
+
+        for row in visibleRows.location..<(visibleRows.location + visibleRows.length) {
+            if selectedRowIndexes.contains(row) {
+                drawSelectionBackground(forRow: row, in: clipRect)
+            } else {
+                drawHighlight(forRow: row, in: clipRect)
+            }
+        }
+    }
+
+    override func highlightSelection(inClipRect clipRect: NSRect) {
+        // Restore selected packet colors after AppKit paints its standard selection.
+        super.highlightSelection(inClipRect: clipRect)
+        let visibleRows = rows(in: clipRect)
+        guard visibleRows.location != NSNotFound else {
+            return
+        }
+        let visibleIndexes = IndexSet(
+            integersIn: visibleRows.location..<(visibleRows.location + visibleRows.length)
+        )
+        for row in selectedRowIndexes.intersection(visibleIndexes) {
+            drawSelectionBackground(forRow: row, in: clipRect)
+        }
+    }
+
+    private func drawHighlight(forRow row: Int, in clipRect: NSRect) {
+        // Use the full row rect because cell frames have leading and trailing gaps.
+        guard let highlightColor = highlightColorProvider?(row) else {
+            return
+        }
+
+        let rowRect = rect(ofRow: row)
+        let fillRect = rowRect.intersection(clipRect)
+        guard !fillRect.isEmpty else {
+            return
+        }
+
+        PacketHighlightPalette.backgroundColor(
+            for: highlightColor,
+            appearance: effectiveAppearance
+        ).setFill()
+        fillRect.fill()
+    }
+
+    private func drawSelectionBackground(forRow row: Int, in clipRect: NSRect) {
+        // Match AppKit's active or inactive selection across the complete row.
+        let fillRect = rect(ofRow: row).intersection(clipRect)
+        guard !fillRect.isEmpty else {
+            return
+        }
+
+        let isEmphasized = window == nil || (window?.isKeyWindow == true && window?.firstResponder === self)
+        let selectionColor: NSColor = isEmphasized
+            ? .selectedContentBackgroundColor
+            : .unemphasizedSelectedContentBackgroundColor
+        selectionColor.setFill()
+        fillRect.fill()
+    }
 }
 
 final class PacketTableViewModel {
@@ -295,6 +361,10 @@ final class PacketTableViewController: NSViewController {
         }
         let columnIndexes = IndexSet(0..<tableView.numberOfColumns)
         tableView.reloadData(forRowIndexes: safeIndexes, columnIndexes: columnIndexes)
+        // Cell reloads omit the outer row margins, so invalidate only the changed full rows.
+        for row in safeIndexes {
+            tableView.setNeedsDisplay(tableView.rect(ofRow: row))
+        }
     }
 
     @objc private func appConfigurationDidChange(_ notification: Notification) {
@@ -306,6 +376,12 @@ final class PacketTableViewController: NSViewController {
         tableView.delegate = self
         tableView.dataSource = self
         tableView.keyboardActionHandler = self
+        tableView.highlightColorProvider = { [weak self] row in
+            guard let self, self.rows.indices.contains(row) else {
+                return nil
+            }
+            return self.rows[row].textStyle.highlightColor
+        }
         tableView.usesAlternatingRowBackgroundColors = true
         tableView.allowsEmptySelection = true
         tableView.allowsMultipleSelection = true
@@ -1044,18 +1120,11 @@ extension PacketTableViewController: NSTableViewDataSource, NSTableViewDelegate 
         }
 
         let packetRow = rows[row]
-        let isSelected = tableView.selectedRowIndexes.contains(row)
-        if let rowView = tableView.rowView(atRow: row, makeIfNecessary: false) as? PacketHighlightRowView {
-            rowView.highlightColor = packetRow.textStyle.highlightColor
-            rowView.needsDisplay = true
-        }
         if let cell = cell as? PacketProtocolCell {
             cell.configure(
                 protocolText: packetRow.protocolText,
                 severity: packetRow.severity,
                 textStyle: packetRow.textStyle,
-                isSelected: isSelected,
-                appearance: tableView.effectiveAppearance,
                 configuration: configuration
             )
         } else if let cell = cell as? PacketClientCell {
@@ -1063,29 +1132,15 @@ extension PacketTableViewController: NSTableViewDataSource, NSTableViewDelegate 
                 displayName: packetRow.clientText,
                 iconFilePath: packetRow.clientIconFilePath,
                 textStyle: packetRow.textStyle,
-                isSelected: isSelected,
-                appearance: tableView.effectiveAppearance,
                 configuration: configuration
             )
         } else if let cell = cell as? PacketTextCell {
             cell.configure(
                 style: textStyle(for: column, in: packetRow),
                 textStyle: packetRow.textStyle,
-                isSelected: isSelected,
-                appearance: tableView.effectiveAppearance,
                 configuration: configuration
             )
         }
-    }
-
-    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
-        guard rows.indices.contains(row) else {
-            return nil
-        }
-
-        let rowView = PacketHighlightRowView()
-        rowView.highlightColor = rows[row].textStyle.highlightColor
-        return rowView
     }
 
     func tableViewColumnDidMove(_ notification: Notification) {

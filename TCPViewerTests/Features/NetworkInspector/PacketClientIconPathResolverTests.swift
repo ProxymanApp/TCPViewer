@@ -86,15 +86,12 @@ struct PacketClientIconPathResolverTests {
         let defaults = try #require(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let configuration = AppConfiguration(defaults: defaults)
-        let appearance = try #require(NSAppearance(named: .aqua))
         let cell = PacketClientCell()
 
         cell.configure(
             displayName: "Example",
             iconFilePath: "/Applications/Example.app",
             textStyle: .plain,
-            isSelected: false,
-            appearance: appearance,
             configuration: configuration
         )
         let copiedCell = try #require(cell.copy() as? PacketClientCell)
