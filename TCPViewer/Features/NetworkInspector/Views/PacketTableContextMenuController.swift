@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import PcapPlusPlusCore
 
 @objc protocol PacketTableContextMenuActionHandling: AnyObject {
     func copyRowsFromMenu(_ sender: Any?)
@@ -17,6 +18,9 @@ import AppKit
     func copyCellFromMenu(_ sender: Any?)
     func pinRowsFromMenu(_ sender: Any?)
     func saveRowsFromMenu(_ sender: Any?)
+    func setPacketHighlightColorFromMenu(_ sender: Any?)
+    func togglePacketStrikethroughFromMenu(_ sender: Any?)
+    func resetPacketTextStyleFromMenu(_ sender: Any?)
     func exportRowsAsPcapFromMenu(_ sender: Any?)
     func exportRowsAsPcapngFromMenu(_ sender: Any?)
     func deleteRowsFromMenu(_ sender: Any?)
@@ -72,6 +76,7 @@ final class PacketTableContextMenuController: NSObject {
             isEnabled: state.saveEnabled,
             toolTip: "Save the selected packets to the packet workspace."
         ))
+        menu.addItem(highlightMenuItem(state: state))
 
         menu.addItem(.separator())
         menu.addItem(exportMenuItem(state: state))
@@ -85,6 +90,57 @@ final class PacketTableContextMenuController: NSObject {
             toolTip: "Delete the selected packets.",
             systemSymbolName: "trash"
         ))
+    }
+
+    // Create the ordered highlight palette and its keyboard shortcuts.
+    private func highlightMenuItem(state: PacketTableMenuState) -> NSMenuItem {
+        let menuItem = NSMenuItem(title: "Highlight", action: nil, keyEquivalent: "")
+        let submenu = NSMenu(title: "Highlight")
+        submenu.autoenablesItems = false
+
+        for (index, color) in PacketHighlightColor.allCases.enumerated() {
+            let shortcut = index < 9 ? String(index + 1) : ""
+            let colorItem = item(
+                title: color.menuTitle,
+                action: #selector(PacketTableContextMenuActionHandling.setPacketHighlightColorFromMenu(_:)),
+                keyEquivalent: shortcut,
+                isEnabled: state.styleEnabled,
+                toolTip: "Highlight the targeted packet rows in \(color.menuTitle.lowercased())."
+            )
+            colorItem.representedObject = color.rawValue
+            colorItem.image = color.menuImage
+            if !shortcut.isEmpty {
+                colorItem.keyEquivalentModifierMask = .command
+            }
+            submenu.addItem(colorItem)
+        }
+
+        submenu.addItem(.separator())
+        let strikethroughItem = item(
+            title: "Strikethrough",
+            action: #selector(PacketTableContextMenuActionHandling.togglePacketStrikethroughFromMenu(_:)),
+            keyEquivalent: "/",
+            isEnabled: state.styleEnabled,
+            toolTip: "Toggle strikethrough on the targeted packet rows."
+        )
+        strikethroughItem.keyEquivalentModifierMask = .command
+        submenu.addItem(strikethroughItem)
+
+        submenu.addItem(.separator())
+        let resetItem = item(
+            title: "Reset",
+            action: #selector(PacketTableContextMenuActionHandling.resetPacketTextStyleFromMenu(_:)),
+            keyEquivalent: "0",
+            isEnabled: state.styleEnabled,
+            toolTip: "Remove all highlighting and text effects from the targeted packet rows."
+        )
+        resetItem.keyEquivalentModifierMask = .command
+        submenu.addItem(resetItem)
+
+        menuItem.submenu = submenu
+        menuItem.isEnabled = state.styleEnabled
+        menuItem.toolTip = "Choose a color or text effect for the targeted packet rows."
+        return menuItem
     }
 
     // Create the copy-format submenu for the targeted packet rows.
@@ -177,6 +233,39 @@ final class PacketTableContextMenuController: NSObject {
             menuItem.image = NSImage(systemSymbolName: systemSymbolName, accessibilityDescription: title)
         }
         return menuItem
+    }
+}
+
+extension PacketHighlightColor {
+    var menuTitle: String {
+        rawValue.capitalized
+    }
+
+    var appKitColor: NSColor {
+        switch self {
+        case .red: .systemRed
+        case .orange: .systemOrange
+        case .yellow: .systemYellow
+        case .green: .systemGreen
+        case .teal: .systemTeal
+        case .blue: .systemBlue
+        case .indigo: .systemIndigo
+        case .purple: .systemPurple
+        case .pink: .systemPink
+        case .brown: .systemBrown
+        case .gray: .systemGray
+        }
+    }
+
+    var menuImage: NSImage {
+        let size = NSSize(width: 12, height: 12)
+        let image = NSImage(size: size, flipped: false) { rect in
+            self.appKitColor.setFill()
+            NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1)).fill()
+            return true
+        }
+        image.isTemplate = false
+        return image
     }
 }
 

@@ -104,13 +104,26 @@ struct TCPViewSessionFormatTests {
                 packetID: 9,
                 packetComment: "pcapng comment",
                 customComment: "custom comment",
-                colorHex: "#4A90E2"
+                colorHex: "#5E5CE6",
+                textStyle: PacketTextStyle(highlightColor: .indigo, isStrikethrough: true)
             ),
         ])
 
         let decoded = try Self.decode(TCPViewSessionAnnotations.self, from: Self.encode(annotations))
 
         #expect(decoded == annotations)
+    }
+
+    @Test func packetSummaryWithoutTextStyleFieldDecodesAsPlainForOlderSessions() throws {
+        let packet = Self.makePacket(id: 8, packetNumber: 8, client: nil)
+        var object = try #require(JSONSerialization.jsonObject(with: Self.encode(packet)) as? [String: Any])
+        object.removeValue(forKey: "textStyle")
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+
+        let decoded = try Self.decode(PacketSummary.self, from: legacyData)
+
+        #expect(decoded.resolvedTextStyle == .plain)
+        #expect(decoded.textStyle == nil)
     }
 
     @Test func clientStoreDeduplicatesTwentyThousandPacketsAndRestoresClients() {
@@ -144,8 +157,10 @@ struct TCPViewSessionFormatTests {
         let captureURL = directory.appendingPathComponent("capture-source.pcapng")
         try Data("pcapng-placeholder".utf8).write(to: captureURL)
         let destinationURL = directory.appendingPathComponent("sample.tcpviewsession")
+        let firstStyle = PacketTextStyle(highlightColor: .teal, isStrikethrough: true)
         let packets = [
-            Self.makePacket(id: 10, packetNumber: 1, client: Self.client, packetComment: "first comment"),
+            Self.makePacket(id: 10, packetNumber: 1, client: Self.client, packetComment: "first comment")
+                .applying(textStyle: firstStyle),
             Self.makePacket(id: 11, packetNumber: 2, client: Self.client),
         ]
         let snapshot = Self.makeSnapshot(
@@ -185,6 +200,9 @@ struct TCPViewSessionFormatTests {
         #expect(contents.clientStore.clients.count == 1)
         #expect(contents.packets.map(\.client) == [Self.client, Self.client])
         #expect(contents.annotations.annotations.first?.packetComment == "first comment")
+        #expect(contents.annotations.annotations.first?.colorHex == "#40C8E0")
+        #expect(contents.annotations.annotations.first?.textStyle == firstStyle)
+        #expect(contents.packets.map(\.resolvedTextStyle) == [firstStyle, .plain])
         #expect(contents.state.importedCaptureFiles.first?.displayName == "source.pcapng")
         #expect(jsonl.split(separator: "\n").count == packets.count)
         #expect(Self.zipPackageContainsRequiredFiles(contents.packageDirectoryURL))

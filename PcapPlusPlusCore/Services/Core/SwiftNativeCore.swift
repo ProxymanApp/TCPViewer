@@ -276,6 +276,7 @@ final class PCPPNativeOfflineDocument {
         withIdentifiers identifiers: [NSNumber],
         to url: URL,
         format: String,
+        textStylesByPacketID: [PacketSummary.ID: PacketTextStyle] = [:],
         progressHandler: PCPPNativePacketExportProgressHandler?,
         cancellationCheck: PCPPNativeCancellationHandler?
     ) throws {
@@ -283,7 +284,14 @@ final class PCPPNativeOfflineDocument {
         let records = state.read {
             $0.file.records.filter { idSet.contains($0.identifier) }
         }
-        try Exporter.export(records: records, to: url, format: CaptureFileFormat(exportRawValue: format), progressHandler: progressHandler, cancellationCheck: cancellationCheck)
+        try Exporter.export(
+            records: records,
+            to: url,
+            format: CaptureFileFormat(exportRawValue: format),
+            textStylesByPacketID: textStylesByPacketID,
+            progressHandler: progressHandler,
+            cancellationCheck: cancellationCheck
+        )
     }
 
     private func loadIncrementally(
@@ -760,6 +768,7 @@ final class PCPPNativeLiveSession {
         withIdentifiers identifiers: [NSNumber],
         to url: URL,
         format: String,
+        textStylesByPacketID: [PacketSummary.ID: PacketTextStyle] = [:],
         progressHandler: PCPPNativePacketExportProgressHandler?,
         cancellationCheck: PCPPNativeCancellationHandler?
     ) throws {
@@ -767,7 +776,14 @@ final class PCPPNativeLiveSession {
         let selected = try state.read {
             try $0.packetStore.records(matching: idSet)
         }
-        try Exporter.export(records: selected, to: url, format: CaptureFileFormat(exportRawValue: format), progressHandler: progressHandler, cancellationCheck: cancellationCheck)
+        try Exporter.export(
+            records: selected,
+            to: url,
+            format: CaptureFileFormat(exportRawValue: format),
+            textStylesByPacketID: textStylesByPacketID,
+            progressHandler: progressHandler,
+            cancellationCheck: cancellationCheck
+        )
     }
 
     private func captureLoop(handle: OpaquePointer) {
@@ -936,7 +952,8 @@ private func makePacketSummaryDescriptor(
         layers: analyzed.layers.map { PCPPNativePacketLayerDescriptor(name: $0.name, detailSummary: $0.detailSummary) },
         decodeStatus: decodeStatusDescriptor(analyzed.decodeStatus),
         captureMetadata: captureMetadataDescriptor(record),
-        sniDomainName: wireshark.sniDomainName
+        sniDomainName: wireshark.sniDomainName,
+        textStyle: record.textStyle
     )
 }
 
@@ -1112,6 +1129,7 @@ enum Exporter {
         records: [NativePacketRecord],
         to url: URL,
         format: CaptureFileFormat,
+        textStylesByPacketID: [PacketSummary.ID: PacketTextStyle] = [:],
         progressHandler: PCPPNativePacketExportProgressHandler?,
         cancellationCheck: PCPPNativeCancellationHandler?
     ) throws {
@@ -1124,7 +1142,12 @@ enum Exporter {
             }
             progressHandler?(UInt(index), UInt(records.count))
         }
-        try NativeCaptureFile.write(records: records, to: url, format: format)
+        try NativeCaptureFile.write(
+            records: records,
+            to: url,
+            format: format,
+            textStylesByPacketID: textStylesByPacketID
+        )
         progressHandler?(UInt(records.count), UInt(records.count))
     }
 }

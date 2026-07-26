@@ -98,6 +98,21 @@ struct TCPViewSessionPacketAnnotation: Codable, Equatable {
     let packetComment: String?
     let customComment: String?
     let colorHex: String?
+    let textStyle: PacketTextStyle?
+
+    init(
+        packetID: PacketSummary.ID,
+        packetComment: String?,
+        customComment: String?,
+        colorHex: String?,
+        textStyle: PacketTextStyle? = nil
+    ) {
+        self.packetID = packetID
+        self.packetComment = packetComment
+        self.customComment = customComment
+        self.colorHex = colorHex
+        self.textStyle = textStyle
+    }
 }
 
 struct TCPViewSessionAnnotations: Codable, Equatable {
@@ -520,7 +535,8 @@ extension PacketSummary {
             decodeStatus: decodeStatus,
             captureMetadata: captureMetadata,
             sniDomainName: sniDomainName,
-            client: client
+            client: client,
+            textStyle: textStyle
         )
     }
 }

@@ -33,6 +33,7 @@ struct PacketTableMenuLogicTests {
         #expect(state.copyCellEnabled)
         #expect(state.pinEnabled)
         #expect(state.saveEnabled)
+        #expect(state.styleEnabled)
         #expect(state.exportEnabled)
         #expect(state.deleteEnabled)
     }
@@ -270,6 +271,7 @@ struct PacketTableMenuLogicTests {
             copyCellEnabled: true,
             pinEnabled: true,
             saveEnabled: true,
+            styleEnabled: true,
             exportEnabled: true,
             deleteEnabled: true
         ))
@@ -282,12 +284,23 @@ struct PacketTableMenuLogicTests {
         let items = menu.nonSeparatorItemsIncludingSubmenus()
         let copyRowsAsItem = try #require(menu.items.first { $0.title == "Copy Rows As" })
         let copyRowsAsSubmenu = try #require(copyRowsAsItem.submenu)
+        let highlightItem = try #require(menu.items.first { $0.title == "Highlight" })
+        let highlightSubmenu = try #require(highlightItem.submenu)
         let copyRowsAsTitles = copyRowsAsSubmenu.items.compactMap { item in
             item.isSeparatorItem ? nil : item.title
         }
 
         #expect(copyRowsAsTitles == ["Plain text", "JSON", "Markdown Table", "CSV", "CSV with Header"])
         #expect(copyRowsAsSubmenu.items.filter(\.isSeparatorItem).count == 2)
+        #expect(highlightSubmenu.items.compactMap { $0.isSeparatorItem ? nil : $0.title } == [
+            "Red", "Orange", "Yellow", "Green", "Teal", "Blue", "Indigo", "Purple", "Pink",
+            "Brown", "Gray", "Strikethrough", "Reset",
+        ])
+        #expect(Array(highlightSubmenu.items.prefix(9)).map(\.keyEquivalent) == (1...9).map(String.init))
+        #expect(highlightSubmenu.items.first { $0.title == "Brown" }?.keyEquivalent == "")
+        #expect(highlightSubmenu.items.first { $0.title == "Gray" }?.keyEquivalent == "")
+        #expect(highlightSubmenu.items.first { $0.title == "Strikethrough" }?.keyEquivalent == "/")
+        #expect(highlightSubmenu.items.first { $0.title == "Reset" }?.keyEquivalent == "0")
         #expect(menu.items.contains { $0.title == "Pin" && $0.submenu == nil })
         #expect(!items.isEmpty)
         #expect(items.allSatisfy { item in item.toolTip?.isEmpty == false })
@@ -377,6 +390,9 @@ private final class MenuActionHandler: NSObject, PacketTableContextMenuActionHan
     func copyCellFromMenu(_ sender: Any?) {}
     func pinRowsFromMenu(_ sender: Any?) {}
     func saveRowsFromMenu(_ sender: Any?) {}
+    func setPacketHighlightColorFromMenu(_ sender: Any?) {}
+    func togglePacketStrikethroughFromMenu(_ sender: Any?) {}
+    func resetPacketTextStyleFromMenu(_ sender: Any?) {}
     func exportRowsAsPcapFromMenu(_ sender: Any?) {}
     func exportRowsAsPcapngFromMenu(_ sender: Any?) {}
     func deleteRowsFromMenu(_ sender: Any?) {}

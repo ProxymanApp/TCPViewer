@@ -152,14 +152,16 @@ final class TCPViewSessionExportService: TCPViewSessionExportWriting {
     private func annotations(for packets: [PacketSummary]) -> TCPViewSessionAnnotations {
         TCPViewSessionAnnotations(
             annotations: packets.compactMap { packet in
-                guard packet.captureMetadata.packetComment != nil else {
+                let textStyle = packet.resolvedTextStyle
+                guard packet.captureMetadata.packetComment != nil || !textStyle.isPlain else {
                     return nil
                 }
                 return TCPViewSessionPacketAnnotation(
                     packetID: packet.id,
                     packetComment: packet.captureMetadata.packetComment,
                     customComment: nil,
-                    colorHex: nil
+                    colorHex: textStyle.highlightColor?.sessionColorHex,
+                    textStyle: textStyle.isPlain ? nil : textStyle
                 )
             }
         )
@@ -297,5 +299,23 @@ final class TCPViewSessionExportService: TCPViewSessionExportWriting {
         }
 
         throw TCPViewerCoreError(code: .operationCancelled, message: "TCPViewer session export was cancelled.")
+    }
+}
+
+private extension PacketHighlightColor {
+    var sessionColorHex: String {
+        switch self {
+        case .red: "#FF453A"
+        case .orange: "#FF9F0A"
+        case .yellow: "#FFD60A"
+        case .green: "#30D158"
+        case .teal: "#40C8E0"
+        case .blue: "#0A84FF"
+        case .indigo: "#5E5CE6"
+        case .purple: "#BF5AF2"
+        case .pink: "#FF375F"
+        case .brown: "#AC8E68"
+        case .gray: "#8E8E93"
+        }
     }
 }

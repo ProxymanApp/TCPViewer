@@ -16,6 +16,11 @@ protocol PacketTableViewControllerDelegate: AnyObject {
         didRequestPinPackets identifiers: [PacketSummary.ID]
     )
     func packetTableViewController(_ controller: PacketTableViewController, didRequestSavePackets identifiers: [PacketSummary.ID])
+    func packetTableViewController(
+        _ controller: PacketTableViewController,
+        didRequestApplyTextStyle mutation: PacketTextStyleMutation,
+        toPackets identifiers: [PacketSummary.ID]
+    )
     func packetTableViewController(_ controller: PacketTableViewController, didRequestExportPackets identifiers: [PacketSummary.ID], format: CaptureFileFormat)
     func packetTableViewController(_ controller: PacketTableViewController, didRequestDeletePackets identifiers: [PacketSummary.ID])
     func packetTableViewController(
@@ -55,6 +60,7 @@ enum PacketTableSelectionSyncPlanner {
 fileprivate protocol PacketTableKeyboardActionHandling: AnyObject {
     func packetTableViewDidRequestCopyRowsFromKeyboard(_ tableView: PacketTableView)
     func packetTableViewDidRequestDeleteFromKeyboard(_ tableView: PacketTableView)
+    func packetTableView(_ tableView: PacketTableView, didRequestTextStyle mutation: PacketTextStyleMutation)
 }
 
 fileprivate final class PacketTableView: NSTableView {
@@ -73,6 +79,24 @@ fileprivate final class PacketTableView: NSTableView {
         if flags.contains(.command), event.charactersIgnoringModifiers?.lowercased() == "c" {
             copy(nil)
             return
+        }
+
+        if flags.contains(.command), let character = event.charactersIgnoringModifiers {
+            if character == "0" {
+                keyboardActionHandler?.packetTableView(self, didRequestTextStyle: .reset)
+                return
+            }
+            if character == "/" {
+                keyboardActionHandler?.packetTableView(self, didRequestTextStyle: .toggleStrikethrough)
+                return
+            }
+            if let index = Int(character), (1...9).contains(index) {
+                keyboardActionHandler?.packetTableView(
+                    self,
+                    didRequestTextStyle: .setHighlightColor(PacketHighlightColor.allCases[index - 1])
+                )
+                return
+            }
         }
 
         if event.keyCode == 51 || event.keyCode == 117 {
@@ -924,6 +948,23 @@ final class PacketTableViewController: NSViewController {
         delegate?.packetTableViewController(self, didRequestSavePackets: identifiers)
     }
 
+    @objc func setPacketHighlightColorFromMenu(_ sender: Any?) {
+        guard let menuItem = sender as? NSMenuItem,
+              let rawValue = menuItem.representedObject as? String,
+              let color = PacketHighlightColor(rawValue: rawValue) else {
+            return
+        }
+        applyTextStyle(.setHighlightColor(color))
+    }
+
+    @objc func togglePacketStrikethroughFromMenu(_ sender: Any?) {
+        applyTextStyle(.toggleStrikethrough)
+    }
+
+    @objc func resetPacketTextStyleFromMenu(_ sender: Any?) {
+        applyTextStyle(.reset)
+    }
+
     @objc func exportRowsAsPcapFromMenu(_ sender: Any?) {
         exportTargetRows(format: .pcap)
     }
@@ -958,6 +999,19 @@ final class PacketTableViewController: NSViewController {
         delegate?.packetTableViewController(self, didRequestExportPackets: identifiers, format: format)
     }
 
+    private func applyTextStyle(_ mutation: PacketTextStyleMutation) {
+        let identifiers = targetPacketIDs()
+        guard !identifiers.isEmpty else {
+            return
+        }
+
+        delegate?.packetTableViewController(
+            self,
+            didRequestApplyTextStyle: mutation,
+            toPackets: identifiers
+        )
+    }
+
     private func requestPin() {
         let identifiers = targetPacketIDs()
         guard !identifiers.isEmpty else {
@@ -990,17 +1044,41 @@ extension PacketTableViewController: NSTableViewDataSource, NSTableViewDelegate 
         }
 
         let packetRow = rows[row]
+        if let rowView = tableView.rowView(atRow: row, makeIfNecessary: false) as? PacketHighlightRowView {
+            rowView.highlightColor = packetRow.textStyle.highlightColor
+            rowView.needsDisplay = true
+        }
         if let cell = cell as? PacketProtocolCell {
-            cell.configure(protocolText: packetRow.protocolText, severity: packetRow.severity, configuration: configuration)
+            cell.configure(
+                protocolText: packetRow.protocolText,
+                severity: packetRow.severity,
+                textStyle: packetRow.textStyle,
+                configuration: configuration
+            )
         } else if let cell = cell as? PacketClientCell {
             cell.configure(
                 displayName: packetRow.clientText,
                 iconFilePath: packetRow.clientIconFilePath,
+                textStyle: packetRow.textStyle,
                 configuration: configuration
             )
         } else if let cell = cell as? PacketTextCell {
-            cell.configure(style: textStyle(for: column, in: packetRow), configuration: configuration)
+            cell.configure(
+                style: textStyle(for: column, in: packetRow),
+                textStyle: packetRow.textStyle,
+                configuration: configuration
+            )
         }
+    }
+
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        guard rows.indices.contains(row) else {
+            return nil
+        }
+
+        let rowView = PacketHighlightRowView()
+        rowView.highlightColor = rows[row].textStyle.highlightColor
+        return rowView
     }
 
     func tableViewColumnDidMove(_ notification: Notification) {
@@ -1044,6 +1122,12 @@ extension PacketTableViewController: PacketTableKeyboardActionHandling {
         clickedRowIndex = nil
         clickedColumnIdentifier = nil
         deleteTargetRows()
+    }
+
+    fileprivate func packetTableView(_ tableView: PacketTableView, didRequestTextStyle mutation: PacketTextStyleMutation) {
+        clickedRowIndex = nil
+        clickedColumnIdentifier = nil
+        applyTextStyle(mutation)
     }
 }
 

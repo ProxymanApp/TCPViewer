@@ -2134,6 +2134,41 @@ struct NetworkInspectorViewModelTests {
         #expect(document.exportRequests.first?.2 == .pcapng)
     }
 
+    @Test func packetExportSnapshotsComposedTextStyles() async {
+        let packet = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp)
+        let document = InspectorFakeDocument(
+            url: URL(fileURLWithPath: "/tmp/style-export-source.pcapng"),
+            packets: [packet]
+        )
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                document: document
+            )),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.openDocument(at: document.currentURL())
+        await waitUntil { viewModel.snapshot.packetRows.count == 1 }
+        viewModel.applyTextStyleMutation(.setHighlightColor(.purple), toPackets: [packet.id])
+        viewModel.applyTextStyleMutation(.toggleStrikethrough, toPackets: [packet.id])
+
+        let result = await viewModel.exportPackets(
+            [packet.id],
+            to: URL(fileURLWithPath: "/tmp/style-export.pcapng"),
+            format: .pcapng
+        )
+
+        guard case .success = result else {
+            Issue.record("Expected styled packet export to succeed.")
+            return
+        }
+        #expect(document.exportMetadataRequests.first?.textStylesByPacketID[packet.id] == PacketTextStyle(
+            highlightColor: .purple,
+            isStrikethrough: true
+        ))
+    }
+
     @Test func clearTablePacketsRemovesOnlyVisibleRows() async {
         let packets = [
             makePacket(packetNumber: 1, source: .offline, transportHint: .tcp),
@@ -2217,6 +2252,39 @@ struct NetworkInspectorViewModelTests {
         }
         #expect(error.code == .offlineFileSaveFailed)
         #expect(staleDocument.exportRequests.isEmpty)
+    }
+
+    @Test func styleRoutingDoesNotCrossStaleSavedAndActivePacketIDCollisions() async throws {
+        let directory = temporaryDirectory()
+        let savedService = SavedPacketService(storageURL: directory.appendingPathComponent("Saved.json"))
+        let staleSavedPacket = makePacket(packetNumber: 1, source: .offline, transportHint: .udp)
+        try savedService.save([staleSavedPacket], backingIdentity: "stale-backing")
+        let activePacket = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp)
+        let document = InspectorFakeDocument(
+            url: URL(fileURLWithPath: "/tmp/style-collision.pcapng"),
+            packets: [activePacket]
+        )
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                document: document
+            )),
+            userDefaults: isolatedDefaults(),
+            savedPacketService: savedService
+        )
+
+        await viewModel.openDocument(at: document.currentURL())
+        await waitUntil { viewModel.snapshot.packetRows.count == 1 }
+        viewModel.applyTextStyleMutation(.setHighlightColor(.red), toPackets: [activePacket.id])
+
+        #expect(viewModel.snapshot.base.packetIngestState.packet(withID: activePacket.id)?.resolvedTextStyle == PacketTextStyle(highlightColor: .red))
+        #expect(savedService.records().first?.packet.resolvedTextStyle == .plain)
+
+        viewModel.selectSourceList(.saved)
+        viewModel.applyTextStyleMutation(.toggleStrikethrough, toPackets: [staleSavedPacket.id])
+
+        #expect(savedService.records().first?.packet.resolvedTextStyle == PacketTextStyle(isStrikethrough: true))
+        #expect(viewModel.snapshot.base.packetIngestState.packet(withID: activePacket.id)?.resolvedTextStyle == PacketTextStyle(highlightColor: .red))
     }
 
     @Test func pinnedAndSavedSelectionsFilterRowsAndReloadFromDisk() async throws {
@@ -3589,6 +3657,7 @@ private final class InspectorFakeDocument: OfflineCaptureDocumentProviding, @unc
     private(set) var saveCount = 0
     private(set) var saveAsRequests: [(URL, CaptureFileFormat)] = []
     private(set) var exportRequests: [([PacketSummary.ID], URL, CaptureFileFormat)] = []
+    private(set) var exportMetadataRequests: [PacketExportMetadata] = []
     private var progress: PacketLoadProgress = .idle
 
     init(url: URL, packets: [PacketSummary]) {
@@ -3671,6 +3740,26 @@ private final class InspectorFakeDocument: OfflineCaptureDocumentProviding, @unc
         progress?(PacketExportProgress(exportedPacketCount: identifiers.count, totalPacketCount: identifiers.count))
         exportRequests.append((identifiers, url, format))
         completion(.success(()))
+    }
+
+    func exportPackets(
+        withIDs identifiers: [PacketSummary.ID],
+        to url: URL,
+        format: CaptureFileFormat,
+        metadata: PacketExportMetadata,
+        progress: PacketExportProgressHandler?,
+        shouldCancel: PacketExportCancellationCheck?,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        exportMetadataRequests.append(metadata)
+        exportPackets(
+            withIDs: identifiers,
+            to: url,
+            format: format,
+            progress: progress,
+            shouldCancel: shouldCancel,
+            completion: completion
+        )
     }
 
     func currentURL() -> URL {

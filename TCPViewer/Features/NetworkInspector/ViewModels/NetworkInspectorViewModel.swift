@@ -1400,6 +1400,35 @@ final class NetworkInspectorViewModel {
         rebuildSnapshot()
     }
 
+    // Apply one immutable mutation to active and saved copies, then refresh the visible rows once.
+    func applyTextStyleMutation(
+        _ mutation: PacketTextStyleMutation,
+        toPackets identifiers: [PacketSummary.ID]
+    ) {
+        let packetIDs = Set(identifiers)
+        guard !packetIDs.isEmpty else {
+            return
+        }
+
+        let ingestState = controller.snapshot.packetIngestState
+        let savedRecords = savedPacketService.records()
+        let matchingCurrentSavedIDs = Set(savedRecords.compactMap { record -> PacketSummary.ID? in
+            guard packetIDs.contains(record.packet.id),
+                  record.backingIdentity == ingestState.backingIdentity,
+                  let activePacket = ingestState.packet(withID: record.packet.id),
+                  activePacket.backsSavedPacket(record.packet) else {
+                return nil
+            }
+            return record.packet.id
+        })
+        let savedPacketIDs = selectedSourceListSelection == .saved ? packetIDs : matchingCurrentSavedIDs
+        let activePacketIDs = selectedSourceListSelection == .saved ? matchingCurrentSavedIDs : packetIDs
+
+        _ = try? savedPacketService.applyTextStyleMutation(mutation, packetIDs: savedPacketIDs)
+        controller.applyTextStyleMutation(mutation, packetIDs: activePacketIDs)
+        rebuildSnapshot()
+    }
+
     func deletePackets(_ identifiers: [PacketSummary.ID]) {
         let packetIDs = Set(identifiers)
         guard !packetIDs.isEmpty else {
@@ -1563,6 +1592,7 @@ final class NetworkInspectorViewModel {
                 withIDs: identifiers,
                 to: url,
                 format: format,
+                metadata: packetExportMetadata(for: identifiers, prefersSavedPackets: requiresSavedBacking),
                 progress: progress,
                 shouldCancel: shouldCancel
             ) { [weak self] result in
@@ -1575,6 +1605,28 @@ final class NetworkInspectorViewModel {
         } catch {
             completion(.failure(error))
         }
+    }
+
+    // Snapshot every selected style, including plain resets, before export leaves the main queue.
+    private func packetExportMetadata(
+        for identifiers: [PacketSummary.ID],
+        prefersSavedPackets: Bool
+    ) -> PacketExportMetadata {
+        let ingestState = controller.snapshot.packetIngestState
+        var savedPacketsByID: [PacketSummary.ID: PacketSummary] = [:]
+        if prefersSavedPackets {
+            for record in savedPacketService.records() where savedPacketsByID[record.packet.id] == nil {
+                savedPacketsByID[record.packet.id] = record.packet
+            }
+        }
+        var styles: [PacketSummary.ID: PacketTextStyle] = [:]
+        styles.reserveCapacity(identifiers.count)
+        for identifier in identifiers {
+            if let packet = savedPacketsByID[identifier] ?? ingestState.packet(withID: identifier) {
+                styles[identifier] = packet.resolvedTextStyle
+            }
+        }
+        return PacketExportMetadata(textStylesByPacketID: styles)
     }
 
     private func validatedExportPacketIDs(

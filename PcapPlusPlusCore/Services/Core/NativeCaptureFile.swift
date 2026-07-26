@@ -5,6 +5,7 @@
 //  Created by Proxyman LLC on 28/5/26.
 //
 
+import Darwin
 import Foundation
 
 struct NativeCaptureFile {
@@ -44,7 +45,15 @@ struct NativeCaptureFile {
         return try PcapReader(url: url, data: data).read()
     }
 
-    static func write(records: [NativePacketRecord], to url: URL, format: CaptureFileFormat) throws {
+    static func write(
+        records: [NativePacketRecord],
+        to url: URL,
+        format: CaptureFileFormat,
+        textStylesByPacketID: [PacketSummary.ID: PacketTextStyle] = [:]
+    ) throws {
+        let outputRecords = records.map { record in
+            record.withTextStyle(textStylesByPacketID[record.identifier] ?? record.textStyle)
+        }
         let temporaryURL = url.deletingLastPathComponent()
             .appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
         guard FileManager.default.createFile(
@@ -59,14 +68,17 @@ struct NativeCaptureFile {
             do {
                 switch format {
                 case .pcap:
-                    try PcapWriter(records: records).write(to: handle)
+                    try PcapWriter(records: outputRecords).write(to: handle)
                 case .pcapng:
-                    try PcapNGWriter(records: records).write(to: handle)
+                    try PcapNGWriter(records: outputRecords).write(to: handle)
                 }
                 try handle.close()
             } catch {
                 try? handle.close()
                 throw error
+            }
+            if format == .pcap {
+                try PcapTextStyleExtendedAttribute.write(stylesFrom: outputRecords, to: temporaryURL)
             }
             if FileManager.default.fileExists(atPath: url.path) {
                 _ = try FileManager.default.replaceItemAt(url, withItemAt: temporaryURL)
@@ -127,7 +139,7 @@ private struct PcapReader {
                 return NativeCaptureFile(
                     url: url,
                     format: .pcap,
-                    records: records,
+                    records: styledRecords(records),
                     metadata: metadata(),
                     skippedPacketCount: 1,
                     partialLoadReason: "Stopped at a truncated packet record."
@@ -155,7 +167,7 @@ private struct PcapReader {
         return NativeCaptureFile(
             url: url,
             format: .pcap,
-            records: records,
+            records: styledRecords(records),
             metadata: metadata(),
             skippedPacketCount: trailingByteCount > 0 ? 1 : 0,
             partialLoadReason: trailingByteCount > 0 ? "Stopped at an incomplete packet header." : nil
@@ -170,6 +182,16 @@ private struct PcapReader {
             captureApplication: nil,
             fileComment: nil
         )
+    }
+
+    private func styledRecords(_ records: [NativePacketRecord]) -> [NativePacketRecord] {
+        let styles = PcapTextStyleExtendedAttribute.read(from: url, packetCount: records.count)
+        guard !styles.isEmpty else {
+            return records
+        }
+        return records.enumerated().map { index, record in
+            record.withTextStyle(styles[index] ?? .plain)
+        }
     }
 
     private func readUInt32(at offset: Int, littleEndian: Bool) -> UInt32? {
@@ -294,6 +316,12 @@ private struct PcapNGReader {
                     continue
                 }
                 let packetData = data.subdata(in: packetOffset..<(packetOffset + capturedLength))
+                let optionsOffset = packetOffset + paddedLength(capturedLength)
+                let packetOptions = optionsOffset <= bodyEnd
+                    ? readOptions(offset: optionsOffset, end: bodyEnd, littleEndian: littleEndian)
+                    : [:]
+                let comment = packetOptions[1].flatMap { String(data: $0, encoding: .utf8) }
+                let decodedComment = PcapNGTextStyleComment.decode(comment)
                 let interface = interfaces[metadataKey(interfaceID: interfaceID, section: section)]
                 let timestampRaw = (timestampHigh << 32) | timestampLow
                 let timestampResolution = interface?.timestampResolution ?? 6
@@ -308,12 +336,13 @@ private struct PcapNGReader {
                     linkLayerType: interface?.linkType ?? Libpcap.dltEthernet,
                     interfaceIdentifier: interface?.name,
                     interfaceName: interface?.name ?? interface?.description,
-                    packetComment: nil,
+                    packetComment: decodedComment.packetComment,
                     interfaceID: interfaceID,
                     sectionNumber: section,
                     pcapNGTimestampResolution: timestampResolution,
                     pcapNGTimestampOffsetSeconds: timestampOffset,
-                    pcapNGTimestampRawValue: timestampRaw
+                    pcapNGTimestampRawValue: timestampRaw,
+                    textStyle: decodedComment.textStyle
                 ))
                 packetNumber += 1
             } else if blockType == 3 {
@@ -585,7 +614,19 @@ private struct PcapNGWriter {
                 throw NativeNSError(.fileWriteFailed, "Packet \(record.identifier) is too large for PCAPNG.")
             }
             let timestamp = try timestampValue(for: record, interface: interface)
-            let bodyLength = 20 + record.rawBytes.count + paddingCount + 4
+            var options = Data()
+            if let comment = PcapNGTextStyleComment.encode(
+                packetComment: record.packetComment,
+                textStyle: record.textStyle
+            ) {
+                try appendOption(code: 1, value: Data(comment.utf8), to: &options)
+            }
+            options.appendLittleEndian(UInt16(0))
+            options.appendLittleEndian(UInt16(0))
+            let bodyLength = 20 + record.rawBytes.count + paddingCount + options.count
+            guard bodyLength <= Int(UInt32.max) - 12 else {
+                throw NativeNSError(.fileWriteFailed, "Packet \(record.identifier) metadata is too large for PCAPNG.")
+            }
             let totalLength = UInt32(12 + bodyLength)
             var packetHeader = Data()
             packetHeader.appendLittleEndian(UInt32(6))
@@ -600,9 +641,8 @@ private struct PcapNGWriter {
             if paddingCount > 0 {
                 try handle.write(contentsOf: Data(repeating: 0, count: paddingCount))
             }
+            try handle.write(contentsOf: options)
             var trailer = Data()
-            trailer.appendLittleEndian(UInt16(0))
-            trailer.appendLittleEndian(UInt16(0))
             trailer.appendLittleEndian(totalLength)
             try handle.write(contentsOf: trailer)
         }
@@ -684,12 +724,160 @@ private struct PcapNGWriter {
     }
 }
 
+private enum PcapNGTextStyleComment {
+    private static let markerPrefix = "[TCPViewer:text-style:v1:"
+    private static let markerSuffix = "]"
+
+    static func encode(packetComment: String?, textStyle: PacketTextStyle) -> String? {
+        let comment = packetComment
+        guard !textStyle.isPlain else {
+            return comment?.isEmpty == false ? comment : nil
+        }
+
+        let color = textStyle.highlightColor?.rawValue ?? "none"
+        let marker = "\(markerPrefix)\(color):\(textStyle.isStrikethrough ? 1 : 0)\(markerSuffix)"
+        guard let comment, !comment.isEmpty else {
+            return marker
+        }
+        return "\(comment)\n\(marker)"
+    }
+
+    static func decode(_ value: String?) -> (packetComment: String?, textStyle: PacketTextStyle) {
+        guard let value else {
+            return (nil, .plain)
+        }
+
+        var style = PacketTextStyle.plain
+        let retainedLines = value.split(separator: "\n", omittingEmptySubsequences: false).filter { line in
+            guard line.hasPrefix(markerPrefix), line.hasSuffix(markerSuffix) else {
+                return true
+            }
+            let payload = line.dropFirst(markerPrefix.count).dropLast(markerSuffix.count)
+            let components = payload.split(separator: ":", omittingEmptySubsequences: false)
+            guard components.count == 2,
+                  components[1] == "0" || components[1] == "1" else {
+                return true
+            }
+            let color = components[0] == "none" ? nil : PacketHighlightColor(rawValue: String(components[0]))
+            guard components[0] == "none" || color != nil else {
+                return true
+            }
+            style = PacketTextStyle(highlightColor: color, isStrikethrough: components[1] == "1")
+            return false
+        }
+        let packetComment = retainedLines.joined(separator: "\n")
+        return (packetComment.isEmpty ? nil : packetComment, style)
+    }
+}
+
+private enum PcapTextStyleExtendedAttribute {
+    private static let name = "com.proxyman.TCPViewer.packet-text-styles"
+    private static let magic = Data("TCPVSTY1".utf8)
+    private static let headerLength = magic.count + 8
+    private static let entryLength = 9
+
+    static func write(stylesFrom records: [NativePacketRecord], to url: URL) throws {
+        var data = magic
+        data.appendLittleEndian(UInt64(records.count))
+        for (index, record) in records.enumerated() where !record.textStyle.isPlain {
+            data.appendLittleEndian(UInt64(index))
+            data.append(styleByte(record.textStyle))
+        }
+
+        let result = data.withUnsafeBytes { bytes in
+            setxattr(url.path, name, bytes.baseAddress, bytes.count, 0, 0)
+        }
+        guard result == 0 else {
+            throw NativeNSError(.fileWriteFailed, "TCP Viewer could not store packet styles in the PCAP export.")
+        }
+    }
+
+    static func read(from url: URL, packetCount: Int) -> [Int: PacketTextStyle] {
+        let length = getxattr(url.path, name, nil, 0, 0, 0)
+        guard length >= headerLength else {
+            return [:]
+        }
+        var data = Data(count: length)
+        let result = data.withUnsafeMutableBytes { bytes in
+            getxattr(url.path, name, bytes.baseAddress, bytes.count, 0, 0)
+        }
+        guard result == length, data.starts(with: magic),
+              data.readLittleEndianUInt64(at: magic.count) == UInt64(packetCount),
+              (data.count - headerLength).isMultiple(of: entryLength) else {
+            return [:]
+        }
+
+        var styles: [Int: PacketTextStyle] = [:]
+        var offset = headerLength
+        while offset + entryLength <= data.count {
+            guard let ordinal = data.readLittleEndianUInt64(at: offset),
+                  ordinal < UInt64(packetCount),
+                  let style = textStyle(from: data[offset + 8]) else {
+                return [:]
+            }
+            styles[Int(ordinal)] = style
+            offset += entryLength
+        }
+        return styles
+    }
+
+    private static func styleByte(_ style: PacketTextStyle) -> UInt8 {
+        let colorValue = style.highlightColor
+            .flatMap { PacketHighlightColor.allCases.firstIndex(of: $0) }
+            .map { UInt8($0 + 1) } ?? 0
+        return colorValue | (style.isStrikethrough ? 0x80 : 0)
+    }
+
+    private static func textStyle(from byte: UInt8) -> PacketTextStyle? {
+        let colorValue = Int(byte & 0x7f)
+        guard colorValue <= PacketHighlightColor.allCases.count else {
+            return nil
+        }
+        let color = colorValue == 0 ? nil : PacketHighlightColor.allCases[colorValue - 1]
+        let style = PacketTextStyle(highlightColor: color, isStrikethrough: byte & 0x80 != 0)
+        return style.isPlain ? nil : style
+    }
+}
+
+private extension NativePacketRecord {
+    func withTextStyle(_ textStyle: PacketTextStyle) -> NativePacketRecord {
+        NativePacketRecord(
+            identifier: identifier,
+            packetNumber: packetNumber,
+            timestamp: timestamp,
+            rawBytes: rawBytes,
+            originalLength: originalLength,
+            linkLayerType: linkLayerType,
+            interfaceIdentifier: interfaceIdentifier,
+            interfaceName: interfaceName,
+            packetComment: packetComment,
+            interfaceID: interfaceID,
+            sectionNumber: sectionNumber,
+            pcapNGTimestampResolution: pcapNGTimestampResolution,
+            pcapNGTimestampOffsetSeconds: pcapNGTimestampOffsetSeconds,
+            pcapNGTimestampRawValue: pcapNGTimestampRawValue,
+            textStyle: textStyle
+        )
+    }
+}
+
 private extension Data {
     mutating func appendLittleEndian<T: FixedWidthInteger>(_ value: T) {
         var littleEndian = value.littleEndian
         Swift.withUnsafeBytes(of: &littleEndian) { buffer in
             append(buffer.bindMemory(to: UInt8.self))
         }
+    }
+
+    func readLittleEndianUInt64(at offset: Int) -> UInt64? {
+        guard offset >= 0, offset + 8 <= count else {
+            return nil
+        }
+        var value: UInt64 = 0
+        for index in 0..<8 {
+            value |= UInt64(self[offset + index]) << UInt64(index * 8)
+        }
+        return value
     }
 
 }

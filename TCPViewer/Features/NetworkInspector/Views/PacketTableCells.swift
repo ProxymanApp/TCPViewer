@@ -6,6 +6,21 @@
 //
 
 import AppKit
+import PcapPlusPlusCore
+
+final class PacketHighlightRowView: NSTableRowView {
+    var highlightColor: PacketHighlightColor?
+
+    override func drawBackground(in dirtyRect: NSRect) {
+        super.drawBackground(in: dirtyRect)
+        guard let highlightColor else {
+            return
+        }
+
+        highlightColor.appKitColor.withAlphaComponent(0.22).setFill()
+        dirtyRect.fill()
+    }
+}
 
 final class PacketTextCell: NSTextFieldCell {
     private static let leftPadding: CGFloat = 5
@@ -35,7 +50,7 @@ final class PacketTextCell: NSTextFieldCell {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func configure(style: Style, configuration: AppConfiguration) {
+    func configure(style: Style, textStyle: PacketTextStyle, configuration: AppConfiguration) {
         font = configuration.packetFont(weight: .regular)
 
         switch style {
@@ -46,6 +61,7 @@ final class PacketTextCell: NSTextFieldCell {
         case .warning:
             textColor = .systemOrange
         }
+        applyStrikethrough(textStyle.isStrikethrough)
     }
 
     override func drawingRect(forBounds rect: NSRect) -> NSRect {
@@ -71,6 +87,7 @@ final class PacketTextCell: NSTextFieldCell {
 final class PacketProtocolCell: NSTextFieldCell {
     private var protocolText = ""
     private var severity: PacketSeverity = .normal
+    private var isStrikethrough = false
 
     override init(textCell string: String) {
         super.init(textCell: string)
@@ -91,9 +108,15 @@ final class PacketProtocolCell: NSTextFieldCell {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func configure(protocolText: String, severity: PacketSeverity, configuration: AppConfiguration) {
+    func configure(
+        protocolText: String,
+        severity: PacketSeverity,
+        textStyle: PacketTextStyle,
+        configuration: AppConfiguration
+    ) {
         self.protocolText = protocolText
         self.severity = severity
+        self.isStrikethrough = textStyle.isStrikethrough
         stringValue = protocolText
         font = configuration.packetFont(weight: .semibold)
         textColor = textColor(for: protocolText, severity: severity)
@@ -102,16 +125,19 @@ final class PacketProtocolCell: NSTextFieldCell {
     override func copy(with zone: NSZone? = nil) -> Any {
         let savedProtocolText = protocolText
         let savedSeverity = severity
+        let savedIsStrikethrough = isStrikethrough
         protocolText = ""
         defer {
             protocolText = savedProtocolText
             severity = savedSeverity
+            isStrikethrough = savedIsStrikethrough
         }
 
         let copied = super.copy(with: zone) as! PacketProtocolCell
         // NSCell copies bitwise; refill Swift strings so copied cells own valid storage.
         copied.protocolText = String(decoding: savedProtocolText.utf8, as: UTF8.self)
         copied.severity = savedSeverity
+        copied.isStrikethrough = savedIsStrikethrough
         return copied
     }
 
@@ -122,10 +148,13 @@ final class PacketProtocolCell: NSTextFieldCell {
             return
         }
 
-        let attributes: [NSAttributedString.Key: Any] = [
+        var attributes: [NSAttributedString.Key: Any] = [
             .font: font ?? .monospacedSystemFont(ofSize: AppConfiguration.defaultPacketFontSize, weight: .semibold),
             .foregroundColor: textColor ?? .labelColor,
         ]
+        if isStrikethrough {
+            attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+        }
         let textSize = label.size(withAttributes: attributes)
         let pillWidth = min(max(textSize.width + 16, 42), cellFrame.width - 12)
         let pillHeight = min(cellFrame.height - 4, max(18, ceil(textSize.height + 6)))
@@ -244,11 +273,17 @@ final class PacketClientCell: NSTextFieldCell {
     }
 
     // Configure the reused cell with the current row's client metadata.
-    func configure(displayName: String, iconFilePath: String?, configuration: AppConfiguration) {
+    func configure(
+        displayName: String,
+        iconFilePath: String?,
+        textStyle: PacketTextStyle,
+        configuration: AppConfiguration
+    ) {
         self.iconFilePath = PacketClientIconCache.normalizedIconPath(iconFilePath)
         stringValue = displayName
         font = configuration.packetFont(weight: .regular)
         textColor = .secondaryLabelColor
+        applyStrikethrough(textStyle.isStrikethrough)
     }
 
     override func copy(with zone: NSZone? = nil) -> Any {
@@ -303,5 +338,30 @@ final class PacketClientCell: NSTextFieldCell {
             height: cellFrame.height
         )
         super.drawInterior(withFrame: textFrame, in: controlView)
+    }
+}
+
+private extension NSTextFieldCell {
+    // Rebuild attributed text after fonts and colors are configured for a reused cell.
+    func applyStrikethrough(_ isEnabled: Bool) {
+        guard isEnabled else {
+            attributedStringValue = NSAttributedString(
+                string: stringValue,
+                attributes: [
+                    .font: font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize),
+                    .foregroundColor: textColor ?? NSColor.labelColor,
+                ]
+            )
+            return
+        }
+
+        attributedStringValue = NSAttributedString(
+            string: stringValue,
+            attributes: [
+                .font: font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize),
+                .foregroundColor: textColor ?? NSColor.labelColor,
+                .strikethroughStyle: NSUnderlineStyle.single.rawValue,
+            ]
+        )
     }
 }

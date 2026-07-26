@@ -90,6 +90,7 @@ struct PacketClientIconPathResolverTests {
         cell.configure(
             displayName: "Example",
             iconFilePath: "/Applications/Example.app",
+            textStyle: .plain,
             configuration: configuration
         )
         let copiedCell = try #require(cell.copy() as? PacketClientCell)

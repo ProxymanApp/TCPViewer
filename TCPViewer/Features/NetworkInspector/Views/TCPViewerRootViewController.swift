@@ -1293,6 +1293,14 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
         viewModel.savePackets(identifiers)
     }
 
+    func packetWorkspaceViewController(
+        _ controller: PacketWorkspaceViewController,
+        didRequestApplyTextStyle mutation: PacketTextStyleMutation,
+        toPackets identifiers: [PacketSummary.ID]
+    ) {
+        viewModel.applyTextStyleMutation(mutation, toPackets: identifiers)
+    }
+
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestExportPackets identifiers: [PacketSummary.ID], format: CaptureFileFormat) {
         viewModel.presentPacketExportPanel(identifiers: identifiers, format: format, attachedTo: view.window)
     }

@@ -50,6 +50,28 @@ struct SavedPacketServiceTests {
         #expect(service.records().map { $0.packet.id } == [incomingPacket.id])
     }
 
+    @Test func textStyleMutationPersistsForSavedPacketRows() throws {
+        let storageURL = temporaryDirectory().appendingPathComponent("Saved.json")
+        let service = SavedPacketService(storageURL: storageURL)
+        let first = makePacket(packetNumber: 1)
+        let second = makePacket(packetNumber: 2)
+        try service.save([first, second])
+
+        let didChange = try service.applyTextStyleMutation(
+            .setHighlightColor(.orange),
+            packetIDs: [first.id]
+        )
+        _ = try service.applyTextStyleMutation(.toggleStrikethrough, packetIDs: [first.id])
+        let reloaded = SavedPacketService(storageURL: storageURL)
+
+        #expect(didChange)
+        #expect(reloaded.records()[0].packet.resolvedTextStyle == PacketTextStyle(
+            highlightColor: .orange,
+            isStrikethrough: true
+        ))
+        #expect(reloaded.records()[1].packet.resolvedTextStyle == .plain)
+    }
+
     private func temporaryDirectory() -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
