@@ -9,7 +9,15 @@ import AppKit
 import PcapPlusPlusCore
 
 final class PacketHighlightRowView: NSTableRowView {
-    var highlightColor: PacketHighlightColor?
+    var highlightColor: PacketHighlightColor? {
+        didSet {
+            needsDisplay = true
+        }
+    }
+
+    override var interiorBackgroundStyle: NSView.BackgroundStyle {
+        highlightColor == nil ? super.interiorBackgroundStyle : .normal
+    }
 
     override func drawBackground(in dirtyRect: NSRect) {
         super.drawBackground(in: dirtyRect)
@@ -17,8 +25,62 @@ final class PacketHighlightRowView: NSTableRowView {
             return
         }
 
-        highlightColor.appKitColor.withAlphaComponent(0.22).setFill()
+        PacketHighlightPalette.backgroundColor(
+            for: highlightColor,
+            isSelected: false,
+            appearance: effectiveAppearance
+        ).setFill()
         dirtyRect.fill()
+    }
+
+    override func drawSelection(in dirtyRect: NSRect) {
+        guard let highlightColor else {
+            super.drawSelection(in: dirtyRect)
+            return
+        }
+
+        PacketHighlightPalette.backgroundColor(
+            for: highlightColor,
+            isSelected: true,
+            appearance: effectiveAppearance
+        ).setFill()
+        dirtyRect.fill()
+
+        // Keep selection obvious without hiding the chosen packet color.
+        let indicatorRect = NSRect(x: bounds.minX, y: bounds.minY, width: 3, height: bounds.height)
+            .intersection(dirtyRect)
+        if !indicatorRect.isEmpty {
+            PacketHighlightPalette.accentColor(for: highlightColor, appearance: effectiveAppearance).setFill()
+            indicatorRect.fill()
+        }
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+}
+
+enum PacketHighlightPalette {
+    // Use stronger translucent system colors in dark mode and for selected rows.
+    static func backgroundColor(
+        for color: PacketHighlightColor,
+        isSelected: Bool,
+        appearance: NSAppearance
+    ) -> NSColor {
+        let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let alpha: CGFloat
+        if isSelected {
+            alpha = isDark ? 0.48 : 0.34
+        } else {
+            alpha = isDark ? 0.30 : 0.20
+        }
+        return color.appKitColor.withAlphaComponent(alpha)
+    }
+
+    static func accentColor(for color: PacketHighlightColor, appearance: NSAppearance) -> NSColor {
+        let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        return color.appKitColor.withAlphaComponent(isDark ? 0.95 : 0.85)
     }
 }
 

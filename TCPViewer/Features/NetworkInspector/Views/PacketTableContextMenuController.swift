@@ -76,6 +76,8 @@ final class PacketTableContextMenuController: NSObject {
             isEnabled: state.saveEnabled,
             toolTip: "Save the selected packets to the packet workspace."
         ))
+
+        menu.addItem(.separator())
         menu.addItem(highlightMenuItem(state: state))
 
         menu.addItem(.separator())

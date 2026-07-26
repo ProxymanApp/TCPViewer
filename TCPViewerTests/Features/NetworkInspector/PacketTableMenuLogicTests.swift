@@ -302,8 +302,37 @@ struct PacketTableMenuLogicTests {
         #expect(highlightSubmenu.items.first { $0.title == "Strikethrough" }?.keyEquivalent == "/")
         #expect(highlightSubmenu.items.first { $0.title == "Reset" }?.keyEquivalent == "0")
         #expect(menu.items.contains { $0.title == "Pin" && $0.submenu == nil })
+        let highlightIndex = try #require(menu.items.firstIndex(where: { $0.title == "Highlight" }))
+        #expect(highlightIndex > 0 && menu.items[highlightIndex - 1].isSeparatorItem)
         #expect(!items.isEmpty)
         #expect(items.allSatisfy { item in item.toolTip?.isEmpty == false })
+    }
+
+    @MainActor
+    @Test func highlightedRowPaletteKeepsSelectedColorsVisibleAcrossAppearances() throws {
+        let lightAppearance = try #require(NSAppearance(named: .aqua))
+        let darkAppearance = try #require(NSAppearance(named: .darkAqua))
+
+        for appearance in [lightAppearance, darkAppearance] {
+            let regularColor = PacketHighlightPalette.backgroundColor(
+                for: .green,
+                isSelected: false,
+                appearance: appearance
+            )
+            let selectedColor = PacketHighlightPalette.backgroundColor(
+                for: .green,
+                isSelected: true,
+                appearance: appearance
+            )
+
+            #expect(selectedColor.alphaComponent > regularColor.alphaComponent)
+            #expect(selectedColor.alphaComponent < 0.5)
+        }
+
+        let rowView = PacketHighlightRowView()
+        rowView.highlightColor = .green
+        rowView.isSelected = true
+        #expect(rowView.interiorBackgroundStyle == .normal)
     }
 
     private func makePacket(

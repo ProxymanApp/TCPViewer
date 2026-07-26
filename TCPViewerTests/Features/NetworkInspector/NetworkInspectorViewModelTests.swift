@@ -2153,6 +2153,11 @@ struct NetworkInspectorViewModelTests {
         viewModel.applyTextStyleMutation(.setHighlightColor(.purple), toPackets: [packet.id])
         viewModel.applyTextStyleMutation(.toggleStrikethrough, toPackets: [packet.id])
 
+        #expect(viewModel.snapshot.packetRows.first?.textStyle == PacketTextStyle(
+            highlightColor: .purple,
+            isStrikethrough: true
+        ))
+
         let result = await viewModel.exportPackets(
             [packet.id],
             to: URL(fileURLWithPath: "/tmp/style-export.pcapng"),
