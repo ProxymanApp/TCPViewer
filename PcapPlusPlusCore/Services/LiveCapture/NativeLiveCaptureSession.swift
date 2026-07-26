@@ -60,6 +60,26 @@ public final class NativeLiveCaptureSession: LiveCaptureSessionProviding, @unche
         state.exportPackets(withIDs: identifiers, to: url, format: format, progress: progress, shouldCancel: shouldCancel, completion: completion)
     }
 
+    public func exportPackets(
+        withIDs identifiers: [PacketSummary.ID],
+        to url: URL,
+        format: CaptureFileFormat,
+        metadata: PacketExportMetadata,
+        progress: PacketExportProgressHandler?,
+        shouldCancel: PacketExportCancellationCheck?,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        state.exportPackets(
+            withIDs: identifiers,
+            to: url,
+            format: format,
+            metadata: metadata,
+            progress: progress,
+            shouldCancel: shouldCancel,
+            completion: completion
+        )
+    }
+
     public func healthSnapshot(completion: @escaping (CaptureHealthSnapshot) -> Void) {
         state.healthSnapshot(completion: completion)
     }
@@ -380,6 +400,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
         withIDs identifiers: [PacketSummary.ID],
         to url: URL,
         format: CaptureFileFormat,
+        metadata: PacketExportMetadata = .empty,
         progress: PacketExportProgressHandler?,
         shouldCancel: PacketExportCancellationCheck?,
         completion: @escaping TCPViewerVoidCompletion
@@ -395,6 +416,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
                         withIdentifiers: identifiers.map { NSNumber(value: $0) },
                         to: url,
                         format: format.rawValue,
+                        textStylesByPacketID: metadata.textStylesByPacketID,
                         progressHandler: { exportedPacketCount, totalPacketCount in
                             progress?(PacketExportProgress(
                                 exportedPacketCount: Int(exportedPacketCount),

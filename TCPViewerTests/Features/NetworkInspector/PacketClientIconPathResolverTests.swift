@@ -80,6 +80,7 @@ struct PacketClientIconPathResolverTests {
         #expect(sampledColor.blueComponent < 0.2)
     }
 
+    @MainActor
     @Test func packetClientCellCopyKeepsConfiguredSwiftState() throws {
         let suiteName = "PacketClientCellCopy-\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))
@@ -90,6 +91,7 @@ struct PacketClientIconPathResolverTests {
         cell.configure(
             displayName: "Example",
             iconFilePath: "/Applications/Example.app",
+            textStyle: .plain,
             configuration: configuration
         )
         let copiedCell = try #require(cell.copy() as? PacketClientCell)

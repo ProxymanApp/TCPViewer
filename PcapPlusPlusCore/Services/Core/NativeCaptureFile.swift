@@ -5,6 +5,7 @@
 //  Created by Proxyman LLC on 28/5/26.
 //
 
+import Darwin
 import Foundation
 
 struct NativeCaptureFile {
@@ -44,7 +45,15 @@ struct NativeCaptureFile {
         return try PcapReader(url: url, data: data).read()
     }
 
-    static func write(records: [NativePacketRecord], to url: URL, format: CaptureFileFormat) throws {
+    static func write(
+        records: [NativePacketRecord],
+        to url: URL,
+        format: CaptureFileFormat,
+        textStylesByPacketID: [PacketSummary.ID: PacketTextStyle] = [:]
+    ) throws {
+        let outputRecords = records.map { record in
+            record.withTextStyle(textStylesByPacketID[record.identifier] ?? record.textStyle)
+        }
         let temporaryURL = url.deletingLastPathComponent()
             .appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
         guard FileManager.default.createFile(
@@ -59,9 +68,9 @@ struct NativeCaptureFile {
             do {
                 switch format {
                 case .pcap:
-                    try PcapWriter(records: records).write(to: handle)
+                    try PcapWriter(records: outputRecords).write(to: handle)
                 case .pcapng:
-                    try PcapNGWriter(records: records).write(to: handle)
+                    try PcapNGWriter(records: outputRecords).write(to: handle)
                 }
                 try handle.close()
             } catch {
@@ -72,6 +81,13 @@ struct NativeCaptureFile {
                 _ = try FileManager.default.replaceItemAt(url, withItemAt: temporaryURL)
             } else {
                 try FileManager.default.moveItem(at: temporaryURL, to: url)
+            }
+            if format == .pcap {
+                // Classic PCAP has no metadata field, so keep its optional file metadata best-effort.
+                let hasStyles = outputRecords.contains { !$0.textStyle.isPlain }
+                if !hasStyles || !PcapTextStyleExtendedAttribute.write(stylesFrom: outputRecords, to: url) {
+                    PcapTextStyleExtendedAttribute.remove(from: url)
+                }
             }
         } catch let error as NSError where error.domain == TCPViewerNativeErrorDomain {
             try? FileManager.default.removeItem(at: temporaryURL)
@@ -127,7 +143,7 @@ private struct PcapReader {
                 return NativeCaptureFile(
                     url: url,
                     format: .pcap,
-                    records: records,
+                    records: styledRecords(records),
                     metadata: metadata(),
                     skippedPacketCount: 1,
                     partialLoadReason: "Stopped at a truncated packet record."
@@ -155,7 +171,7 @@ private struct PcapReader {
         return NativeCaptureFile(
             url: url,
             format: .pcap,
-            records: records,
+            records: styledRecords(records),
             metadata: metadata(),
             skippedPacketCount: trailingByteCount > 0 ? 1 : 0,
             partialLoadReason: trailingByteCount > 0 ? "Stopped at an incomplete packet header." : nil
@@ -170,6 +186,16 @@ private struct PcapReader {
             captureApplication: nil,
             fileComment: nil
         )
+    }
+
+    private func styledRecords(_ records: [NativePacketRecord]) -> [NativePacketRecord] {
+        let styles = PcapTextStyleExtendedAttribute.read(from: url, packetCount: records.count)
+        guard !styles.isEmpty else {
+            return records
+        }
+        return records.enumerated().map { index, record in
+            record.withTextStyle(styles[index] ?? .plain)
+        }
     }
 
     private func readUInt32(at offset: Int, littleEndian: Bool) -> UInt32? {
@@ -213,6 +239,8 @@ private struct PcapNGReader {
         var packetNumber: UInt64 = 1
         var skippedPacketCount = 0
         var partialLoadReason: String?
+        var captureApplication: String?
+        var sectionSupportsTextStyles = false
 
         while offset + 12 <= data.count {
             let blockStart = offset
@@ -237,6 +265,10 @@ private struct PcapNGReader {
                 }
                 hasSection = true
                 nextInterfaceID = 0
+                captureApplication = captureApplication ?? sectionHeader.userApplication
+                sectionSupportsTextStyles = PcapNGTextStyleComment.supports(
+                    userApplication: sectionHeader.userApplication
+                )
                 offset = blockStart + sectionHeader.totalLength
                 continue
             }
@@ -294,6 +326,15 @@ private struct PcapNGReader {
                     continue
                 }
                 let packetData = data.subdata(in: packetOffset..<(packetOffset + capturedLength))
+                let optionsOffset = packetOffset + paddedLength(capturedLength)
+                let packetOptions = optionsOffset <= bodyEnd
+                    ? readOptions(offset: optionsOffset, end: bodyEnd, littleEndian: littleEndian)
+                    : [:]
+                let comment = packetOptions[1].flatMap { String(data: $0, encoding: .utf8) }
+                let decodedComment = PcapNGTextStyleComment.decode(
+                    comment,
+                    allowsTextStyleMetadata: sectionSupportsTextStyles
+                )
                 let interface = interfaces[metadataKey(interfaceID: interfaceID, section: section)]
                 let timestampRaw = (timestampHigh << 32) | timestampLow
                 let timestampResolution = interface?.timestampResolution ?? 6
@@ -308,12 +349,13 @@ private struct PcapNGReader {
                     linkLayerType: interface?.linkType ?? Libpcap.dltEthernet,
                     interfaceIdentifier: interface?.name,
                     interfaceName: interface?.name ?? interface?.description,
-                    packetComment: nil,
+                    packetComment: decodedComment.packetComment,
                     interfaceID: interfaceID,
                     sectionNumber: section,
                     pcapNGTimestampResolution: timestampResolution,
                     pcapNGTimestampOffsetSeconds: timestampOffset,
-                    pcapNGTimestampRawValue: timestampRaw
+                    pcapNGTimestampRawValue: timestampRaw,
+                    textStyle: decodedComment.textStyle
                 ))
                 packetNumber += 1
             } else if blockType == 3 {
@@ -358,7 +400,7 @@ private struct PcapNGReader {
                 format: CaptureFileFormat.pcapng.rawValue,
                 operatingSystem: nil,
                 hardware: nil,
-                captureApplication: nil,
+                captureApplication: captureApplication,
                 fileComment: nil
             ),
             skippedPacketCount: skippedPacketCount,
@@ -369,6 +411,7 @@ private struct PcapNGReader {
     private struct SectionHeaderBlock {
         let totalLength: Int
         let littleEndian: Bool
+        let userApplication: String?
     }
 
     private func isSectionHeaderBlock(at offset: Int) -> Bool {
@@ -406,7 +449,16 @@ private struct PcapNGReader {
             throw NativeNSError(.fileReadFailed, "The PCAPNG section header has an invalid trailing length.")
         }
 
-        return SectionHeaderBlock(totalLength: totalLength, littleEndian: littleEndian)
+        let options = readOptions(
+            offset: offset + 24,
+            end: trailingLengthOffset,
+            littleEndian: littleEndian
+        )
+        return SectionHeaderBlock(
+            totalLength: totalLength,
+            littleEndian: littleEndian,
+            userApplication: options[4].flatMap { String(data: $0, encoding: .utf8) }
+        )
     }
 
     private func readOptions(offset: Int, end: Int, littleEndian: Bool) -> [UInt16: Data] {
@@ -538,6 +590,13 @@ private struct PcapNGWriter {
         sectionBody.appendLittleEndian(UInt16(1))
         sectionBody.appendLittleEndian(UInt16(0))
         sectionBody.appendLittleEndian(UInt64.max)
+        try appendOption(
+            code: 4,
+            value: Data(PcapNGTextStyleComment.userApplication.utf8),
+            to: &sectionBody
+        )
+        sectionBody.appendLittleEndian(UInt16(0))
+        sectionBody.appendLittleEndian(UInt16(0))
         try writeBlock(type: 0x0a0d0d0a, body: sectionBody, to: handle)
 
         let defaultInterface = InterfaceKey(
@@ -585,7 +644,19 @@ private struct PcapNGWriter {
                 throw NativeNSError(.fileWriteFailed, "Packet \(record.identifier) is too large for PCAPNG.")
             }
             let timestamp = try timestampValue(for: record, interface: interface)
-            let bodyLength = 20 + record.rawBytes.count + paddingCount + 4
+            var options = Data()
+            if let comment = PcapNGTextStyleComment.encode(
+                packetComment: record.packetComment,
+                textStyle: record.textStyle
+            ) {
+                try appendOption(code: 1, value: Data(comment.utf8), to: &options)
+            }
+            options.appendLittleEndian(UInt16(0))
+            options.appendLittleEndian(UInt16(0))
+            let bodyLength = 20 + record.rawBytes.count + paddingCount + options.count
+            guard bodyLength <= Int(UInt32.max) - 12 else {
+                throw NativeNSError(.fileWriteFailed, "Packet \(record.identifier) metadata is too large for PCAPNG.")
+            }
             let totalLength = UInt32(12 + bodyLength)
             var packetHeader = Data()
             packetHeader.appendLittleEndian(UInt32(6))
@@ -600,9 +671,8 @@ private struct PcapNGWriter {
             if paddingCount > 0 {
                 try handle.write(contentsOf: Data(repeating: 0, count: paddingCount))
             }
+            try handle.write(contentsOf: options)
             var trailer = Data()
-            trailer.appendLittleEndian(UInt16(0))
-            trailer.appendLittleEndian(UInt16(0))
             trailer.appendLittleEndian(totalLength)
             try handle.write(contentsOf: trailer)
         }
@@ -684,12 +754,238 @@ private struct PcapNGWriter {
     }
 }
 
+private enum PcapNGTextStyleComment {
+    static let userApplication = "TCPViewer"
+
+    private static let markerPrefix = "[TCPViewer:text-style:v2:"
+    private static let markerSuffix = "]"
+
+    static func supports(userApplication: String?) -> Bool {
+        userApplication == Self.userApplication
+    }
+
+    static func encode(packetComment: String?, textStyle: PacketTextStyle) -> String? {
+        let comment = packetComment.map(escapingMarkerLines(in:))
+        guard !textStyle.isPlain else {
+            return comment?.isEmpty == false ? comment : nil
+        }
+
+        let color = textStyle.highlightColor?.rawValue ?? "none"
+        let marker = "\(markerPrefix)\(color):\(textStyle.isStrikethrough ? 1 : 0)\(markerSuffix)"
+        guard let comment, !comment.isEmpty else {
+            return marker
+        }
+        return "\(comment)\n\(marker)"
+    }
+
+    static func decode(
+        _ value: String?,
+        allowsTextStyleMetadata: Bool
+    ) -> (packetComment: String?, textStyle: PacketTextStyle) {
+        guard let value else {
+            return (nil, .plain)
+        }
+        guard allowsTextStyleMetadata else {
+            return (value.isEmpty ? nil : value, .plain)
+        }
+
+        var style = PacketTextStyle.plain
+        var retainedLines = value.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        if let marker = retainedLines.last,
+           let decodedStyle = textStyle(fromMarker: marker) {
+            style = decodedStyle
+            retainedLines.removeLast()
+        }
+        let packetComment = retainedLines
+            .map(unescapingMarkerLine(_:))
+            .joined(separator: "\n")
+        return (packetComment.isEmpty ? nil : packetComment, style)
+    }
+
+    private static func escapingMarkerLines(in comment: String) -> String {
+        comment
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line in
+                let line = String(line)
+                return hasMarkerPrefixAfterEscapes(line) ? "\\\(line)" : line
+            }
+            .joined(separator: "\n")
+    }
+
+    private static func unescapingMarkerLine(_ line: String) -> String {
+        line.first == "\\" && hasMarkerPrefixAfterEscapes(line) ? String(line.dropFirst()) : line
+    }
+
+    private static func hasMarkerPrefixAfterEscapes(_ line: String) -> Bool {
+        line.drop(while: { $0 == "\\" }).hasPrefix(markerPrefix)
+    }
+
+    private static func textStyle(fromMarker line: String) -> PacketTextStyle? {
+        guard line.hasPrefix(markerPrefix), line.hasSuffix(markerSuffix) else {
+            return nil
+        }
+        let payload = line.dropFirst(markerPrefix.count).dropLast(markerSuffix.count)
+        let components = payload.split(separator: ":", omittingEmptySubsequences: false)
+        guard components.count == 2,
+              components[1] == "0" || components[1] == "1" else {
+            return nil
+        }
+        let color = components[0] == "none" ? nil : PacketHighlightColor(rawValue: String(components[0]))
+        guard components[0] == "none" || color != nil else {
+            return nil
+        }
+        return PacketTextStyle(highlightColor: color, isStrikethrough: components[1] == "1")
+    }
+}
+
+private enum PcapTextStyleExtendedAttribute {
+    private static let name = "com.proxyman.TCPViewer.packet-text-styles"
+    private static let magic = Data("TCPVSTY1".utf8)
+    private static let headerLength = magic.count + 8
+    private static let entryLength = 9
+
+    static func write(stylesFrom records: [NativePacketRecord], to url: URL) -> Bool {
+        var data = magic
+        data.appendLittleEndian(UInt64(records.count))
+        for (index, record) in records.enumerated() where !record.textStyle.isPlain {
+            data.appendLittleEndian(UInt64(index))
+            data.append(PacketTextStyleBinaryCodec.encode(record.textStyle))
+        }
+
+        let result = data.withUnsafeBytes { bytes in
+            setxattr(url.path, name, bytes.baseAddress, bytes.count, 0, 0)
+        }
+        return result == 0
+    }
+
+    static func read(from url: URL, packetCount: Int) -> [Int: PacketTextStyle] {
+        let length = getxattr(url.path, name, nil, 0, 0, 0)
+        guard length >= headerLength else {
+            return [:]
+        }
+        var data = Data(count: length)
+        let result = data.withUnsafeMutableBytes { bytes in
+            getxattr(url.path, name, bytes.baseAddress, bytes.count, 0, 0)
+        }
+        guard result == length, data.starts(with: magic),
+              data.readLittleEndianUInt64(at: magic.count) == UInt64(packetCount),
+              (data.count - headerLength).isMultiple(of: entryLength) else {
+            return [:]
+        }
+
+        var styles: [Int: PacketTextStyle] = [:]
+        var offset = headerLength
+        while offset + entryLength <= data.count {
+            guard let ordinal = data.readLittleEndianUInt64(at: offset),
+                  ordinal < UInt64(packetCount),
+                  let style = PacketTextStyleBinaryCodec.decode(data[offset + 8]) else {
+                return [:]
+            }
+            styles[Int(ordinal)] = style
+            offset += entryLength
+        }
+        return styles
+    }
+
+    static func remove(from url: URL) {
+        _ = removexattr(url.path, name, 0)
+    }
+
+}
+
+enum PacketTextStyleBinaryCodec {
+    static func encode(_ style: PacketTextStyle) -> UInt8 {
+        colorCode(style.highlightColor) | (style.isStrikethrough ? 0x80 : 0)
+    }
+
+    static func decode(_ byte: UInt8) -> PacketTextStyle? {
+        let colorValue = Int(byte & 0x7f)
+        let decodedColor = color(from: UInt8(colorValue))
+        guard decodedColor.isValid else {
+            return nil
+        }
+        let style = PacketTextStyle(
+            highlightColor: decodedColor.color,
+            isStrikethrough: byte & 0x80 != 0
+        )
+        return style.isPlain ? nil : style
+    }
+
+    private static func colorCode(_ color: PacketHighlightColor?) -> UInt8 {
+        switch color {
+        case nil: 0
+        case .red: 1
+        case .orange: 2
+        case .yellow: 3
+        case .green: 4
+        case .teal: 5
+        case .blue: 6
+        case .indigo: 7
+        case .purple: 8
+        case .pink: 9
+        case .brown: 10
+        case .gray: 11
+        }
+    }
+
+    private static func color(from code: UInt8) -> (isValid: Bool, color: PacketHighlightColor?) {
+        switch code {
+        case 0: (true, nil)
+        case 1: (true, .red)
+        case 2: (true, .orange)
+        case 3: (true, .yellow)
+        case 4: (true, .green)
+        case 5: (true, .teal)
+        case 6: (true, .blue)
+        case 7: (true, .indigo)
+        case 8: (true, .purple)
+        case 9: (true, .pink)
+        case 10: (true, .brown)
+        case 11: (true, .gray)
+        default: (false, nil)
+        }
+    }
+}
+
+private extension NativePacketRecord {
+    func withTextStyle(_ textStyle: PacketTextStyle) -> NativePacketRecord {
+        NativePacketRecord(
+            identifier: identifier,
+            packetNumber: packetNumber,
+            timestamp: timestamp,
+            rawBytes: rawBytes,
+            originalLength: originalLength,
+            linkLayerType: linkLayerType,
+            interfaceIdentifier: interfaceIdentifier,
+            interfaceName: interfaceName,
+            packetComment: packetComment,
+            interfaceID: interfaceID,
+            sectionNumber: sectionNumber,
+            pcapNGTimestampResolution: pcapNGTimestampResolution,
+            pcapNGTimestampOffsetSeconds: pcapNGTimestampOffsetSeconds,
+            pcapNGTimestampRawValue: pcapNGTimestampRawValue,
+            textStyle: textStyle
+        )
+    }
+}
+
 private extension Data {
     mutating func appendLittleEndian<T: FixedWidthInteger>(_ value: T) {
         var littleEndian = value.littleEndian
         Swift.withUnsafeBytes(of: &littleEndian) { buffer in
             append(buffer.bindMemory(to: UInt8.self))
         }
+    }
+
+    func readLittleEndianUInt64(at offset: Int) -> UInt64? {
+        guard offset >= 0, offset + 8 <= count else {
+            return nil
+        }
+        var value: UInt64 = 0
+        for index in 0..<8 {
+            value |= UInt64(self[offset + index]) << UInt64(index * 8)
+        }
+        return value
     }
 
 }

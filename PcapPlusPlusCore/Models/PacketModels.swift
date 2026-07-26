@@ -313,6 +313,7 @@ public struct PacketSummary: Identifiable, Sendable, Codable, Hashable {
     public let captureMetadata: PacketCaptureMetadata
     public let sniDomainName: String?
     public let client: PacketClient?
+    public let textStyle: PacketTextStyle?
 
     public init(
         id: UInt64? = nil,
@@ -334,7 +335,8 @@ public struct PacketSummary: Identifiable, Sendable, Codable, Hashable {
         decodeStatus: PacketDecodeStatus,
         captureMetadata: PacketCaptureMetadata,
         sniDomainName: String? = nil,
-        client: PacketClient? = nil
+        client: PacketClient? = nil,
+        textStyle: PacketTextStyle? = nil
     ) {
         self.id = id ?? packetNumber
         self.packetNumber = packetNumber
@@ -356,6 +358,11 @@ public struct PacketSummary: Identifiable, Sendable, Codable, Hashable {
         self.captureMetadata = captureMetadata
         self.sniDomainName = sniDomainName
         self.client = client
+        self.textStyle = textStyle?.isPlain == true ? nil : textStyle
+    }
+
+    public var resolvedTextStyle: PacketTextStyle {
+        textStyle ?? .plain
     }
 }
 

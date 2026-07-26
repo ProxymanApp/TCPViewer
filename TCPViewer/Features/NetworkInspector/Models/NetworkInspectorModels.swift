@@ -182,6 +182,7 @@ struct PacketTableRow: Identifiable, Sendable, Hashable {
     let summaryText: String
     let tags: [PacketTag]
     let severity: PacketSeverity
+    let textStyle: PacketTextStyle
 
     init(packet: PacketSummary) {
         self.init(
@@ -236,6 +237,7 @@ struct PacketTableRow: Identifiable, Sendable, Hashable {
         self.summaryText = packet.infoSummary.tcpviewerNativeCopy
         self.tags = NetworkInspectorFormatters.tags(for: packet)
         self.severity = NetworkInspectorFormatters.severity(for: packet)
+        self.textStyle = packet.resolvedTextStyle
     }
 
     var tagText: String {

@@ -50,6 +50,47 @@ struct SavedPacketServiceTests {
         #expect(service.records().map { $0.packet.id } == [incomingPacket.id])
     }
 
+    @Test func textStyleMutationPersistsForSavedPacketRows() throws {
+        let storageURL = temporaryDirectory().appendingPathComponent("Saved.json")
+        let service = SavedPacketService(storageURL: storageURL)
+        let first = makePacket(packetNumber: 1)
+        let second = makePacket(packetNumber: 2)
+        try service.save([first, second])
+
+        let didChange = try service.applyTextStyleMutation(
+            .setHighlightColor(.orange),
+            packetIDs: [first.id]
+        )
+        _ = try service.applyTextStyleMutation(.toggleStrikethrough, packetIDs: [first.id])
+        let reloaded = SavedPacketService(storageURL: storageURL)
+
+        #expect(didChange)
+        #expect(reloaded.records()[0].packet.resolvedTextStyle == PacketTextStyle(
+            highlightColor: .orange,
+            isStrikethrough: true
+        ))
+        #expect(reloaded.records()[1].packet.resolvedTextStyle == .plain)
+    }
+
+    @Test func textStyleMutationRollsBackWhenPersistenceFails() throws {
+        let rootURL = temporaryDirectory()
+        let storageDirectoryURL = rootURL.appendingPathComponent("Saved", isDirectory: true)
+        try FileManager.default.createDirectory(at: storageDirectoryURL, withIntermediateDirectories: true)
+        let storageURL = storageDirectoryURL.appendingPathComponent("Saved.json")
+        let service = SavedPacketService(storageURL: storageURL)
+        let packet = makePacket(packetNumber: 1)
+        try service.save([packet])
+        let recordsBeforeMutation = service.records()
+
+        try FileManager.default.removeItem(at: storageDirectoryURL)
+        #expect(FileManager.default.createFile(atPath: storageDirectoryURL.path, contents: Data()))
+
+        #expect(throws: Error.self) {
+            try service.applyTextStyleMutation(.setHighlightColor(.red), packetIDs: [packet.id])
+        }
+        #expect(service.records() == recordsBeforeMutation)
+    }
+
     private func temporaryDirectory() -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)

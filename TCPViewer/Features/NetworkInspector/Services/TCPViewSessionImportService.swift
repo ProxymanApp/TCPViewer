@@ -92,7 +92,16 @@ final class TCPViewSessionImportService {
                 clients: sidecars.clientStore,
                 packageDirectoryURL: packageDirectoryURL
             )
-            let packets = TCPViewSessionClientStoreBuilder.rehydratePackets(records: sidecars.packetRecords, clients: sidecars.clientStore)
+            let annotationStyles = Dictionary(
+                uniqueKeysWithValues: sidecars.annotations.annotations.compactMap { annotation in
+                    annotation.textStyle.map { (annotation.packetID, $0) }
+                }
+            )
+            let packets = TCPViewSessionClientStoreBuilder
+                .rehydratePackets(records: sidecars.packetRecords, clients: sidecars.clientStore)
+                .map { packet in
+                    annotationStyles[packet.id].map(packet.applying(textStyle:)) ?? packet
+                }
             return TCPViewSessionPackageContents(
                 sourceURL: url,
                 extractionDirectoryURL: extractionRoot,
@@ -631,6 +640,43 @@ final class TCPViewSessionOfflineDocument: OfflineCaptureDocumentProviding {
             withIDs: innerIDs,
             to: url,
             format: format,
+            progress: progress,
+            shouldCancel: shouldCancel,
+            completion: completion
+        )
+    }
+
+    func exportPackets(
+        withIDs identifiers: [PacketSummary.ID],
+        to url: URL,
+        format: CaptureFileFormat,
+        metadata: PacketExportMetadata,
+        progress: PacketExportProgressHandler?,
+        shouldCancel: PacketExportCancellationCheck?,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        guard let innerDocument else {
+            completion(.failure(Self.unavailableBackingError()))
+            return
+        }
+
+        let innerIDs = identifiers.compactMap { innerPacketIDBySessionID[$0] }
+        guard innerIDs.count == identifiers.count else {
+            completion(.failure(Self.unavailableBackingError()))
+            return
+        }
+
+        var remappedStyles: [PacketSummary.ID: PacketTextStyle] = [:]
+        for (sessionID, innerID) in zip(identifiers, innerIDs) {
+            if let style = metadata.textStylesByPacketID[sessionID] {
+                remappedStyles[innerID] = style
+            }
+        }
+        innerDocument.exportPackets(
+            withIDs: innerIDs,
+            to: url,
+            format: format,
+            metadata: PacketExportMetadata(textStylesByPacketID: remappedStyles),
             progress: progress,
             shouldCancel: shouldCancel,
             completion: completion

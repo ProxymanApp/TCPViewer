@@ -54,6 +54,7 @@ struct PacketTableMenuState: Equatable {
     let copyCellEnabled: Bool
     let pinEnabled: Bool
     let saveEnabled: Bool
+    let styleEnabled: Bool
     let exportEnabled: Bool
     let deleteEnabled: Bool
 
@@ -65,6 +66,7 @@ struct PacketTableMenuState: Equatable {
         copyCellEnabled: false,
         pinEnabled: false,
         saveEnabled: false,
+        styleEnabled: false,
         exportEnabled: false,
         deleteEnabled: false
     )
@@ -101,6 +103,7 @@ enum PacketTableMenuLogic {
             copyCellEnabled: !targetRows.isEmpty && clickedColumnIdentifier != nil,
             pinEnabled: targetRows.contains { $0.canPinClient },
             saveEnabled: !targetRows.isEmpty,
+            styleEnabled: !targetRows.isEmpty,
             exportEnabled: !targetRows.isEmpty,
             deleteEnabled: !targetRows.isEmpty
         )

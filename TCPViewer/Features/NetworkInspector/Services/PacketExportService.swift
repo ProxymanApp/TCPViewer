@@ -261,10 +261,10 @@ final class PacketExportService {
         return controller
     }
 
-    func presentFailure(_ error: Error) {
+    func presentFailure(_ error: Error, title: String = "Export Failed") {
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "Export Failed"
+        alert.messageText = title
         if let tcpviewerError = error as? TCPViewerCoreError {
             alert.informativeText = tcpviewerError.message
         } else {

@@ -393,7 +393,8 @@ enum NativeBridgeMapper {
             layers: descriptor.layers.map(packetLayer),
             decodeStatus: decodeStatus(descriptor.decodeStatus),
             captureMetadata: packetCaptureMetadata(descriptor.captureMetadata),
-            sniDomainName: descriptor.sniDomainName
+            sniDomainName: descriptor.sniDomainName,
+            textStyle: descriptor.textStyle
         )
     }
 

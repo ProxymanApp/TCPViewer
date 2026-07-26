@@ -16,6 +16,11 @@ protocol PacketTableViewControllerDelegate: AnyObject {
         didRequestPinPackets identifiers: [PacketSummary.ID]
     )
     func packetTableViewController(_ controller: PacketTableViewController, didRequestSavePackets identifiers: [PacketSummary.ID])
+    func packetTableViewController(
+        _ controller: PacketTableViewController,
+        didRequestApplyTextStyle mutation: PacketTextStyleMutation,
+        toPackets identifiers: [PacketSummary.ID]
+    )
     func packetTableViewController(_ controller: PacketTableViewController, didRequestExportPackets identifiers: [PacketSummary.ID], format: CaptureFileFormat)
     func packetTableViewController(_ controller: PacketTableViewController, didRequestDeletePackets identifiers: [PacketSummary.ID])
     func packetTableViewController(
@@ -55,10 +60,12 @@ enum PacketTableSelectionSyncPlanner {
 fileprivate protocol PacketTableKeyboardActionHandling: AnyObject {
     func packetTableViewDidRequestCopyRowsFromKeyboard(_ tableView: PacketTableView)
     func packetTableViewDidRequestDeleteFromKeyboard(_ tableView: PacketTableView)
+    func packetTableView(_ tableView: PacketTableView, didRequestTextStyle mutation: PacketTextStyleMutation)
 }
 
 fileprivate final class PacketTableView: NSTableView {
     weak var keyboardActionHandler: PacketTableKeyboardActionHandling?
+    var highlightColorProvider: ((Int) -> PacketHighlightColor?)?
 
     @objc func copy(_ sender: Any?) {
         keyboardActionHandler?.packetTableViewDidRequestCopyRowsFromKeyboard(self)
@@ -75,6 +82,24 @@ fileprivate final class PacketTableView: NSTableView {
             return
         }
 
+        if flags.contains(.command), let character = event.charactersIgnoringModifiers {
+            if character == "0" {
+                keyboardActionHandler?.packetTableView(self, didRequestTextStyle: .reset)
+                return
+            }
+            if character == "/" {
+                keyboardActionHandler?.packetTableView(self, didRequestTextStyle: .toggleStrikethrough)
+                return
+            }
+            if let index = Int(character), (1...9).contains(index) {
+                keyboardActionHandler?.packetTableView(
+                    self,
+                    didRequestTextStyle: .setHighlightColor(PacketHighlightColor.allCases[index - 1])
+                )
+                return
+            }
+        }
+
         if event.keyCode == 51 || event.keyCode == 117 {
             delete(nil)
             return
@@ -83,6 +108,71 @@ fileprivate final class PacketTableView: NSTableView {
         super.keyDown(with: event)
     }
 
+    override func drawBackground(inClipRect clipRect: NSRect) {
+        // Paint marked rows across the table bounds, including space outside column cells.
+        super.drawBackground(inClipRect: clipRect)
+        let visibleRows = rows(in: clipRect)
+        guard visibleRows.location != NSNotFound else {
+            return
+        }
+
+        for row in visibleRows.location..<(visibleRows.location + visibleRows.length) {
+            if selectedRowIndexes.contains(row) {
+                drawSelectionBackground(forRow: row, in: clipRect)
+            } else {
+                drawHighlight(forRow: row, in: clipRect)
+            }
+        }
+    }
+
+    override func highlightSelection(inClipRect clipRect: NSRect) {
+        // Restore selected packet colors after AppKit paints its standard selection.
+        super.highlightSelection(inClipRect: clipRect)
+        let visibleRows = rows(in: clipRect)
+        guard visibleRows.location != NSNotFound else {
+            return
+        }
+        let visibleIndexes = IndexSet(
+            integersIn: visibleRows.location..<(visibleRows.location + visibleRows.length)
+        )
+        for row in selectedRowIndexes.intersection(visibleIndexes) {
+            drawSelectionBackground(forRow: row, in: clipRect)
+        }
+    }
+
+    private func drawHighlight(forRow row: Int, in clipRect: NSRect) {
+        // Use the full row rect because cell frames have leading and trailing gaps.
+        guard let highlightColor = highlightColorProvider?(row) else {
+            return
+        }
+
+        let rowRect = rect(ofRow: row)
+        let fillRect = rowRect.intersection(clipRect)
+        guard !fillRect.isEmpty else {
+            return
+        }
+
+        PacketHighlightPalette.backgroundColor(
+            for: highlightColor,
+            appearance: effectiveAppearance
+        ).setFill()
+        fillRect.fill()
+    }
+
+    private func drawSelectionBackground(forRow row: Int, in clipRect: NSRect) {
+        // Match AppKit's active or inactive selection across the complete row.
+        let fillRect = rect(ofRow: row).intersection(clipRect)
+        guard !fillRect.isEmpty else {
+            return
+        }
+
+        let isEmphasized = window == nil || (window?.isKeyWindow == true && window?.firstResponder === self)
+        let selectionColor: NSColor = isEmphasized
+            ? .selectedContentBackgroundColor
+            : .unemphasizedSelectedContentBackgroundColor
+        selectionColor.setFill()
+        fillRect.fill()
+    }
 }
 
 final class PacketTableViewModel {
@@ -271,6 +361,10 @@ final class PacketTableViewController: NSViewController {
         }
         let columnIndexes = IndexSet(0..<tableView.numberOfColumns)
         tableView.reloadData(forRowIndexes: safeIndexes, columnIndexes: columnIndexes)
+        // Cell reloads omit the outer row margins, so invalidate only the changed full rows.
+        for row in safeIndexes {
+            tableView.setNeedsDisplay(tableView.rect(ofRow: row))
+        }
     }
 
     @objc private func appConfigurationDidChange(_ notification: Notification) {
@@ -282,6 +376,12 @@ final class PacketTableViewController: NSViewController {
         tableView.delegate = self
         tableView.dataSource = self
         tableView.keyboardActionHandler = self
+        tableView.highlightColorProvider = { [weak self] row in
+            guard let self, self.rows.indices.contains(row) else {
+                return nil
+            }
+            return self.rows[row].textStyle.highlightColor
+        }
         tableView.usesAlternatingRowBackgroundColors = true
         tableView.allowsEmptySelection = true
         tableView.allowsMultipleSelection = true
@@ -924,6 +1024,23 @@ final class PacketTableViewController: NSViewController {
         delegate?.packetTableViewController(self, didRequestSavePackets: identifiers)
     }
 
+    @objc func setPacketHighlightColorFromMenu(_ sender: Any?) {
+        guard let menuItem = sender as? NSMenuItem,
+              let rawValue = menuItem.representedObject as? String,
+              let color = PacketHighlightColor(rawValue: rawValue) else {
+            return
+        }
+        applyTextStyle(.setHighlightColor(color))
+    }
+
+    @objc func togglePacketStrikethroughFromMenu(_ sender: Any?) {
+        applyTextStyle(.toggleStrikethrough)
+    }
+
+    @objc func resetPacketTextStyleFromMenu(_ sender: Any?) {
+        applyTextStyle(.reset)
+    }
+
     @objc func exportRowsAsPcapFromMenu(_ sender: Any?) {
         exportTargetRows(format: .pcap)
     }
@@ -956,6 +1073,19 @@ final class PacketTableViewController: NSViewController {
         }
 
         delegate?.packetTableViewController(self, didRequestExportPackets: identifiers, format: format)
+    }
+
+    private func applyTextStyle(_ mutation: PacketTextStyleMutation) {
+        let identifiers = targetPacketIDs()
+        guard !identifiers.isEmpty else {
+            return
+        }
+
+        delegate?.packetTableViewController(
+            self,
+            didRequestApplyTextStyle: mutation,
+            toPackets: identifiers
+        )
     }
 
     private func requestPin() {
@@ -991,15 +1121,25 @@ extension PacketTableViewController: NSTableViewDataSource, NSTableViewDelegate 
 
         let packetRow = rows[row]
         if let cell = cell as? PacketProtocolCell {
-            cell.configure(protocolText: packetRow.protocolText, severity: packetRow.severity, configuration: configuration)
+            cell.configure(
+                protocolText: packetRow.protocolText,
+                severity: packetRow.severity,
+                textStyle: packetRow.textStyle,
+                configuration: configuration
+            )
         } else if let cell = cell as? PacketClientCell {
             cell.configure(
                 displayName: packetRow.clientText,
                 iconFilePath: packetRow.clientIconFilePath,
+                textStyle: packetRow.textStyle,
                 configuration: configuration
             )
         } else if let cell = cell as? PacketTextCell {
-            cell.configure(style: textStyle(for: column, in: packetRow), configuration: configuration)
+            cell.configure(
+                style: textStyle(for: column, in: packetRow),
+                textStyle: packetRow.textStyle,
+                configuration: configuration
+            )
         }
     }
 
@@ -1044,6 +1184,12 @@ extension PacketTableViewController: PacketTableKeyboardActionHandling {
         clickedRowIndex = nil
         clickedColumnIdentifier = nil
         deleteTargetRows()
+    }
+
+    fileprivate func packetTableView(_ tableView: PacketTableView, didRequestTextStyle mutation: PacketTextStyleMutation) {
+        clickedRowIndex = nil
+        clickedColumnIdentifier = nil
+        applyTextStyle(mutation)
     }
 }
 

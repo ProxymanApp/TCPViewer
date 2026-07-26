@@ -220,6 +220,7 @@ final class PCPPNativePacketSummaryDescriptor {
     let decodeStatus: PCPPNativeDecodeStatusDescriptor
     let captureMetadata: PCPPNativePacketCaptureMetadataDescriptor
     let sniDomainName: String?
+    let textStyle: PacketTextStyle
 
     init(
         identifier: UInt64,
@@ -239,7 +240,8 @@ final class PCPPNativePacketSummaryDescriptor {
         layers: [PCPPNativePacketLayerDescriptor],
         decodeStatus: PCPPNativeDecodeStatusDescriptor,
         captureMetadata: PCPPNativePacketCaptureMetadataDescriptor,
-        sniDomainName: String?
+        sniDomainName: String?,
+        textStyle: PacketTextStyle = .plain
     ) {
         self.identifier = identifier
         self.packetNumber = packetNumber
@@ -259,6 +261,7 @@ final class PCPPNativePacketSummaryDescriptor {
         self.decodeStatus = decodeStatus
         self.captureMetadata = captureMetadata
         self.sniDomainName = sniDomainName
+        self.textStyle = textStyle
     }
 }
 

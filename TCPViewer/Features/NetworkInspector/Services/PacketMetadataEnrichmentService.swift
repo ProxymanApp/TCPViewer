@@ -752,7 +752,8 @@ extension PacketSummary {
             decodeStatus: decodeStatus,
             captureMetadata: captureMetadata,
             sniDomainName: sniDomainName,
-            client: client
+            client: client,
+            textStyle: textStyle
         )
     }
 
@@ -781,7 +782,8 @@ extension PacketSummary {
             decodeStatus: decodeStatus,
             captureMetadata: captureMetadata,
             sniDomainName: sniDomainName ?? self.sniDomainName,
-            client: client ?? self.client
+            client: client ?? self.client,
+            textStyle: textStyle
         )
     }
 
@@ -806,7 +808,8 @@ extension PacketSummary {
             decodeStatus: decodeStatus,
             captureMetadata: captureMetadata,
             sniDomainName: sniDomainName,
-            client: client
+            client: client,
+            textStyle: textStyle
         )
     }
 }

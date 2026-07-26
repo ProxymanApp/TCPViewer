@@ -24,6 +24,7 @@ struct NativePacketRecord: Sendable {
     let pcapNGTimestampResolution: UInt8?
     let pcapNGTimestampOffsetSeconds: Int64
     let pcapNGTimestampRawValue: UInt64?
+    let textStyle: PacketTextStyle
 
     init(
         identifier: UInt64,
@@ -39,7 +40,8 @@ struct NativePacketRecord: Sendable {
         sectionNumber: UInt32 = 0,
         pcapNGTimestampResolution: UInt8? = nil,
         pcapNGTimestampOffsetSeconds: Int64 = 0,
-        pcapNGTimestampRawValue: UInt64? = nil
+        pcapNGTimestampRawValue: UInt64? = nil,
+        textStyle: PacketTextStyle = .plain
     ) {
         self.identifier = identifier
         self.packetNumber = packetNumber
@@ -55,6 +57,7 @@ struct NativePacketRecord: Sendable {
         self.pcapNGTimestampResolution = pcapNGTimestampResolution
         self.pcapNGTimestampOffsetSeconds = pcapNGTimestampOffsetSeconds
         self.pcapNGTimestampRawValue = pcapNGTimestampRawValue
+        self.textStyle = textStyle
     }
 
     var capturedLength: Int {
@@ -162,7 +165,8 @@ enum SwiftPacketDissector {
             layers: packet.layers.map { PCPPNativePacketLayerDescriptor(name: $0.name, detailSummary: $0.detailSummary) },
             decodeStatus: decodeDescriptor,
             captureMetadata: captureMetadata,
-            sniDomainName: packet.sniDomainName
+            sniDomainName: packet.sniDomainName,
+            textStyle: record.textStyle
         )
         let inspection = PCPPNativePacketInspectionDescriptor(
             packetIdentifier: record.identifier,

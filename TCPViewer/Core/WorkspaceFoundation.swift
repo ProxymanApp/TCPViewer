@@ -292,6 +292,40 @@ struct PacketIngestState: Sendable, Equatable {
         lastMutation = .metadataUpdate(packetIDs: updatedIDs)
     }
 
+    // Update only indexed packet IDs so styling remains bounded for large live captures.
+    @discardableResult
+    mutating func applyTextStyleMutation(
+        _ mutation: PacketTextStyleMutation,
+        packetIDs: Set<PacketSummary.ID>
+    ) -> [PacketSummary.ID] {
+        var updatedIDs: [PacketSummary.ID] = []
+        updatedIDs.reserveCapacity(packetIDs.count)
+        for packetID in packetIDs {
+            guard let packetIndex = packetIndexByID[packetID] else {
+                continue
+            }
+
+            let packet = packets[packetIndex]
+            let updatedStyle = mutation.applying(to: packet.resolvedTextStyle)
+            guard updatedStyle != packet.resolvedTextStyle else {
+                continue
+            }
+
+            packets[packetIndex] = packet.applying(textStyle: updatedStyle)
+            updatedIDs.append(packetID)
+        }
+
+        guard !updatedIDs.isEmpty else {
+            lastMutation = .none
+            return []
+        }
+
+        updatedIDs.sort()
+        packetRevision &+= 1
+        lastMutation = .metadataUpdate(packetIDs: updatedIDs)
+        return updatedIDs
+    }
+
     // Append a batch and fold metadata updates that target older packets into a single mutation,
     // so consumers can take their cheap append paths without a redundant didSet fire.
     mutating func appendAndApplyMetadataUpdates(
@@ -925,6 +959,7 @@ final class TCPViewerWorkspaceController {
     private struct ImportedSessionCaptureExportGroup {
         let fileID: ImportedCaptureFileID
         var originalPacketIDs: [PacketSummary.ID]
+        var textStylesByOriginalPacketID: [PacketSummary.ID: PacketTextStyle]
     }
 
     weak var delegate: TCPViewerWorkspaceControllerDelegate?
@@ -2067,6 +2102,11 @@ final class TCPViewerWorkspaceController {
                 withIDs: exportSnapshot.packets.map(\.id),
                 to: captureURL,
                 format: .pcapng,
+                metadata: PacketExportMetadata(
+                    textStylesByPacketID: Dictionary(
+                        uniqueKeysWithValues: exportSnapshot.packets.map { ($0.id, $0.resolvedTextStyle) }
+                    )
+                ),
                 progress: progress,
                 shouldCancel: shouldCancel
             ) { result in
@@ -2095,6 +2135,11 @@ final class TCPViewerWorkspaceController {
             withIDs: exportSnapshot.packets.map(\.id),
             to: captureURL,
             format: .pcapng,
+            metadata: PacketExportMetadata(
+                textStylesByPacketID: Dictionary(
+                    uniqueKeysWithValues: exportSnapshot.packets.map { ($0.id, $0.resolvedTextStyle) }
+                )
+            ),
             progress: progress,
             shouldCancel: shouldCancel,
             completion: completion
@@ -2117,10 +2162,12 @@ final class TCPViewerWorkspaceController {
 
             if groups.last?.fileID == reference.fileID {
                 groups[groups.count - 1].originalPacketIDs.append(reference.originalPacketID)
+                groups[groups.count - 1].textStylesByOriginalPacketID[reference.originalPacketID] = packet.resolvedTextStyle
             } else {
                 groups.append(ImportedSessionCaptureExportGroup(
                     fileID: reference.fileID,
-                    originalPacketIDs: [reference.originalPacketID]
+                    originalPacketIDs: [reference.originalPacketID],
+                    textStylesByOriginalPacketID: [reference.originalPacketID: packet.resolvedTextStyle]
                 ))
             }
         }
@@ -2215,6 +2262,7 @@ final class TCPViewerWorkspaceController {
             withIDs: group.originalPacketIDs,
             to: partURL,
             format: .pcapng,
+            metadata: PacketExportMetadata(textStylesByPacketID: group.textStylesByOriginalPacketID),
             progress: groupProgress,
             shouldCancel: shouldCancel
         ) { [weak self] result in
@@ -2270,6 +2318,7 @@ final class TCPViewerWorkspaceController {
         withIDs identifiers: [PacketSummary.ID],
         to url: URL,
         format: CaptureFileFormat,
+        metadata: PacketExportMetadata = .empty,
         progress: PacketExportProgressHandler? = nil,
         shouldCancel: PacketExportCancellationCheck? = nil,
         completion: @escaping TCPViewerVoidCompletion
@@ -2305,7 +2354,7 @@ final class TCPViewerWorkspaceController {
                 }
 
                 self.snapshot.sessionState.statusMessage = "Exporting \(url.lastPathComponent)..."
-                liveSession.exportPackets(withIDs: identifiers, to: url, format: format, progress: progress, shouldCancel: cancellationCheck) { [weak self] result in
+                liveSession.exportPackets(withIDs: identifiers, to: url, format: format, metadata: metadata, progress: progress, shouldCancel: cancellationCheck) { [weak self] result in
                     DispatchQueue.main.async {
                         self?.resumeLiveSessionAfterExportIfNeeded(liveSession, shouldResumeCapture: shouldResumeCapture, exportResult: result, url: url, completion: completion)
                     }
@@ -2339,7 +2388,7 @@ final class TCPViewerWorkspaceController {
         case .offline:
             if let sessionDocument = document as? TCPViewSessionOfflineDocument {
                 snapshot.documentState.statusMessage = "Exporting \(url.lastPathComponent)..."
-                sessionDocument.exportPackets(withIDs: identifiers, to: url, format: format, progress: progress, shouldCancel: cancellationCheck) { [weak self] result in
+                sessionDocument.exportPackets(withIDs: identifiers, to: url, format: format, metadata: metadata, progress: progress, shouldCancel: cancellationCheck) { [weak self] result in
                     DispatchQueue.main.async {
                         self?.completeOfflineExport(result, url: url, completion: completion)
                     }
@@ -2367,7 +2416,20 @@ final class TCPViewerWorkspaceController {
 
                 snapshot.documentState.statusMessage = "Exporting \(url.lastPathComponent)..."
                 let originalPacketIDs = importedReferences.map(\.originalPacketID)
-                importedDocument.exportPackets(withIDs: originalPacketIDs, to: url, format: format, progress: progress, shouldCancel: cancellationCheck) { [weak self] result in
+                var remappedStyles: [PacketSummary.ID: PacketTextStyle] = [:]
+                for (identifier, reference) in zip(identifiers, importedReferences) {
+                    if let style = metadata.textStylesByPacketID[identifier] {
+                        remappedStyles[reference.originalPacketID] = style
+                    }
+                }
+                importedDocument.exportPackets(
+                    withIDs: originalPacketIDs,
+                    to: url,
+                    format: format,
+                    metadata: PacketExportMetadata(textStylesByPacketID: remappedStyles),
+                    progress: progress,
+                    shouldCancel: cancellationCheck
+                ) { [weak self] result in
                     DispatchQueue.main.async {
                         self?.completeOfflineExport(result, url: url, completion: completion)
                     }
@@ -2381,7 +2443,7 @@ final class TCPViewerWorkspaceController {
             }
 
             snapshot.documentState.statusMessage = "Exporting \(url.lastPathComponent)..."
-            document.exportPackets(withIDs: identifiers, to: url, format: format, progress: progress, shouldCancel: cancellationCheck) { [weak self] result in
+            document.exportPackets(withIDs: identifiers, to: url, format: format, metadata: metadata, progress: progress, shouldCancel: cancellationCheck) { [weak self] result in
                 DispatchQueue.main.async {
                     self?.completeOfflineExport(result, url: url, completion: completion)
                 }
@@ -2668,6 +2730,18 @@ final class TCPViewerWorkspaceController {
                 break
             }
         }
+    }
+
+    // Apply a packet presentation mutation on main; background exports receive immutable snapshots.
+    func applyTextStyleMutation(
+        _ mutation: PacketTextStyleMutation,
+        packetIDs: Set<PacketSummary.ID>
+    ) {
+        guard !packetIDs.isEmpty else {
+            return
+        }
+
+        _ = snapshot.packetIngestState.applyTextStyleMutation(mutation, packetIDs: packetIDs)
     }
 
     #if DEBUG

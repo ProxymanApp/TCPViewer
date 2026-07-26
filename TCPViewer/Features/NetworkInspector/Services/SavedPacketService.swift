@@ -87,6 +87,37 @@ final class SavedPacketService {
         try persist()
     }
 
+    // Keep saved-row styles synchronized with their matching active packet summaries.
+    @discardableResult
+    func applyTextStyleMutation(
+        _ mutation: PacketTextStyleMutation,
+        packetIDs: Set<PacketSummary.ID>
+    ) throws -> Bool {
+        let previousRecords = cachedRecords
+        var didChange = false
+        for index in cachedRecords.indices where packetIDs.contains(cachedRecords[index].packet.id) {
+            let packet = cachedRecords[index].packet
+            let updatedStyle = mutation.applying(to: packet.resolvedTextStyle)
+            guard updatedStyle != packet.resolvedTextStyle else {
+                continue
+            }
+
+            cachedRecords[index].packet = packet.applying(textStyle: updatedStyle)
+            didChange = true
+        }
+
+        if didChange {
+            do {
+                try persist()
+            } catch {
+                // Keep the in-memory view consistent with the last durable saved-packet state.
+                cachedRecords = previousRecords
+                throw error
+            }
+        }
+        return didChange
+    }
+
     private func persist() throws {
         guard !isDocumentScoped else {
             return

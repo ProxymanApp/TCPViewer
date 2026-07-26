@@ -33,6 +33,7 @@ struct PacketTableMenuLogicTests {
         #expect(state.copyCellEnabled)
         #expect(state.pinEnabled)
         #expect(state.saveEnabled)
+        #expect(state.styleEnabled)
         #expect(state.exportEnabled)
         #expect(state.deleteEnabled)
     }
@@ -270,6 +271,7 @@ struct PacketTableMenuLogicTests {
             copyCellEnabled: true,
             pinEnabled: true,
             saveEnabled: true,
+            styleEnabled: true,
             exportEnabled: true,
             deleteEnabled: true
         ))
@@ -282,15 +284,112 @@ struct PacketTableMenuLogicTests {
         let items = menu.nonSeparatorItemsIncludingSubmenus()
         let copyRowsAsItem = try #require(menu.items.first { $0.title == "Copy Rows As" })
         let copyRowsAsSubmenu = try #require(copyRowsAsItem.submenu)
+        let highlightItem = try #require(menu.items.first { $0.title == "Highlight" })
+        let highlightSubmenu = try #require(highlightItem.submenu)
         let copyRowsAsTitles = copyRowsAsSubmenu.items.compactMap { item in
             item.isSeparatorItem ? nil : item.title
         }
 
         #expect(copyRowsAsTitles == ["Plain text", "JSON", "Markdown Table", "CSV", "CSV with Header"])
         #expect(copyRowsAsSubmenu.items.filter(\.isSeparatorItem).count == 2)
+        #expect(highlightSubmenu.items.compactMap { $0.isSeparatorItem ? nil : $0.title } == [
+            "Red", "Orange", "Yellow", "Green", "Teal", "Blue", "Indigo", "Purple", "Pink",
+            "Brown", "Gray", "Strikethrough", "Reset",
+        ])
+        #expect(Array(highlightSubmenu.items.prefix(9)).map(\.keyEquivalent) == (1...9).map(String.init))
+        #expect(highlightSubmenu.items.first { $0.title == "Brown" }?.keyEquivalent == "")
+        #expect(highlightSubmenu.items.first { $0.title == "Gray" }?.keyEquivalent == "")
+        #expect(highlightSubmenu.items.first { $0.title == "Strikethrough" }?.keyEquivalent == "/")
+        #expect(highlightSubmenu.items.first { $0.title == "Reset" }?.keyEquivalent == "0")
         #expect(menu.items.contains { $0.title == "Pin" && $0.submenu == nil })
+        let highlightIndex = try #require(menu.items.firstIndex(where: { $0.title == "Highlight" }))
+        #expect(highlightIndex > 0 && menu.items[highlightIndex - 1].isSeparatorItem)
         #expect(!items.isEmpty)
         #expect(items.allSatisfy { item in item.toolTip?.isEmpty == false })
+    }
+
+    @MainActor
+    @Test func highlightedRowPaletteResolvesOpaqueColorsAcrossAppearances() throws {
+        let lightAppearance = try #require(NSAppearance(named: .aqua))
+        let darkAppearance = try #require(NSAppearance(named: .darkAqua))
+
+        for appearance in [lightAppearance, darkAppearance] {
+            let color = PacketHighlightPalette.backgroundColor(
+                for: .green,
+                appearance: appearance
+            )
+            #expect(color.alphaComponent == 1)
+        }
+    }
+
+    @MainActor
+    @Test func packetTableUsesOneBackgroundAcrossCellsAndFullRow() throws {
+        let defaults = Self.makeUserDefaults()
+        let controller = PacketTableViewController(configuration: AppConfiguration(defaults: defaults))
+        controller.loadViewIfNeeded()
+        let tableView = try Self.tableView(in: controller)
+        let packet = makePacket(packetNumber: 1).applying(
+            textStyle: PacketTextStyle(highlightColor: .red)
+        )
+        controller.render(snapshot: makeSnapshot(packets: [packet]))
+        tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+
+        for column in tableView.tableColumns {
+            guard let cell = column.dataCell as? NSTextFieldCell else {
+                continue
+            }
+            controller.tableView(tableView, willDisplayCell: cell, for: column, row: 0)
+            #expect(!cell.drawsBackground)
+        }
+
+        tableView.columnAutoresizingStyle = .noColumnAutoresizing
+        let columnsMaxX = tableView.tableColumns.indices
+            .map { tableView.rect(ofColumn: $0).maxX }
+            .max() ?? 0
+        tableView.setFrameSize(NSSize(width: columnsMaxX + 40, height: tableView.rowHeight))
+
+        tableView.deselectAll(nil)
+        let rowEdgeColors = try Self.renderedRowEdgeColors(in: tableView, row: 0)
+        for edgeColor in rowEdgeColors {
+            #expect(edgeColor.redComponent > edgeColor.greenComponent)
+            #expect(edgeColor.redComponent > edgeColor.blueComponent)
+        }
+
+        tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        let selectedEdgeColors = try Self.renderedRowEdgeColors(in: tableView, row: 0)
+        let selectedColor = try #require(NSColor.selectedContentBackgroundColor.usingColorSpace(.deviceRGB))
+        for edgeColor in selectedEdgeColors {
+            #expect(abs(edgeColor.redComponent - selectedColor.redComponent) < 0.01)
+            #expect(abs(edgeColor.greenComponent - selectedColor.greenComponent) < 0.01)
+            #expect(abs(edgeColor.blueComponent - selectedColor.blueComponent) < 0.01)
+        }
+    }
+
+    private func makeSnapshot(packets: [PacketSummary]) -> NetworkInspectorSnapshot {
+        var base = TCPViewerWindowSnapshot.foundation
+        base.packetIngestState.replace(with: packets, source: .live)
+        let rows = packets.map(PacketTableRow.init(packet:))
+        let visibleIndex = Dictionary(uniqueKeysWithValues: rows.enumerated().map { ($1.id, $0) })
+        let content = PacketTableContent(
+            displayFilter: PacketDisplayFilter(""),
+            displayFilterChips: [],
+            store: PacketTableRowStore(rows: rows, visiblePacketRowIndexByID: visibleIndex),
+            generation: 1,
+            updatePlan: .reload,
+            malformedPacketCount: 0
+        )
+        return NetworkInspectorSnapshot.make(
+            base: base,
+            selectedSidebar: .liveCapture,
+            selectedSourceListSelection: .allPackets,
+            sourceListSnapshot: .empty,
+            sourceListFilterText: "",
+            workspaceMode: .packets,
+            inspectorTab: .summary,
+            isInspectorVisible: true,
+            displayFilterText: "",
+            packetTableContent: content
+        )
     }
 
     private func makePacket(
@@ -346,6 +445,34 @@ struct PacketTableMenuLogicTests {
     }
 
     @MainActor
+    private static func renderedRowEdgeColors(in tableView: NSTableView, row: Int) throws -> [NSColor] {
+        let rowRect = tableView.rect(ofRow: row)
+        let bitmap = try #require(NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(ceil(tableView.bounds.width)),
+            pixelsHigh: Int(ceil(rowRect.height)),
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ))
+        let context = try #require(NSGraphicsContext(bitmapImageRep: bitmap))
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        tableView.drawBackground(inClipRect: rowRect)
+        NSGraphicsContext.restoreGraphicsState()
+
+        let trailingX = max(1, bitmap.pixelsWide - 2)
+        return try [1, trailingX].map { x in
+            try #require(bitmap.colorAt(x: x, y: 1)?.usingColorSpace(.deviceRGB))
+        }
+    }
+
+    @MainActor
     private static func columnSender(_ identifier: String) -> NSView {
         let view = NSView(frame: .zero)
         view.identifier = NSUserInterfaceItemIdentifier(identifier)
@@ -377,6 +504,9 @@ private final class MenuActionHandler: NSObject, PacketTableContextMenuActionHan
     func copyCellFromMenu(_ sender: Any?) {}
     func pinRowsFromMenu(_ sender: Any?) {}
     func saveRowsFromMenu(_ sender: Any?) {}
+    func setPacketHighlightColorFromMenu(_ sender: Any?) {}
+    func togglePacketStrikethroughFromMenu(_ sender: Any?) {}
+    func resetPacketTextStyleFromMenu(_ sender: Any?) {}
     func exportRowsAsPcapFromMenu(_ sender: Any?) {}
     func exportRowsAsPcapngFromMenu(_ sender: Any?) {}
     func deleteRowsFromMenu(_ sender: Any?) {}

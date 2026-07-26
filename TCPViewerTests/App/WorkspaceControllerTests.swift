@@ -1873,6 +1873,27 @@ struct PacketIngestStateMutationTests {
         }
     }
 
+    @Test func textStyleMutationsUpdateOnlyIndexedPacketsAndComposeEffects() {
+        var state = PacketIngestState.empty
+        let packets = (1...3).map { makePacket(packetNumber: UInt64($0)) }
+        state.append(packets, source: .live)
+
+        let coloredIDs = state.applyTextStyleMutation(.setHighlightColor(.red), packetIDs: [1, 3, 99])
+
+        #expect(coloredIDs == [1, 3])
+        #expect(state.packets[0].resolvedTextStyle == PacketTextStyle(highlightColor: .red))
+        #expect(state.packets[1].resolvedTextStyle == .plain)
+        #expect(state.packets[2].resolvedTextStyle == PacketTextStyle(highlightColor: .red))
+        #expect(state.lastMutation == .metadataUpdate(packetIDs: [1, 3]))
+
+        state.applyTextStyleMutation(.toggleStrikethrough, packetIDs: [1])
+        #expect(state.packets[0].resolvedTextStyle == PacketTextStyle(highlightColor: .red, isStrikethrough: true))
+
+        state.applyTextStyleMutation(.reset, packetIDs: [3])
+        #expect(state.packets[2].resolvedTextStyle == .plain)
+        #expect(state.packets[2].textStyle == nil)
+    }
+
     private func makePacket(packetNumber: UInt64) -> PacketSummary {
         PacketSummary(
             packetNumber: packetNumber,

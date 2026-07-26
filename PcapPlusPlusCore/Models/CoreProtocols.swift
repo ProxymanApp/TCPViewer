@@ -73,6 +73,15 @@ public protocol LiveCaptureSessionProviding: AnyObject {
         shouldCancel: PacketExportCancellationCheck?,
         completion: @escaping TCPViewerVoidCompletion
     )
+    func exportPackets(
+        withIDs identifiers: [PacketSummary.ID],
+        to url: URL,
+        format: CaptureFileFormat,
+        metadata: PacketExportMetadata,
+        progress: PacketExportProgressHandler?,
+        shouldCancel: PacketExportCancellationCheck?,
+        completion: @escaping TCPViewerVoidCompletion
+    )
     func healthSnapshot(completion: @escaping (CaptureHealthSnapshot) -> Void)
     #if DEBUG
     func debugMemorySnapshot() -> LiveCaptureSessionDebugSnapshot
@@ -104,6 +113,15 @@ public protocol OfflineCaptureDocumentProviding: AnyObject {
         shouldCancel: PacketExportCancellationCheck?,
         completion: @escaping TCPViewerVoidCompletion
     )
+    func exportPackets(
+        withIDs identifiers: [PacketSummary.ID],
+        to url: URL,
+        format: CaptureFileFormat,
+        metadata: PacketExportMetadata,
+        progress: PacketExportProgressHandler?,
+        shouldCancel: PacketExportCancellationCheck?,
+        completion: @escaping TCPViewerVoidCompletion
+    )
     func currentURL() -> URL
     func currentMetadata() -> CaptureDocumentMetadata
     func packetSummaries() -> [PacketSummary]
@@ -114,11 +132,49 @@ public extension LiveCaptureSessionProviding {
     func exportPackets(withIDs identifiers: [PacketSummary.ID], to url: URL, format: CaptureFileFormat, completion: @escaping TCPViewerVoidCompletion) {
         exportPackets(withIDs: identifiers, to: url, format: format, progress: nil, shouldCancel: nil, completion: completion)
     }
+
+    func exportPackets(
+        withIDs identifiers: [PacketSummary.ID],
+        to url: URL,
+        format: CaptureFileFormat,
+        metadata: PacketExportMetadata,
+        progress: PacketExportProgressHandler?,
+        shouldCancel: PacketExportCancellationCheck?,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        exportPackets(
+            withIDs: identifiers,
+            to: url,
+            format: format,
+            progress: progress,
+            shouldCancel: shouldCancel,
+            completion: completion
+        )
+    }
 }
 
 public extension OfflineCaptureDocumentProviding {
     func exportPackets(withIDs identifiers: [PacketSummary.ID], to url: URL, format: CaptureFileFormat, completion: @escaping TCPViewerVoidCompletion) {
         exportPackets(withIDs: identifiers, to: url, format: format, progress: nil, shouldCancel: nil, completion: completion)
+    }
+
+    func exportPackets(
+        withIDs identifiers: [PacketSummary.ID],
+        to url: URL,
+        format: CaptureFileFormat,
+        metadata: PacketExportMetadata,
+        progress: PacketExportProgressHandler?,
+        shouldCancel: PacketExportCancellationCheck?,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        exportPackets(
+            withIDs: identifiers,
+            to: url,
+            format: format,
+            progress: progress,
+            shouldCancel: shouldCancel,
+            completion: completion
+        )
     }
 }
 

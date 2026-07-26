@@ -5,6 +5,7 @@
 //  Created by Proxyman LLC on 12/7/26.
 //
 
+import Darwin
 import Foundation
 import Testing
 @testable import PcapPlusPlusCore
@@ -73,6 +74,169 @@ struct PcapNGFidelityTests {
         }
     }
 
+    @Test func pcapNGExportRoundTripsPacketCommentAndTextStyle() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TCPViewer-PcapNGStyle-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("styled.pcapng")
+        let style = PacketTextStyle(highlightColor: .indigo, isStrikethrough: true)
+        let packetComment = "Keep this comment\n[TCPViewer:text-style:v2:red:1]\n\\[TCPViewer:text-style:v2:blue:0]"
+        let record = makeRecord(
+            identifier: 7,
+            linkLayerType: Libpcap.dltEthernet,
+            packetComment: packetComment
+        )
+
+        try NativeCaptureFile.write(
+            records: [record],
+            to: url,
+            format: .pcapng,
+            textStylesByPacketID: [record.identifier: style]
+        )
+        let capture = try NativeCaptureFile.load(from: url)
+        let exportedBytes = try Data(contentsOf: url)
+
+        #expect(capture.records.count == 1)
+        #expect(capture.records[0].rawBytes == record.rawBytes)
+        #expect(capture.records[0].packetComment == packetComment)
+        #expect(capture.records[0].textStyle == style)
+        #expect(capture.metadata.captureApplication == "TCPViewer")
+        #expect(exportedBytes.range(of: Data("[TCPViewer:text-style:v2:indigo:1]".utf8)) != nil)
+    }
+
+    @Test func pcapNGPreservesPlainCommentsThatLookLikeStyleMetadata() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TCPViewer-PcapNGStyleComment-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("plain-comment.pcapng")
+        let packetComment = "[TCPViewer:text-style:v2:red:1]"
+        let record = makeRecord(
+            identifier: 1,
+            linkLayerType: Libpcap.dltEthernet,
+            packetComment: packetComment
+        )
+
+        try NativeCaptureFile.write(records: [record], to: url, format: .pcapng)
+        let capture = try NativeCaptureFile.load(from: url)
+
+        #expect(capture.records[0].packetComment == packetComment)
+        #expect(capture.records[0].textStyle == .plain)
+    }
+
+    @Test func pcapNGIgnoresStyleMarkersFromOtherApplications() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TCPViewer-PcapNGExternalMarker-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("external-marker.pcapng")
+        let record = makeRecord(
+            identifier: 1,
+            linkLayerType: Libpcap.dltEthernet,
+            textStyle: PacketTextStyle(highlightColor: .red, isStrikethrough: true)
+        )
+        try NativeCaptureFile.write(records: [record], to: url, format: .pcapng)
+
+        var data = try Data(contentsOf: url)
+        let applicationRange = try #require(data.range(of: Data("TCPViewer".utf8)))
+        data.replaceSubrange(applicationRange, with: Data("OtherTool".utf8))
+        try data.write(to: url)
+        let capture = try NativeCaptureFile.load(from: url)
+
+        #expect(capture.records[0].packetComment == "[TCPViewer:text-style:v2:red:1]")
+        #expect(capture.records[0].textStyle == .plain)
+    }
+
+    @Test func pcapExportKeepsCanonicalBytesAndRoundTripsStyleInFileMetadata() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TCPViewer-PcapStyle-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let plainURL = directory.appendingPathComponent("plain.pcap")
+        let styledURL = directory.appendingPathComponent("styled.pcap")
+        let record = makeRecord(identifier: 1, linkLayerType: Libpcap.dltEthernet)
+        let style = PacketTextStyle(highlightColor: .pink, isStrikethrough: true)
+
+        try NativeCaptureFile.write(records: [record], to: plainURL, format: .pcap)
+        try NativeCaptureFile.write(
+            records: [record],
+            to: styledURL,
+            format: .pcap,
+            textStylesByPacketID: [record.identifier: style]
+        )
+        let capture = try NativeCaptureFile.load(from: styledURL)
+        let styleMetadata = try #require(extendedAttributeData(at: styledURL))
+
+        #expect(try Data(contentsOf: plainURL) == Data(contentsOf: styledURL))
+        #expect(extendedAttributeData(at: plainURL) == nil)
+        #expect(styleMetadata.last == 0x89)
+        #expect(capture.records.map(\.textStyle) == [style])
+        #expect(capture.records[0].rawBytes == record.rawBytes)
+    }
+
+    @Test func pcapTextStyleBinaryCodesRemainStable() {
+        let expectedColors: [(PacketHighlightColor, UInt8)] = [
+            (.red, 1), (.orange, 2), (.yellow, 3), (.green, 4), (.teal, 5), (.blue, 6),
+            (.indigo, 7), (.purple, 8), (.pink, 9), (.brown, 10), (.gray, 11),
+        ]
+
+        for (color, code) in expectedColors {
+            let style = PacketTextStyle(highlightColor: color, isStrikethrough: true)
+            #expect(PacketTextStyleBinaryCodec.encode(style) == code | 0x80)
+            #expect(PacketTextStyleBinaryCodec.decode(code | 0x80) == style)
+        }
+        #expect(PacketTextStyleBinaryCodec.encode(.plain) == 0)
+        #expect(PacketTextStyleBinaryCodec.decode(12) == nil)
+    }
+
+    @Test func explicitPlainExportMetadataResetsAnImportedStyle() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TCPViewer-PcapNGStyleReset-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("reset.pcapng")
+        let record = makeRecord(
+            identifier: 3,
+            linkLayerType: Libpcap.dltEthernet,
+            textStyle: PacketTextStyle(highlightColor: .red)
+        )
+
+        try NativeCaptureFile.write(
+            records: [record],
+            to: url,
+            format: .pcapng,
+            textStylesByPacketID: [record.identifier: .plain]
+        )
+        let capture = try NativeCaptureFile.load(from: url)
+
+        #expect(capture.records.map(\.textStyle) == [.plain])
+    }
+
+    @Test func replacingAnExistingPcapReplacesItsStyleMetadata() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TCPViewer-PcapStyleReplace-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("replaced.pcap")
+        let record = makeRecord(identifier: 1, linkLayerType: Libpcap.dltEthernet)
+
+        try NativeCaptureFile.write(
+            records: [record],
+            to: url,
+            format: .pcap,
+            textStylesByPacketID: [record.identifier: PacketTextStyle(highlightColor: .green)]
+        )
+        try NativeCaptureFile.write(
+            records: [record],
+            to: url,
+            format: .pcap,
+            textStylesByPacketID: [record.identifier: .plain]
+        )
+
+        #expect(try NativeCaptureFile.load(from: url).records.map(\.textStyle) == [.plain])
+    }
+
     private func makeRecord(
         identifier: UInt64,
         timestamp: Date = Date(timeIntervalSince1970: 1),
@@ -81,7 +245,9 @@ struct PcapNGFidelityTests {
         interfaceName: String? = nil,
         resolution: UInt8? = nil,
         offset: Int64 = 0,
-        rawTimestamp: UInt64? = nil
+        rawTimestamp: UInt64? = nil,
+        packetComment: String? = nil,
+        textStyle: PacketTextStyle = .plain
     ) -> NativePacketRecord {
         NativePacketRecord(
             identifier: identifier,
@@ -92,11 +258,25 @@ struct PcapNGFidelityTests {
             linkLayerType: linkLayerType,
             interfaceIdentifier: interfaceName,
             interfaceName: interfaceName,
-            packetComment: nil,
+            packetComment: packetComment,
             interfaceID: interfaceID,
             pcapNGTimestampResolution: resolution,
             pcapNGTimestampOffsetSeconds: offset,
-            pcapNGTimestampRawValue: rawTimestamp
+            pcapNGTimestampRawValue: rawTimestamp,
+            textStyle: textStyle
         )
+    }
+
+    private func extendedAttributeData(at url: URL) -> Data? {
+        let name = "com.proxyman.TCPViewer.packet-text-styles"
+        let length = getxattr(url.path, name, nil, 0, 0, 0)
+        guard length > 0 else {
+            return nil
+        }
+        var data = Data(count: length)
+        let result = data.withUnsafeMutableBytes { bytes in
+            getxattr(url.path, name, bytes.baseAddress, bytes.count, 0, 0)
+        }
+        return result == length ? data : nil
     }
 }
