@@ -585,6 +585,47 @@ struct InspectorPipelineTests {
         #expect(packet.dnsResolutions?.first?.ipAddress == "93.184.216.34")
     }
 
+    @Test func splitLengthPrefixedDNSOverTCPProducesResolutionOnCompletingPacket() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let dnsPayload = makeDNSResponsePayload()
+        var framedPayload: [UInt8] = []
+        framedPayload.appendBigEndian(UInt16(dnsPayload.count))
+        framedPayload.append(contentsOf: dnsPayload)
+        let splitIndex = framedPayload.count / 2
+        let firstPayload = Array(framedPayload[..<splitIndex])
+        let secondPayload = Array(framedPayload[splitIndex...])
+        let captureURL = directory.appendingPathComponent("split-dns-over-tcp.pcap")
+        try writePCAP(to: captureURL, packets: [
+            makeIPv4TCPPacket(
+                sourcePort: 53,
+                destinationPort: 54_321,
+                identification: 0x1243,
+                sequenceNumber: 10,
+                payload: firstPayload
+            ),
+            makeIPv4TCPPacket(
+                sourcePort: 53,
+                destinationPort: 54_321,
+                identification: 0x1244,
+                sequenceNumber: UInt32(10 + firstPayload.count),
+                payload: secondPayload
+            ),
+        ])
+
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
+        let packets = try await document.open()
+
+        #expect(packets.count == 2)
+        #expect(packets[0].dnsResolutions == nil)
+        #expect(packets[1].dnsResolutions == [DNSResolutionObservation(
+            domainName: "www.example.com",
+            ipAddress: "93.184.216.34",
+            timeToLive: 60
+        )])
+    }
+
     @Test func encryptedDNSPortsDoNotParseLengthPrefixedBytesAsPlainDNS() {
         let dnsPayload = makeDNSResponsePayload()
         var encryptedCarrierPayload: [UInt8] = []

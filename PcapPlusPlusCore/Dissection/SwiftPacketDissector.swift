@@ -105,10 +105,15 @@ enum SwiftPacketDissector {
     private static let wiresharkWarningLogLock = NSLock()
     private static var loggedWiresharkWarningKeys: Set<String> = []
 
-    static func dissect(record: NativePacketRecord, disablesWireshark: Bool) -> SwiftPacketDissection {
+    static func dissect(
+        record: NativePacketRecord,
+        disablesWireshark: Bool,
+        analyzedPacket: AnalyzedPacket? = nil
+    ) -> SwiftPacketDissection {
         dissect(
             record: record,
             disablesWireshark: disablesWireshark,
+            analyzedPacket: analyzedPacket,
             wiresharkRuntimeStatus: SwiftWiresharkRuntimeStatus(
                 isAvailable: false,
                 unavailableReason: "Wireshark libwireshark backend is unavailable."
@@ -120,11 +125,11 @@ enum SwiftPacketDissector {
     static func dissect(
         record: NativePacketRecord,
         disablesWireshark: Bool,
+        analyzedPacket: AnalyzedPacket? = nil,
         wiresharkRuntimeStatus: SwiftWiresharkRuntimeStatus,
         logger: SwiftWiresharkConsoleLogger = SwiftWiresharkConsoleLogger()
     ) -> SwiftPacketDissection {
-        let analyzer = PacketAnalyzer(record: record)
-        let packet = analyzer.analyze()
+        let packet = analyzedPacket ?? PacketAnalyzer(record: record).analyze()
         var nodes = packet.detailNodes
         if disablesWireshark {
             let reason = "Wireshark libwireshark backend is disabled for this capture."
@@ -250,6 +255,7 @@ struct AnalyzedPacket {
     var streamID: UInt32?
     var tcpFlags: String?
     var tcpPayloadLength: Int?
+    var dnsTCPStreamSegment: DNSTCPStreamSegment?
     var sniDomainName: String?
     var dnsResolutions: [DNSResolutionObservation] = []
     var layers: [PacketLayer] = []
@@ -569,13 +575,32 @@ final class PacketAnalyzer {
         packet.layers = inheritedLayers + [PacketLayer(name: "TCP", detailSummary: packet.infoSummary)]
         packet.detailNodes = inheritedNodes + [tcpNode]
 
+        let isPlaintextDNS = sourcePort == 53 || destinationPort == 53
+        if isPlaintextDNS {
+            let sequenceNumber = readUInt32BE(at: offset + 4) ?? 0
+            packet.dnsTCPStreamSegment = DNSTCPStreamSegment(
+                payloadSequenceNumber: sequenceNumber &+ (flagsValue & 0x0002 != 0 ? 1 : 0),
+                payload: [],
+                resetsStream: flagsValue & 0x0006 != 0,
+                endsStream: flagsValue & 0x0001 != 0
+            )
+        }
+
         guard payloadLength > 0, payloadOffset <= bytes.count else {
             return packet
         }
 
         let payload = Array(bytes[payloadOffset..<min(bytes.count, payloadOffset + payloadLength)])
+        if let segment = packet.dnsTCPStreamSegment {
+            packet.dnsTCPStreamSegment = DNSTCPStreamSegment(
+                payloadSequenceNumber: segment.payloadSequenceNumber,
+                payload: payload,
+                resetsStream: segment.resetsStream,
+                endsStream: segment.endsStream
+            )
+        }
         // Only port 53 is plaintext DNS; DoT/DoH payloads must remain opaque without decryption.
-        if sourcePort == 53 || destinationPort == 53,
+        if isPlaintextDNS,
            payload.count >= 2 {
             let messageLength = Int(UInt16(payload[0]) << 8 | UInt16(payload[1]))
             if messageLength > 0,
@@ -584,9 +609,7 @@ final class PacketAnalyzer {
                 packet.transportHint = .dns
                 packet.protocolSummary = "DNS"
                 packet.infoSummary = dns.summary
-                packet.dnsResolutions = DNSMessageParser(
-                    data: Data(payload[2..<(messageLength + 2)])
-                ).resolutions()
+                packet.dnsResolutions = DNSTCPStreamParser.resolutions(inCompletePayload: payload)
                 packet.layers.append(PacketLayer(name: "DNS", detailSummary: dns.summary))
                 packet.detailNodes.append(dns.node)
                 return packet

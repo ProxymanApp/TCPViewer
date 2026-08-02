@@ -321,6 +321,7 @@ final class PCPPNativeOfflineDocument {
             let totalBytes = UInt64((try? FileManager.default.attributesOfItem(atPath: sourceURL.path)[.size] as? NSNumber)?.uint64Value ?? 0)
             var summaries: [PCPPNativePacketSummaryDescriptor] = []
             var pendingBatch: [PCPPNativePacketSummaryDescriptor] = []
+            var dnsTCPStreamParser = DNSTCPStreamParser()
 
             for (index, record) in records.enumerated() {
                 if cancellationCheck?() == true {
@@ -341,7 +342,11 @@ final class PCPPNativeOfflineDocument {
 
                 let summary = try autoreleasepool {
                     try state.write {
-                        try self.makePacketSummaryDescriptorSafely(record: record, state: &$0)
+                        try self.makePacketSummaryDescriptorSafely(
+                            record: record,
+                            state: &$0,
+                            dnsTCPStreamParser: &dnsTCPStreamParser
+                        )
                     }
                 }
                 summaries.append(summary)
@@ -409,21 +414,30 @@ final class PCPPNativeOfflineDocument {
 
     private func makePacketSummaryDescriptorSafely(
         record: NativePacketRecord,
-        state: inout PCPPNativeOfflineDocumentState
+        state: inout PCPPNativeOfflineDocumentState,
+        dnsTCPStreamParser: inout DNSTCPStreamParser
     ) throws -> PCPPNativePacketSummaryDescriptor {
+        var analyzed = PacketAnalyzer(record: record).analyze()
+        mergeDNSResolutions(
+            dnsTCPStreamParser.resolutions(for: analyzed, at: record.timestamp),
+            into: &analyzed
+        )
         do {
             let session = try requireDissectionSession(in: state)
             try session.observe(record)
             let wiresharkSummary = try session.summarize(record)
-            let analyzer = PacketAnalyzer(record: record).analyze()
-            return makePacketSummaryDescriptor(record: record, analyzed: analyzer, wireshark: wiresharkSummary)
+            return makePacketSummaryDescriptor(record: record, analyzed: analyzed, wireshark: wiresharkSummary)
         } catch {
             if NativeErrorIsCriticalWiresharkException(error) {
                 throw error
             }
             // A single packet can be malformed enough for epan to reject it; keep the file open.
             state.partiallyLoaded = true
-            return SwiftPacketDissector.dissect(record: record, disablesWireshark: true).summary
+            return SwiftPacketDissector.dissect(
+                record: record,
+                disablesWireshark: true,
+                analyzedPacket: analyzed
+            ).summary
         }
     }
 
@@ -500,6 +514,7 @@ private struct PCPPNativeLiveSessionState {
     var packetsDroppedByInterface: UInt64 = 0
     var liveLinkLayerType = Libpcap.dltEthernet
     var dissectionSession: WiresharkEpanSession?
+    var dnsTCPStreamParser = DNSTCPStreamParser()
     var statusMessage: String?
 }
 
@@ -607,6 +622,7 @@ final class PCPPNativeLiveSession {
             $0.packetNumber = 1
             $0.liveLinkLayerType = captureBackend.dataLink(for: openedHandle)
             $0.packetStore.reset()
+            $0.dnsTCPStreamParser.reset()
             $0.packetsReceived = 0
             $0.packetsDropped = 0
             $0.packetsDroppedByInterface = 0
@@ -694,6 +710,7 @@ final class PCPPNativeLiveSession {
             $0.packetsDropped = 0
             $0.packetsDroppedByInterface = 0
             $0.dissectionSession = nextDissectionSession
+            $0.dnsTCPStreamParser.reset()
             if nextDissectionSession != nil {
                 $0.statusMessage = nil
             }
@@ -843,18 +860,30 @@ final class PCPPNativeLiveSession {
 
             let result: (summary: PCPPNativePacketSummaryDescriptor, degraded: Bool) = autoreleasepool {
                 state.write {
+                    var analyzed = PacketAnalyzer(record: record).analyze()
+                    mergeDNSResolutions(
+                        $0.dnsTCPStreamParser.resolutions(for: analyzed, at: record.timestamp),
+                        into: &analyzed
+                    )
                     guard let session = $0.dissectionSession else {
-                        return (SwiftPacketDissector.dissect(record: record, disablesWireshark: true).summary, false)
+                        return (SwiftPacketDissector.dissect(
+                            record: record,
+                            disablesWireshark: true,
+                            analyzedPacket: analyzed
+                        ).summary, false)
                     }
 
                     do {
                         try session.observe(record)
                         let wiresharkSummary = try session.summarize(record)
-                        let analyzer = PacketAnalyzer(record: record).analyze()
-                        return (makePacketSummaryDescriptor(record: record, analyzed: analyzer, wireshark: wiresharkSummary), false)
+                        return (makePacketSummaryDescriptor(record: record, analyzed: analyzed, wireshark: wiresharkSummary), false)
                     } catch {
                         disableWiresharkAfterFailure(error, state: &$0)
-                        return (SwiftPacketDissector.dissect(record: record, disablesWireshark: true).summary, true)
+                        return (SwiftPacketDissector.dissect(
+                            record: record,
+                            disablesWireshark: true,
+                            analyzedPacket: analyzed
+                        ).summary, true)
                     }
                 }
             }
@@ -925,6 +954,15 @@ final class PCPPNativeLiveSession {
             statusMessage: status ?? state.statusMessage
         )
     }
+}
+
+// Merge stream observations with packet-local parsing while preserving stable order.
+private func mergeDNSResolutions(_ resolutions: [DNSResolutionObservation], into packet: inout AnalyzedPacket) {
+    guard !resolutions.isEmpty else {
+        return
+    }
+    var seen = Set(packet.dnsResolutions)
+    packet.dnsResolutions.append(contentsOf: resolutions.filter { seen.insert($0).inserted })
 }
 
 private func makePacketSummaryDescriptor(
