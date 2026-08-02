@@ -105,10 +105,15 @@ enum SwiftPacketDissector {
     private static let wiresharkWarningLogLock = NSLock()
     private static var loggedWiresharkWarningKeys: Set<String> = []
 
-    static func dissect(record: NativePacketRecord, disablesWireshark: Bool) -> SwiftPacketDissection {
+    static func dissect(
+        record: NativePacketRecord,
+        disablesWireshark: Bool,
+        analyzedPacket: AnalyzedPacket? = nil
+    ) -> SwiftPacketDissection {
         dissect(
             record: record,
             disablesWireshark: disablesWireshark,
+            analyzedPacket: analyzedPacket,
             wiresharkRuntimeStatus: SwiftWiresharkRuntimeStatus(
                 isAvailable: false,
                 unavailableReason: "Wireshark libwireshark backend is unavailable."
@@ -120,11 +125,11 @@ enum SwiftPacketDissector {
     static func dissect(
         record: NativePacketRecord,
         disablesWireshark: Bool,
+        analyzedPacket: AnalyzedPacket? = nil,
         wiresharkRuntimeStatus: SwiftWiresharkRuntimeStatus,
         logger: SwiftWiresharkConsoleLogger = SwiftWiresharkConsoleLogger()
     ) -> SwiftPacketDissection {
-        let analyzer = PacketAnalyzer(record: record)
-        let packet = analyzer.analyze()
+        let packet = analyzedPacket ?? PacketAnalyzer(record: record).analyze()
         var nodes = packet.detailNodes
         if disablesWireshark {
             let reason = "Wireshark libwireshark backend is disabled for this capture."
@@ -166,6 +171,7 @@ enum SwiftPacketDissector {
             decodeStatus: decodeDescriptor,
             captureMetadata: captureMetadata,
             sniDomainName: packet.sniDomainName,
+            dnsResolutions: packet.dnsResolutions,
             textStyle: record.textStyle
         )
         let inspection = PCPPNativePacketInspectionDescriptor(
@@ -249,7 +255,9 @@ struct AnalyzedPacket {
     var streamID: UInt32?
     var tcpFlags: String?
     var tcpPayloadLength: Int?
+    var dnsTCPStreamSegment: DNSTCPStreamSegment?
     var sniDomainName: String?
+    var dnsResolutions: [DNSResolutionObservation] = []
     var layers: [PacketLayer] = []
     var detailNodes: [PacketDetailNode] = []
     var decodeStatus = PacketDecodeStatus(kind: .complete)
@@ -567,11 +575,47 @@ final class PacketAnalyzer {
         packet.layers = inheritedLayers + [PacketLayer(name: "TCP", detailSummary: packet.infoSummary)]
         packet.detailNodes = inheritedNodes + [tcpNode]
 
+        let isPlaintextDNS = sourcePort == 53 || destinationPort == 53
+        if isPlaintextDNS {
+            let sequenceNumber = readUInt32BE(at: offset + 4) ?? 0
+            packet.dnsTCPStreamSegment = DNSTCPStreamSegment(
+                payloadSequenceNumber: sequenceNumber &+ (flagsValue & 0x0002 != 0 ? 1 : 0),
+                payload: [],
+                resetsStream: flagsValue & 0x0006 != 0,
+                endsStream: flagsValue & 0x0001 != 0
+            )
+        }
+
         guard payloadLength > 0, payloadOffset <= bytes.count else {
             return packet
         }
 
         let payload = Array(bytes[payloadOffset..<min(bytes.count, payloadOffset + payloadLength)])
+        if let segment = packet.dnsTCPStreamSegment {
+            packet.dnsTCPStreamSegment = DNSTCPStreamSegment(
+                payloadSequenceNumber: segment.payloadSequenceNumber,
+                payload: payload,
+                resetsStream: segment.resetsStream,
+                endsStream: segment.endsStream
+            )
+        }
+        // Only port 53 is plaintext DNS; DoT/DoH payloads must remain opaque without decryption.
+        if isPlaintextDNS,
+           payload.count >= 2 {
+            let messageLength = Int(UInt16(payload[0]) << 8 | UInt16(payload[1]))
+            if messageLength > 0,
+               payload.count >= messageLength + 2,
+               let dns = dnsNode(offset: payloadOffset + 2, length: messageLength) {
+                packet.transportHint = .dns
+                packet.protocolSummary = "DNS"
+                packet.infoSummary = dns.summary
+                packet.dnsResolutions = DNSTCPStreamParser.resolutions(inCompletePayload: payload)
+                packet.layers.append(PacketLayer(name: "DNS", detailSummary: dns.summary))
+                packet.detailNodes.append(dns.node)
+                return packet
+            }
+        }
+
         if let tls = tlsNode(payload: payload, offset: payloadOffset) {
             let versionName = tls.layerName
             packet.transportHint = .tls
@@ -646,10 +690,15 @@ final class PacketAnalyzer {
         packet.layers = inheritedLayers + [PacketLayer(name: "UDP", detailSummary: packet.infoSummary)]
         packet.detailNodes = inheritedNodes + [udpNode]
 
+        // Only port 53 is plaintext DNS; encrypted DNS bytes must never become false cache evidence.
         if sourcePort == 53 || destinationPort == 53, let dns = dnsNode(offset: payloadOffset, length: payloadLength) {
             packet.transportHint = .dns
             packet.protocolSummary = "DNS"
             packet.infoSummary = dns.summary
+            let dnsEnd = min(bytes.count, payloadOffset + payloadLength)
+            packet.dnsResolutions = DNSMessageParser(
+                data: Data(bytes[payloadOffset..<dnsEnd])
+            ).resolutions()
             packet.layers.append(PacketLayer(name: "DNS", detailSummary: dns.summary))
             packet.detailNodes.append(dns.node)
         } else if payloadLength > 0 {
@@ -1144,12 +1193,19 @@ final class PacketAnalyzer {
                 break
             }
             let type = readUInt16BE(at: cursor) ?? 0
+            let timeToLive = readUInt32BE(at: cursor + 4) ?? 0
             let dataLength = Int(readUInt16BE(at: cursor + 8) ?? 0)
             let dataOffset = cursor + 10
             children.append(field(id: "dns.answer.\(answerIndex).name", name: "Name", fieldName: "dns.resp.name", value: parsedName.name, offset: parsedName.rangeOffset, length: parsedName.rangeLength))
             children.append(field(id: "dns.answer.\(answerIndex).type", name: "Type", fieldName: "dns.resp.type", value: dnsTypeName(type), offset: cursor, length: 2))
+            children.append(field(id: "dns.answer.\(answerIndex).ttl", name: "Time to live", fieldName: "dns.resp.ttl", value: "\(timeToLive)", offset: cursor + 4, length: 4))
             if type == 1, dataLength == 4, bytes.count >= dataOffset + 4 {
                 children.append(field(id: "dns.answer.\(answerIndex).data", name: "Address", fieldName: "dns.a", value: ipv4Address(at: dataOffset), offset: dataOffset, length: 4))
+            } else if type == 28, dataLength == 16, bytes.count >= dataOffset + 16 {
+                children.append(field(id: "dns.answer.\(answerIndex).data", name: "AAAA Address", fieldName: "dns.aaaa", value: ipv6Address(at: dataOffset), offset: dataOffset, length: 16))
+            } else if type == 5,
+                      let cname = dnsName(at: dataOffset, packetStart: offset) {
+                children.append(field(id: "dns.answer.\(answerIndex).data", name: "Canonical name", fieldName: "dns.cname", value: cname.name, offset: cname.rangeOffset, length: cname.rangeLength))
             } else {
                 children.append(field(id: "dns.answer.\(answerIndex).data", name: "RDATA", fieldName: "dns.resp.data", value: hexBytes(offset: dataOffset, length: min(dataLength, bytes.count - dataOffset)), offset: dataOffset, length: min(dataLength, bytes.count - dataOffset)))
             }

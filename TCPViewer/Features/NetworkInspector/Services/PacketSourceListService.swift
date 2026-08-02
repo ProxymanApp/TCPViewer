@@ -405,7 +405,7 @@ enum PacketSourceListClassifier {
     }
 
     static func domainIdentity(for packet: PacketSummary) -> PacketSourceDomainIdentity {
-        guard let domainName = trimmed(packet.sniDomainName) else {
+        guard let domainName = trimmed(packet.domainName) else {
             return PacketSourceDomainIdentity(key: .ipAddresses, displayName: "IP Addresses")
         }
 

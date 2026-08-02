@@ -220,6 +220,7 @@ final class PCPPNativePacketSummaryDescriptor {
     let decodeStatus: PCPPNativeDecodeStatusDescriptor
     let captureMetadata: PCPPNativePacketCaptureMetadataDescriptor
     let sniDomainName: String?
+    let dnsResolutions: [DNSResolutionObservation]?
     let textStyle: PacketTextStyle
 
     init(
@@ -241,6 +242,7 @@ final class PCPPNativePacketSummaryDescriptor {
         decodeStatus: PCPPNativeDecodeStatusDescriptor,
         captureMetadata: PCPPNativePacketCaptureMetadataDescriptor,
         sniDomainName: String?,
+        dnsResolutions: [DNSResolutionObservation]? = nil,
         textStyle: PacketTextStyle = .plain
     ) {
         self.identifier = identifier
@@ -261,6 +263,7 @@ final class PCPPNativePacketSummaryDescriptor {
         self.decodeStatus = decodeStatus
         self.captureMetadata = captureMetadata
         self.sniDomainName = sniDomainName
+        self.dnsResolutions = dnsResolutions?.isEmpty == true ? nil : dnsResolutions
         self.textStyle = textStyle
     }
 }

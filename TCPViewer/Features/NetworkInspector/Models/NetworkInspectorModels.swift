@@ -80,7 +80,7 @@ private extension String {
     // Re-encode through UTF-8 to force a Swift-owned (native) string buffer.
     //
     // Strings handed to us by the native packet layer (`PacketSummary.protocolSummary`,
-    // `infoSummary`, `sniDomainName`, endpoint addresses, …) and by Foundation/AppKit lookups
+    // `infoSummary`, domain names, endpoint addresses, …) and by Foundation/AppKit lookups
     // (`PacketClient` bundle identifiers/paths, interface names) are lazily Cocoa-backed: the Swift
     // `String` only wraps an `NSString` whose lifetime is owned elsewhere. A `PacketTableRow` built
     // from those strings is long-lived and is copied by AppKit on the main thread while live capture
@@ -154,7 +154,7 @@ struct PacketTableRow: Identifiable, Sendable, Hashable {
     let id: PacketSummary.ID
     let sourceAddress: String?
     let destinationAddress: String?
-    let sniDomainName: String?
+    let domainName: String?
     let clientIconFilePath: String?
     let hasClient: Bool
     let timestamp: Date
@@ -205,7 +205,7 @@ struct PacketTableRow: Identifiable, Sendable, Hashable {
         self.id = packet.id
         self.sourceAddress = packet.endpoints.source.address?.tcpviewerNativeCopy
         self.destinationAddress = packet.endpoints.destination.address?.tcpviewerNativeCopy
-        self.sniDomainName = packet.sniDomainName?.tcpviewerNativeCopy
+        self.domainName = packet.domainName?.tcpviewerNativeCopy
         self.clientIconFilePath = (clientIconFilePath ?? PacketClientIconPathResolver.iconFilePath(for: packet.client))?.tcpviewerNativeCopy
         self.hasClient = packet.client != nil
         self.timestamp = packet.timestamp
@@ -216,7 +216,7 @@ struct PacketTableRow: Identifiable, Sendable, Hashable {
         self.destinationText = NetworkInspectorFormatters.endpointLabel(packet.endpoints.destination)
         self.sourcePortText = NetworkInspectorFormatters.portLabel(packet.endpoints.source.port)
         self.destinationPortText = NetworkInspectorFormatters.portLabel(packet.endpoints.destination.port)
-        self.domainText = (packet.sniDomainName ?? "-").tcpviewerNativeCopy
+        self.domainText = (packet.domainName ?? "-").tcpviewerNativeCopy
         self.clientText = (packet.client?.displayName ?? "-").tcpviewerNativeCopy
         self.protocolText = NetworkInspectorFormatters.protocolLabel(for: packet).tcpviewerNativeCopy
         self.streamIDText = packet.streamID.map(String.init) ?? "-"
@@ -252,7 +252,7 @@ struct PacketTableRow: Identifiable, Sendable, Hashable {
     }
 
     var canPinDomain: Bool {
-        sniDomainName?.tcpviewerTrimmedNonEmpty != nil
+        domainName?.tcpviewerTrimmedNonEmpty != nil
     }
 
     var canPinClient: Bool {
@@ -463,7 +463,7 @@ struct PacketDisplayFilter: Sendable, Hashable {
             "\(packet.packetNumber)",
             NetworkInspectorFormatters.protocolLabel(for: packet),
             endpointText(for: packet),
-            packet.sniDomainName ?? "",
+            packet.domainName ?? "",
             clientText(for: packet),
             "\(packet.capturedLength)",
             packet.infoSummary,

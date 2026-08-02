@@ -18,8 +18,23 @@ struct PacketMetadataEnrichmentResult {
 struct PacketMetadataUpdate {
     let packetIDs: [PacketSummary.ID]
     let sniDomainName: String?
+    let dnsDomainName: String?
     let client: PacketClient?
     let direction: PacketDirection?
+
+    init(
+        packetIDs: [PacketSummary.ID],
+        sniDomainName: String?,
+        dnsDomainName: String? = nil,
+        client: PacketClient?,
+        direction: PacketDirection?
+    ) {
+        self.packetIDs = packetIDs
+        self.sniDomainName = sniDomainName
+        self.dnsDomainName = dnsDomainName
+        self.client = client
+        self.direction = direction
+    }
 }
 
 #if DEBUG
@@ -97,6 +112,7 @@ extension PacketClientResolving {
 final class PacketMetadataEnrichmentService: PacketMetadataEnriching {
     private struct FlowMetadata {
         var sniDomainName: String?
+        var dnsDomainName: String?
         var client: PacketClient?
         var direction: PacketDirection?
         var pendingPacketIDs: [PacketSummary.ID] = []
@@ -107,6 +123,7 @@ final class PacketMetadataEnrichmentService: PacketMetadataEnriching {
     private let flowIdleTimeout: TimeInterval
     private let maxPendingPacketIDsPerFlow: Int
     private let clientResolver: any PacketClientResolving
+    private var dnsResolutionCache: DNSResolutionCache
     private var flowMetadataByStreamID: [UInt32: FlowMetadata] = [:]
     private var flowOrder: [UInt32] = []
 
@@ -114,11 +131,13 @@ final class PacketMetadataEnrichmentService: PacketMetadataEnriching {
         maxCachedFlows: Int = 100_000,
         flowIdleTimeout: TimeInterval = 600,
         maxPendingPacketIDsPerFlow: Int = 128,
+        dnsResolutionCache: DNSResolutionCache = DNSResolutionCache(),
         clientResolver: any PacketClientResolving = MacOSPacketClientResolver()
     ) {
         self.maxCachedFlows = max(maxCachedFlows, 1)
         self.flowIdleTimeout = max(flowIdleTimeout, 0)
         self.maxPendingPacketIDsPerFlow = max(maxPendingPacketIDsPerFlow, 1)
+        self.dnsResolutionCache = dnsResolutionCache
         self.clientResolver = clientResolver
     }
 
@@ -126,6 +145,7 @@ final class PacketMetadataEnrichmentService: PacketMetadataEnriching {
     func reset() {
         flowMetadataByStreamID.removeAll(keepingCapacity: false)
         flowOrder.removeAll(keepingCapacity: false)
+        dnsResolutionCache.reset()
         clientResolver.reset()
     }
 
@@ -147,12 +167,17 @@ final class PacketMetadataEnrichmentService: PacketMetadataEnriching {
         enrichedPackets.reserveCapacity(packets.count)
 
         for packet in packets {
+            dnsResolutionCache.observe(packet.dnsResolutions ?? [], at: packet.timestamp)
+
             guard let streamID = packet.streamID else {
                 let resolution = source == .live ? clientResolver.resolution(for: packet) : nil
+                let direction = resolution?.direction ?? packet.direction
+                let dnsDomainName = resolvedDNSDomain(for: packet, direction: direction)
                 enrichedPackets.append(packet.tcpviewerApplying(
                     sniDomainName: packet.sniDomainName,
+                    dnsDomainName: dnsDomainName,
                     client: resolution?.client,
-                    direction: resolution?.direction
+                    direction: direction
                 ))
                 continue
             }
@@ -160,7 +185,13 @@ final class PacketMetadataEnrichmentService: PacketMetadataEnriching {
             var metadata = metadataForFlow(streamID, packet: packet)
             var shouldBackfill = false
 
-            if let sniDomainName = packet.sniDomainName, !sniDomainName.isEmpty, metadata.sniDomainName != sniDomainName {
+            if metadata.direction == nil {
+                metadata.direction = packet.direction
+            }
+
+            if let sniDomainName = packet.sniDomainName?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !sniDomainName.isEmpty,
+               metadata.sniDomainName != sniDomainName {
                 metadata.sniDomainName = sniDomainName
                 shouldBackfill = true
             }
@@ -171,10 +202,25 @@ final class PacketMetadataEnrichmentService: PacketMetadataEnriching {
                 shouldBackfill = true
             }
 
+            if metadata.dnsDomainName == nil,
+               let dnsDomainName = packet.dnsDomainName?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !dnsDomainName.isEmpty {
+                metadata.dnsDomainName = dnsDomainName
+                shouldBackfill = true
+            }
+
+            if metadata.sniDomainName == nil,
+               metadata.dnsDomainName == nil,
+               let dnsDomainName = resolvedDNSDomain(for: packet, direction: metadata.direction) {
+                metadata.dnsDomainName = dnsDomainName
+                shouldBackfill = true
+            }
+
             if shouldBackfill, !metadata.pendingPacketIDs.isEmpty {
                 updates.append(PacketMetadataUpdate(
                     packetIDs: metadata.pendingPacketIDs,
                     sniDomainName: metadata.sniDomainName,
+                    dnsDomainName: metadata.dnsDomainName,
                     client: metadata.client,
                     direction: metadata.direction
                 ))
@@ -182,6 +228,7 @@ final class PacketMetadataEnrichmentService: PacketMetadataEnriching {
 
             let enrichedPacket = packet.tcpviewerApplying(
                 sniDomainName: metadata.sniDomainName ?? packet.sniDomainName,
+                dnsDomainName: metadata.dnsDomainName ?? packet.dnsDomainName,
                 client: metadata.client,
                 direction: metadata.direction
             )
@@ -194,6 +241,41 @@ final class PacketMetadataEnrichmentService: PacketMetadataEnriching {
         }
 
         return PacketMetadataEnrichmentResult(packets: enrichedPackets, updates: updates)
+    }
+
+    private func resolvedDNSDomain(for packet: PacketSummary, direction: PacketDirection?) -> String? {
+        guard packet.transportHint != .dns else {
+            return nil
+        }
+
+        // Direction selects the remote endpoint; ambiguous traffic is attributed only with one clear match.
+        switch direction {
+        case .outbound:
+            return packet.endpoints.destination.address.flatMap {
+                dnsResolutionCache.domain(forIPAddress: $0, at: packet.timestamp)
+            }
+        case .inbound:
+            return packet.endpoints.source.address.flatMap {
+                dnsResolutionCache.domain(forIPAddress: $0, at: packet.timestamp)
+            }
+        case .local, .unknown, nil:
+            let sourceDomain = packet.endpoints.source.address.flatMap {
+                dnsResolutionCache.domain(forIPAddress: $0, at: packet.timestamp)
+            }
+            let destinationDomain = packet.endpoints.destination.address.flatMap {
+                dnsResolutionCache.domain(forIPAddress: $0, at: packet.timestamp)
+            }
+            if let sourceDomain, destinationDomain == nil {
+                return sourceDomain
+            }
+            if let destinationDomain, sourceDomain == nil {
+                return destinationDomain
+            }
+            if sourceDomain == destinationDomain {
+                return sourceDomain
+            }
+            return nil
+        }
     }
 
     private func metadataForFlow(_ streamID: UInt32, packet: PacketSummary) -> FlowMetadata {
@@ -752,6 +834,8 @@ extension PacketSummary {
             decodeStatus: decodeStatus,
             captureMetadata: captureMetadata,
             sniDomainName: sniDomainName,
+            dnsDomainName: dnsDomainName,
+            dnsResolutions: dnsResolutions,
             client: client,
             textStyle: textStyle,
             customComment: customComment
@@ -760,6 +844,7 @@ extension PacketSummary {
 
     func tcpviewerApplying(
         sniDomainName: String? = nil,
+        dnsDomainName: String? = nil,
         client: PacketClient? = nil,
         direction: PacketDirection? = nil
     ) -> PacketSummary {
@@ -783,6 +868,8 @@ extension PacketSummary {
             decodeStatus: decodeStatus,
             captureMetadata: captureMetadata,
             sniDomainName: sniDomainName ?? self.sniDomainName,
+            dnsDomainName: dnsDomainName ?? self.dnsDomainName,
+            dnsResolutions: dnsResolutions,
             client: client ?? self.client,
             textStyle: textStyle,
             customComment: customComment
@@ -810,6 +897,8 @@ extension PacketSummary {
             decodeStatus: decodeStatus,
             captureMetadata: captureMetadata,
             sniDomainName: sniDomainName,
+            dnsDomainName: dnsDomainName,
+            dnsResolutions: dnsResolutions,
             client: client,
             textStyle: textStyle,
             customComment: customComment
