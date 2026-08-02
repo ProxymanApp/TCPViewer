@@ -431,6 +431,7 @@ struct PacketIngestState: Sendable, Equatable {
                 let currentPacket = packets[packetIndex]
                 let updatedPacket = currentPacket.tcpviewerApplying(
                     sniDomainName: update.sniDomainName,
+                    dnsDomainName: update.dnsDomainName,
                     client: update.client,
                     direction: update.direction
                 )

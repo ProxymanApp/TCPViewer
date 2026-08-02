@@ -292,6 +292,23 @@ public struct PacketClient: Sendable, Codable, Hashable {
     }
 }
 
+public struct DNSResolutionObservation: Sendable, Codable, Hashable {
+    public let domainName: String
+    public let ipAddress: String
+    public let timeToLive: UInt32
+
+    public init(domainName: String, ipAddress: String, timeToLive: UInt32) {
+        self.domainName = domainName
+        self.ipAddress = ipAddress
+        self.timeToLive = timeToLive
+    }
+}
+
+public enum PacketDomainSource: String, Sendable, Codable, Hashable {
+    case sni
+    case dns
+}
+
 public struct PacketSummary: Identifiable, Sendable, Codable, Hashable {
     public let id: UInt64
     public let packetNumber: UInt64
@@ -312,6 +329,8 @@ public struct PacketSummary: Identifiable, Sendable, Codable, Hashable {
     public let decodeStatus: PacketDecodeStatus
     public let captureMetadata: PacketCaptureMetadata
     public let sniDomainName: String?
+    public let dnsDomainName: String?
+    public let dnsResolutions: [DNSResolutionObservation]?
     public let client: PacketClient?
     public let textStyle: PacketTextStyle?
     public let customComment: String?
@@ -336,6 +355,8 @@ public struct PacketSummary: Identifiable, Sendable, Codable, Hashable {
         decodeStatus: PacketDecodeStatus,
         captureMetadata: PacketCaptureMetadata,
         sniDomainName: String? = nil,
+        dnsDomainName: String? = nil,
+        dnsResolutions: [DNSResolutionObservation]? = nil,
         client: PacketClient? = nil,
         textStyle: PacketTextStyle? = nil,
         customComment: String? = nil
@@ -359,6 +380,8 @@ public struct PacketSummary: Identifiable, Sendable, Codable, Hashable {
         self.decodeStatus = decodeStatus
         self.captureMetadata = captureMetadata
         self.sniDomainName = sniDomainName
+        self.dnsDomainName = dnsDomainName
+        self.dnsResolutions = dnsResolutions?.isEmpty == true ? nil : dnsResolutions
         self.client = client
         self.textStyle = textStyle?.isPlain == true ? nil : textStyle
         let sanitizedComment = customComment.map(PacketComment.sanitized)
@@ -371,6 +394,27 @@ public struct PacketSummary: Identifiable, Sendable, Codable, Hashable {
 
     public var resolvedComment: String? {
         customComment ?? captureMetadata.packetComment
+    }
+
+    public var domainName: String? {
+        Self.normalizedDomain(sniDomainName) ?? Self.normalizedDomain(dnsDomainName)
+    }
+
+    public var domainSource: PacketDomainSource? {
+        if Self.normalizedDomain(sniDomainName) != nil {
+            return .sni
+        }
+        if Self.normalizedDomain(dnsDomainName) != nil {
+            return .dns
+        }
+        return nil
+    }
+
+    private static func normalizedDomain(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+            return nil
+        }
+        return value
     }
 }
 

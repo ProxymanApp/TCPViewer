@@ -957,6 +957,7 @@ private func makePacketSummaryDescriptor(
         decodeStatus: decodeStatusDescriptor(analyzed.decodeStatus),
         captureMetadata: captureMetadataDescriptor(record),
         sniDomainName: wireshark.sniDomainName,
+        dnsResolutions: analyzed.dnsResolutions,
         textStyle: record.textStyle
     )
 }

@@ -543,6 +543,11 @@ struct InspectorPipelineTests {
 
         #expect(packet.transportHint == .dns)
         #expect(packet.protocolSummary?.localizedCaseInsensitiveContains("DNS") == true)
+        #expect(packet.dnsResolutions == [DNSResolutionObservation(
+            domainName: "www.example.com",
+            ipAddress: "93.184.216.34",
+            timeToLive: 60
+        )])
         let dnsNode = try #require(findNode(in: inspection.detailNodes, fieldName: "dns"))
         #expect(findNode(in: dnsNode.children, fieldName: "dns.id")?.value == "0x1234")
         #expect(findNode(in: dnsNode.children, fieldName: "dns.flags.response")?.value?.localizedCaseInsensitiveContains("response") == true)
@@ -553,6 +558,58 @@ struct InspectorPipelineTests {
         #expect(findNode(in: dnsNode.children, fieldName: "dns.resp.name")?.value == "www.example.com")
         #expect(findNode(in: dnsNode.children, fieldName: "dns.a")?.value == "93.184.216.34")
         #expect(findNode(in: dnsNode.children, fieldName: "dns.a")?.byteRange == PacketByteRange(offset: 87, length: 4))
+    }
+
+    @Test func completeLengthPrefixedDNSOverTCPProducesResolutionObservation() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let dnsPayload = makeDNSResponsePayload()
+        var tcpPayload: [UInt8] = []
+        tcpPayload.appendBigEndian(UInt16(dnsPayload.count))
+        tcpPayload.append(contentsOf: dnsPayload)
+        let captureURL = directory.appendingPathComponent("dns-over-tcp.pcap")
+        try writePCAP(to: captureURL, packets: [makeIPv4TCPPacket(
+            sourcePort: 53,
+            destinationPort: 54_321,
+            identification: 0x1239,
+            payload: tcpPayload
+        )])
+
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
+        let packets = try await document.open()
+        let packet = try #require(packets.first)
+
+        #expect(packet.transportHint == .dns)
+        #expect(packet.dnsResolutions?.first?.domainName == "www.example.com")
+        #expect(packet.dnsResolutions?.first?.ipAddress == "93.184.216.34")
+    }
+
+    @Test func encryptedDNSPortsDoNotParseLengthPrefixedBytesAsPlainDNS() {
+        let dnsPayload = makeDNSResponsePayload()
+        var encryptedCarrierPayload: [UInt8] = []
+        encryptedCarrierPayload.appendBigEndian(UInt16(dnsPayload.count))
+        encryptedCarrierPayload.append(contentsOf: dnsPayload)
+        let rawBytes = makeIPv4TCPPacket(
+            sourcePort: 853,
+            destinationPort: 54_321,
+            identification: 0x1242,
+            payload: encryptedCarrierPayload
+        )
+        let packet = PacketAnalyzer(record: NativePacketRecord(
+            identifier: 1,
+            packetNumber: 1,
+            timestamp: Date(timeIntervalSince1970: 0),
+            rawBytes: rawBytes,
+            originalLength: rawBytes.count,
+            linkLayerType: Libpcap.dltEthernet,
+            interfaceIdentifier: nil,
+            interfaceName: nil,
+            packetComment: nil
+        )).analyze()
+
+        #expect(packet.transportHint != .dns)
+        #expect(packet.dnsResolutions.isEmpty)
     }
 
     @Test func phaseTwoInspectionUsesWiresharkPayloadDetailsForUnestablishedStreams() async throws {
@@ -1384,26 +1441,7 @@ private func makeIPv4UDPPayloadPacket() -> Data {
 }
 
 private func makeIPv4DNSResponsePacket() -> Data {
-    let dnsPayload: [UInt8] = [
-        0x12, 0x34,
-        0x81, 0x80,
-        0x00, 0x01,
-        0x00, 0x01,
-        0x00, 0x00,
-        0x00, 0x00,
-        0x03, 0x77, 0x77, 0x77,
-        0x07, 0x65, 0x78, 0x61, 0x6d, 0x70, 0x6c, 0x65,
-        0x03, 0x63, 0x6f, 0x6d,
-        0x00,
-        0x00, 0x01,
-        0x00, 0x01,
-        0xc0, 0x0c,
-        0x00, 0x01,
-        0x00, 0x01,
-        0x00, 0x00, 0x00, 0x3c,
-        0x00, 0x04,
-        0x5d, 0xb8, 0xd8, 0x22,
-    ]
+    let dnsPayload = makeDNSResponsePayload()
     let udpLength = UInt16(8 + dnsPayload.count)
     let ipv4TotalLength = UInt16(20 + Int(udpLength))
     var packet = Data([
@@ -1424,6 +1462,29 @@ private func makeIPv4DNSResponsePacket() -> Data {
     packet.appendBigEndian(UInt16(0))
     packet.append(contentsOf: dnsPayload)
     return packet
+}
+
+private func makeDNSResponsePayload() -> [UInt8] {
+    [
+        0x12, 0x34,
+        0x81, 0x80,
+        0x00, 0x01,
+        0x00, 0x01,
+        0x00, 0x00,
+        0x00, 0x00,
+        0x03, 0x77, 0x77, 0x77,
+        0x07, 0x65, 0x78, 0x61, 0x6d, 0x70, 0x6c, 0x65,
+        0x03, 0x63, 0x6f, 0x6d,
+        0x00,
+        0x00, 0x01,
+        0x00, 0x01,
+        0xc0, 0x0c,
+        0x00, 0x01,
+        0x00, 0x01,
+        0x00, 0x00, 0x00, 0x3c,
+        0x00, 0x04,
+        0x5d, 0xb8, 0xd8, 0x22,
+    ]
 }
 
 private func makeIPv4HTTPRequestPacket() -> Data {

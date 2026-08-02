@@ -50,7 +50,7 @@ enum PacketPinMatcher {
     static func matches(_ packet: PacketSummary, pin: PacketPin) -> Bool {
         switch pin.kind {
         case .domain:
-            return normalizedDomain(packet.sniDomainName) == pin.domain
+            return normalizedDomain(packet.domainName) == pin.domain
         case .ip:
             return packet.endpoints.source.address == pin.ipAddress ||
                 packet.endpoints.destination.address == pin.ipAddress
@@ -195,14 +195,14 @@ final class PacketPinService {
     ) throws -> PacketPin {
         switch kind {
         case .domain:
-            guard let domain = PacketPinMatcher.normalizedDomain(packet.sniDomainName) else {
+            guard let domain = PacketPinMatcher.normalizedDomain(packet.domainName) else {
                 throw PacketPinCreationError.missingDomain
             }
 
             return PacketPin(
                 id: PacketPinID(rawValue: "domain:\(domain)"),
                 kind: .domain,
-                title: packet.sniDomainName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? domain,
+                title: packet.domainName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? domain,
                 createdAt: now,
                 domain: domain,
                 ipAddress: nil,

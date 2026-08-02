@@ -535,6 +535,8 @@ extension PacketSummary {
             decodeStatus: decodeStatus,
             captureMetadata: captureMetadata,
             sniDomainName: sniDomainName,
+            dnsDomainName: dnsDomainName,
+            dnsResolutions: dnsResolutions,
             client: client,
             textStyle: textStyle,
             customComment: customComment

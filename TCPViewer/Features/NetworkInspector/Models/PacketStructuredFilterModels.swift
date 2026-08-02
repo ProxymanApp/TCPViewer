@@ -486,7 +486,7 @@ final class PacketStructuredFilterService {
             return [searchableText(for: packet)]
         case .urlDomain:
             return compact([
-                packet.sniDomainName,
+                packet.domainName,
                 packet.infoSummary,
                 packet.layers.compactMap(\.detailSummary).joined(separator: " "),
             ])
@@ -566,7 +566,7 @@ final class PacketStructuredFilterService {
             packet.transportHint.rawValue,
             endpointValues(packet.endpoints.source).joined(separator: " "),
             endpointValues(packet.endpoints.destination).joined(separator: " "),
-            packet.sniDomainName,
+            packet.domainName,
             packet.client?.displayName,
             packet.client?.name,
             packet.client?.bundleIdentifier,

@@ -320,7 +320,7 @@ enum TCPViewerMCPPacketQueryService {
             }
         }
         if !query.domains.isEmpty {
-            guard let domain = packet.sniDomainName?.lowercased(),
+            guard let domain = packet.domainName?.lowercased(),
                   query.domains.contains(where: { domain.contains($0) }) else {
                 return false
             }
@@ -374,7 +374,7 @@ enum TCPViewerMCPPacketQueryService {
         case .protocolName:
             return protocolValues(packet)
         case .domain:
-            return packet.sniDomainName.map { [$0] } ?? []
+            return packet.domainName.map { [$0] } ?? []
         case .sourceAddress:
             return packet.endpoints.source.address.map { [$0] } ?? []
         case .destinationAddress:
@@ -409,7 +409,7 @@ enum TCPViewerMCPPacketQueryService {
             return [String(packet.captureMetadata.isTruncated)]
         case .text:
             return protocolValues(packet) + [
-                packet.sniDomainName,
+                packet.domainName,
                 packet.endpoints.source.address,
                 packet.endpoints.destination.address,
                 packet.client?.displayName,

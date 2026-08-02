@@ -41,8 +41,11 @@ struct TCPViewerMCPPacketSerializer {
         if let interfaceID = packet.interfaceID {
             object["interface_id"] = protectedText(interfaceID)
         }
-        if let domain = packet.sniDomainName {
+        if let domain = packet.domainName {
             object["domain"] = protectedText(domain)
+        }
+        if let domainSource = packet.domainSource {
+            object["domain_source"] = .string(domainSource.rawValue)
         }
         if let streamID = packet.streamID {
             object["stream_id"] = .int(Int(streamID))

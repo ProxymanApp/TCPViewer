@@ -698,7 +698,7 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
             capturedBytes += packet.capturedLength
             let protocolName = packet.protocolSummary ?? packet.transportHint.rawValue
             protocolCounts[protocolName, default: 0] += 1
-            if let domain = packet.sniDomainName {
+            if let domain = packet.domainName {
                 let value = redactsSensitiveData ? redactor.redact(domain) : domain
                 domainCounts[value, default: 0] += 1
             }
