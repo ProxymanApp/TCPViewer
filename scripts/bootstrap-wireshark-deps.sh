@@ -108,6 +108,8 @@ export PKG_CONFIG_PATH="$INSTALL_ROOT/lib/pkgconfig:$INSTALL_ROOT/share/pkgconfi
 export PKG_CONFIG_LIBDIR="$PKG_CONFIG_PATH"
 export CMAKE_PREFIX_PATH="$INSTALL_ROOT"
 export PATH="$INSTALL_ROOT/bin:$PATH"
+# Meson detects Ninja separately, so pass the absolute path resolved outside Xcode's restricted PATH.
+export NINJA="$NINJA_BIN"
 export CC="${CC:-/usr/bin/clang}"
 export CXX="${CXX:-/usr/bin/clang++}"
 unset CPATH
@@ -273,7 +275,16 @@ build_cmake "pcre2" "$(extract_archive "pcre2-$PCRE2_VERSION" "pcre2-$PCRE2_VERS
   -DPCRE2_BUILD_PCRE2_32=OFF
 
 download_archive "glib-$GLIB_VERSION.tar.xz" "https://download.gnome.org/sources/glib/2.88/glib-$GLIB_VERSION.tar.xz" "51ab804c56f6eab3e5045c774d1290ac5e4c923d4f9a3d8e33123bee45c1840e"
-build_meson "glib" "$(extract_archive "glib-$GLIB_VERSION" "glib-$GLIB_VERSION.tar.xz")" \
+GLIB_SOURCE_DIR="$(extract_archive "glib-$GLIB_VERSION" "glib-$GLIB_VERSION.tar.xz")"
+GLIB_PATCH_FILE="$PROJECT_DIR/scripts/patches/glib-2.88.1-macos-pipe2-availability.patch"
+# Keep patching idempotent because extracted dependency sources are cached between builds.
+if /usr/bin/patch -d "$GLIB_SOURCE_DIR" -p1 --forward --dry-run < "$GLIB_PATCH_FILE" >/dev/null 2>&1; then
+  /usr/bin/patch -d "$GLIB_SOURCE_DIR" -p1 --forward < "$GLIB_PATCH_FILE"
+elif ! /usr/bin/patch -d "$GLIB_SOURCE_DIR" -p1 --reverse --dry-run < "$GLIB_PATCH_FILE" >/dev/null 2>&1; then
+  echo "error: could not apply the GLib macOS availability patch." >&2
+  exit 1
+fi
+build_meson "glib" "$GLIB_SOURCE_DIR" \
   -Dtests=false \
   -Dinstalled_tests=false \
   -Dintrospection=disabled \
@@ -318,7 +329,8 @@ download_archive "brotli-$BROTLI_VERSION.tar.gz" "https://github.com/google/brot
 build_cmake "brotli" "$(extract_archive "brotli-$BROTLI_VERSION" "brotli-$BROTLI_VERSION.tar.gz")" -DBUILD_SHARED_LIBS=ON -DBROTLI_DISABLE_TESTS=ON
 
 download_archive "c-ares-$CARES_VERSION.tar.gz" "https://github.com/c-ares/c-ares/releases/download/v$CARES_VERSION/c-ares-$CARES_VERSION.tar.gz" "912dd7cc3b3e8a79c52fd7fb9c0f4ecf0aaa73e45efda880266a2d6e26b84ef5"
-build_cmake "c-ares" "$(extract_archive "c-ares-$CARES_VERSION" "c-ares-$CARES_VERSION.tar.gz")" -DCARES_SHARED=ON -DCARES_STATIC=OFF -DCARES_BUILD_TOOLS=OFF -DCARES_BUILD_TESTS=OFF
+# SDK 27 exposes pipe2, but c-ares must retain its portable fallback for the macOS 15 target.
+build_cmake "c-ares" "$(extract_archive "c-ares-$CARES_VERSION" "c-ares-$CARES_VERSION.tar.gz")" -DCARES_SHARED=ON -DCARES_STATIC=OFF -DCARES_BUILD_TOOLS=OFF -DCARES_BUILD_TESTS=OFF -DHAVE_PIPE2=0
 
 download_archive "lz4-$LZ4_VERSION.tar.gz" "https://github.com/lz4/lz4/archive/refs/tags/v$LZ4_VERSION.tar.gz" "537512904744b35e232912055ccf8ec66d768639ff3abe5788d90d792ec5f48b"
 (

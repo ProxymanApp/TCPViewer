@@ -55,6 +55,9 @@ struct DNSResolutionCache {
                 expiresAt: timestamp.addingTimeInterval(lifetime)
             )
             var entries = entriesByIPAddress[ipAddress, default: []]
+            #if DEBUG
+            let isRefresh = entries.contains { $0.domainName == domainName }
+            #endif
             entries.removeAll { $0.expiresAt <= timestamp || $0.domainName == domainName }
             entries.append(entry)
             if entries.count > maximumDomainsPerIPAddress {
@@ -65,6 +68,12 @@ struct DNSResolutionCache {
                 insertionOrder.append(ipAddress)
             }
             entriesByIPAddress[ipAddress] = entries
+            #if DEBUG
+            Self.debugLog(
+                "\(isRefresh ? "refreshed" : "stored") domain=\(domainName) ip=\(ipAddress) "
+                    + "ttl=\(observation.timeToLive)s retained=\(Int(lifetime))s"
+            )
+            #endif
         }
 
         evictIfNeeded()
@@ -72,8 +81,16 @@ struct DNSResolutionCache {
 
     // Return the newest unexpired observation for an IP in average O(1) time.
     mutating func domain(forIPAddress address: String, at timestamp: Date) -> String? {
-        guard let ipAddress = Self.normalizedIPAddress(address),
-              var entries = entriesByIPAddress[ipAddress] else {
+        guard let ipAddress = Self.normalizedIPAddress(address) else {
+            #if DEBUG
+            Self.debugLog("lookup ip=\(address) result=miss reason=invalid-address")
+            #endif
+            return nil
+        }
+        guard var entries = entriesByIPAddress[ipAddress] else {
+            #if DEBUG
+            Self.debugLog("lookup ip=\(ipAddress) result=miss reason=not-cached")
+            #endif
             return nil
         }
 
@@ -81,10 +98,17 @@ struct DNSResolutionCache {
         guard !entries.isEmpty else {
             // Keep the bounded key slot so reinsertion cannot create duplicate FIFO entries.
             entriesByIPAddress[ipAddress] = []
+            #if DEBUG
+            Self.debugLog("lookup ip=\(ipAddress) result=miss reason=expired")
+            #endif
             return nil
         }
         entriesByIPAddress[ipAddress] = entries
-        return entries.max { $0.observedAt < $1.observedAt }?.domainName
+        let domainName = entries.max { $0.observedAt < $1.observedAt }?.domainName
+        #if DEBUG
+        Self.debugLog("lookup ip=\(ipAddress) result=hit domain=\(domainName ?? "-")")
+        #endif
+        return domainName
     }
 
     mutating func reset() {
@@ -145,4 +169,11 @@ struct DNSResolutionCache {
         }
         return nil
     }
+
+    #if DEBUG
+    // Keep captured domain and address diagnostics out of release builds.
+    private static func debugLog(_ message: String) {
+        print("[TCPViewer][DNS Cache] \(message)")
+    }
+    #endif
 }

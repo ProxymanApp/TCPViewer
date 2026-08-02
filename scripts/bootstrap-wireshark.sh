@@ -242,7 +242,9 @@ if [ -f "$STAMP_FILE" ] && [ "$(cat "$STAMP_FILE")" = "$CURRENT_STAMP_CONTENT" ]
   exit 0
 fi
 
-if ! command -v pkg-config >/dev/null 2>&1; then
+# Xcode omits Homebrew from PATH, so resolve pkg-config from its standard absolute locations.
+PKG_CONFIG_BIN="$(find_tool "${PKG_CONFIG:-}" pkg-config /opt/homebrew/bin/pkg-config /usr/local/bin/pkg-config)"
+if [ -z "$PKG_CONFIG_BIN" ]; then
   echo "error: pkg-config is required for Wireshark dependency discovery." >&2
   echo "       Install build tools with: brew install pkg-config cmake ninja meson autoconf automake libtool" >&2
   exit 1
@@ -309,6 +311,7 @@ mkdir -p "$INSTALL_ROOT"
 export MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET"
 export PKG_CONFIG_PATH="$DEPS_INSTALL_ROOT/lib/pkgconfig:$DEPS_INSTALL_ROOT/share/pkgconfig"
 export PKG_CONFIG_LIBDIR="$PKG_CONFIG_PATH"
+export PKG_CONFIG="$PKG_CONFIG_BIN"
 export CMAKE_PREFIX_PATH="$DEPS_INSTALL_ROOT"
 export PATH="$DEPS_INSTALL_ROOT/bin:$PATH"
 export CC="${CC:-/usr/bin/clang}"
@@ -330,6 +333,7 @@ export LDFLAGS="-L$DEPS_INSTALL_ROOT/lib -mmacosx-version-min=$DEPLOYMENT_TARGET
 
 "$CMAKE_BIN" -S "$SOURCE_DIR" -B "$BUILD_DIR" -G Ninja \
   -DCMAKE_MAKE_PROGRAM="$NINJA_BIN" \
+  -DPKG_CONFIG_EXECUTABLE="$PKG_CONFIG_BIN" \
   -DCMAKE_BUILD_TYPE=RelWithDebInfo \
   -DCMAKE_INSTALL_PREFIX="$INSTALL_ROOT" \
   -DCMAKE_OSX_ARCHITECTURES="$CMAKE_ARCHITECTURES" \
@@ -350,6 +354,7 @@ export LDFLAGS="-L$DEPS_INSTALL_ROOT/lib -mmacosx-version-min=$DEPLOYMENT_TARGET
   -DENABLE_PLUGINS=OFF \
   -DENABLE_AMRNB=OFF \
   -DENABLE_OPUS=OFF \
+  -DENABLE_SPANDSP=OFF \
   -DBUILD_androiddump=OFF \
   -DBUILD_ciscodump=OFF \
   -DBUILD_capinfos=OFF \
