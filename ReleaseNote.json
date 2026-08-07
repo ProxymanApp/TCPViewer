@@ -221,6 +221,20 @@
       ],
       "bugs": [
       ]
+    },
+    {
+      "version": "1.11.0",
+      "title": "TCP Viewer 1.11.0: Packet Colors, Comments, and DNS Names",
+      "features": [
+        "Add packet colors and save them when exporting a session.",
+        "Keep packet comments when saving, opening, and exporting captures.",
+        "Show domain names from DNS responses, including DNS over TCP."
+      ],
+      "improvements": [
+        "Explain how MCP capture filters use BPF syntax."
+      ],
+      "bugs": [
+      ]
     }
   ]
 }
