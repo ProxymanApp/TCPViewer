@@ -36,6 +36,22 @@ public final class NativeOfflineCaptureDocument: OfflineCaptureDocumentProviding
         state.inspectPacket(id: id, completion: completion)
     }
 
+    public func followTCPStream(
+        containing packetID: PacketSummary.ID,
+        limits: TCPFollowLimits,
+        progress: TCPFollowProgressHandler?,
+        shouldCancel: TCPFollowCancellationCheck?,
+        completion: @escaping TCPViewerCompletion<TCPFollowStream>
+    ) {
+        state.followTCPStream(
+            containing: packetID,
+            limits: limits,
+            progress: progress,
+            shouldCancel: shouldCancel,
+            completion: completion
+        )
+    }
+
     public func save(completion: @escaping TCPViewerVoidCompletion) {
         state.save(completion: completion)
     }
@@ -163,6 +179,7 @@ private final class NativeOfflineCaptureDocumentState: @unchecked Sendable {
 
     private let stateQueue = DispatchQueue(label: "com.proxyman.tcpviewer.PcapPlusPlusCore.NativeOfflineCaptureDocument.state", qos: .userInitiated)
     private let loadQueue = DispatchQueue(label: "com.proxyman.tcpviewer.PcapPlusPlusCore.NativeOfflineCaptureDocument.load", qos: .userInitiated)
+    private let followQueue = DispatchQueue(label: "com.proxyman.tcpviewer.PcapPlusPlusCore.NativeOfflineCaptureDocument.follow", qos: .userInitiated)
     private let nativeDocument: PCPPNativeOfflineDocument
     private let eventBox: EventCallbackBox<PacketIngestEvent>
     private let packetCache = LockedValueBox<[PacketSummary]>([])
@@ -222,6 +239,74 @@ private final class NativeOfflineCaptureDocumentState: @unchecked Sendable {
                     return NativeBridgeMapper.packetInspection(descriptor)
                 } catch {
                     throw NativeBridgeMapper.coreError(error, defaultCode: .offlineFileOpenFailed)
+                }
+            })
+        }
+    }
+
+    // Resolve candidate IDs from the summary index so following never rescans packet payloads on live paths.
+    func followTCPStream(
+        containing packetID: PacketSummary.ID,
+        limits: TCPFollowLimits,
+        progress: TCPFollowProgressHandler?,
+        shouldCancel: TCPFollowCancellationCheck?,
+        completion: @escaping TCPViewerCompletion<TCPFollowStream>
+    ) {
+        let packets = packetCache.get()
+        followQueue.async {
+            completion(Result {
+                var selected: PacketSummary?
+                for packet in packets {
+                    if shouldCancel?() == true {
+                        throw TCPViewerCoreError(code: .operationCancelled, message: "TCP stream reassembly was cancelled.")
+                    }
+                    if packet.id == packetID {
+                        selected = packet
+                        break
+                    }
+                }
+                guard let selected else {
+                    throw TCPViewerCoreError(code: .offlineFileOpenFailed, message: "Packet \(packetID) is not available.")
+                }
+                guard selected.hasTCPLayer, let streamID = selected.streamID else {
+                    throw TCPViewerCoreError(code: .unavailableFeature, message: "Select a TCP packet to follow its stream.")
+                }
+
+                var candidateIDs: [PacketSummary.ID] = []
+                for packet in packets {
+                    if shouldCancel?() == true {
+                        throw TCPViewerCoreError(code: .operationCancelled, message: "TCP stream reassembly was cancelled.")
+                    }
+                    if packet.hasTCPLayer && packet.streamID == streamID {
+                        candidateIDs.append(packet.id)
+                        guard candidateIDs.count <= limits.maximumCandidatePacketCount else {
+                            throw TCPViewerCoreError(
+                                code: .unavailableFeature,
+                                message: "This TCP stream has more than \(limits.maximumCandidatePacketCount) packets."
+                            )
+                        }
+                    }
+                }
+                do {
+                    let fields = try self.nativeDocument.followTCPStream(
+                        containing: packetID,
+                        candidateIdentifiers: candidateIDs,
+                        limits: limits,
+                        progress: progress,
+                        shouldCancel: shouldCancel
+                    )
+                    return TCPFollowStream(
+                        client: fields.client,
+                        server: fields.server,
+                        records: fields.records,
+                        clientByteCount: fields.clientByteCount,
+                        serverByteCount: fields.serverByteCount,
+                        capturedThroughPacketID: packets.last?.id ?? packetID,
+                        capturedAt: Date(),
+                        isTruncated: fields.isTruncated
+                    )
+                } catch {
+                    throw NativeBridgeMapper.coreError(error, defaultCode: .unavailableFeature)
                 }
             })
         }
@@ -468,5 +553,11 @@ private final class NativeOfflineCaptureDocumentState: @unchecked Sendable {
         let tcpviewerError = NativeBridgeMapper.coreError(error, defaultCode: code)
         eventBox.yield(.documentStateChanged(phase: .failed, message: tcpviewerError.message))
         return tcpviewerError
+    }
+}
+
+private extension PacketSummary {
+    var hasTCPLayer: Bool {
+        layers.contains { $0.name.caseInsensitiveCompare("TCP") == .orderedSame }
     }
 }

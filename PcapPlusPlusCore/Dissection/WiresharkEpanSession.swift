@@ -20,9 +20,19 @@ struct WiresharkPacketInspectionFields {
     let sniDomainName: String?
 }
 
+struct WiresharkTCPFollowFields {
+    let client: PacketEndpoint
+    let server: PacketEndpoint
+    let records: [TCPFollowRecord]
+    let clientByteCount: Int
+    let serverByteCount: Int
+    let isTruncated: Bool
+}
+
 enum WiresharkSessionPurpose {
     case offline
     case live
+    case follow
 }
 
 struct WiresharkRuntimeConfiguration {
@@ -121,6 +131,11 @@ final class WiresharkEpanSession {
         }
     }
 
+    // Check whether this session still owns the selected packet's first-pass state.
+    func canFollowObservedPacket(withIdentifier identifier: UInt64) -> Bool {
+        TCPViewerWiresharkSessionCanFollowObservedPacket(handle, identifier)
+    }
+
     func summarize(_ record: NativePacketRecord) throws -> WiresharkPacketSummaryFields {
         try withContext(for: record) { context in
             guard let resultPointer = TCPViewerWiresharkSessionSummarizePacket(handle, context) else {
@@ -165,6 +180,179 @@ final class WiresharkEpanSession {
                 sniDomainName: Self.string(result.sniDomainName)
             )
         }
+    }
+
+    // Build a bounded temporary session when an inactive offline document needs to be followed.
+    static func followTCPStreamInTemporarySession(
+        containing selectedRecord: NativePacketRecord,
+        records: [NativePacketRecord],
+        limits: TCPFollowLimits,
+        progress: TCPFollowProgressHandler?,
+        shouldCancel: TCPFollowCancellationCheck?
+    ) throws -> WiresharkTCPFollowFields {
+        try validateFollowRequest(selectedRecord: selectedRecord, records: records, limits: limits)
+        let session = try WiresharkEpanSession(purpose: .follow)
+        let totalWorkCount = records.count * 2
+        for (index, record) in records.enumerated() {
+            if shouldCancel?() == true {
+                throw NativeNSError(.operationCancelled, "TCP stream reassembly was cancelled.")
+            }
+            try session.observe(record)
+            reportFollowProgress(
+                processedPacketCount: index + 1,
+                totalPacketCount: totalWorkCount,
+                handler: progress
+            )
+        }
+        try session.finishFirstPass()
+        return try session.followObservedTCPStream(
+            containing: selectedRecord,
+            records: records,
+            limits: limits,
+            progressOffset: records.count,
+            progressTotal: totalWorkCount,
+            progress: progress,
+            shouldCancel: shouldCancel
+        )
+    }
+
+    // Retap an immutable snapshot using the capture's already-loaded Wireshark session.
+    func followObservedTCPStream(
+        containing selectedRecord: NativePacketRecord,
+        records: [NativePacketRecord],
+        limits: TCPFollowLimits,
+        progress: TCPFollowProgressHandler?,
+        shouldCancel: TCPFollowCancellationCheck?
+    ) throws -> WiresharkTCPFollowFields {
+        try followObservedTCPStream(
+            containing: selectedRecord,
+            records: records,
+            limits: limits,
+            progressOffset: 0,
+            progressTotal: records.count,
+            progress: progress,
+            shouldCancel: shouldCancel
+        )
+    }
+
+    private func followObservedTCPStream(
+        containing selectedRecord: NativePacketRecord,
+        records: [NativePacketRecord],
+        limits: TCPFollowLimits,
+        progressOffset: Int,
+        progressTotal: Int,
+        progress: TCPFollowProgressHandler?,
+        shouldCancel: TCPFollowCancellationCheck?
+    ) throws -> WiresharkTCPFollowFields {
+        try Self.validateFollowRequest(selectedRecord: selectedRecord, records: records, limits: limits)
+
+        var followIsActive = false
+        defer {
+            if followIsActive {
+                TCPViewerWiresharkSessionCancelFollowTCPStream(handle)
+            }
+        }
+        try withContext(for: selectedRecord) { context in
+            guard TCPViewerWiresharkSessionBeginFollowTCPStream(handle, context) else {
+                if let criticalError = criticalExceptionErrorIfNeeded() {
+                    throw criticalError
+                }
+                throw unavailableError()
+            }
+        }
+        followIsActive = true
+
+        for (index, record) in records.enumerated() {
+            if shouldCancel?() == true {
+                throw NativeNSError(.operationCancelled, "TCP stream reassembly was cancelled.")
+            }
+            let status = try withContext(for: record) { context in
+                TCPViewerWiresharkSessionProcessFollowPacket(
+                    handle,
+                    context,
+                    limits.maximumPayloadBytes
+                )
+            }
+            if status == TCPViewerWiresharkFollowPacketFailed {
+                if let criticalError = criticalExceptionErrorIfNeeded() {
+                    throw criticalError
+                }
+                throw unavailableError()
+            }
+            Self.reportFollowProgress(
+                processedPacketCount: progressOffset + index + 1,
+                totalPacketCount: progressTotal,
+                handler: progress
+            )
+            if status == TCPViewerWiresharkFollowPacketLimitReached {
+                break
+            }
+        }
+
+        guard let resultPointer = TCPViewerWiresharkSessionFinishFollowTCPStream(
+            handle,
+            limits.maximumRecordCount
+        ) else {
+            throw unavailableError("Wireshark returned no TCP stream result.")
+        }
+        followIsActive = false
+        defer { TCPViewerWiresharkFollowResultDestroy(resultPointer) }
+        let result = resultPointer.pointee
+        guard result.succeeded else {
+            if let criticalError = criticalExceptionErrorIfNeeded() {
+                throw criticalError
+            }
+            throw unavailableError(Self.string(result.errorMessage))
+        }
+
+        return WiresharkTCPFollowFields(
+            client: PacketEndpoint(
+                address: Self.string(result.clientAddress),
+                port: result.clientPort
+            ),
+            server: PacketEndpoint(
+                address: Self.string(result.serverAddress),
+                port: result.serverPort
+            ),
+            records: followRecords(from: result),
+            clientByteCount: Int(clamping: result.clientByteCount),
+            serverByteCount: Int(clamping: result.serverByteCount),
+            isTruncated: result.isTruncated
+        )
+    }
+
+    private static func validateFollowRequest(
+        selectedRecord: NativePacketRecord,
+        records: [NativePacketRecord],
+        limits: TCPFollowLimits
+    ) throws {
+        guard records.count <= limits.maximumCandidatePacketCount,
+              records.count <= Int.max / 2 else {
+            throw NativeNSError(
+                .unavailableFeature,
+                "This TCP stream has more than \(limits.maximumCandidatePacketCount) candidate packets."
+            )
+        }
+        guard records.contains(where: { $0.identifier == selectedRecord.identifier }) else {
+            throw NativeNSError(.fileReadFailed, "The selected TCP packet is not available in the stream snapshot.")
+        }
+    }
+
+    // Coalesce large retaps so progress cannot flood the main queue with one callback per packet.
+    private static func reportFollowProgress(
+        processedPacketCount: Int,
+        totalPacketCount: Int,
+        handler: TCPFollowProgressHandler?
+    ) {
+        guard processedPacketCount == 1
+                || processedPacketCount == totalPacketCount
+                || processedPacketCount.isMultiple(of: 1_024) else {
+            return
+        }
+        handler?(TCPFollowProgress(
+            processedPacketCount: processedPacketCount,
+            totalPacketCount: totalPacketCount
+        ))
     }
 
     private func withContext<T>(
@@ -256,6 +444,31 @@ final class WiresharkEpanSession {
                 identifier: Self.string(source.identifier) ?? "bytes",
                 label: Self.string(source.label) ?? "Bytes",
                 bytes: bytes
+            )
+        }
+    }
+
+    // Copy C-owned follow records before the shim destroys its result storage.
+    private func followRecords(from result: TCPViewerWiresharkFollowResult) -> [TCPFollowRecord] {
+        guard let recordPointer = result.records, result.recordCount > 0 else {
+            return []
+        }
+        return UnsafeBufferPointer(start: recordPointer, count: result.recordCount).map { record in
+            let data: Data
+            if let bytes = record.bytes, record.byteCount > 0 {
+                data = Data(bytes: bytes, count: record.byteCount)
+            } else {
+                data = Data()
+            }
+            return TCPFollowRecord(
+                direction: record.isServer ? .serverToClient : .clientToServer,
+                packetID: record.packetIdentifier,
+                timestamp: Date(
+                    timeIntervalSince1970: TimeInterval(record.timestampSeconds)
+                        + TimeInterval(record.timestampNanoseconds) / 1_000_000_000
+                ),
+                sequenceNumber: record.sequenceNumber,
+                data: data
             )
         }
     }

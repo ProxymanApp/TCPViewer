@@ -623,6 +623,41 @@ final class TCPViewSessionOfflineDocument: OfflineCaptureDocumentProviding {
         }
     }
 
+    // Translate inner capture packet IDs back to their stable session IDs.
+    func followTCPStream(
+        containing packetID: PacketSummary.ID,
+        limits: TCPFollowLimits,
+        progress: TCPFollowProgressHandler?,
+        shouldCancel: TCPFollowCancellationCheck?,
+        completion: @escaping TCPViewerCompletion<TCPFollowStream>
+    ) {
+        guard let innerDocument,
+              let innerID = innerPacketIDBySessionID[packetID] else {
+            completion(.failure(Self.unavailableBackingError()))
+            return
+        }
+        let packetIDMapping = innerPacketIDBySessionID
+        innerDocument.followTCPStream(
+            containing: innerID,
+            limits: limits,
+            progress: progress,
+            shouldCancel: shouldCancel
+        ) { result in
+            completion(result.map { stream in
+                let relevantInnerIDs = Set(stream.records.map(\.packetID) + [stream.capturedThroughPacketID])
+                let sessionIDByInnerID = Dictionary(
+                    uniqueKeysWithValues: packetIDMapping.compactMap { sessionID, innerID in
+                        relevantInnerIDs.contains(innerID) ? (innerID, sessionID) : nil
+                    }
+                )
+                return stream.tcpviewerRemapping(
+                    packetIDByOriginalID: sessionIDByInnerID,
+                    fallbackPacketID: packetID
+                )
+            })
+        }
+    }
+
     func save(completion: @escaping TCPViewerVoidCompletion) {
         completion(.failure(Self.readOnlyError()))
     }

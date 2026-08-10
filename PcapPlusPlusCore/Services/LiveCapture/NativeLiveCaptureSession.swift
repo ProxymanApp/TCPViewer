@@ -49,6 +49,22 @@ public final class NativeLiveCaptureSession: LiveCaptureSessionProviding, @unche
         state.inspectPacket(id: id, completion: completion)
     }
 
+    public func followTCPStream(
+        containing packetID: PacketSummary.ID,
+        limits: TCPFollowLimits,
+        progress: TCPFollowProgressHandler?,
+        shouldCancel: TCPFollowCancellationCheck?,
+        completion: @escaping TCPViewerCompletion<TCPFollowStream>
+    ) {
+        state.followTCPStream(
+            containing: packetID,
+            limits: limits,
+            progress: progress,
+            shouldCancel: shouldCancel,
+            completion: completion
+        )
+    }
+
     public func exportPackets(
         withIDs identifiers: [PacketSummary.ID],
         to url: URL,
@@ -263,6 +279,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     private static let liveReanalysisInterval: DispatchTimeInterval = .milliseconds(250)
 
     private let queue = DispatchQueue(label: "com.proxyman.tcpviewer.PcapPlusPlusCore.NativeLiveCaptureSession", qos: .userInitiated)
+    private let followQueue = DispatchQueue(label: "com.proxyman.tcpviewer.PcapPlusPlusCore.NativeLiveCaptureSession.follow", qos: .userInitiated)
     private let nativeSession: PCPPNativeLiveSession
     private let eventBox: EventCallbackBox<PacketIngestEvent>
     private let stopCondition: CaptureStopCondition
@@ -392,6 +409,29 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
         queue.async {
             completion(Result {
                 try self.inspectPacketOnQueue(id: id)
+            })
+        }
+    }
+
+    func followTCPStream(
+        containing packetID: PacketSummary.ID,
+        limits: TCPFollowLimits,
+        progress: TCPFollowProgressHandler?,
+        shouldCancel: TCPFollowCancellationCheck?,
+        completion: @escaping TCPViewerCompletion<TCPFollowStream>
+    ) {
+        followQueue.async {
+            completion(Result {
+                do {
+                    return try self.nativeSession.followTCPStream(
+                        containing: packetID,
+                        limits: limits,
+                        progress: progress,
+                        shouldCancel: shouldCancel
+                    )
+                } catch {
+                    throw NativeBridgeMapper.coreError(error, defaultCode: .unavailableFeature)
+                }
             })
         }
     }

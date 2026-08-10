@@ -16,6 +16,7 @@ protocol PacketTableViewControllerDelegate: AnyObject {
         didRequestPinPackets identifiers: [PacketSummary.ID]
     )
     func packetTableViewController(_ controller: PacketTableViewController, didRequestSavePackets identifiers: [PacketSummary.ID])
+    func packetTableViewController(_ controller: PacketTableViewController, didRequestFollowTCPStream packetID: PacketSummary.ID)
     func packetTableViewController(
         _ controller: PacketTableViewController,
         didRequestSetComment comment: String,
@@ -1047,6 +1048,14 @@ final class PacketTableViewController: NSViewController {
         }
 
         delegate?.packetTableViewController(self, didRequestSavePackets: identifiers)
+    }
+
+    @objc func followTCPStreamFromMenu(_ sender: Any?) {
+        let packetIDs = targetPacketIDs()
+        guard packetIDs.count == 1, let packetID = packetIDs.first else {
+            return
+        }
+        delegate?.packetTableViewController(self, didRequestFollowTCPStream: packetID)
     }
 
     @objc func addPacketCommentFromMenu(_ sender: Any?) {

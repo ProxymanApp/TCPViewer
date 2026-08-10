@@ -205,6 +205,7 @@ final class TCPViewerRootViewController: NSViewController {
     private var temporaryInspectorRestoreThickness: CGFloat?
     private var hasRenderedHelperOnboarding = false
     private var sessionImportSheetViewController: TCPViewSessionImportSheetViewController?
+    private var followStreamWindowControllers: [TCPFollowStreamWindowController] = []
     private var isMainEmptyStateVisible = false
     #if DEBUG
     private var packetSelectionCrashReproducer: TCPViewerPacketSelectionCrashReproducer?
@@ -1293,6 +1294,10 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
         viewModel.savePackets(identifiers)
     }
 
+    func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestFollowTCPStream packetID: PacketSummary.ID) {
+        presentFollowTCPStreamWindow(packetID: packetID)
+    }
+
     func packetWorkspaceViewController(
         _ controller: PacketWorkspaceViewController,
         didRequestSetComment comment: String,
@@ -1407,6 +1412,52 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
 
     private static func flowCountText(_ count: Int) -> String {
         "\(count) flow\(count == 1 ? "" : "s")"
+    }
+}
+
+private extension TCPViewerRootViewController {
+    // Open a dedicated native workspace and keep its bounded background operation cancellable.
+    func presentFollowTCPStreamWindow(packetID: PacketSummary.ID) {
+        let controller = TCPFollowStreamWindowController(packetID: packetID)
+        followStreamWindowControllers.append(controller)
+        controller.closeHandler = { [weak self, weak controller] in
+            guard let controller else {
+                return
+            }
+            self?.followStreamWindowControllers.removeAll { $0 === controller }
+        }
+        controller.revealPacket = { [weak self] packetID in
+            guard let self else {
+                return
+            }
+            self.viewModel.selectPacket(packetID)
+            self.view.window?.makeKeyAndOrderFront(nil)
+        }
+        controller.present()
+
+        viewModel.followTCPStream(
+            containing: packetID,
+            progress: { [weak controller] progress in
+                DispatchQueue.main.async {
+                    controller?.updateProgress(progress)
+                }
+            },
+            shouldCancel: { [weak controller] in
+                controller?.cancellationFlag.isCancelled ?? true
+            }
+        ) { [weak controller] result in
+            DispatchQueue.main.async {
+                guard let controller else {
+                    return
+                }
+                switch result {
+                case .success(let stream):
+                    controller.show(stream: stream)
+                case .failure(let error):
+                    controller.show(error: error)
+                }
+            }
+        }
     }
 }
 

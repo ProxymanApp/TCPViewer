@@ -73,6 +73,36 @@ typedef struct TCPViewerWiresharkInspectionResult {
     size_t nodeCount;
 } TCPViewerWiresharkInspectionResult;
 
+typedef struct TCPViewerWiresharkFollowRecord {
+    bool isServer;
+    uint64_t packetIdentifier;
+    uint32_t sequenceNumber;
+    int64_t timestampSeconds;
+    int32_t timestampNanoseconds;
+    uint8_t *bytes;
+    size_t byteCount;
+} TCPViewerWiresharkFollowRecord;
+
+typedef struct TCPViewerWiresharkFollowResult {
+    bool succeeded;
+    bool isTruncated;
+    const char *errorMessage;
+    const char *clientAddress;
+    const char *serverAddress;
+    uint16_t clientPort;
+    uint16_t serverPort;
+    uint64_t clientByteCount;
+    uint64_t serverByteCount;
+    TCPViewerWiresharkFollowRecord *records;
+    size_t recordCount;
+} TCPViewerWiresharkFollowResult;
+
+typedef enum TCPViewerWiresharkFollowPacketStatus {
+    TCPViewerWiresharkFollowPacketFailed = -1,
+    TCPViewerWiresharkFollowPacketAccepted = 0,
+    TCPViewerWiresharkFollowPacketLimitReached = 1,
+} TCPViewerWiresharkFollowPacketStatus;
+
 typedef struct TCPViewerWiresharkExceptionReport {
     bool isCriticalException;
     unsigned long exceptionGroup;
@@ -91,12 +121,25 @@ bool TCPViewerWiresharkSessionIsAvailable(TCPViewerWiresharkSession *session);
 const char *TCPViewerWiresharkSessionUnavailableReason(TCPViewerWiresharkSession *session);
 bool TCPViewerWiresharkSessionObservePacket(TCPViewerWiresharkSession *session, const TCPViewerWiresharkPacketContext *context);
 bool TCPViewerWiresharkSessionFinishFirstPass(TCPViewerWiresharkSession *session);
+bool TCPViewerWiresharkSessionCanFollowObservedPacket(TCPViewerWiresharkSession *session, uint64_t packetIdentifier);
 TCPViewerWiresharkSummaryResult *TCPViewerWiresharkSessionSummarizePacket(TCPViewerWiresharkSession *session, const TCPViewerWiresharkPacketContext *context);
 TCPViewerWiresharkInspectionResult *TCPViewerWiresharkSessionInspectPacket(TCPViewerWiresharkSession *session, const TCPViewerWiresharkPacketContext *context);
+bool TCPViewerWiresharkSessionBeginFollowTCPStream(TCPViewerWiresharkSession *session, const TCPViewerWiresharkPacketContext *selectedContext);
+TCPViewerWiresharkFollowPacketStatus TCPViewerWiresharkSessionProcessFollowPacket(
+    TCPViewerWiresharkSession *session,
+    const TCPViewerWiresharkPacketContext *context,
+    size_t maximumPayloadBytes
+);
+TCPViewerWiresharkFollowResult *TCPViewerWiresharkSessionFinishFollowTCPStream(
+    TCPViewerWiresharkSession *session,
+    size_t maximumRecordCount
+);
+void TCPViewerWiresharkSessionCancelFollowTCPStream(TCPViewerWiresharkSession *session);
 TCPViewerWiresharkExceptionReport *TCPViewerWiresharkSessionCopyLastCriticalException(TCPViewerWiresharkSession *session);
 TCPViewerWiresharkExceptionReport *TCPViewerWiresharkSessionCopyNextCriticalException(TCPViewerWiresharkSession *session);
 void TCPViewerWiresharkSummaryResultDestroy(TCPViewerWiresharkSummaryResult *result);
 void TCPViewerWiresharkInspectionResultDestroy(TCPViewerWiresharkInspectionResult *result);
+void TCPViewerWiresharkFollowResultDestroy(TCPViewerWiresharkFollowResult *result);
 void TCPViewerWiresharkExceptionReportDestroy(TCPViewerWiresharkExceptionReport *report);
 
 #if DEBUG

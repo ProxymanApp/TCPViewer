@@ -2876,6 +2876,30 @@ final class TCPViewerWorkspaceController {
         inspectPacket(packet, identifier: identifier, completion: completion)
     }
 
+    func followTCPStream(
+        containing identifier: PacketSummary.ID,
+        limits: TCPFollowLimits = .default,
+        progress: TCPFollowProgressHandler? = nil,
+        shouldCancel: TCPFollowCancellationCheck? = nil,
+        completion: @escaping TCPViewerCompletion<TCPFollowStream>
+    ) {
+        guard let packet = snapshot.packetIngestState.packet(withID: identifier) else {
+            completion(.failure(TCPViewerCoreError(
+                code: .offlineFileOpenFailed,
+                message: "Packet \(identifier) is no longer available."
+            )))
+            return
+        }
+        followTCPStream(
+            packet,
+            identifier: identifier,
+            limits: limits,
+            progress: progress,
+            shouldCancel: shouldCancel,
+            completion: completion
+        )
+    }
+
     func cancelBackgroundWork() {
         cancelControllerTasks()
 
@@ -3857,6 +3881,80 @@ final class TCPViewerWorkspaceController {
         }
     }
 
+    // Route follow requests to the packet's backing source and preserve workspace packet IDs.
+    private func followTCPStream(
+        _ packet: PacketSummary,
+        identifier: PacketSummary.ID,
+        limits: TCPFollowLimits,
+        progress: TCPFollowProgressHandler?,
+        shouldCancel: TCPFollowCancellationCheck?,
+        completion: @escaping TCPViewerCompletion<TCPFollowStream>
+    ) {
+        switch packet.source {
+        case .live:
+            guard let liveSession else {
+                completion(.failure(TCPViewerCoreError(
+                    code: .offlineFileOpenFailed,
+                    message: "Live packet \(identifier) is no longer available."
+                )))
+                return
+            }
+            liveSession.followTCPStream(
+                containing: identifier,
+                limits: limits,
+                progress: progress,
+                shouldCancel: shouldCancel,
+                completion: completion
+            )
+        case .offline:
+            if let reference = snapshot.packetIngestState.importedPacketReference(for: identifier),
+               let importedDocument = importedDocumentsByFileID[reference.fileID] {
+                let importedReferences = snapshot.packetIngestState.importedPacketReferenceByID
+                importedDocument.followTCPStream(
+                    containing: reference.originalPacketID,
+                    limits: limits,
+                    progress: progress,
+                    shouldCancel: shouldCancel
+                ) { result in
+                    completion(result.map { stream in
+                        let relevantOriginalIDs = Set(stream.records.map(\.packetID) + [stream.capturedThroughPacketID])
+                        let workspaceIDByOriginalID = Dictionary(
+                            uniqueKeysWithValues: importedReferences.compactMap { workspaceID, candidate in
+                                candidate.fileID == reference.fileID && relevantOriginalIDs.contains(candidate.originalPacketID)
+                                    ? (candidate.originalPacketID, workspaceID)
+                                    : nil
+                            }
+                        )
+                        return stream.tcpviewerRemapping(
+                            packetIDByOriginalID: workspaceIDByOriginalID,
+                            fallbackPacketID: identifier
+                        )
+                    })
+                }
+            } else {
+                guard let document else {
+                    completion(.failure(TCPViewerCoreError(
+                        code: .offlineFileOpenFailed,
+                        message: "Packet \(identifier) is no longer available."
+                    )))
+                    return
+                }
+                document.followTCPStream(
+                    containing: identifier,
+                    limits: limits,
+                    progress: progress,
+                    shouldCancel: shouldCancel,
+                    completion: completion
+                )
+            }
+        @unknown default:
+            completion(.failure(TCPViewerCoreError(
+                code: .unavailableFeature,
+                message: "Packet \(identifier) cannot be followed."
+            )))
+        }
+    }
+
     private func detailNode(with identifier: String?) -> PacketDetailNode? {
         guard let identifier,
               let inspection = snapshot.inspectionState.inspection else {
@@ -3958,6 +4056,32 @@ final class TCPViewerWorkspaceController {
 
     private func displayName(for interface: CaptureInterfaceSummary) -> String {
         interface.friendlyName ?? interface.displayName
+    }
+}
+
+extension TCPFollowStream {
+    func tcpviewerRemapping(
+        packetIDByOriginalID: [PacketSummary.ID: PacketSummary.ID],
+        fallbackPacketID: PacketSummary.ID
+    ) -> TCPFollowStream {
+        TCPFollowStream(
+            client: client,
+            server: server,
+            records: records.map { record in
+                TCPFollowRecord(
+                    direction: record.direction,
+                    packetID: packetIDByOriginalID[record.packetID] ?? fallbackPacketID,
+                    timestamp: record.timestamp,
+                    sequenceNumber: record.sequenceNumber,
+                    data: record.data
+                )
+            },
+            clientByteCount: clientByteCount,
+            serverByteCount: serverByteCount,
+            capturedThroughPacketID: packetIDByOriginalID[capturedThroughPacketID] ?? fallbackPacketID,
+            capturedAt: capturedAt,
+            isTruncated: isTruncated
+        )
     }
 }
 

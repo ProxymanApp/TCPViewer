@@ -2150,6 +2150,20 @@ final class NetworkInspectorViewModel {
         controller.inspectPacket(id: identifier, completion: completion)
     }
 
+    func followTCPStream(
+        containing identifier: PacketSummary.ID,
+        progress: TCPFollowProgressHandler?,
+        shouldCancel: TCPFollowCancellationCheck?,
+        completion: @escaping TCPViewerCompletion<TCPFollowStream>
+    ) {
+        controller.followTCPStream(
+            containing: identifier,
+            progress: progress,
+            shouldCancel: shouldCancel,
+            completion: completion
+        )
+    }
+
     func selectInspectorTab(_ tab: PacketInspectorTab) {
         inspectorTab = tab
         rebuildSnapshot()

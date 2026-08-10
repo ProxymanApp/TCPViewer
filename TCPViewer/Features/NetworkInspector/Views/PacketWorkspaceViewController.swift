@@ -15,6 +15,7 @@ protocol PacketWorkspaceViewControllerDelegate: AnyObject {
         didRequestPinPackets identifiers: [PacketSummary.ID]
     )
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestSavePackets identifiers: [PacketSummary.ID])
+    func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestFollowTCPStream packetID: PacketSummary.ID)
     func packetWorkspaceViewController(
         _ controller: PacketWorkspaceViewController,
         didRequestSetComment comment: String,
@@ -390,6 +391,10 @@ extension PacketWorkspaceViewController: PacketTableViewControllerDelegate {
 
     func packetTableViewController(_ controller: PacketTableViewController, didRequestSavePackets identifiers: [PacketSummary.ID]) {
         delegate?.packetWorkspaceViewController(self, didRequestSavePackets: identifiers)
+    }
+
+    func packetTableViewController(_ controller: PacketTableViewController, didRequestFollowTCPStream packetID: PacketSummary.ID) {
+        delegate?.packetWorkspaceViewController(self, didRequestFollowTCPStream: packetID)
     }
 
     func packetTableViewController(
