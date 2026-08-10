@@ -491,6 +491,23 @@ struct PacketIngestState: Sendable, Equatable {
     }
 }
 
+struct TCPFollowCaptureIdentity: Sendable, Equatable {
+    let backingIdentity: String?
+    let packetLineageRevision: UInt64
+
+    init(ingestState: PacketIngestState) {
+        backingIdentity = ingestState.backingIdentity
+        packetLineageRevision = ingestState.packetLineageRevision
+    }
+
+    // Reveal only when the packet still belongs to the capture that produced the follow result.
+    func canReveal(packetID: PacketSummary.ID, in ingestState: PacketIngestState) -> Bool {
+        backingIdentity == ingestState.backingIdentity &&
+            packetLineageRevision == ingestState.packetLineageRevision &&
+            ingestState.packet(withID: packetID) != nil
+    }
+}
+
 struct CaptureDocumentState: Sendable, Equatable {
     enum Phase: String, Sendable {
         case idle
@@ -2862,6 +2879,15 @@ final class TCPViewerWorkspaceController {
 
     func selectPacket(_ identifier: PacketSummary.ID?) {
         scheduleInspection(for: identifier)
+    }
+
+    var tcpFollowCaptureIdentity: TCPFollowCaptureIdentity {
+        TCPFollowCaptureIdentity(ingestState: snapshot.packetIngestState)
+    }
+
+    // Check both lineage and membership before navigating from a detached follow window.
+    func canRevealTCPFollowPacket(_ identifier: PacketSummary.ID, from identity: TCPFollowCaptureIdentity) -> Bool {
+        identity.canReveal(packetID: identifier, in: snapshot.packetIngestState)
     }
 
     func inspectPacket(id identifier: PacketSummary.ID, completion: @escaping TCPViewerCompletion<PacketInspection>) {

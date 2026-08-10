@@ -253,32 +253,35 @@ final class PCPPNativeOfflineDocument {
     // Copy the selected conversation before retapping the document's loaded Wireshark session.
     func followTCPStream(
         containing identifier: UInt64,
-        candidateIdentifiers: [UInt64],
         limits: TCPFollowLimits,
         progress: TCPFollowProgressHandler?,
         shouldCancel: TCPFollowCancellationCheck?
     ) throws -> WiresharkTCPFollowFields {
-        let identifiers = Set(candidateIdentifiers)
-        let snapshot = try state.read { state -> (NativePacketRecord, [NativePacketRecord], WiresharkEpanSession) in
+        let snapshot = try state.read { state -> (NativePacketRecord, [NativePacketRecord], WiresharkEpanSession, [UInt64]) in
             guard let selected = state.file.records.first(where: { $0.identifier == identifier }) else {
                 throw NativeNSError(.fileReadFailed, "Packet \(identifier) is not available in the backing store.")
             }
             guard let session = state.dissectionSession else {
                 throw NativeNSError(.unavailableFeature, "Wireshark TCP stream reassembly is unavailable for this capture.")
             }
+            let candidateIdentifiers = try session.tcpFollowCandidatePacketIdentifiers(
+                containing: identifier,
+                maximumPacketCount: limits.maximumCandidatePacketCount
+            )
+            let identifierSet = Set(candidateIdentifiers)
             var records: [NativePacketRecord] = []
             records.reserveCapacity(candidateIdentifiers.count)
             for record in state.file.records {
                 if shouldCancel?() == true {
                     throw NativeNSError(.operationCancelled, "TCP stream reassembly was cancelled.")
                 }
-                if identifiers.contains(record.identifier) {
+                if identifierSet.contains(record.identifier) {
                     records.append(record)
                 }
             }
-            return (selected, records, session)
+            return (selected, records, session, candidateIdentifiers)
         }
-        if snapshot.2.canFollowObservedPacket(withIdentifier: identifier) {
+        if snapshot.2.canFollowObservedPackets(withIdentifiers: snapshot.3) {
             return try snapshot.2.followObservedTCPStream(
                 containing: snapshot.0,
                 records: snapshot.1,
@@ -783,7 +786,7 @@ final class PCPPNativeLiveSession {
         }
     }
 
-    // Follow a duplicated disk snapshot with the active live session so capture can resume its first pass.
+    // Follow a duplicated disk snapshot without blocking live packet storage during the retap.
     func followTCPStream(
         containing identifier: UInt64,
         limits: TCPFollowLimits,
@@ -969,15 +972,8 @@ final class PCPPNativeLiveSession {
                     }
 
                     do {
-                        try session.observe(record)
-                        if analyzed.layers.contains(where: {
-                            $0.name.caseInsensitiveCompare("TCP") == .orderedSame
-                        }), let streamIdentifier = analyzed.streamID {
-                            $0.packetStore.markTCPStreamReady(
-                                identifier: record.identifier,
-                                streamIdentifier: streamIdentifier
-                            )
-                        }
+                        let streamIndexUpdates = try session.observe(record)
+                        $0.packetStore.markTCPStreamsReady(streamIndexUpdates)
                         let wiresharkSummary = try session.summarize(record)
                         return (makePacketSummaryDescriptor(record: record, analyzed: analyzed, wireshark: wiresharkSummary), false)
                     } catch {

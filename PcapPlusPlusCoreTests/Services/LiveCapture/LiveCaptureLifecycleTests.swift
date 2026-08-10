@@ -12,6 +12,44 @@ import Testing
 
 @Suite(.serialized)
 struct LiveCaptureLifecycleTests {
+    @Test func lifecycleTransitionCancelsAndDrainsRegisteredFollowOperations() {
+        let coordinator = LiveTCPFollowOperationCoordinator()
+        #expect(coordinator.beginFollow())
+        #expect(coordinator.beginFollow())
+
+        let transitionRequested = DispatchSemaphore(value: 0)
+        let followOperationsDrained = DispatchSemaphore(value: 0)
+        let releaseTransition = DispatchSemaphore(value: 0)
+        let transitionFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            transitionRequested.signal()
+            coordinator.beginLifecycleTransition()
+            followOperationsDrained.signal()
+            releaseTransition.wait()
+            coordinator.finishLifecycleTransition()
+            transitionFinished.signal()
+        }
+
+        #expect(transitionRequested.wait(timeout: .now() + 2) == .success)
+        let cancellationDeadline = Date().addingTimeInterval(2)
+        while !coordinator.shouldCancel && Date() < cancellationDeadline {
+            Thread.sleep(forTimeInterval: 0.001)
+        }
+        #expect(coordinator.shouldCancel)
+        #expect(!coordinator.beginFollow())
+
+        coordinator.finishFollow()
+        #expect(followOperationsDrained.wait(timeout: .now() + .milliseconds(50)) == .timedOut)
+        coordinator.finishFollow()
+        #expect(followOperationsDrained.wait(timeout: .now() + 2) == .success)
+        #expect(!coordinator.beginFollow())
+
+        releaseTransition.signal()
+        #expect(transitionFinished.wait(timeout: .now() + 2) == .success)
+        #expect(coordinator.beginFollow())
+        coordinator.finishFollow()
+    }
+
     @Test func startFailureRollsBackAndAllowsRetry() throws {
         let backend = TestLiveCaptureBackend(openFailuresRemaining: 1)
         let session = makeSession(backend: backend)

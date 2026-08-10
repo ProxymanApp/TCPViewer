@@ -271,6 +271,60 @@ private struct LivePacketSummaryText: Equatable {
     }
 }
 
+final class LiveTCPFollowOperationCoordinator: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var activeOperationCount = 0
+    private var acceptsOperations = true
+    private var cancellationRequested = false
+
+    // Register before dispatch so lifecycle transitions cannot miss queued follow work.
+    func beginFollow() -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        guard acceptsOperations else {
+            return false
+        }
+        activeOperationCount += 1
+        return true
+    }
+
+    // Release one running or queued operation and wake a waiting lifecycle transition.
+    func finishFollow() {
+        condition.lock()
+        activeOperationCount = max(activeOperationCount - 1, 0)
+        if activeOperationCount == 0 {
+            condition.broadcast()
+        }
+        condition.unlock()
+    }
+
+    // Cancel and drain every registered follow before replacing Wireshark ownership.
+    func beginLifecycleTransition() {
+        condition.lock()
+        acceptsOperations = false
+        cancellationRequested = true
+        while activeOperationCount > 0 {
+            condition.wait()
+        }
+        condition.unlock()
+    }
+
+    // Allow new follow requests after the native lifecycle mutation completes.
+    func finishLifecycleTransition() {
+        condition.lock()
+        cancellationRequested = false
+        acceptsOperations = true
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    var shouldCancel: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return cancellationRequested
+    }
+}
+
 private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     private static let maxLivePacketBatchSize = 256
     private static let maxLiveReanalysisBatchSize = 128
@@ -283,6 +337,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     private let nativeSession: PCPPNativeLiveSession
     private let eventBox: EventCallbackBox<PacketIngestEvent>
     private let stopCondition: CaptureStopCondition
+    private let followOperationCoordinator = LiveTCPFollowOperationCoordinator()
 
     private var phase: LiveCaptureSessionPhase = .ready
     private var health: CaptureHealthSnapshot = .empty
@@ -420,19 +475,30 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
         shouldCancel: TCPFollowCancellationCheck?,
         completion: @escaping TCPViewerCompletion<TCPFollowStream>
     ) {
+        guard followOperationCoordinator.beginFollow() else {
+            completion(.failure(TCPViewerCoreError(
+                code: .operationCancelled,
+                message: "TCP stream reassembly was cancelled for a capture lifecycle change."
+            )))
+            return
+        }
         followQueue.async {
-            completion(Result {
+            let result = Result {
                 do {
                     return try self.nativeSession.followTCPStream(
                         containing: packetID,
                         limits: limits,
                         progress: progress,
-                        shouldCancel: shouldCancel
+                        shouldCancel: {
+                            self.followOperationCoordinator.shouldCancel || shouldCancel?() == true
+                        }
                     )
                 } catch {
                     throw NativeBridgeMapper.coreError(error, defaultCode: .unavailableFeature)
                 }
-            })
+            }
+            self.followOperationCoordinator.finishFollow()
+            completion(result)
         }
     }
 
@@ -487,6 +553,8 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     #endif
 
     private func startOnQueue() throws {
+        followOperationCoordinator.beginLifecycleTransition()
+        defer { followOperationCoordinator.finishLifecycleTransition() }
         cancelDurationStopWorkItem()
         if phase == .stopped || phase == .failed || phase == .ready {
             activeRunPacketCount = 0
@@ -537,6 +605,8 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     }
 
     private func clearCapturedPacketsOnQueue() {
+        followOperationCoordinator.beginLifecycleTransition()
+        defer { followOperationCoordinator.finishLifecycleTransition() }
         cancelPacketBatchFlushWorkItem()
         cancelPacketReanalysisWorkItem()
         packetBatchBuffer.discardPending(releasingCapacity: true)
@@ -549,6 +619,8 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     }
 
     private func stopOnQueue(reason: String?) throws {
+        followOperationCoordinator.beginLifecycleTransition()
+        defer { followOperationCoordinator.finishLifecycleTransition() }
         cancelDurationStopWorkItem()
         flushPendingPacketBatch()
 

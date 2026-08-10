@@ -29,6 +29,11 @@ struct WiresharkTCPFollowFields {
     let isTruncated: Bool
 }
 
+struct WiresharkTCPStreamIndexEntry: Sendable, Equatable {
+    let packetIdentifier: UInt64
+    let streamIdentifier: UInt32
+}
+
 enum WiresharkSessionPurpose {
     case offline
     case live
@@ -111,14 +116,18 @@ final class WiresharkEpanSession {
         TCPViewerWiresharkSessionDestroy(handle)
     }
 
-    func observe(_ record: NativePacketRecord) throws {
+    @discardableResult
+    func observe(_ record: NativePacketRecord) throws -> [WiresharkTCPStreamIndexEntry] {
         try withContext(for: record) { context in
-            guard TCPViewerWiresharkSessionObservePacket(handle, context) else {
+            let succeeded = TCPViewerWiresharkSessionObservePacket(handle, context)
+            let updates = copyPendingTCPStreamIndexUpdates()
+            guard succeeded else {
                 if let criticalError = criticalExceptionErrorIfNeeded() {
                     throw criticalError
                 }
                 throw unavailableError()
             }
+            return updates
         }
     }
 
@@ -134,6 +143,40 @@ final class WiresharkEpanSession {
     // Check whether this session still owns the selected packet's first-pass state.
     func canFollowObservedPacket(withIdentifier identifier: UInt64) -> Bool {
         TCPViewerWiresharkSessionCanFollowObservedPacket(handle, identifier)
+    }
+
+    // Confirm the active first pass still contains every frame needed by the retap.
+    func canFollowObservedPackets(withIdentifiers identifiers: [UInt64]) -> Bool {
+        identifiers.withUnsafeBufferPointer { buffer in
+            TCPViewerWiresharkSessionCanFollowObservedPackets(
+                handle,
+                buffer.baseAddress,
+                buffer.count
+            )
+        }
+    }
+
+    // Resolve Wireshark's connection-specific stream membership, including dependency frames.
+    func tcpFollowCandidatePacketIdentifiers(
+        containing identifier: UInt64,
+        maximumPacketCount: Int
+    ) throws -> [UInt64] {
+        guard let resultPointer = TCPViewerWiresharkSessionCopyTCPFollowCandidates(
+            handle,
+            identifier,
+            maximumPacketCount
+        ) else {
+            throw unavailableError("Wireshark returned no TCP stream candidate index.")
+        }
+        defer { TCPViewerWiresharkFollowCandidateResultDestroy(resultPointer) }
+        let result = resultPointer.pointee
+        guard result.succeeded else {
+            throw unavailableError(Self.string(result.errorMessage))
+        }
+        guard let identifiers = result.packetIdentifiers, result.packetIdentifierCount > 0 else {
+            return []
+        }
+        return Array(UnsafeBufferPointer(start: identifiers, count: result.packetIdentifierCount))
     }
 
     func summarize(_ record: NativePacketRecord) throws -> WiresharkPacketSummaryFields {
@@ -291,6 +334,7 @@ final class WiresharkEpanSession {
 
         guard let resultPointer = TCPViewerWiresharkSessionFinishFollowTCPStream(
             handle,
+            limits.maximumPayloadBytes,
             limits.maximumRecordCount
         ) else {
             throw unavailableError("Wireshark returned no TCP stream result.")
@@ -444,6 +488,24 @@ final class WiresharkEpanSession {
                 identifier: Self.string(source.identifier) ?? "bytes",
                 label: Self.string(source.label) ?? "Bytes",
                 bytes: bytes
+            )
+        }
+    }
+
+    // Drain the small per-packet index delta before another observation can replace it.
+    private func copyPendingTCPStreamIndexUpdates() -> [WiresharkTCPStreamIndexEntry] {
+        guard let resultPointer = TCPViewerWiresharkSessionCopyPendingTCPStreamIndexUpdates(handle) else {
+            return []
+        }
+        defer { TCPViewerWiresharkTCPStreamIndexResultDestroy(resultPointer) }
+        let result = resultPointer.pointee
+        guard let entries = result.entries, result.entryCount > 0 else {
+            return []
+        }
+        return UnsafeBufferPointer(start: entries, count: result.entryCount).map {
+            WiresharkTCPStreamIndexEntry(
+                packetIdentifier: $0.packetIdentifier,
+                streamIdentifier: $0.streamIdentifier
             )
         }
     }

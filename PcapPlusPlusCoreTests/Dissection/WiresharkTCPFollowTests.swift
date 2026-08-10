@@ -52,6 +52,85 @@ struct WiresharkTCPFollowTests {
 
         #expect(result.isTruncated)
         #expect(result.records.count <= 1)
+        #expect(result.records.reduce(0) { $0 + $1.data.count } <= 6)
+    }
+
+    @Test func exactPayloadLimitIsNotMarkedTruncated() throws {
+        let records = makeConversation()
+        let result = try followTCPStream(
+            containing: records[3],
+            records: records,
+            limits: TCPFollowLimits(
+                maximumCandidatePacketCount: records.count,
+                maximumPayloadBytes: 16,
+                maximumRecordCount: records.count
+            ),
+            progress: nil,
+            shouldCancel: nil
+        )
+
+        #expect(result.records.reduce(0) { $0 + $1.data.count } == 16)
+        #expect(!result.isTruncated)
+    }
+
+    @Test func candidateIndexSeparatesReusedEndpointTupleConnections() throws {
+        let firstConnection = makeConversation()
+        let firstReset = makeTCPPacket(
+            identifier: 8,
+            sourceIsClient: true,
+            sequence: 112,
+            acknowledgment: 906,
+            flags: 0x14
+        )
+        let secondConnection = [
+            makeTCPPacket(identifier: 9, sourceIsClient: true, sequence: 5_000, acknowledgment: 0, flags: 0x02),
+            makeTCPPacket(identifier: 10, sourceIsClient: false, sequence: 6_000, acknowledgment: 5_001, flags: 0x12),
+            makeTCPPacket(identifier: 11, sourceIsClient: true, sequence: 5_001, acknowledgment: 6_001, flags: 0x10),
+            makeTCPPacket(
+                identifier: 12,
+                sourceIsClient: true,
+                sequence: 5_001,
+                acknowledgment: 6_001,
+                flags: 0x18,
+                payload: Data("second".utf8)
+            ),
+        ]
+        let session = try WiresharkEpanSession()
+        for record in firstConnection + [firstReset] + secondConnection {
+            try session.observe(record)
+        }
+        try session.finishFirstPass()
+
+        let candidates = try session.tcpFollowCandidatePacketIdentifiers(
+            containing: 12,
+            maximumPacketCount: 100
+        )
+
+        #expect(Set(candidates) == Set(secondConnection.map(\.identifier)))
+    }
+
+    @Test func candidateIndexIncludesIPv4FragmentsNeededForTCPReassembly() throws {
+        let records = makeFragmentedTCPPacket()
+        let session = try WiresharkEpanSession()
+        for record in records {
+            try session.observe(record)
+        }
+        try session.finishFirstPass()
+
+        let candidates = try session.tcpFollowCandidatePacketIdentifiers(
+            containing: records[1].identifier,
+            maximumPacketCount: 10
+        )
+        let result = try session.followObservedTCPStream(
+            containing: records[1],
+            records: records,
+            limits: .default,
+            progress: nil,
+            shouldCancel: nil
+        )
+
+        #expect(Set(candidates) == Set(records.map(\.identifier)))
+        #expect(payload(in: result, direction: .clientToServer) == Data("fragmented".utf8))
     }
 
     @Test func rejectsNonTCPPacketAndCancellation() throws {
@@ -88,15 +167,37 @@ struct WiresharkTCPFollowTests {
         for record in records {
             try liveSession.observe(record)
         }
+        let concurrentlyCapturedRecord = makeTCPPacket(
+            identifier: 102,
+            sourceIsClient: true,
+            sequence: 112,
+            acknowledgment: 906,
+            flags: 0x18,
+            payload: Data("late".utf8)
+        )
+        var didObserveConcurrentRecord = false
+        var concurrentObservationError: Error?
         let follow = try liveSession.followObservedTCPStream(
             containing: records[3],
             records: records,
             limits: .default,
-            progress: nil,
+            progress: { _ in
+                guard !didObserveConcurrentRecord else {
+                    return
+                }
+                didObserveConcurrentRecord = true
+                do {
+                    try liveSession.observe(concurrentlyCapturedRecord)
+                } catch {
+                    concurrentObservationError = error
+                }
+            },
             shouldCancel: nil
         )
 
         #expect(!follow.records.isEmpty)
+        #expect(concurrentObservationError == nil)
+        #expect(payload(in: follow, direction: .clientToServer) == Data("hello world".utf8))
         let laterRecord = makeUDPPacket(identifier: 101)
         try liveSession.observe(laterRecord)
         #expect(try liveSession.summarize(laterRecord).infoSummary.isEmpty == false)
@@ -221,6 +322,50 @@ struct WiresharkTCPFollowTests {
         packet.append(contentsOf: bytes(acknowledgment))
         packet.append(contentsOf: [0x50, flags, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00])
         packet.append(payload)
+        return makeRecord(identifier: identifier, bytes: packet)
+    }
+
+    // Split one TCP segment on an eight-byte IPv4 fragment boundary after four payload bytes.
+    private func makeFragmentedTCPPacket() -> [NativePacketRecord] {
+        var tcpSegment = Data()
+        tcpSegment.append(contentsOf: bytes(UInt16(50_000)))
+        tcpSegment.append(contentsOf: bytes(UInt16(8_080)))
+        tcpSegment.append(contentsOf: bytes(UInt32(100)))
+        tcpSegment.append(contentsOf: bytes(UInt32(0)))
+        tcpSegment.append(contentsOf: [0x50, 0x18, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00])
+        tcpSegment.append(Data("fragmented".utf8))
+
+        let firstPayload = tcpSegment.prefix(24)
+        let secondPayload = tcpSegment.dropFirst(24)
+        let first = makeIPv4Fragment(
+            identifier: 30,
+            fragmentPayload: Data(firstPayload),
+            flagsAndOffset: 0x2000
+        )
+        let second = makeIPv4Fragment(
+            identifier: 31,
+            fragmentPayload: Data(secondPayload),
+            flagsAndOffset: 3
+        )
+        return [first, second]
+    }
+
+    private func makeIPv4Fragment(
+        identifier: UInt64,
+        fragmentPayload: Data,
+        flagsAndOffset: UInt16
+    ) -> NativePacketRecord {
+        var packet = Data([
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55,
+            0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
+            0x08, 0x00,
+            0x45, 0x00,
+        ])
+        packet.append(contentsOf: bytes(UInt16(20 + fragmentPayload.count)))
+        packet.append(contentsOf: bytes(UInt16(0x1234)))
+        packet.append(contentsOf: bytes(flagsAndOffset))
+        packet.append(contentsOf: [0x40, 0x06, 0x00, 0x00, 192, 0, 2, 1, 198, 51, 100, 2])
+        packet.append(fragmentPayload)
         return makeRecord(identifier: identifier, bytes: packet)
     }
 

@@ -1771,6 +1771,21 @@ private final class InterfacePopupActionTarget: NSObject {
 @Suite
 struct PacketIngestStateMutationTests {
 
+    @Test func followCaptureIdentityRejectsReusedPacketIDsAfterLineageChanges() {
+        var state = PacketIngestState.empty
+        let packet = makePacket(packetNumber: 1)
+        state.append([packet], source: .live)
+        let identity = TCPFollowCaptureIdentity(ingestState: state)
+
+        #expect(identity.canReveal(packetID: packet.id, in: state))
+        #expect(!identity.canReveal(packetID: 99, in: state))
+
+        state.reset(source: .live, message: "New capture")
+        state.append([packet], source: .live)
+
+        #expect(!identity.canReveal(packetID: packet.id, in: state))
+    }
+
     @Test func appendAndApplyMetadataUpdatesEmitsAppendWhenNoUpdates() {
         var state = PacketIngestState.empty
         let packet = makePacket(packetNumber: 1)

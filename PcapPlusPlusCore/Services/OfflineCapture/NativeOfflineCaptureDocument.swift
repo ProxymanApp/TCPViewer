@@ -244,7 +244,7 @@ private final class NativeOfflineCaptureDocumentState: @unchecked Sendable {
         }
     }
 
-    // Resolve candidate IDs from the summary index so following never rescans packet payloads on live paths.
+    // Validate the selected summary before the native Wireshark index resolves its stream frames.
     func followTCPStream(
         containing packetID: PacketSummary.ID,
         limits: TCPFollowLimits,
@@ -265,32 +265,12 @@ private final class NativeOfflineCaptureDocumentState: @unchecked Sendable {
                         break
                     }
                 }
-                guard let selected else {
+                guard selected != nil else {
                     throw TCPViewerCoreError(code: .offlineFileOpenFailed, message: "Packet \(packetID) is not available.")
-                }
-                guard selected.hasTCPLayer, let streamID = selected.streamID else {
-                    throw TCPViewerCoreError(code: .unavailableFeature, message: "Select a TCP packet to follow its stream.")
-                }
-
-                var candidateIDs: [PacketSummary.ID] = []
-                for packet in packets {
-                    if shouldCancel?() == true {
-                        throw TCPViewerCoreError(code: .operationCancelled, message: "TCP stream reassembly was cancelled.")
-                    }
-                    if packet.hasTCPLayer && packet.streamID == streamID {
-                        candidateIDs.append(packet.id)
-                        guard candidateIDs.count <= limits.maximumCandidatePacketCount else {
-                            throw TCPViewerCoreError(
-                                code: .unavailableFeature,
-                                message: "This TCP stream has more than \(limits.maximumCandidatePacketCount) packets."
-                            )
-                        }
-                    }
                 }
                 do {
                     let fields = try self.nativeDocument.followTCPStream(
                         containing: packetID,
-                        candidateIdentifiers: candidateIDs,
                         limits: limits,
                         progress: progress,
                         shouldCancel: shouldCancel
@@ -553,11 +533,5 @@ private final class NativeOfflineCaptureDocumentState: @unchecked Sendable {
         let tcpviewerError = NativeBridgeMapper.coreError(error, defaultCode: code)
         eventBox.yield(.documentStateChanged(phase: .failed, message: tcpviewerError.message))
         return tcpviewerError
-    }
-}
-
-private extension PacketSummary {
-    var hasTCPLayer: Bool {
-        layers.contains { $0.name.caseInsensitiveCompare("TCP") == .orderedSame }
     }
 }

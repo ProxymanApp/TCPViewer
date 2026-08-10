@@ -190,6 +190,23 @@ final class NativeLivePacketDiskStore {
         latestEntryIndexByTCPStreamID[streamIdentifier] = index
     }
 
+    // Apply Wireshark's per-packet stream delta in capture order so dependency frames keep a valid chain.
+    func markTCPStreamsReady(_ updates: [WiresharkTCPStreamIndexEntry]) {
+        let orderedUpdates = updates.compactMap { update -> (index: Int, update: WiresharkTCPStreamIndexEntry)? in
+            guard let index = entryIndexByID[update.packetIdentifier] else {
+                return nil
+            }
+            return (index, update)
+        }.sorted { $0.index < $1.index }
+
+        for item in orderedUpdates {
+            markTCPStreamReady(
+                identifier: item.update.packetIdentifier,
+                streamIdentifier: item.update.streamIdentifier
+            )
+        }
+    }
+
     // Duplicate the anonymous backing file and copy only this stream's compact index chain.
     func snapshotForTCPStream(
         containing identifier: UInt64,

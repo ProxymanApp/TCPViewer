@@ -1418,6 +1418,7 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
 private extension TCPViewerRootViewController {
     // Open a dedicated native workspace and keep its bounded background operation cancellable.
     func presentFollowTCPStreamWindow(packetID: PacketSummary.ID) {
+        let captureIdentity = viewModel.tcpFollowCaptureIdentity
         let controller = TCPFollowStreamWindowController(packetID: packetID)
         followStreamWindowControllers.append(controller)
         controller.closeHandler = { [weak self, weak controller] in
@@ -1427,7 +1428,8 @@ private extension TCPViewerRootViewController {
             self?.followStreamWindowControllers.removeAll { $0 === controller }
         }
         controller.revealPacket = { [weak self] packetID in
-            guard let self else {
+            guard let self,
+                  self.viewModel.canRevealTCPFollowPacket(packetID, from: captureIdentity) else {
                 return
             }
             self.viewModel.selectPacket(packetID)

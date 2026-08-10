@@ -62,6 +62,22 @@ struct NativeLivePacketDiskSnapshotTests {
         #expect(try snapshot.records(maximumBytes: 1).map(\.identifier) == [1])
     }
 
+    @Test func streamIndexUpdatesBuildTheSnapshotChainInCaptureOrder() throws {
+        let store = NativeLivePacketDiskStore()
+        try store.append(makeRecord(identifier: 1, byte: 0x11))
+        try store.append(makeRecord(identifier: 2, byte: 0x22))
+        try store.append(makeRecord(identifier: 3, byte: 0x33))
+
+        store.markTCPStreamsReady([
+            WiresharkTCPStreamIndexEntry(packetIdentifier: 3, streamIdentifier: 7),
+            WiresharkTCPStreamIndexEntry(packetIdentifier: 1, streamIdentifier: 7),
+            WiresharkTCPStreamIndexEntry(packetIdentifier: 2, streamIdentifier: 7),
+        ])
+
+        let snapshot = try store.snapshotForTCPStream(containing: 2, maximumPacketCount: 3)
+        #expect(try snapshot.records(maximumBytes: 3).map(\.identifier) == [1, 2, 3])
+    }
+
     private func makeRecord(identifier: UInt64, byte: UInt8) -> NativePacketRecord {
         NativePacketRecord(
             identifier: identifier,

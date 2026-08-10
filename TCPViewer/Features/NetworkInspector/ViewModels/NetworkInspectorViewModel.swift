@@ -2150,6 +2150,15 @@ final class NetworkInspectorViewModel {
         controller.inspectPacket(id: identifier, completion: completion)
     }
 
+    var tcpFollowCaptureIdentity: TCPFollowCaptureIdentity {
+        controller.tcpFollowCaptureIdentity
+    }
+
+    // Keep detached follow-window navigation scoped to its original capture lineage.
+    func canRevealTCPFollowPacket(_ identifier: PacketSummary.ID, from identity: TCPFollowCaptureIdentity) -> Bool {
+        controller.canRevealTCPFollowPacket(identifier, from: identity)
+    }
+
     func followTCPStream(
         containing identifier: PacketSummary.ID,
         progress: TCPFollowProgressHandler?,
