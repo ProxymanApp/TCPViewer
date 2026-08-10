@@ -30,8 +30,6 @@ final class TCPFollowCancellationFlag: @unchecked Sendable {
 
 final class TCPFollowStreamWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate {
     private enum ToolbarItem {
-        static let direction = NSToolbarItem.Identifier("TCPFollowStream.direction")
-        static let representation = NSToolbarItem.Identifier("TCPFollowStream.representation")
         static let flexibleSpace = NSToolbarItem.Identifier.flexibleSpace
         static let save = NSToolbarItem.Identifier("TCPFollowStream.save")
     }
@@ -41,20 +39,18 @@ final class TCPFollowStreamWindowController: NSWindowController, NSWindowDelegat
     var revealPacket: ((PacketSummary.ID) -> Void)?
 
     private let streamViewController = TCPFollowStreamViewController()
-    private let directionControl = NSSegmentedControl(labels: ["Both", "Client → Server", "Server → Client"], trackingMode: .selectOne, target: nil, action: nil)
-    private let representationControl = NSSegmentedControl(labels: ["Text", "Hex"], trackingMode: .selectOne, target: nil, action: nil)
     private let saveMenuButton = NSPopUpButton(frame: .zero, pullsDown: true)
     private let exportQueue = DispatchQueue(label: "com.proxyman.tcpviewer.TCPFollowStream.export", qos: .userInitiated)
 
     init(packetID: PacketSummary.ID) {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 900, height: 640),
+            contentRect: NSRect(x: 0, y: 0, width: 1_200, height: 760),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "Follow TCP Stream · Packet \(packetID)"
-        window.minSize = NSSize(width: 640, height: 420)
+        window.minSize = NSSize(width: 1_100, height: 560)
         window.center()
         super.init(window: window)
         window.delegate = self
@@ -99,32 +95,25 @@ final class TCPFollowStreamWindowController: NSWindowController, NSWindowDelegat
         closeHandler?()
     }
 
-    // Advertise the small fixed toolbar layout.
+    // Keep export at the trailing edge while settings remain in the content view.
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [ToolbarItem.direction, ToolbarItem.representation, ToolbarItem.flexibleSpace, ToolbarItem.save]
+        [ToolbarItem.flexibleSpace, ToolbarItem.save]
     }
 
-    // Keep the direction, representation, and export controls visible by default.
+    // Keep the export control visible by default.
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         toolbarAllowedItemIdentifiers(toolbar)
     }
 
-    // Build native segmented and pull-down toolbar items.
+    // Build the icon-only export menu toolbar item.
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier identifier: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         let item = NSToolbarItem(itemIdentifier: identifier)
         switch identifier {
-        case ToolbarItem.direction:
-            item.label = "Direction"
-            item.paletteLabel = "Direction"
-            item.view = directionControl
-        case ToolbarItem.representation:
-            item.label = "Format"
-            item.paletteLabel = "Format"
-            item.view = representationControl
         case ToolbarItem.save:
             item.label = "Save"
             item.paletteLabel = "Save"
             item.view = saveMenuButton
+            item.visibilityPriority = .user
         default:
             return nil
         }
@@ -132,23 +121,17 @@ final class TCPFollowStreamWindowController: NSWindowController, NSWindowDelegat
     }
 
     private func configureToolbar() {
-        directionControl.selectedSegment = TCPFollowDirectionFilter.both.rawValue
-        directionControl.target = self
-        directionControl.action = #selector(directionChanged(_:))
-        directionControl.setAccessibilityLabel("Stream direction")
-
-        representationControl.selectedSegment = TCPFollowRepresentation.text.rawValue
-        representationControl.target = self
-        representationControl.action = #selector(representationChanged(_:))
-        representationControl.setAccessibilityLabel("Payload representation")
-
-        saveMenuButton.addItem(withTitle: "Save…")
+        saveMenuButton.controlSize = .regular
+        saveMenuButton.addItem(withTitle: "")
+        saveMenuButton.item(at: 0)?.image = TCPViewerUI.image("square.and.arrow.up")
         saveMenuButton.menu?.addItem(withTitle: "Save Transcript…", action: #selector(saveTranscript(_:)), keyEquivalent: "")
         saveMenuButton.menu?.addItem(.separator())
         saveMenuButton.menu?.addItem(withTitle: "Export Client Bytes…", action: #selector(exportClientBytes(_:)), keyEquivalent: "")
         saveMenuButton.menu?.addItem(withTitle: "Export Server Bytes…", action: #selector(exportServerBytes(_:)), keyEquivalent: "")
         saveMenuButton.menu?.items.forEach { $0.target = self }
-        saveMenuButton.setAccessibilityLabel("Save stream")
+        saveMenuButton.imagePosition = .imageOnly
+        saveMenuButton.toolTip = "Export TCP stream"
+        saveMenuButton.setAccessibilityLabel("Export TCP stream")
         saveMenuButton.isEnabled = false
 
         let toolbar = NSToolbar(identifier: "TCPFollowStream.toolbar")
@@ -157,20 +140,6 @@ final class TCPFollowStreamWindowController: NSWindowController, NSWindowDelegat
         toolbar.allowsUserCustomization = false
         window?.toolbarStyle = .unified
         window?.toolbar = toolbar
-    }
-
-    @objc private func directionChanged(_ sender: NSSegmentedControl) {
-        guard let filter = TCPFollowDirectionFilter(rawValue: sender.selectedSegment) else {
-            return
-        }
-        streamViewController.setDirectionFilter(filter)
-    }
-
-    @objc private func representationChanged(_ sender: NSSegmentedControl) {
-        guard let representation = TCPFollowRepresentation(rawValue: sender.selectedSegment) else {
-            return
-        }
-        streamViewController.setRepresentation(representation)
     }
 
     @objc private func saveTranscript(_ sender: Any?) {

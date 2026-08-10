@@ -30,12 +30,31 @@ final class TCPFollowStreamViewController: NSViewController {
     var revealPacket: ((PacketSummary.ID) -> Void)?
 
     private let viewModel = TCPFollowStreamViewModel()
+    private let settingsLabel = NSTextField(labelWithString: "Settings:")
+    private let directionControl = NSSegmentedControl(
+        labels: ["Both", "Client → Server", "Server → Client"],
+        trackingMode: .selectOne,
+        target: nil,
+        action: nil
+    )
+    private let representationControl = NSSegmentedControl(
+        labels: ["Text", "Hex"],
+        trackingMode: .selectOne,
+        target: nil,
+        action: nil
+    )
+    private let settingsStack = NSStackView()
     private let summaryLabel = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(labelWithString: "")
     private let placeholderLabel = NSTextField(labelWithString: "Reassembling TCP stream…")
     private let progressIndicator = NSProgressIndicator()
-    private let scrollView = NSScrollView()
-    private let textView = TCPFollowTextView()
+    private let scrollView = TCPFollowTextView.scrollableTextView()
+    private lazy var textView: TCPFollowTextView = {
+        guard let textView = scrollView.documentView as? TCPFollowTextView else {
+            preconditionFailure("The follow stream scroll view must contain TCPFollowTextView.")
+        }
+        return textView
+    }()
     private let placeholderStack = NSStackView()
     private var latestRenderedContent: TCPFollowRenderedContent?
 
@@ -95,17 +114,35 @@ final class TCPFollowStreamViewController: NSViewController {
 
     // Apply the direction control to the already-reassembled snapshot.
     func setDirectionFilter(_ filter: TCPFollowDirectionFilter) {
+        directionControl.selectedSegment = filter.rawValue
         viewModel.setDirectionFilter(filter)
         render()
     }
 
     // Apply the text/hex control to the already-reassembled snapshot.
     func setRepresentation(_ representation: TCPFollowRepresentation) {
+        representationControl.selectedSegment = representation.rawValue
         viewModel.setRepresentation(representation)
         render()
     }
 
     private func setupView() {
+        settingsLabel.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
+        directionControl.selectedSegment = TCPFollowDirectionFilter.both.rawValue
+        directionControl.target = self
+        directionControl.action = #selector(directionChanged(_:))
+        directionControl.setAccessibilityLabel("Stream direction")
+        representationControl.selectedSegment = TCPFollowRepresentation.text.rawValue
+        representationControl.target = self
+        representationControl.action = #selector(representationChanged(_:))
+        representationControl.setAccessibilityLabel("Payload representation")
+        settingsStack.orientation = .horizontal
+        settingsStack.alignment = .centerY
+        settingsStack.spacing = 10
+        settingsStack.addArrangedSubview(settingsLabel)
+        settingsStack.addArrangedSubview(directionControl)
+        settingsStack.addArrangedSubview(representationControl)
+
         summaryLabel.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
         summaryLabel.lineBreakMode = .byTruncatingMiddle
         statusLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
@@ -120,9 +157,8 @@ final class TCPFollowStreamViewController: NSViewController {
         textView.revealPacket = { [weak self] packetID in
             self?.revealPacket?(packetID)
         }
-        scrollView.documentView = textView
         scrollView.hasVerticalScroller = true
-        scrollView.hasHorizontalScroller = true
+        scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
         scrollView.borderType = .noBorder
 
@@ -136,12 +172,15 @@ final class TCPFollowStreamViewController: NSViewController {
         placeholderStack.addArrangedSubview(placeholderLabel)
         placeholderStack.addArrangedSubview(progressIndicator)
 
-        [summaryLabel, statusLabel, scrollView, placeholderStack].forEach {
+        [settingsStack, summaryLabel, statusLabel, scrollView, placeholderStack].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview($0)
         }
         NSLayoutConstraint.activate([
-            summaryLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 12),
+            settingsStack.topAnchor.constraint(equalTo: view.topAnchor, constant: 12),
+            settingsStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 14),
+            settingsStack.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -14),
+            summaryLabel.topAnchor.constraint(equalTo: settingsStack.bottomAnchor, constant: 12),
             summaryLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 14),
             summaryLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -14),
             statusLabel.topAnchor.constraint(equalTo: summaryLabel.bottomAnchor, constant: 3),
@@ -157,6 +196,20 @@ final class TCPFollowStreamViewController: NSViewController {
             progressIndicator.widthAnchor.constraint(equalToConstant: 260),
         ])
         showLoading()
+    }
+
+    @objc private func directionChanged(_ sender: NSSegmentedControl) {
+        guard let filter = TCPFollowDirectionFilter(rawValue: sender.selectedSegment) else {
+            return
+        }
+        setDirectionFilter(filter)
+    }
+
+    @objc private func representationChanged(_ sender: NSSegmentedControl) {
+        guard let representation = TCPFollowRepresentation(rawValue: sender.selectedSegment) else {
+            return
+        }
+        setRepresentation(representation)
     }
 
     // Refresh only presentation state; core reassembly is intentionally not repeated.
