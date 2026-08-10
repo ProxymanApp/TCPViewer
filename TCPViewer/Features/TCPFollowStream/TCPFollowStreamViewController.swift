@@ -92,6 +92,15 @@ final class TCPFollowStreamViewController: NSViewController, NSSearchFieldDelega
         setupView()
     }
 
+    // Reflow hex rows only when resizing changes the number of complete columns that fit.
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        guard updateHexBytesPerLineIfNeeded() else {
+            return
+        }
+        render()
+    }
+
     // Display an indeterminate loading state before the core reports packet counts.
     func showLoading() {
         summaryLabel.stringValue = "Preparing packet snapshot"
@@ -123,6 +132,7 @@ final class TCPFollowStreamViewController: NSViewController, NSSearchFieldDelega
         placeholderStack.isHidden = true
         scrollView.isHidden = false
         searchField.isEnabled = true
+        updateHexBytesPerLineIfNeeded()
         render()
     }
 
@@ -148,6 +158,7 @@ final class TCPFollowStreamViewController: NSViewController, NSSearchFieldDelega
     func setRepresentation(_ representation: TCPFollowRepresentation) {
         representationControl.selectedSegment = representation.rawValue
         viewModel.setRepresentation(representation)
+        updateHexBytesPerLineIfNeeded()
         render()
     }
 
@@ -230,6 +241,10 @@ final class TCPFollowStreamViewController: NSViewController, NSSearchFieldDelega
         textView.isRichText = true
         textView.usesFindBar = false
         textView.isIncrementalSearchingEnabled = false
+        textView.isHorizontallyResizable = false
+        textView.isVerticallyResizable = true
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.widthTracksTextView = true
         textView.textContainerInset = NSSize(width: 14, height: 14)
         textView.revealPacket = { [weak self] packetID in
             self?.revealPacket?(packetID)
@@ -556,6 +571,23 @@ final class TCPFollowStreamViewController: NSViewController, NSSearchFieldDelega
         textView.packetRanges = content.packetRanges
         statusLabel.stringValue = content.statusText
         refreshSearchResults()
+    }
+
+    // Convert the viewport width into complete offset, byte, and ASCII columns.
+    @discardableResult
+    private func updateHexBytesPerLineIfNeeded() -> Bool {
+        guard viewModel.stream != nil, viewModel.representation == .hex else {
+            return false
+        }
+        let textInsets = textView.textContainerInset.width * 2
+        let fragmentPadding = (textView.textContainer?.lineFragmentPadding ?? 0) * 2
+        let availableWidth = max(scrollView.contentSize.width - textInsets - fragmentPadding, 0)
+        let byteCount = TCPFollowStreamViewModel.preferredHexBytesPerLine(for: availableWidth)
+        guard byteCount != viewModel.hexBytesPerLine else {
+            return false
+        }
+        viewModel.setHexBytesPerLine(byteCount)
+        return true
     }
 
     private func endpointLabel(_ endpoint: PacketEndpoint) -> String {

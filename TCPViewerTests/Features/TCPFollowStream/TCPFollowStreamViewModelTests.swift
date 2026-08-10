@@ -47,6 +47,40 @@ struct TCPFollowStreamViewModelTests {
     }
 
     @MainActor
+    @Test func hexLayoutUsesAdditionalViewportWidthInAlignedGroups() {
+        let characterWidth = ("0" as NSString).size(withAttributes: [
+            .font: TCPFollowStreamViewModel.payloadFont,
+        ]).width
+
+        let narrowByteCount = TCPFollowStreamViewModel.preferredHexBytesPerLine(
+            for: characterWidth * 76 + 0.5
+        )
+        let wideByteCount = TCPFollowStreamViewModel.preferredHexBytesPerLine(
+            for: characterWidth * 204 + 0.5
+        )
+
+        #expect(narrowByteCount == 16)
+        #expect(wideByteCount == 48)
+        #expect(wideByteCount.isMultiple(of: 8))
+    }
+
+    @MainActor
+    @Test func hexRenderingAdvancesOffsetsByTheConfiguredRowWidth() {
+        let clientData = Data((0..<40).map(UInt8.init))
+        let viewModel = TCPFollowStreamViewModel()
+        viewModel.setStream(makeStream(clientData: clientData, serverData: Data()))
+        viewModel.setDirectionFilter(.clientToServer)
+        viewModel.setRepresentation(.hex)
+        viewModel.setHexBytesPerLine(32)
+
+        let content = viewModel.renderedContent()
+
+        #expect(content.plainText.contains("00000000  00 01 02 03"))
+        #expect(content.plainText.contains("00000020  20 21 22 23"))
+        #expect(!content.plainText.contains("00000010  "))
+    }
+
+    @MainActor
     @Test func boundsDisplayedPayloadWithoutLimitingRawExport() {
         let viewModel = TCPFollowStreamViewModel(
             maximumDisplayedPayloadBytes: 4,
@@ -115,6 +149,22 @@ struct TCPFollowStreamViewModelTests {
         #expect(textView.frame.width >= scrollView.contentSize.width)
         #expect(textView.frame.height >= scrollView.contentSize.height)
         #expect(textView.string.contains("Client to Server · Packet 10"))
+    }
+
+    @MainActor
+    @Test func wideHexTranscriptUsesMoreThanSixteenBytesPerRow() {
+        let controller = TCPFollowStreamViewController()
+        controller.view.frame = NSRect(x: 0, y: 0, width: 1_200, height: 760)
+        controller.view.layoutSubtreeIfNeeded()
+        let clientData = Data((0..<64).map(UInt8.init))
+
+        controller.show(stream: makeStream(clientData: clientData, serverData: Data()))
+        controller.setDirectionFilter(.clientToServer)
+        controller.setRepresentation(.hex)
+        controller.view.layoutSubtreeIfNeeded()
+
+        #expect(controller.renderedContent.plainText.contains("00000020  20 21 22 23"))
+        #expect(!controller.renderedContent.plainText.contains("00000010  "))
     }
 
     @MainActor
@@ -273,7 +323,10 @@ struct TCPFollowStreamViewModelTests {
         #expect(matchLabel.stringValue == "1 of 1")
     }
 
-    private func makeStream() -> TCPFollowStream {
+    private func makeStream(
+        clientData: Data = Data([0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x00]),
+        serverData: Data = Data("world".utf8)
+    ) -> TCPFollowStream {
         TCPFollowStream(
             client: PacketEndpoint(address: "192.0.2.1", port: 50_000),
             server: PacketEndpoint(address: "198.51.100.2", port: 443),
@@ -283,18 +336,18 @@ struct TCPFollowStreamViewModelTests {
                     packetID: 10,
                     timestamp: Date(timeIntervalSince1970: 10),
                     sequenceNumber: 100,
-                    data: Data([0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x00])
+                    data: clientData
                 ),
                 TCPFollowRecord(
                     direction: .serverToClient,
                     packetID: 11,
                     timestamp: Date(timeIntervalSince1970: 11),
                     sequenceNumber: 200,
-                    data: Data("world".utf8)
+                    data: serverData
                 ),
             ],
-            clientByteCount: 6,
-            serverByteCount: 5,
+            clientByteCount: clientData.count,
+            serverByteCount: serverData.count,
             capturedThroughPacketID: 12,
             capturedAt: Date(timeIntervalSince1970: 12),
             isTruncated: false

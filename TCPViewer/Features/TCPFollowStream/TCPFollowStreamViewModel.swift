@@ -35,10 +35,14 @@ struct TCPFollowRenderedContent {
 final class TCPFollowStreamViewModel {
     private static let defaultMaximumDisplayedPayloadBytes = 4 * 1_024 * 1_024
     private static let defaultMaximumDisplayedRecordCount = 10_000
+    private static let minimumHexBytesPerLine = 16
+    private static let maximumHexBytesPerLine = 64
+    static let payloadFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
 
     private(set) var stream: TCPFollowStream?
     private(set) var directionFilter: TCPFollowDirectionFilter = .both
     private(set) var representation: TCPFollowRepresentation = .text
+    private(set) var hexBytesPerLine = TCPFollowStreamViewModel.minimumHexBytesPerLine
     private let maximumDisplayedPayloadBytes: Int
     private let maximumDisplayedRecordCount: Int
 
@@ -63,6 +67,26 @@ final class TCPFollowStreamViewModel {
     // Change payload rendering without repeating reassembly.
     func setRepresentation(_ representation: TCPFollowRepresentation) {
         self.representation = representation
+    }
+
+    // Keep hex rows aligned while using the available transcript width.
+    func setHexBytesPerLine(_ byteCount: Int) {
+        hexBytesPerLine = min(
+            max(byteCount, Self.minimumHexBytesPerLine),
+            Self.maximumHexBytesPerLine
+        )
+    }
+
+    // Fit complete offset, hex, and ASCII columns, rounded to readable eight-byte groups.
+    static func preferredHexBytesPerLine(for availableWidth: CGFloat) -> Int {
+        let characterWidth = ("0" as NSString).size(withAttributes: [.font: payloadFont]).width
+        guard availableWidth > 0, characterWidth > 0 else {
+            return minimumHexBytesPerLine
+        }
+        let availableCharacters = max(Int(floor(availableWidth / characterWidth)) - 1, 0)
+        let fittedByteCount = max((availableCharacters - 11) / 4, minimumHexBytesPerLine)
+        let groupedByteCount = fittedByteCount - fittedByteCount % 8
+        return min(max(groupedByteCount, minimumHexBytesPerLine), maximumHexBytesPerLine)
     }
 
     // Build one attributed transcript and packet-character index for the text view.
@@ -161,7 +185,7 @@ final class TCPFollowStreamViewModel {
         output.append(NSAttributedString(
             string: payload,
             attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+                .font: Self.payloadFont,
                 .foregroundColor: NSColor.labelColor,
             ]
         ))
@@ -195,16 +219,17 @@ final class TCPFollowStreamViewModel {
         }
     }
 
-    // Render classic 16-byte rows with offsets and an ASCII gutter.
+    // Render width-aware rows with offsets and an aligned ASCII gutter.
     private func hex(_ data: Data) -> String {
         guard !data.isEmpty else {
             return ""
         }
         let bytes = [UInt8](data)
-        return stride(from: 0, to: bytes.count, by: 16).map { offset in
-            let line = Array(bytes[offset..<min(offset + 16, bytes.count)])
+        let paddedHexLength = hexBytesPerLine * 3 - 1
+        return stride(from: 0, to: bytes.count, by: hexBytesPerLine).map { offset in
+            let line = Array(bytes[offset..<min(offset + hexBytesPerLine, bytes.count)])
             let hexBytes = line.map { String(format: "%02x", $0) }.joined(separator: " ")
-            let paddedHex = hexBytes.padding(toLength: 47, withPad: " ", startingAt: 0)
+            let paddedHex = hexBytes.padding(toLength: paddedHexLength, withPad: " ", startingAt: 0)
             let ascii = String(line.map { (0x20...0x7e).contains($0) ? Character(UnicodeScalar($0)) : "." })
             return String(format: "%08x  %@  %@", offset, paddedHex, ascii)
         }.joined(separator: "\n")
