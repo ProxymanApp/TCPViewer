@@ -623,6 +623,10 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
         defer { followOperationCoordinator.finishLifecycleTransition() }
         cancelDurationStopWorkItem()
         flushPendingPacketBatch()
+        // Deferred summary refinement cannot use the live EPAN session after Stop releases it.
+        cancelPacketReanalysisWorkItem()
+        packetReanalysisQueue.discardPending(releasingCapacity: true)
+        packetSummaryTextByID.removeAll(keepingCapacity: false)
 
         do {
             try nativeSession.stop()

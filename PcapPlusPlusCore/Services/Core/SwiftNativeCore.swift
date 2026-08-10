@@ -563,6 +563,7 @@ private struct PCPPNativeLiveSessionState {
     var packetsDroppedByInterface: UInt64 = 0
     var liveLinkLayerType = Libpcap.dltEthernet
     var dissectionSession: WiresharkEpanSession?
+    var hadWorkingDissectionSession = false
     var dnsTCPStreamParser = DNSTCPStreamParser()
     var statusMessage: String?
 }
@@ -665,6 +666,7 @@ final class PCPPNativeLiveSession {
         state.write {
             $0.handle = openedHandle
             $0.dissectionSession = nextDissectionSession
+            $0.hadWorkingDissectionSession = nextDissectionSession != nil
             $0.running = true
             $0.paused = false
             $0.phase = .running
@@ -759,6 +761,7 @@ final class PCPPNativeLiveSession {
             $0.packetsDropped = 0
             $0.packetsDroppedByInterface = 0
             $0.dissectionSession = nextDissectionSession
+            $0.hadWorkingDissectionSession = nextDissectionSession != nil
             $0.dnsTCPStreamParser.reset()
             if nextDissectionSession != nil {
                 $0.statusMessage = nil
@@ -770,7 +773,18 @@ final class PCPPNativeLiveSession {
         try state.write { state in
             let record = try state.packetStore.record(withIdentifier: identifier)
             return autoreleasepool {
-                guard let session = state.dissectionSession else {
+                let session: WiresharkEpanSession
+                if let activeSession = state.dissectionSession {
+                    session = activeSession
+                } else if state.phase == .stopped && state.hadWorkingDissectionSession {
+                    // Stop releases live EPAN ownership, so inspect retained packets in a temporary session.
+                    do {
+                        session = try WiresharkEpanSession()
+                    } catch {
+                        disableWiresharkAfterFailure(error, state: &state)
+                        return SwiftPacketDissector.dissect(record: record, disablesWireshark: true).inspection
+                    }
+                } else {
                     return SwiftPacketDissector.dissect(record: record, disablesWireshark: true).inspection
                 }
 
@@ -793,8 +807,9 @@ final class PCPPNativeLiveSession {
         progress: TCPFollowProgressHandler?,
         shouldCancel: TCPFollowCancellationCheck?
     ) throws -> TCPFollowStream {
-        let resources = try state.read { state -> (snapshot: NativeLivePacketDiskSnapshot, session: WiresharkEpanSession) in
-            guard let session = state.dissectionSession else {
+        let resources = try state.read { state -> (snapshot: NativeLivePacketDiskSnapshot, session: WiresharkEpanSession?) in
+            guard state.dissectionSession != nil
+                    || (state.phase == .stopped && state.hadWorkingDissectionSession) else {
                 throw NativeNSError(.unavailableFeature, "Wireshark TCP stream reassembly is unavailable for this capture.")
             }
             let snapshot = try state.packetStore.snapshotForTCPStream(
@@ -802,7 +817,7 @@ final class PCPPNativeLiveSession {
                 maximumPacketCount: limits.maximumCandidatePacketCount,
                 shouldCancel: shouldCancel
             )
-            return (snapshot, session)
+            return (snapshot, state.dissectionSession)
         }
         let maximumInputBytes = limits.maximumPayloadBytes > 128 * 1_024 * 1_024
             ? 256 * 1_024 * 1_024
@@ -814,13 +829,25 @@ final class PCPPNativeLiveSession {
         guard let selected = records.first(where: { $0.identifier == identifier }) else {
             throw NativeNSError(.fileReadFailed, "The selected TCP packet is no longer in the live snapshot.")
         }
-        let fields = try resources.session.followObservedTCPStream(
-            containing: selected,
-            records: records,
-            limits: limits,
-            progress: progress,
-            shouldCancel: shouldCancel
-        )
+        // Stop releases live EPAN ownership, so rebuild a bounded session from the retained disk snapshot.
+        let fields: WiresharkTCPFollowFields
+        if let session = resources.session {
+            fields = try session.followObservedTCPStream(
+                containing: selected,
+                records: records,
+                limits: limits,
+                progress: progress,
+                shouldCancel: shouldCancel
+            )
+        } else {
+            fields = try WiresharkEpanSession.followTCPStreamInTemporarySession(
+                containing: selected,
+                records: records,
+                limits: limits,
+                progress: progress,
+                shouldCancel: shouldCancel
+            )
+        }
         return TCPFollowStream(
             client: fields.client,
             server: fields.server,
@@ -1040,6 +1067,7 @@ final class PCPPNativeLiveSession {
     private func disableWiresharkAfterFailure(_ error: Error, state: inout PCPPNativeLiveSessionState) {
         let message = NativeBridgeMapper.coreError(error, defaultCode: .unavailableFeature).message
         state.dissectionSession = nil
+        state.hadWorkingDissectionSession = false
         state.statusMessage = "Wireshark details are unavailable; capture continues with the Swift dissector. \(message)"
     }
 

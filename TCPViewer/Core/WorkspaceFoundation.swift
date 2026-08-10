@@ -491,6 +491,70 @@ struct PacketIngestState: Sendable, Equatable {
     }
 }
 
+struct TCPFollowStreamNavigation: Equatable {
+    struct Entry: Equatable {
+        let streamID: UInt32
+        let packetID: PacketSummary.ID
+    }
+
+    let entries: [Entry]
+    let selectedIndex: Int
+
+    var selectedEntry: Entry {
+        entries[selectedIndex]
+    }
+
+    // Build a sorted stream list without crossing imported capture-file boundaries.
+    init?(ingestState: PacketIngestState, selectedPacketID: PacketSummary.ID) {
+        guard let selectedPacket = ingestState.packet(withID: selectedPacketID),
+              let selectedStreamID = selectedPacket.streamID else {
+            return nil
+        }
+
+        let selectedReference = ingestState.importedPacketReference(for: selectedPacketID)
+        var packetIDByStreamID: [UInt32: PacketSummary.ID] = [:]
+        for packet in ingestState.packets {
+            let containsTCPLayer = packet.layers.contains {
+                $0.name.caseInsensitiveCompare("TCP") == .orderedSame
+            }
+            guard containsTCPLayer, let streamID = packet.streamID else {
+                continue
+            }
+            let candidateReference = ingestState.importedPacketReference(for: packet.id)
+            let belongsToSelectedCapture = selectedReference.map { selected in
+                candidateReference?.fileID == selected.fileID
+            } ?? (candidateReference == nil)
+            guard belongsToSelectedCapture, packetIDByStreamID[streamID] == nil else {
+                continue
+            }
+            packetIDByStreamID[streamID] = packet.id
+        }
+        packetIDByStreamID[selectedStreamID] = selectedPacketID
+
+        let entries = packetIDByStreamID.keys.sorted().compactMap { streamID in
+            packetIDByStreamID[streamID].map { Entry(streamID: streamID, packetID: $0) }
+        }
+        guard let selectedIndex = entries.firstIndex(where: { $0.streamID == selectedStreamID }) else {
+            return nil
+        }
+        self.entries = entries
+        self.selectedIndex = selectedIndex
+    }
+
+    private init(entries: [Entry], selectedIndex: Int) {
+        self.entries = entries
+        self.selectedIndex = selectedIndex
+    }
+
+    // Return the same capture-scoped list focused on another available stream.
+    func selecting(index: Int) -> TCPFollowStreamNavigation? {
+        guard entries.indices.contains(index) else {
+            return nil
+        }
+        return TCPFollowStreamNavigation(entries: entries, selectedIndex: index)
+    }
+}
+
 struct TCPFollowCaptureIdentity: Sendable, Equatable {
     let backingIdentity: String?
     let packetLineageRevision: UInt64
@@ -2883,6 +2947,14 @@ final class TCPViewerWorkspaceController {
 
     var tcpFollowCaptureIdentity: TCPFollowCaptureIdentity {
         TCPFollowCaptureIdentity(ingestState: snapshot.packetIngestState)
+    }
+
+    // List the TCP streams that belong to the selected packet's capture source.
+    func tcpFollowStreamNavigation(containing identifier: PacketSummary.ID) -> TCPFollowStreamNavigation? {
+        TCPFollowStreamNavigation(
+            ingestState: snapshot.packetIngestState,
+            selectedPacketID: identifier
+        )
     }
 
     // Check both lineage and membership before navigating from a detached follow window.

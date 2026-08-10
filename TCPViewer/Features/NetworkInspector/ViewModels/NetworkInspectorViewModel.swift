@@ -2154,6 +2154,11 @@ final class NetworkInspectorViewModel {
         controller.tcpFollowCaptureIdentity
     }
 
+    // Provide capture-scoped stream IDs and representative packets for follow-window navigation.
+    func tcpFollowStreamNavigation(containing identifier: PacketSummary.ID) -> TCPFollowStreamNavigation? {
+        controller.tcpFollowStreamNavigation(containing: identifier)
+    }
+
     // Keep detached follow-window navigation scoped to its original capture lineage.
     func canRevealTCPFollowPacket(_ identifier: PacketSummary.ID, from identity: TCPFollowCaptureIdentity) -> Bool {
         controller.canRevealTCPFollowPacket(identifier, from: identity)

@@ -1419,7 +1419,10 @@ private extension TCPViewerRootViewController {
     // Open a dedicated native workspace and keep its bounded background operation cancellable.
     func presentFollowTCPStreamWindow(packetID: PacketSummary.ID) {
         let captureIdentity = viewModel.tcpFollowCaptureIdentity
-        let controller = TCPFollowStreamWindowController(packetID: packetID)
+        guard let navigation = viewModel.tcpFollowStreamNavigation(containing: packetID) else {
+            return
+        }
+        let controller = TCPFollowStreamWindowController(navigation: navigation)
         followStreamWindowControllers.append(controller)
         controller.closeHandler = { [weak self, weak controller] in
             guard let controller else {
@@ -1435,8 +1438,28 @@ private extension TCPViewerRootViewController {
             self.viewModel.selectPacket(packetID)
             self.view.window?.makeKeyAndOrderFront(nil)
         }
+        controller.streamSelectionHandler = { [weak self, weak controller] entry in
+            guard let self, let controller else {
+                return
+            }
+            guard self.viewModel.canRevealTCPFollowPacket(entry.packetID, from: captureIdentity) else {
+                controller.show(error: TCPViewerCoreError(
+                    code: .offlineFileOpenFailed,
+                    message: "The capture changed, so this TCP stream is no longer available."
+                ))
+                return
+            }
+            self.loadFollowTCPStream(containing: entry.packetID, into: controller)
+        }
         controller.present()
+        loadFollowTCPStream(containing: packetID, into: controller)
+    }
 
+    // Reuse the same bounded callback-based reassembly path for initial and stepped streams.
+    func loadFollowTCPStream(
+        containing packetID: PacketSummary.ID,
+        into controller: TCPFollowStreamWindowController
+    ) {
         viewModel.followTCPStream(
             containing: packetID,
             progress: { [weak controller] progress in

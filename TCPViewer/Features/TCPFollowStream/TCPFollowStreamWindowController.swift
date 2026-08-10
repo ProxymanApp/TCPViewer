@@ -37,27 +37,40 @@ final class TCPFollowStreamWindowController: NSWindowController, NSWindowDelegat
     let cancellationFlag = TCPFollowCancellationFlag()
     var closeHandler: (() -> Void)?
     var revealPacket: ((PacketSummary.ID) -> Void)?
+    var streamSelectionHandler: ((TCPFollowStreamNavigation.Entry) -> Void)?
 
     private let streamViewController = TCPFollowStreamViewController()
     private let saveMenuButton = NSPopUpButton(frame: .zero, pullsDown: true)
     private let exportQueue = DispatchQueue(label: "com.proxyman.tcpviewer.TCPFollowStream.export", qos: .userInitiated)
 
-    init(packetID: PacketSummary.ID) {
+    init(navigation: TCPFollowStreamNavigation) {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1_200, height: 760),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
-        window.title = "Follow TCP Stream · Packet \(packetID)"
+        window.title = "Follow TCP Stream · Stream \(navigation.selectedEntry.streamID)"
         window.minSize = NSSize(width: 1_100, height: 560)
         window.center()
         super.init(window: window)
         window.delegate = self
         window.contentViewController = streamViewController
         configureToolbar()
+        streamViewController.setStreamNavigation(navigation, isEnabled: false)
         streamViewController.revealPacket = { [weak self] packetID in
             self?.revealPacket?(packetID)
+        }
+        streamViewController.requestStream = { [weak self] entry in
+            guard let self else {
+                return
+            }
+            guard let streamSelectionHandler = self.streamSelectionHandler else {
+                self.streamViewController.setStreamNavigationEnabled(true)
+                return
+            }
+            self.beginLoading(entry: entry)
+            streamSelectionHandler(entry)
         }
     }
 
@@ -72,20 +85,35 @@ final class TCPFollowStreamWindowController: NSWindowController, NSWindowDelegat
         window?.makeKeyAndOrderFront(nil)
     }
 
+    // Route the app-wide Command-F menu action to this window's transcript search.
+    @IBAction func focusStructuredFilter(_ sender: Any?) {
+        streamViewController.focusSearch()
+    }
+
     // Forward bounded core progress onto the native progress bar.
     func updateProgress(_ progress: TCPFollowProgress) {
         streamViewController.updateProgress(progress)
     }
 
+    // Reset the workspace while another stream is reassembled in the background.
+    func beginLoading(entry: TCPFollowStreamNavigation.Entry) {
+        window?.title = "Follow TCP Stream · Stream \(entry.streamID)"
+        saveMenuButton.isEnabled = false
+        streamViewController.setStreamNavigationEnabled(false)
+        streamViewController.showLoading()
+    }
+
     // Finish loading and enable transcript/raw export actions.
     func show(stream: TCPFollowStream) {
         streamViewController.show(stream: stream)
+        streamViewController.setStreamNavigationEnabled(true)
         saveMenuButton.isEnabled = true
     }
 
     // Show a non-destructive error inside the same window.
     func show(error: Error) {
         streamViewController.show(error: error)
+        streamViewController.setStreamNavigationEnabled(true)
         saveMenuButton.isEnabled = false
     }
 
