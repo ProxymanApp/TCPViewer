@@ -352,6 +352,18 @@ final class PacketTableViewController: NSViewController {
         enqueueCustomColumnResolution(after: updatePlan, previousRowCount: previousRowCount)
     }
 
+    // Scroll the current sorted and filtered table row into view.
+    @discardableResult
+    func scrollPacketToVisible(_ identifier: PacketSummary.ID) -> Bool {
+        guard let rowIndex = viewModel.rowIndex(for: identifier),
+              (0..<tableView.numberOfRows).contains(rowIndex) else {
+            return false
+        }
+
+        tableView.scrollRowToVisible(rowIndex)
+        return true
+    }
+
     private func applyAppendPlan(range: Range<Int>, previousRowCount: Int) {
         if range.lowerBound == previousRowCount, range.upperBound <= rows.count {
             tableView.noteNumberOfRowsChanged()

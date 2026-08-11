@@ -9,20 +9,149 @@ import AppKit
 import PcapPlusPlusCore
 
 private final class TCPFollowTextView: NSTextView {
-    var packetRanges: [TCPFollowPacketRange] = []
+    var packetRanges: [TCPFollowPacketRange] = [] {
+        didSet {
+            hideRevealButton()
+        }
+    }
     var revealPacket: ((PacketSummary.ID) -> Void)?
+    private let revealButton = NSButton()
+    private var hoveredPacketID: PacketSummary.ID?
+    private var hoverTrackingArea: NSTrackingArea?
 
-    // Open the originating packet when a transcript turn is double-clicked.
-    override func mouseDown(with event: NSEvent) {
-        super.mouseDown(with: event)
-        guard event.clickCount == 2 else {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setupRevealButton()
+    }
+
+    override init(frame frameRect: NSRect, textContainer container: NSTextContainer?) {
+        super.init(frame: frameRect, textContainer: container)
+        setupRevealButton()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setupRevealButton()
+    }
+
+    // Track hover only inside the visible transcript viewport.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTrackingArea {
+            removeTrackingArea(hoverTrackingArea)
+        }
+        let trackingArea = NSTrackingArea(
+            rect: .zero,
+            options: [.activeInKeyWindow, .inVisibleRect, .mouseMoved, .mouseEnteredAndExited],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(trackingArea)
+        hoverTrackingArea = trackingArea
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        updateRevealButton(at: convert(event.locationInWindow, from: nil))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        updateRevealButton(at: convert(event.locationInWindow, from: nil))
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        hideRevealButton()
+    }
+
+    private func setupRevealButton() {
+        revealButton.title = ""
+        revealButton.image = TCPViewerUI.image("arrow.right.circle")
+        revealButton.imagePosition = .imageOnly
+        revealButton.bezelStyle = .inline
+        revealButton.controlSize = .small
+        revealButton.target = self
+        revealButton.action = #selector(revealHoveredPacket(_:))
+        revealButton.toolTip = "Reveal packet in main table"
+        revealButton.setAccessibilityLabel("Reveal packet in main table")
+        revealButton.isHidden = true
+        addSubview(revealButton)
+    }
+
+    // Move one reusable button beside the header for the record under the pointer.
+    private func updateRevealButton(at point: NSPoint) {
+        guard let packetRange = packetRange(at: point),
+              let buttonFrame = revealButtonFrame(for: packetRange) else {
+            hideRevealButton()
             return
         }
-        let index = characterIndexForInsertion(at: convert(event.locationInWindow, from: nil))
-        guard let packetID = packetRanges.first(where: { NSLocationInRange(index, $0.range) })?.packetID else {
+        hoveredPacketID = packetRange.packetID
+        revealButton.frame = buttonFrame
+        revealButton.isHidden = false
+    }
+
+    // Resolve a record by vertical text layout so the full visible row remains hoverable.
+    private func packetRange(at point: NSPoint) -> TCPFollowPacketRange? {
+        guard let layoutManager, let textContainer, layoutManager.numberOfGlyphs > 0 else {
+            return nil
+        }
+        layoutManager.ensureLayout(for: textContainer)
+        let containerOrigin = textContainerOrigin
+        let containerPoint = NSPoint(x: point.x - containerOrigin.x, y: point.y - containerOrigin.y)
+        guard containerPoint.y >= 0 else {
+            return nil
+        }
+        let glyphIndex = layoutManager.glyphIndex(
+            for: containerPoint,
+            in: textContainer,
+            fractionOfDistanceThroughGlyph: nil
+        )
+        guard glyphIndex < layoutManager.numberOfGlyphs else {
+            return nil
+        }
+        let characterIndex = layoutManager.characterIndexForGlyph(at: glyphIndex)
+        guard let packetRange = packetRanges.first(where: { NSLocationInRange(characterIndex, $0.range) }) else {
+            return nil
+        }
+        let glyphRange = layoutManager.glyphRange(forCharacterRange: packetRange.range, actualCharacterRange: nil)
+        let recordBounds = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+        guard containerPoint.y >= recordBounds.minY, containerPoint.y <= recordBounds.maxY else {
+            return nil
+        }
+        return packetRange
+    }
+
+    // Position the action after the packet header without changing transcript text or selection.
+    private func revealButtonFrame(for packetRange: TCPFollowPacketRange) -> NSRect? {
+        guard let layoutManager, let textContainer, packetRange.range.location < textStorage?.length ?? 0 else {
+            return nil
+        }
+        let headerLineRange = (string as NSString).lineRange(
+            for: NSRange(location: packetRange.range.location, length: 0)
+        )
+        let headerLength = max(headerLineRange.length - 1, 0)
+        let headerRange = NSRange(location: headerLineRange.location, length: headerLength)
+        let glyphRange = layoutManager.glyphRange(forCharacterRange: headerRange, actualCharacterRange: nil)
+        let headerBounds = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+        let buttonSize = NSSize(width: 22, height: 18)
+        let origin = textContainerOrigin
+        let maximumX = max(origin.x, bounds.width - buttonSize.width - 6)
+        return NSRect(
+            x: min(origin.x + headerBounds.maxX + 5, maximumX),
+            y: origin.y + headerBounds.midY - buttonSize.height / 2,
+            width: buttonSize.width,
+            height: buttonSize.height
+        )
+    }
+
+    private func hideRevealButton() {
+        hoveredPacketID = nil
+        revealButton.isHidden = true
+    }
+
+    @objc private func revealHoveredPacket(_ sender: NSButton) {
+        guard let hoveredPacketID else {
             return
         }
-        revealPacket?(packetID)
+        revealPacket?(hoveredPacketID)
     }
 }
 

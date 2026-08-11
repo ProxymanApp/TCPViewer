@@ -463,9 +463,31 @@ struct PacketTableMenuLogicTests {
         }
     }
 
-    private func makeSnapshot(packets: [PacketSummary]) -> NetworkInspectorSnapshot {
+    @MainActor
+    @Test func scrollingToSelectedPacketRevealsItsCurrentVisibleRow() throws {
+        let controller = PacketTableViewController(configuration: AppConfiguration(defaults: Self.makeUserDefaults()))
+        controller.loadViewIfNeeded()
+        controller.view.frame = NSRect(x: 0, y: 0, width: 640, height: 120)
+        let packets = (1...100).map { makePacket(packetNumber: UInt64($0)) }
+        let selectedPacket = packets[89]
+
+        controller.render(snapshot: makeSnapshot(packets: packets, selectedPacketID: selectedPacket.id))
+        controller.view.layoutSubtreeIfNeeded()
+        let tableView = try Self.tableView(in: controller)
+
+        #expect(tableView.selectedRow == 89)
+        #expect(!tableView.rect(ofRow: 89).intersects(tableView.visibleRect))
+        #expect(controller.scrollPacketToVisible(selectedPacket.id))
+        #expect(tableView.rect(ofRow: 89).intersects(tableView.visibleRect))
+    }
+
+    private func makeSnapshot(
+        packets: [PacketSummary],
+        selectedPacketID: PacketSummary.ID? = nil
+    ) -> NetworkInspectorSnapshot {
         var base = TCPViewerWindowSnapshot.foundation
         base.packetIngestState.replace(with: packets, source: .live)
+        base.selectedPacketID = selectedPacketID
         let rows = packets.map(PacketTableRow.init(packet:))
         let visibleIndex = Dictionary(uniqueKeysWithValues: rows.enumerated().map { ($1.id, $0) })
         let content = PacketTableContent(

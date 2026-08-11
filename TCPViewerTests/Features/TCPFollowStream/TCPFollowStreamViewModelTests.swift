@@ -152,6 +152,50 @@ struct TCPFollowStreamViewModelTests {
     }
 
     @MainActor
+    @Test func packetRevealButtonAppearsOnlyForHoveredRecord() throws {
+        let navigation = try #require(makeStreamNavigation())
+        let windowController = TCPFollowStreamWindowController(navigation: navigation)
+        let window = try #require(windowController.window)
+        let contentView = try #require(window.contentView)
+        let scrollView = try #require(firstSubview(ofType: NSScrollView.self, in: contentView))
+        let textView = try #require(scrollView.documentView as? NSTextView)
+        let revealButton = try #require(allSubviews(ofType: NSButton.self, in: textView).first {
+            $0.toolTip == "Reveal packet in main table"
+        })
+        var revealedPacketID: PacketSummary.ID?
+        windowController.revealPacket = { revealedPacketID = $0 }
+
+        windowController.show(stream: makeStream())
+        window.layoutIfNeeded()
+        #expect(revealButton.isHidden)
+
+        let hoverPoint = NSPoint(
+            x: textView.textContainerOrigin.x + 4,
+            y: textView.textContainerOrigin.y + 4
+        )
+        let windowPoint = textView.convert(hoverPoint, to: nil)
+        let hoverEvent = try #require(NSEvent.mouseEvent(
+            with: .mouseMoved,
+            location: windowPoint,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 0,
+            pressure: 0
+        ))
+        textView.mouseMoved(with: hoverEvent)
+
+        #expect(!revealButton.isHidden)
+        revealButton.performClick(nil)
+        #expect(revealedPacketID == 10)
+
+        textView.mouseExited(with: hoverEvent)
+        #expect(revealButton.isHidden)
+    }
+
+    @MainActor
     @Test func wideHexTranscriptUsesMoreThanSixteenBytesPerRow() {
         let controller = TCPFollowStreamViewController()
         controller.view.frame = NSRect(x: 0, y: 0, width: 1_200, height: 760)

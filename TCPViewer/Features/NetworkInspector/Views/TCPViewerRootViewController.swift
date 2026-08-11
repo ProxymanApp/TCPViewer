@@ -1436,6 +1436,7 @@ private extension TCPViewerRootViewController {
                 return
             }
             self.viewModel.selectPacket(packetID)
+            self.workspaceViewController.scrollPacketToVisible(packetID)
             self.view.window?.makeKeyAndOrderFront(nil)
         }
         controller.streamSelectionHandler = { [weak self, weak controller] entry in

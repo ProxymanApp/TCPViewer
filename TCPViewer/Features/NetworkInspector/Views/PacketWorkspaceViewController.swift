@@ -170,6 +170,17 @@ final class PacketWorkspaceViewController: NSViewController {
         }
     }
 
+    // Forward packet navigation to the table that owns the visible row ordering.
+    @discardableResult
+    func scrollPacketToVisible(_ identifier: PacketSummary.ID) -> Bool {
+        guard !viewModel.isEmpty else {
+            return false
+        }
+
+        showTable()
+        return tableController.scrollPacketToVisible(identifier)
+    }
+
     func focusStructuredFilter() {
         applyStructuredFilterVisibility(true)
         structuredFilterController.focusLastFilterTextField()
