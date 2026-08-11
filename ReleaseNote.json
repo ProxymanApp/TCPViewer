@@ -235,6 +235,17 @@
       ],
       "bugs": [
       ]
+    },
+        {
+      "version": "1.12.0",
+      "title": "TCP Viewer 1.12.0: Follow TCP Stream",
+      "features": [
+        "Introduce the Follow TCP Stream feature to view the entire conversation between two endpoints in a separate window."
+      ],
+      "improvements": [
+      ],
+      "bugs": [
+      ]
     }
   ]
 }
