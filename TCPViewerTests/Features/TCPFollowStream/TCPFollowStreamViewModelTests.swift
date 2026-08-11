@@ -266,7 +266,7 @@ struct TCPFollowStreamViewModelTests {
         let contentController = try #require(window.contentViewController as? TCPFollowStreamViewController)
         let contentView = contentController.view
         let searchField = try #require(allSubviews(ofType: NSSearchField.self, in: contentView).first {
-            $0.placeholderString == "Search transcript"
+            $0.placeholderString == "Search transcript ⌘F"
         })
         let matchLabel = try #require(allSubviews(ofType: NSTextField.self, in: contentView).first {
             $0.stringValue == "0 of 0"

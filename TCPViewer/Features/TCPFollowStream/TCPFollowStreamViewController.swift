@@ -256,7 +256,7 @@ final class TCPFollowStreamViewController: NSViewController, NSSearchFieldDelega
 
         // Place bounded search controls beneath the transcript instead of using AppKit's find bar.
         searchSeparator.boxType = .separator
-        searchField.placeholderString = "Search transcript"
+        searchField.placeholderString = "Search transcript ⌘F"
         searchField.delegate = self
         searchField.target = self
         searchField.action = #selector(searchSubmitted(_:))
