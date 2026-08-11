@@ -88,15 +88,29 @@ private final class TCPFollowTextView: NSTextView {
         revealButton.isHidden = false
     }
 
-    // Resolve a record by vertical text layout so the full visible row remains hoverable.
+    // Resolve a record from viewport-only layout so hover never typesets the full transcript.
     private func packetRange(at point: NSPoint) -> TCPFollowPacketRange? {
-        guard let layoutManager, let textContainer, layoutManager.numberOfGlyphs > 0 else {
+        guard visibleRect.contains(point),
+              let layoutManager,
+              let textContainer,
+              (textStorage?.length ?? 0) > 0 else {
             return nil
         }
-        layoutManager.ensureLayout(for: textContainer)
         let containerOrigin = textContainerOrigin
         let containerPoint = NSPoint(x: point.x - containerOrigin.x, y: point.y - containerOrigin.y)
         guard containerPoint.y >= 0 else {
+            return nil
+        }
+        let visibleContainerBounds = visibleRect.offsetBy(
+            dx: -containerOrigin.x,
+            dy: -containerOrigin.y
+        )
+        layoutManager.ensureLayout(forBoundingRect: visibleContainerBounds, in: textContainer)
+        let visibleGlyphRange = layoutManager.glyphRange(
+            forBoundingRectWithoutAdditionalLayout: visibleContainerBounds,
+            in: textContainer
+        )
+        guard visibleGlyphRange.length > 0 else {
             return nil
         }
         let glyphIndex = layoutManager.glyphIndex(
@@ -104,19 +118,36 @@ private final class TCPFollowTextView: NSTextView {
             in: textContainer,
             fractionOfDistanceThroughGlyph: nil
         )
-        guard glyphIndex < layoutManager.numberOfGlyphs else {
+        guard NSLocationInRange(glyphIndex, visibleGlyphRange) else {
+            return nil
+        }
+        let lineBounds = layoutManager.lineFragmentRect(
+            forGlyphAt: glyphIndex,
+            effectiveRange: nil
+        )
+        guard containerPoint.y >= lineBounds.minY, containerPoint.y <= lineBounds.maxY else {
             return nil
         }
         let characterIndex = layoutManager.characterIndexForGlyph(at: glyphIndex)
-        guard let packetRange = packetRanges.first(where: { NSLocationInRange(characterIndex, $0.range) }) else {
-            return nil
+        return packetRange(containing: characterIndex)
+    }
+
+    // Binary-search the sorted character ranges instead of scanning every stream record on mouse move.
+    private func packetRange(containing characterIndex: Int) -> TCPFollowPacketRange? {
+        var lowerBound = 0
+        var upperBound = packetRanges.count
+        while lowerBound < upperBound {
+            let index = lowerBound + (upperBound - lowerBound) / 2
+            let packetRange = packetRanges[index]
+            if characterIndex < packetRange.range.location {
+                upperBound = index
+            } else if characterIndex >= NSMaxRange(packetRange.range) {
+                lowerBound = index + 1
+            } else {
+                return packetRange
+            }
         }
-        let glyphRange = layoutManager.glyphRange(forCharacterRange: packetRange.range, actualCharacterRange: nil)
-        let recordBounds = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
-        guard containerPoint.y >= recordBounds.minY, containerPoint.y <= recordBounds.maxY else {
-            return nil
-        }
-        return packetRange
+        return nil
     }
 
     // Position the action after the packet header without changing transcript text or selection.
@@ -129,14 +160,19 @@ private final class TCPFollowTextView: NSTextView {
         )
         let headerLength = max(headerLineRange.length - 1, 0)
         let headerRange = NSRange(location: headerLineRange.location, length: headerLength)
+        layoutManager.ensureLayout(forCharacterRange: headerRange)
         let glyphRange = layoutManager.glyphRange(forCharacterRange: headerRange, actualCharacterRange: nil)
         let headerBounds = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
         let buttonSize = NSSize(width: ceil(revealButton.fittingSize.width), height: 18)
         let origin = textContainerOrigin
+        let headerBoundsInView = headerBounds.offsetBy(dx: origin.x, dy: origin.y)
+        guard headerBoundsInView.intersects(visibleRect) else {
+            return nil
+        }
         let maximumX = max(origin.x, bounds.width - buttonSize.width - 6)
         return NSRect(
-            x: min(origin.x + headerBounds.maxX + 5, maximumX),
-            y: origin.y + headerBounds.midY - buttonSize.height / 2,
+            x: min(headerBoundsInView.maxX + 5, maximumX),
+            y: headerBoundsInView.midY - buttonSize.height / 2,
             width: buttonSize.width,
             height: buttonSize.height
         )
@@ -253,16 +289,17 @@ final class TCPFollowStreamViewController: NSViewController, NSSearchFieldDelega
 
     // Render the completed immutable stream snapshot.
     func show(stream: TCPFollowStream) {
-        progressIndicator.stopAnimation(nil)
         viewModel.setStream(stream)
         let client = endpointLabel(stream.client)
         let server = endpointLabel(stream.server)
         summaryLabel.stringValue = "\(client)  ⇄  \(server)"
-        placeholderStack.isHidden = true
-        scrollView.isHidden = false
         searchField.isEnabled = true
         updateHexBytesPerLineIfNeeded()
         render()
+        // Keep the loader covering the previous transcript until the replacement is installed.
+        progressIndicator.stopAnimation(nil)
+        placeholderStack.isHidden = true
+        scrollView.isHidden = false
     }
 
     // Replace the progress state with a concise recoverable error.
@@ -374,6 +411,9 @@ final class TCPFollowStreamViewController: NSViewController, NSSearchFieldDelega
         textView.isVerticallyResizable = true
         textView.autoresizingMask = [.width]
         textView.textContainer?.widthTracksTextView = true
+        textView.layoutManager?.allowsNonContiguousLayout = true
+        textView.layoutManager?.limitsLayoutForSuspiciousContents = true
+        textView.layoutManager?.backgroundLayoutEnabled = false
         textView.textContainerInset = NSSize(width: 14, height: 14)
         textView.revealPacket = { [weak self] target in
             self?.revealPacket?(target)

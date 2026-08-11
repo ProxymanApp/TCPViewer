@@ -43,6 +43,12 @@ final class TCPFollowStreamViewModel {
     private static let minimumHexBytesPerLine = 16
     private static let maximumHexBytesPerLine = 64
     static let payloadFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+    private static let transcriptParagraphStyle: NSParagraphStyle = {
+        let style = NSMutableParagraphStyle()
+        style.baseWritingDirection = .leftToRight
+        style.lineBreakMode = .byCharWrapping
+        return style
+    }()
 
     private(set) var stream: TCPFollowStream?
     private(set) var directionFilter: TCPFollowDirectionFilter = .both
@@ -183,6 +189,7 @@ final class TCPFollowStreamViewModel {
             attributes: [
                 .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold),
                 .foregroundColor: color,
+                .paragraphStyle: Self.transcriptParagraphStyle,
             ]
         ))
 
@@ -192,6 +199,7 @@ final class TCPFollowStreamViewModel {
             attributes: [
                 .font: Self.payloadFont,
                 .foregroundColor: NSColor.labelColor,
+                .paragraphStyle: Self.transcriptParagraphStyle,
             ]
         ))
         if !payload.hasSuffix("\n") {

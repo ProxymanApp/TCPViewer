@@ -28,6 +28,15 @@ struct TCPFollowStreamViewModelTests {
         for packetRange in content.packetRanges {
             #expect(NSMaxRange(packetRange.range) <= content.attributedText.length)
         }
+        let payloadLocation = try #require(content.plainText.range(of: "hello"))
+        let payloadOffset = NSRange(payloadLocation, in: content.plainText).location
+        let paragraphStyle = try #require(content.attributedText.attribute(
+            .paragraphStyle,
+            at: payloadOffset,
+            effectiveRange: nil
+        ) as? NSParagraphStyle)
+        #expect(paragraphStyle.baseWritingDirection == .leftToRight)
+        #expect(paragraphStyle.lineBreakMode == .byCharWrapping)
     }
 
     @MainActor
@@ -176,6 +185,7 @@ struct TCPFollowStreamViewModelTests {
         let contentView = try #require(window.contentView)
         let scrollView = try #require(firstSubview(ofType: NSScrollView.self, in: contentView))
         let textView = try #require(scrollView.documentView as? NSTextView)
+        let layoutManager = try #require(textView.layoutManager)
         let revealButton = try #require(allSubviews(ofType: NSButton.self, in: textView).first {
             $0.toolTip == "Show this packet in the packet list"
         })
@@ -184,6 +194,9 @@ struct TCPFollowStreamViewModelTests {
 
         windowController.show(stream: makeStream())
         window.layoutIfNeeded()
+        #expect(layoutManager.allowsNonContiguousLayout)
+        #expect(layoutManager.limitsLayoutForSuspiciousContents)
+        #expect(!layoutManager.backgroundLayoutEnabled)
         #expect(revealButton.isHidden)
 
         let hoverPoint = NSPoint(
