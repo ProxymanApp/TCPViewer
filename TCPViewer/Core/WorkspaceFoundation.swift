@@ -507,17 +507,14 @@ struct TCPFollowStreamNavigation: Equatable {
     // Build a sorted stream list without crossing imported capture-file boundaries.
     init?(ingestState: PacketIngestState, selectedPacketID: PacketSummary.ID) {
         guard let selectedPacket = ingestState.packet(withID: selectedPacketID),
-              let selectedStreamID = selectedPacket.streamID else {
+              let selectedStreamID = selectedPacket.tcpFollowStreamID else {
             return nil
         }
 
         let selectedReference = ingestState.importedPacketReference(for: selectedPacketID)
         var packetIDByStreamID: [UInt32: PacketSummary.ID] = [:]
         for packet in ingestState.packets {
-            let containsTCPLayer = packet.layers.contains {
-                $0.name.caseInsensitiveCompare("TCP") == .orderedSame
-            }
-            guard containsTCPLayer, let streamID = packet.streamID else {
+            guard let streamID = packet.tcpFollowStreamID else {
                 continue
             }
             let candidateReference = ingestState.importedPacketReference(for: packet.id)

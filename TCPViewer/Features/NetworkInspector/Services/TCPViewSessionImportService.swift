@@ -811,8 +811,11 @@ final class TCPViewSessionOfflineDocument: OfflineCaptureDocumentProviding {
 
             let innerPacket = innerPackets[record.captureOrdinal]
             innerPacketIDBySessionID[sessionPacket.id] = innerPacket.id
-            sessionPacketByID[sessionPacket.id] = sessionPacket
-            mappedPackets.append(sessionPacket)
+            let mappedPacket = sessionPacket.tcpviewerApplying(
+                tcpFollowStreamID: innerPacket.tcpFollowStreamID
+            )
+            sessionPacketByID[sessionPacket.id] = mappedPacket
+            mappedPackets.append(mappedPacket)
         }
 
         trimDocumentState(to: Set(mappedPackets.map(\.id)))

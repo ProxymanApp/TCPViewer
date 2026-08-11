@@ -209,9 +209,7 @@ struct PacketTableRow: Identifiable, Sendable, Hashable {
         self.domainName = packet.domainName?.tcpviewerNativeCopy
         self.clientIconFilePath = (clientIconFilePath ?? PacketClientIconPathResolver.iconFilePath(for: packet.client))?.tcpviewerNativeCopy
         self.hasClient = packet.client != nil
-        self.canFollowTCPStream = packet.streamID != nil && packet.layers.contains {
-            $0.name.caseInsensitiveCompare("TCP") == .orderedSame
-        }
+        self.canFollowTCPStream = packet.tcpFollowStreamID != nil
         self.timestamp = packet.timestamp
         self.streamID = packet.streamID
         self.numberText = "\(packet.packetNumber)"

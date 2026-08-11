@@ -533,6 +533,7 @@ struct PacketTableMenuLogicTests {
             originalLength: 128,
             capturedLength: 128,
             streamID: streamID,
+            tcpFollowStreamID: streamID,
             infoSummary: infoSummary ?? "Packet \(packetNumber)",
             layers: [PacketLayer(name: "Ethernet"), PacketLayer(name: "TCP")],
             decodeStatus: PacketDecodeStatus(kind: .complete),

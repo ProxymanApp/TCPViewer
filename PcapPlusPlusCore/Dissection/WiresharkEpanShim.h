@@ -150,6 +150,11 @@ TCPViewerWiresharkFollowCandidateResult *TCPViewerWiresharkSessionCopyTCPFollowC
     uint64_t packetIdentifier,
     size_t maximumPacketCount
 );
+bool TCPViewerWiresharkSessionTCPStreamIdentifier(
+    TCPViewerWiresharkSession *session,
+    uint64_t packetIdentifier,
+    uint32_t *streamIdentifier
+);
 TCPViewerWiresharkSummaryResult *TCPViewerWiresharkSessionSummarizePacket(TCPViewerWiresharkSession *session, const TCPViewerWiresharkPacketContext *context);
 TCPViewerWiresharkInspectionResult *TCPViewerWiresharkSessionInspectPacket(TCPViewerWiresharkSession *session, const TCPViewerWiresharkPacketContext *context);
 bool TCPViewerWiresharkSessionBeginFollowTCPStream(TCPViewerWiresharkSession *session, const TCPViewerWiresharkPacketContext *selectedContext);

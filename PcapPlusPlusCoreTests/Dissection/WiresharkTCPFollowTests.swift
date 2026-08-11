@@ -107,6 +107,7 @@ struct WiresharkTCPFollowTests {
         )
 
         #expect(Set(candidates) == Set(secondConnection.map(\.identifier)))
+        #expect(session.tcpStreamIdentifier(for: 4) != session.tcpStreamIdentifier(for: 12))
     }
 
     @Test func candidateIndexIncludesIPv4FragmentsNeededForTCPReassembly() throws {

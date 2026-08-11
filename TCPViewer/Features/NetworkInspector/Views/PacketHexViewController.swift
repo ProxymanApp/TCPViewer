@@ -124,6 +124,7 @@ final class PacketHexViewController: NSViewController {
     private var manualByteViewID: String?
     private var manualRevealPacketID: PacketSummary.ID?
     private var manualRevealRange: PacketByteRange?
+    private var manualRevealByteViewID: String?
 
     init(configuration: AppConfiguration) {
         self.configuration = configuration
@@ -199,15 +200,20 @@ final class PacketHexViewController: NSViewController {
         guard let range = TCPFollowPayloadMatcher.matchingRange(for: target.payload, in: renderedByteViews),
               let byteView = renderedByteViews.first(where: { $0.id == range.sourceID }),
               let highlight = PacketHexHighlight.make(from: range, byteCount: byteView.bytes.count) else {
+            clearManualReveal()
+            if let byteView = selectedByteView(in: renderedByteViews, highlightedRange: nil) {
+                display(byteView: byteView, highlight: nil)
+            } else {
+                updateRenderedHighlight(nil, force: true)
+            }
             manualRevealPacketID = target.packetID
-            manualRevealRange = nil
             showRevealStatus("Reassembled from multiple packets")
             return false
         }
 
         manualRevealPacketID = target.packetID
         manualRevealRange = range
-        manualByteViewID = byteView.id
+        manualRevealByteViewID = byteView.id
         display(byteView: byteView, highlight: highlight)
         showRevealStatus(nil)
         return true
@@ -289,7 +295,7 @@ final class PacketHexViewController: NSViewController {
             return nil
         }
 
-        let requestedID = manualByteViewID ?? highlightedRange?.sourceID ?? "frame"
+        let requestedID = manualRevealByteViewID ?? manualByteViewID ?? highlightedRange?.sourceID ?? "frame"
         return byteViews.first { $0.id == requestedID } ?? byteViews.first { $0.id == "frame" } ?? byteViews[0]
     }
 
@@ -350,6 +356,7 @@ final class PacketHexViewController: NSViewController {
     private func clearManualReveal() {
         manualRevealPacketID = nil
         manualRevealRange = nil
+        manualRevealByteViewID = nil
         showRevealStatus(nil)
     }
 

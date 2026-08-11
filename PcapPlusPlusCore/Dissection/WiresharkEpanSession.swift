@@ -179,6 +179,19 @@ final class WiresharkEpanSession {
         return Array(UnsafeBufferPointer(start: identifiers, count: result.packetIdentifierCount))
     }
 
+    // Return Wireshark's connection-specific tcp.stream value for one observed packet.
+    func tcpStreamIdentifier(for packetIdentifier: UInt64) -> UInt32? {
+        var streamIdentifier: UInt32 = 0
+        guard TCPViewerWiresharkSessionTCPStreamIdentifier(
+            handle,
+            packetIdentifier,
+            &streamIdentifier
+        ) else {
+            return nil
+        }
+        return streamIdentifier
+    }
+
     func summarize(_ record: NativePacketRecord) throws -> WiresharkPacketSummaryFields {
         try withContext(for: record) { context in
             guard let resultPointer = TCPViewerWiresharkSessionSummarizePacket(handle, context) else {

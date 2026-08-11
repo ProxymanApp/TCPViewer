@@ -133,6 +133,22 @@ struct TCPFollowStreamViewModelTests {
         #expect(navigation.selecting(index: 2) == nil)
     }
 
+    @Test func streamNavigationSeparatesReusedEndpointTuples() throws {
+        var ingestState = PacketIngestState.empty
+        ingestState.append([
+            makeNavigationPacket(packetNumber: 10, streamID: 55, tcpFollowStreamID: 0),
+            makeNavigationPacket(packetNumber: 20, streamID: 55, tcpFollowStreamID: 1),
+        ], source: .offline)
+
+        let navigation = try #require(TCPFollowStreamNavigation(
+            ingestState: ingestState,
+            selectedPacketID: 10
+        ))
+
+        #expect(navigation.entries.map(\.streamID) == [0, 1])
+        #expect(navigation.entries.map(\.packetID) == [10, 20])
+    }
+
     @MainActor
     @Test func renderedTranscriptFillsTheScrollViewport() throws {
         let controller = TCPFollowStreamViewController()
@@ -412,6 +428,7 @@ struct TCPFollowStreamViewModelTests {
     private func makeNavigationPacket(
         packetNumber: UInt64,
         streamID: UInt32,
+        tcpFollowStreamID: UInt32? = nil,
         transportHint: TransportProtocolHint = .tcp,
         layerName: String = "TCP"
     ) -> PacketSummary {
@@ -427,6 +444,7 @@ struct TCPFollowStreamViewModelTests {
             originalLength: 64,
             capturedLength: 64,
             streamID: streamID,
+            tcpFollowStreamID: tcpFollowStreamID ?? (layerName == "TCP" ? streamID : nil),
             infoSummary: "Packet \(packetNumber)",
             layers: [PacketLayer(name: layerName)],
             decodeStatus: PacketDecodeStatus(kind: .complete),

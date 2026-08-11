@@ -475,7 +475,12 @@ final class PCPPNativeOfflineDocument {
             let session = try requireDissectionSession(in: state)
             try session.observe(record)
             let wiresharkSummary = try session.summarize(record)
-            return makePacketSummaryDescriptor(record: record, analyzed: analyzed, wireshark: wiresharkSummary)
+            return makePacketSummaryDescriptor(
+                record: record,
+                analyzed: analyzed,
+                wireshark: wiresharkSummary,
+                tcpFollowStreamID: session.tcpStreamIdentifier(for: record.identifier)
+            )
         } catch {
             if NativeErrorIsCriticalWiresharkException(error) {
                 throw error
@@ -896,7 +901,12 @@ final class PCPPNativeLiveSession {
                     do {
                         let wiresharkSummary = try session.summarize(record)
                         let analyzer = PacketAnalyzer(record: record).analyze()
-                        return makePacketSummaryDescriptor(record: record, analyzed: analyzer, wireshark: wiresharkSummary)
+                        return makePacketSummaryDescriptor(
+                            record: record,
+                            analyzed: analyzer,
+                            wireshark: wiresharkSummary,
+                            tcpFollowStreamID: session.tcpStreamIdentifier(for: record.identifier)
+                        )
                     } catch {
                         disableWiresharkAfterFailure(error, state: &state)
                         return SwiftPacketDissector.dissect(record: record, disablesWireshark: true).summary
@@ -1002,7 +1012,12 @@ final class PCPPNativeLiveSession {
                         let streamIndexUpdates = try session.observe(record)
                         $0.packetStore.markTCPStreamsReady(streamIndexUpdates)
                         let wiresharkSummary = try session.summarize(record)
-                        return (makePacketSummaryDescriptor(record: record, analyzed: analyzed, wireshark: wiresharkSummary), false)
+                        return (makePacketSummaryDescriptor(
+                            record: record,
+                            analyzed: analyzed,
+                            wireshark: wiresharkSummary,
+                            tcpFollowStreamID: session.tcpStreamIdentifier(for: record.identifier)
+                        ), false)
                     } catch {
                         disableWiresharkAfterFailure(error, state: &$0)
                         return (SwiftPacketDissector.dissect(
@@ -1095,7 +1110,8 @@ private func mergeDNSResolutions(_ resolutions: [DNSResolutionObservation], into
 private func makePacketSummaryDescriptor(
     record: NativePacketRecord,
     analyzed: AnalyzedPacket,
-    wireshark: WiresharkPacketSummaryFields
+    wireshark: WiresharkPacketSummaryFields,
+    tcpFollowStreamID: UInt32? = nil
 ) -> PCPPNativePacketSummaryDescriptor {
     PCPPNativePacketSummaryDescriptor(
         identifier: record.identifier,
@@ -1115,6 +1131,7 @@ private func makePacketSummaryDescriptor(
         originalLength: record.originalLength,
         capturedLength: record.rawBytes.count,
         streamIdentifier: analyzed.streamID.map { NSNumber(value: $0) },
+        tcpFollowStreamIdentifier: tcpFollowStreamID.map { NSNumber(value: $0) },
         tcpFlags: analyzed.tcpFlags,
         tcpPayloadLength: analyzed.tcpPayloadLength.map { NSNumber(value: $0) },
         infoSummary: wireshark.infoSummary,
@@ -1260,7 +1277,12 @@ final class PCPPNativeLivePacketStoreTestProbe {
                     try session.observe(record)
                     let wiresharkSummary = try session.summarize(record)
                     let analyzer = PacketAnalyzer(record: record).analyze()
-                    return makePacketSummaryDescriptor(record: record, analyzed: analyzer, wireshark: wiresharkSummary)
+                    return makePacketSummaryDescriptor(
+                        record: record,
+                        analyzed: analyzer,
+                        wireshark: wiresharkSummary,
+                        tcpFollowStreamID: session.tcpStreamIdentifier(for: record.identifier)
+                    )
                 }
             }
         }

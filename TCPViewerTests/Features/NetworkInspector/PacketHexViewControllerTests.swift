@@ -7,6 +7,7 @@
 
 import AppKit
 import Foundation
+import HexFiend
 import Testing
 import PcapPlusPlusCore
 @testable import TCPViewer
@@ -147,6 +148,28 @@ struct PacketHexViewControllerTests {
 
         #expect(!didReveal)
         #expect(!statusLabel.isHidden)
+    }
+
+    @MainActor
+    @Test func failedFollowPayloadRevealClearsThePreviousHighlight() throws {
+        let packet = makePacket(packetNumber: 1)
+        let controller = PacketHexViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: makeSnapshot(packet: packet, inspection: makeInspection(for: packet)))
+        let hexTextView = try #require(firstSubview(ofType: HFTextView.self, in: controller.view))
+
+        #expect(controller.revealTCPFollowPayload(TCPFollowRevealTarget(
+            packetID: packet.id,
+            payload: Data([0xAA, 0x01])
+        )))
+        #expect(!hexTextView.controller.selectedContentsRanges.isEmpty)
+
+        #expect(!controller.revealTCPFollowPayload(TCPFollowRevealTarget(
+            packetID: packet.id,
+            payload: Data([0xFE, 0xED])
+        )))
+        let clearedRange = try #require(hexTextView.controller.selectedContentsRanges.first)
+        #expect(clearedRange.hfRange().length == 0)
     }
 
     private func isolatedDefaults() -> UserDefaults {

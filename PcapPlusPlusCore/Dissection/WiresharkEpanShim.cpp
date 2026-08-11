@@ -1178,8 +1178,8 @@ struct TCPViewerWiresharkSession {
     std::unordered_set<uint32_t> storedFrameNumbers;
     std::unordered_set<uint32_t> activeFrameNumbers;
     std::unordered_map<uint64_t, uint32_t> frameNumberByPacketIdentifier;
-    std::unordered_map<uint32_t, uint64_t> packetIdentifierByFrameNumber;
-    std::unordered_map<uint32_t, uint32_t> tcpStreamNumberByFrameNumber;
+    std::vector<uint64_t> packetIdentifierByFrameNumber;
+    std::vector<std::optional<uint32_t>> tcpStreamNumberByFrameNumber;
     std::unordered_map<uint64_t, uint32_t> tcpStreamNumberByPacketIdentifier;
     std::vector<std::pair<uint32_t, uint32_t>> pendingTCPStreamFrames;
     std::vector<std::pair<uint64_t, uint32_t>> pendingTCPStreamIndexUpdates;
@@ -1268,8 +1268,11 @@ struct TCPViewerWiresharkSession {
         if (frameNumber == kUnknownFrameNumber) {
             return;
         }
-        const auto existing = tcpStreamNumberByFrameNumber.find(frameNumber);
-        if (existing != tcpStreamNumberByFrameNumber.end() && existing->second == streamNumber) {
+        if (tcpStreamNumberByFrameNumber.size() <= frameNumber) {
+            tcpStreamNumberByFrameNumber.resize(static_cast<size_t>(frameNumber) + 1);
+        }
+        const auto existing = tcpStreamNumberByFrameNumber[frameNumber];
+        if (existing.has_value() && existing.value() == streamNumber) {
             return;
         }
         tcpStreamNumberByFrameNumber[frameNumber] = streamNumber;
@@ -1280,11 +1283,10 @@ struct TCPViewerWiresharkSession {
     void finalizeTCPStreamIndexUpdatesLocked()
     {
         for (const auto &[frameNumber, streamNumber] : pendingTCPStreamFrames) {
-            const auto packetMatch = packetIdentifierByFrameNumber.find(frameNumber);
-            if (packetMatch == packetIdentifierByFrameNumber.end()) {
+            if (frameNumber >= packetIdentifierByFrameNumber.size()) {
                 continue;
             }
-            const uint64_t packetIdentifier = packetMatch->second;
+            const uint64_t packetIdentifier = packetIdentifierByFrameNumber[frameNumber];
             const auto existing = tcpStreamNumberByPacketIdentifier.find(packetIdentifier);
             // A reactivated offline session may assign new local stream numbers to isolated packets.
             // Preserve the authoritative index built while the complete capture was first observed.
@@ -1605,6 +1607,9 @@ struct TCPViewerWiresharkSession {
 
         storedFrameNumbers.insert(frameNumber);
         frameNumberByPacketIdentifier[context.packetIdentifier] = frameNumber;
+        if (packetIdentifierByFrameNumber.size() <= frameNumber) {
+            packetIdentifierByFrameNumber.resize(static_cast<size_t>(frameNumber) + 1);
+        }
         packetIdentifierByFrameNumber[frameNumber] = context.packetIdentifier;
         finalizeTCPStreamIndexUpdatesLocked();
         return true;
@@ -1988,10 +1993,9 @@ struct TCPViewerWiresharkSession {
             }
             auto &destination = result->records[outputIndex];
             destination.isServer = source->is_server;
-            const auto identifierMatch = packetIdentifierByFrameNumber.find(source->packet_num);
-            destination.packetIdentifier = identifierMatch == packetIdentifierByFrameNumber.end()
-                ? static_cast<uint64_t>(source->packet_num)
-                : identifierMatch->second;
+            destination.packetIdentifier = source->packet_num < packetIdentifierByFrameNumber.size()
+                ? packetIdentifierByFrameNumber[source->packet_num]
+                : static_cast<uint64_t>(source->packet_num);
             destination.sequenceNumber = source->seq;
             destination.timestampSeconds = source->abs_ts.secs;
             destination.timestampNanoseconds = source->abs_ts.nsecs;
@@ -2342,6 +2346,23 @@ TCPViewerWiresharkFollowCandidateResult *TCPViewerWiresharkSessionCopyTCPFollowC
     }
     result->succeeded = true;
     return result;
+}
+
+bool TCPViewerWiresharkSessionTCPStreamIdentifier(
+    TCPViewerWiresharkSession *session,
+    uint64_t packetIdentifier,
+    uint32_t *streamIdentifier
+) {
+    if (session == nullptr || streamIdentifier == nullptr) {
+        return false;
+    }
+    std::lock_guard<std::mutex> sessionLock(session->mutex);
+    const auto match = session->tcpStreamNumberByPacketIdentifier.find(packetIdentifier);
+    if (match == session->tcpStreamNumberByPacketIdentifier.end()) {
+        return false;
+    }
+    *streamIdentifier = match->second;
+    return true;
 }
 
 TCPViewerWiresharkSummaryResult *TCPViewerWiresharkSessionSummarizePacket(TCPViewerWiresharkSession *session, const TCPViewerWiresharkPacketContext *context)
