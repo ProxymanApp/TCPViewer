@@ -23,7 +23,8 @@ struct TCPFollowStreamViewModelTests {
         #expect(content.plainText.contains("Server to Client · Packet 11"))
         #expect(content.plainText.contains("hello·\n"))
         #expect(content.displayedByteCount == 11)
-        #expect(content.packetRanges.map(\.packetID) == [10, 11])
+        #expect(content.packetRanges.map(\.revealTarget.packetID) == [10, 11])
+        #expect(content.packetRanges.map(\.revealTarget.payload) == [Data([0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x00]), Data("world".utf8)])
         for packetRange in content.packetRanges {
             #expect(NSMaxRange(packetRange.range) <= content.attributedText.length)
         }
@@ -162,8 +163,8 @@ struct TCPFollowStreamViewModelTests {
         let revealButton = try #require(allSubviews(ofType: NSButton.self, in: textView).first {
             $0.toolTip == "Reveal packet in main table"
         })
-        var revealedPacketID: PacketSummary.ID?
-        windowController.revealPacket = { revealedPacketID = $0 }
+        var revealedTarget: TCPFollowRevealTarget?
+        windowController.revealPacket = { revealedTarget = $0 }
 
         windowController.show(stream: makeStream())
         window.layoutIfNeeded()
@@ -189,7 +190,8 @@ struct TCPFollowStreamViewModelTests {
 
         #expect(!revealButton.isHidden)
         revealButton.performClick(nil)
-        #expect(revealedPacketID == 10)
+        #expect(revealedTarget?.packetID == 10)
+        #expect(revealedTarget?.payload == Data([0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x00]))
 
         textView.mouseExited(with: hoverEvent)
         #expect(revealButton.isHidden)

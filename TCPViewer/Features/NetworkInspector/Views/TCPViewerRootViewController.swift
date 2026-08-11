@@ -58,6 +58,11 @@ private final class TCPViewerCaptureDropView: NSView {
     }
 }
 
+private struct PendingTCPFollowReveal {
+    let target: TCPFollowRevealTarget
+    let captureIdentity: TCPFollowCaptureIdentity
+}
+
 private protocol TCPViewSessionImportSheetViewControllerDelegate: AnyObject {
     func tcpViewSessionImportSheetDidRequestCancel(_ controller: TCPViewSessionImportSheetViewController)
     func tcpViewSessionImportSheetDidRequestClose(_ controller: TCPViewSessionImportSheetViewController)
@@ -206,6 +211,7 @@ final class TCPViewerRootViewController: NSViewController {
     private var hasRenderedHelperOnboarding = false
     private var sessionImportSheetViewController: TCPViewSessionImportSheetViewController?
     private var followStreamWindowControllers: [TCPFollowStreamWindowController] = []
+    private var pendingTCPFollowReveal: PendingTCPFollowReveal?
     private var isMainEmptyStateVisible = false
     #if DEBUG
     private var packetSelectionCrashReproducer: TCPViewerPacketSelectionCrashReproducer?
@@ -522,6 +528,7 @@ final class TCPViewerRootViewController: NSViewController {
         sidebarViewController.render(snapshot: snapshot)
         workspaceViewController.render(snapshot: snapshot)
         inspectorViewController.render(snapshot: snapshot)
+        applyPendingTCPFollowReveal(snapshot)
         mainEmptyStateViewController.render(snapshot: snapshot)
         statusStripViewController.render(snapshot: snapshot, metrics: viewModel.statusMetricsSnapshot)
         applyMainEmptyStateVisibility(snapshot)
@@ -533,6 +540,34 @@ final class TCPViewerRootViewController: NSViewController {
             hasRenderedHelperOnboarding = true
             delegate?.tcpviewerRootViewController(self, didRequestHelperOnboarding: viewModel.networkHelperToolSnapshot)
         }
+    }
+
+    // Wait for asynchronous dissection before asking the Hex pane to reveal reassembled bytes.
+    private func applyPendingTCPFollowReveal(_ snapshot: NetworkInspectorSnapshot) {
+        guard let pendingTCPFollowReveal else {
+            return
+        }
+        guard viewModel.canRevealTCPFollowPacket(
+            pendingTCPFollowReveal.target.packetID,
+            from: pendingTCPFollowReveal.captureIdentity
+        ) else {
+            self.pendingTCPFollowReveal = nil
+            return
+        }
+        let inspectionState = snapshot.base.inspectionState
+        guard inspectionState.selectedPacketID == pendingTCPFollowReveal.target.packetID else {
+            self.pendingTCPFollowReveal = nil
+            return
+        }
+        guard inspectionState.inspection?.packetID == pendingTCPFollowReveal.target.packetID else {
+            if !inspectionState.isLoading {
+                self.pendingTCPFollowReveal = nil
+            }
+            return
+        }
+
+        inspectorViewController.revealTCPFollowPayload(pendingTCPFollowReveal.target)
+        self.pendingTCPFollowReveal = nil
     }
 
     private func applyMainEmptyStateVisibility(_ snapshot: NetworkInspectorSnapshot) {
@@ -1430,13 +1465,18 @@ private extension TCPViewerRootViewController {
             }
             self?.followStreamWindowControllers.removeAll { $0 === controller }
         }
-        controller.revealPacket = { [weak self] packetID in
+        controller.revealPacket = { [weak self] target in
             guard let self,
-                  self.viewModel.canRevealTCPFollowPacket(packetID, from: captureIdentity) else {
+                  self.viewModel.canRevealTCPFollowPacket(target.packetID, from: captureIdentity) else {
                 return
             }
-            self.viewModel.selectPacket(packetID)
-            self.workspaceViewController.scrollPacketToVisible(packetID)
+            self.pendingTCPFollowReveal = PendingTCPFollowReveal(
+                target: target,
+                captureIdentity: captureIdentity
+            )
+            self.viewModel.selectPacket(target.packetID)
+            self.viewModel.setInspectorVisible(true)
+            self.workspaceViewController.scrollPacketToVisible(target.packetID)
             self.view.window?.makeKeyAndOrderFront(nil)
         }
         controller.streamSelectionHandler = { [weak self, weak controller] entry in

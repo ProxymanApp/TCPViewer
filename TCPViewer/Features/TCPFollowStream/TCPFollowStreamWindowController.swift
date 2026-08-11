@@ -36,7 +36,7 @@ final class TCPFollowStreamWindowController: NSWindowController, NSWindowDelegat
 
     let cancellationFlag = TCPFollowCancellationFlag()
     var closeHandler: (() -> Void)?
-    var revealPacket: ((PacketSummary.ID) -> Void)?
+    var revealPacket: ((TCPFollowRevealTarget) -> Void)?
     var streamSelectionHandler: ((TCPFollowStreamNavigation.Entry) -> Void)?
 
     private let streamViewController = TCPFollowStreamViewController()
@@ -58,8 +58,8 @@ final class TCPFollowStreamWindowController: NSWindowController, NSWindowDelegat
         window.contentViewController = streamViewController
         configureToolbar()
         streamViewController.setStreamNavigation(navigation, isEnabled: false)
-        streamViewController.revealPacket = { [weak self] packetID in
-            self?.revealPacket?(packetID)
+        streamViewController.revealPacket = { [weak self] target in
+            self?.revealPacket?(target)
         }
         streamViewController.requestStream = { [weak self] entry in
             guard let self else {

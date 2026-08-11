@@ -14,9 +14,9 @@ private final class TCPFollowTextView: NSTextView {
             hideRevealButton()
         }
     }
-    var revealPacket: ((PacketSummary.ID) -> Void)?
+    var revealPacket: ((TCPFollowRevealTarget) -> Void)?
     private let revealButton = NSButton()
-    private var hoveredPacketID: PacketSummary.ID?
+    private var hoveredRevealTarget: TCPFollowRevealTarget?
     private var hoverTrackingArea: NSTrackingArea?
 
     override init(frame frameRect: NSRect) {
@@ -83,7 +83,7 @@ private final class TCPFollowTextView: NSTextView {
             hideRevealButton()
             return
         }
-        hoveredPacketID = packetRange.packetID
+        hoveredRevealTarget = packetRange.revealTarget
         revealButton.frame = buttonFrame
         revealButton.isHidden = false
     }
@@ -143,20 +143,20 @@ private final class TCPFollowTextView: NSTextView {
     }
 
     private func hideRevealButton() {
-        hoveredPacketID = nil
+        hoveredRevealTarget = nil
         revealButton.isHidden = true
     }
 
     @objc private func revealHoveredPacket(_ sender: NSButton) {
-        guard let hoveredPacketID else {
+        guard let hoveredRevealTarget else {
             return
         }
-        revealPacket?(hoveredPacketID)
+        revealPacket?(hoveredRevealTarget)
     }
 }
 
 final class TCPFollowStreamViewController: NSViewController, NSSearchFieldDelegate {
-    var revealPacket: ((PacketSummary.ID) -> Void)?
+    var revealPacket: ((TCPFollowRevealTarget) -> Void)?
     var requestStream: ((TCPFollowStreamNavigation.Entry) -> Void)?
 
     private let viewModel = TCPFollowStreamViewModel()
@@ -375,8 +375,8 @@ final class TCPFollowStreamViewController: NSViewController, NSSearchFieldDelega
         textView.autoresizingMask = [.width]
         textView.textContainer?.widthTracksTextView = true
         textView.textContainerInset = NSSize(width: 14, height: 14)
-        textView.revealPacket = { [weak self] packetID in
-            self?.revealPacket?(packetID)
+        textView.revealPacket = { [weak self] target in
+            self?.revealPacket?(target)
         }
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false

@@ -21,7 +21,12 @@ enum TCPFollowRepresentation: Int, CaseIterable {
 
 struct TCPFollowPacketRange {
     let range: NSRange
+    let revealTarget: TCPFollowRevealTarget
+}
+
+struct TCPFollowRevealTarget: Equatable {
     let packetID: PacketSummary.ID
+    let payload: Data
 }
 
 struct TCPFollowRenderedContent {
@@ -117,7 +122,7 @@ final class TCPFollowStreamViewModel {
             append(record: record, data: displayedData, to: output)
             ranges.append(TCPFollowPacketRange(
                 range: NSRange(location: start, length: output.length - start),
-                packetID: record.packetID
+                revealTarget: TCPFollowRevealTarget(packetID: record.packetID, payload: record.data)
             ))
             displayedByteCount += displayedData.count
             if displayedData.count < record.data.count {
