@@ -42,10 +42,79 @@ struct PacketHexHighlight: Equatable {
     }
 }
 
+enum TCPFollowPayloadMatcher {
+    // Prefer the smallest reassembled source, then fall back to a unique match in the frame.
+    static func matchingRange(for payload: Data, in byteViews: [PacketByteView]) -> PacketByteRange? {
+        guard !payload.isEmpty else {
+            return nil
+        }
+
+        let candidates = byteViews.compactMap { byteView -> Candidate? in
+            guard let offset = uniqueOffset(of: payload, in: byteView.bytes) else {
+                return nil
+            }
+            return Candidate(
+                byteView: byteView,
+                offset: offset,
+                isReassembled: isReassembled(byteView)
+            )
+        }.sorted(by: isPreferred)
+
+        guard let candidate = candidates.first else {
+            return nil
+        }
+        if candidates.count > 1, hasEqualPriority(candidate, candidates[1]) {
+            return nil
+        }
+        return PacketByteRange(
+            offset: candidate.offset,
+            length: payload.count,
+            sourceID: candidate.byteView.id
+        )
+    }
+
+    private struct Candidate {
+        let byteView: PacketByteView
+        let offset: Int
+        let isReassembled: Bool
+    }
+
+    private static func uniqueOffset(of payload: Data, in bytes: Data) -> Int? {
+        guard let firstRange = bytes.range(of: payload) else {
+            return nil
+        }
+        let nextIndex = bytes.index(after: firstRange.lowerBound)
+        guard bytes[nextIndex...].range(of: payload) == nil else {
+            return nil
+        }
+        return bytes.distance(from: bytes.startIndex, to: firstRange.lowerBound)
+    }
+
+    private static func isReassembled(_ byteView: PacketByteView) -> Bool {
+        byteView.id.localizedCaseInsensitiveContains("reassembled") ||
+            byteView.label.localizedCaseInsensitiveContains("reassembled")
+    }
+
+    private static func isPreferred(_ lhs: Candidate, _ rhs: Candidate) -> Bool {
+        if lhs.isReassembled != rhs.isReassembled {
+            return lhs.isReassembled
+        }
+        if lhs.byteView.bytes.count != rhs.byteView.bytes.count {
+            return lhs.byteView.bytes.count < rhs.byteView.bytes.count
+        }
+        return lhs.byteView.id < rhs.byteView.id
+    }
+
+    private static func hasEqualPriority(_ lhs: Candidate, _ rhs: Candidate) -> Bool {
+        lhs.isReassembled == rhs.isReassembled && lhs.byteView.bytes.count == rhs.byteView.bytes.count
+    }
+}
+
 final class PacketHexViewController: NSViewController {
     private let configuration: AppConfiguration
     private let stackView = NSStackView()
     private let byteViewSegmentedControl = NSSegmentedControl()
+    private let revealStatusLabel = NSTextField(labelWithString: "")
     private let hexTextView = HFTextView()
     private var renderedPacketID: PacketSummary.ID?
     private var renderedByteViewID: String?
@@ -53,6 +122,9 @@ final class PacketHexViewController: NSViewController {
     private var renderedByteViews: [PacketByteView] = []
     private var renderedHighlight: PacketHexHighlight?
     private var manualByteViewID: String?
+    private var manualRevealPacketID: PacketSummary.ID?
+    private var manualRevealRange: PacketByteRange?
+    private var manualRevealByteViewID: String?
 
     init(configuration: AppConfiguration) {
         self.configuration = configuration
@@ -68,6 +140,7 @@ final class PacketHexViewController: NSViewController {
         view = TCPViewerDynamicBackgroundView(backgroundColor: .controlBackgroundColor)
         setupStackView()
         setupByteViewControl()
+        setupRevealStatusLabel()
         setupHexTextView()
     }
 
@@ -79,19 +152,26 @@ final class PacketHexViewController: NSViewController {
     // Render packet bytes and keep the HexFiend selection aligned with inspector tree selection.
     func render(inspectionState: PacketInspectionState) {
         let inspection = currentInspection(in: inspectionState)
+        if manualRevealPacketID != inspectionState.selectedPacketID {
+            clearManualReveal()
+        }
         if shouldKeepRenderedBytes(whileLoading: inspectionState, currentInspection: inspection) {
             updateRenderedHighlight(nil)
             return
         }
         let byteViews = byteViews(for: inspection)
-        // Keep a user-picked byte source across packet changes; same-packet tree selection can override it.
-        if renderedPacketID == inspection?.packetID,
-           renderedHighlight?.sourceRange.sourceID != inspectionState.highlightedByteRange?.sourceID {
+        if manualRevealPacketID != inspection?.packetID {
+            clearManualReveal()
+        }
+        // A protocol-tree selection takes precedence over the Follow TCP reveal context.
+        if inspectionState.highlightedByteRange != nil {
             manualByteViewID = nil
+            clearManualReveal()
         }
 
         renderByteViewControl(byteViews: byteViews)
-        let selectedByteView = selectedByteView(in: byteViews, highlightedRange: inspectionState.highlightedByteRange)
+        let requestedRange = inspectionState.highlightedByteRange ?? manualRevealRange
+        let selectedByteView = selectedByteView(in: byteViews, highlightedRange: requestedRange)
         let contentChanged = renderedPacketID != inspection?.packetID ||
             renderedByteViewID != selectedByteView?.id ||
             renderedBytes != selectedByteView?.bytes
@@ -107,8 +187,36 @@ final class PacketHexViewController: NSViewController {
         }
 
         let byteCount = selectedByteView?.bytes.count ?? 0
-        let highlight = PacketHexHighlight.make(from: inspectionState.highlightedByteRange, byteCount: byteCount)
+        let highlight = PacketHexHighlight.make(from: requestedRange, byteCount: byteCount)
         updateRenderedHighlight(highlight, force: contentChanged)
+    }
+
+    // Select the exact byte source and range represented by a Follow TCP transcript record.
+    @discardableResult
+    func revealTCPFollowPayload(_ target: TCPFollowRevealTarget) -> Bool {
+        guard renderedPacketID == target.packetID else {
+            return false
+        }
+        guard let range = TCPFollowPayloadMatcher.matchingRange(for: target.payload, in: renderedByteViews),
+              let byteView = renderedByteViews.first(where: { $0.id == range.sourceID }),
+              let highlight = PacketHexHighlight.make(from: range, byteCount: byteView.bytes.count) else {
+            clearManualReveal()
+            if let byteView = selectedByteView(in: renderedByteViews, highlightedRange: nil) {
+                display(byteView: byteView, highlight: nil)
+            } else {
+                updateRenderedHighlight(nil, force: true)
+            }
+            manualRevealPacketID = target.packetID
+            showRevealStatus("Reassembled from multiple packets")
+            return false
+        }
+
+        manualRevealPacketID = target.packetID
+        manualRevealRange = range
+        manualRevealByteViewID = byteView.id
+        display(byteView: byteView, highlight: highlight)
+        showRevealStatus(nil)
+        return true
     }
 
     private func setupStackView() {
@@ -130,6 +238,16 @@ final class PacketHexViewController: NSViewController {
 
         stackView.addArrangedSubview(byteViewSegmentedControl)
         byteViewSegmentedControl.heightAnchor.constraint(equalToConstant: 24).isActive = true
+    }
+
+    private func setupRevealStatusLabel() {
+        revealStatusLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        revealStatusLabel.textColor = .secondaryLabelColor
+        revealStatusLabel.lineBreakMode = .byTruncatingTail
+        revealStatusLabel.isHidden = true
+        revealStatusLabel.translatesAutoresizingMaskIntoConstraints = false
+        stackView.addArrangedSubview(revealStatusLabel)
+        revealStatusLabel.trailingAnchor.constraint(lessThanOrEqualTo: stackView.trailingAnchor).isActive = true
     }
 
     private func setupHexTextView() {
@@ -177,7 +295,7 @@ final class PacketHexViewController: NSViewController {
             return nil
         }
 
-        let requestedID = manualByteViewID ?? highlightedRange?.sourceID ?? "frame"
+        let requestedID = manualRevealByteViewID ?? manualByteViewID ?? highlightedRange?.sourceID ?? "frame"
         return byteViews.first { $0.id == requestedID } ?? byteViews.first { $0.id == "frame" } ?? byteViews[0]
     }
 
@@ -221,12 +339,30 @@ final class PacketHexViewController: NSViewController {
 
         let byteView = renderedByteViews[selectedIndex]
         manualByteViewID = byteView.id
+        clearManualReveal()
+        display(byteView: byteView, highlight: nil)
+    }
+
+    private func display(byteView: PacketByteView, highlight: PacketHexHighlight?) {
         renderedByteViewID = byteView.id
         renderedBytes = byteView.bytes
         renderedHighlight = nil
         hexTextView.data = byteView.bytes
         configureReadOnlyController()
-        updateRenderedHighlight(nil, force: true)
+        selectRenderedSegment()
+        updateRenderedHighlight(highlight, force: true)
+    }
+
+    private func clearManualReveal() {
+        manualRevealPacketID = nil
+        manualRevealRange = nil
+        manualRevealByteViewID = nil
+        showRevealStatus(nil)
+    }
+
+    private func showRevealStatus(_ message: String?) {
+        revealStatusLabel.stringValue = message ?? ""
+        revealStatusLabel.isHidden = message == nil
     }
 
     // Preserve the old bytes until the newly selected packet finishes decoding.

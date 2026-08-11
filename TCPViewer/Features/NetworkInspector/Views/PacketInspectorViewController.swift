@@ -742,6 +742,11 @@ final class PacketInspectorViewController: NSViewController {
         applyTreeRenderChange(renderChange, inspectionState: inspectionState)
     }
 
+    // Forward a Follow TCP record to the Hex pane after its packet inspection finishes loading.
+    func revealTCPFollowPayload(_ target: TCPFollowRevealTarget) {
+        hexViewController.revealTCPFollowPayload(target)
+    }
+
     // Switch the outline/hex split to match the outer inspector placement.
     func applyPlacement(_ placement: NetworkInspectorPlacement) {
         applyPlacement(placement, resetsDefaultDivider: true, forcesDefaultDivider: false)

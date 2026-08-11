@@ -213,6 +213,7 @@ final class PCPPNativePacketSummaryDescriptor {
     let originalLength: Int
     let capturedLength: Int
     let streamIdentifier: NSNumber?
+    let tcpFollowStreamIdentifier: NSNumber?
     let tcpFlags: String?
     let tcpPayloadLength: NSNumber?
     let infoSummary: String
@@ -235,6 +236,7 @@ final class PCPPNativePacketSummaryDescriptor {
         originalLength: Int,
         capturedLength: Int,
         streamIdentifier: NSNumber?,
+        tcpFollowStreamIdentifier: NSNumber?,
         tcpFlags: String?,
         tcpPayloadLength: NSNumber?,
         infoSummary: String,
@@ -256,6 +258,7 @@ final class PCPPNativePacketSummaryDescriptor {
         self.originalLength = originalLength
         self.capturedLength = capturedLength
         self.streamIdentifier = streamIdentifier
+        self.tcpFollowStreamIdentifier = tcpFollowStreamIdentifier
         self.tcpFlags = tcpFlags
         self.tcpPayloadLength = tcpPayloadLength
         self.infoSummary = infoSummary

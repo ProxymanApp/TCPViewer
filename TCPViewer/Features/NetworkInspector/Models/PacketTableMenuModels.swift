@@ -53,6 +53,7 @@ struct PacketTableMenuState: Equatable {
     let clickedColumnIdentifier: String?
     let copyRowEnabled: Bool
     let copyCellEnabled: Bool
+    let followTCPStreamEnabled: Bool
     let pinEnabled: Bool
     let saveEnabled: Bool
     let styleEnabled: Bool
@@ -69,6 +70,7 @@ struct PacketTableMenuState: Equatable {
         clickedColumnIdentifier: nil,
         copyRowEnabled: false,
         copyCellEnabled: false,
+        followTCPStreamEnabled: false,
         pinEnabled: false,
         saveEnabled: false,
         styleEnabled: false,
@@ -106,6 +108,7 @@ enum PacketTableMenuLogic {
             clickedColumnIdentifier: clickedColumnIdentifier,
             copyRowEnabled: !targetRows.isEmpty,
             copyCellEnabled: !targetRows.isEmpty && clickedColumnIdentifier != nil,
+            followTCPStreamEnabled: targetRows.count == 1 && targetRows[0].canFollowTCPStream,
             pinEnabled: targetRows.contains { $0.canPinClient },
             saveEnabled: !targetRows.isEmpty,
             styleEnabled: !targetRows.isEmpty,

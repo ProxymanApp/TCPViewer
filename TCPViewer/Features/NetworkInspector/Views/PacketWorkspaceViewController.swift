@@ -15,6 +15,7 @@ protocol PacketWorkspaceViewControllerDelegate: AnyObject {
         didRequestPinPackets identifiers: [PacketSummary.ID]
     )
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestSavePackets identifiers: [PacketSummary.ID])
+    func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestFollowTCPStream packetID: PacketSummary.ID)
     func packetWorkspaceViewController(
         _ controller: PacketWorkspaceViewController,
         didRequestSetComment comment: String,
@@ -167,6 +168,17 @@ final class PacketWorkspaceViewController: NSViewController {
             showTable()
             tableController.render(snapshot: snapshot)
         }
+    }
+
+    // Forward packet navigation to the table that owns the visible row ordering.
+    @discardableResult
+    func scrollPacketToVisible(_ identifier: PacketSummary.ID) -> Bool {
+        guard !viewModel.isEmpty else {
+            return false
+        }
+
+        showTable()
+        return tableController.scrollPacketToVisible(identifier)
     }
 
     func focusStructuredFilter() {
@@ -390,6 +402,10 @@ extension PacketWorkspaceViewController: PacketTableViewControllerDelegate {
 
     func packetTableViewController(_ controller: PacketTableViewController, didRequestSavePackets identifiers: [PacketSummary.ID]) {
         delegate?.packetWorkspaceViewController(self, didRequestSavePackets: identifiers)
+    }
+
+    func packetTableViewController(_ controller: PacketTableViewController, didRequestFollowTCPStream packetID: PacketSummary.ID) {
+        delegate?.packetWorkspaceViewController(self, didRequestFollowTCPStream: packetID)
     }
 
     func packetTableViewController(

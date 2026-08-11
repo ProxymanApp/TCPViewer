@@ -2150,6 +2150,34 @@ final class NetworkInspectorViewModel {
         controller.inspectPacket(id: identifier, completion: completion)
     }
 
+    var tcpFollowCaptureIdentity: TCPFollowCaptureIdentity {
+        controller.tcpFollowCaptureIdentity
+    }
+
+    // Provide capture-scoped stream IDs and representative packets for follow-window navigation.
+    func tcpFollowStreamNavigation(containing identifier: PacketSummary.ID) -> TCPFollowStreamNavigation? {
+        controller.tcpFollowStreamNavigation(containing: identifier)
+    }
+
+    // Keep detached follow-window navigation scoped to its original capture lineage.
+    func canRevealTCPFollowPacket(_ identifier: PacketSummary.ID, from identity: TCPFollowCaptureIdentity) -> Bool {
+        controller.canRevealTCPFollowPacket(identifier, from: identity)
+    }
+
+    func followTCPStream(
+        containing identifier: PacketSummary.ID,
+        progress: TCPFollowProgressHandler?,
+        shouldCancel: TCPFollowCancellationCheck?,
+        completion: @escaping TCPViewerCompletion<TCPFollowStream>
+    ) {
+        controller.followTCPStream(
+            containing: identifier,
+            progress: progress,
+            shouldCancel: shouldCancel,
+            completion: completion
+        )
+    }
+
     func selectInspectorTab(_ tab: PacketInspectorTab) {
         inspectorTab = tab
         rebuildSnapshot()

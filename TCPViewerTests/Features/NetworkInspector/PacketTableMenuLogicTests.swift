@@ -75,6 +75,34 @@ struct PacketTableMenuLogicTests {
         #expect(state.copyCellEnabled)
     }
 
+    @Test func followTCPStreamRequiresOneTCPRowWithAStreamIdentifier() {
+        let tcpRow = PacketTableRow(packet: makePacket(packetNumber: 1, streamID: 7))
+        let unavailableRow = PacketTableRow(packet: makePacket(packetNumber: 2))
+
+        let oneTCP = PacketTableMenuLogic.state(
+            rows: [tcpRow, unavailableRow],
+            selectedRowIndexes: IndexSet(integer: 0),
+            clickedRowIndex: 0,
+            clickedColumnIdentifier: "protocol"
+        )
+        let multiple = PacketTableMenuLogic.state(
+            rows: [tcpRow, unavailableRow],
+            selectedRowIndexes: IndexSet([0, 1]),
+            clickedRowIndex: 0,
+            clickedColumnIdentifier: "protocol"
+        )
+        let unavailable = PacketTableMenuLogic.state(
+            rows: [tcpRow, unavailableRow],
+            selectedRowIndexes: IndexSet(integer: 1),
+            clickedRowIndex: 1,
+            clickedColumnIdentifier: "protocol"
+        )
+
+        #expect(oneTCP.followTCPStreamEnabled)
+        #expect(!multiple.followTCPStreamEnabled)
+        #expect(!unavailable.followTCPStreamEnabled)
+    }
+
     @Test func copyFormatterUsesCSVRowsAndClickedColumnCells() {
         let rows = [
             PacketTableRow(packet: makePacket(packetNumber: 1, infoSummary: "Hello, world")),
@@ -281,6 +309,7 @@ struct PacketTableMenuLogicTests {
             clickedColumnIdentifier: "source",
             copyRowEnabled: true,
             copyCellEnabled: true,
+            followTCPStreamEnabled: true,
             pinEnabled: true,
             saveEnabled: true,
             styleEnabled: true,
@@ -315,6 +344,7 @@ struct PacketTableMenuLogicTests {
         #expect(highlightSubmenu.items.first { $0.title == "Strikethrough" }?.keyEquivalent == "/")
         #expect(highlightSubmenu.items.first { $0.title == "Reset" }?.keyEquivalent == "0")
         #expect(menu.items.contains { $0.title == "Pin" && $0.submenu == nil })
+        #expect(menu.items.contains { $0.title == "Follow TCP Stream" && $0.isEnabled })
         #expect(commentItem.isEnabled)
         #expect(commentItem.keyEquivalent == PacketCommentShortcut.keyEquivalent)
         #expect(commentItem.keyEquivalentModifierMask == PacketCommentShortcut.modifierMask)
@@ -433,9 +463,31 @@ struct PacketTableMenuLogicTests {
         }
     }
 
-    private func makeSnapshot(packets: [PacketSummary]) -> NetworkInspectorSnapshot {
+    @MainActor
+    @Test func scrollingToSelectedPacketRevealsItsCurrentVisibleRow() throws {
+        let controller = PacketTableViewController(configuration: AppConfiguration(defaults: Self.makeUserDefaults()))
+        controller.loadViewIfNeeded()
+        controller.view.frame = NSRect(x: 0, y: 0, width: 640, height: 120)
+        let packets = (1...100).map { makePacket(packetNumber: UInt64($0)) }
+        let selectedPacket = packets[89]
+
+        controller.render(snapshot: makeSnapshot(packets: packets, selectedPacketID: selectedPacket.id))
+        controller.view.layoutSubtreeIfNeeded()
+        let tableView = try Self.tableView(in: controller)
+
+        #expect(tableView.selectedRow == 89)
+        #expect(!tableView.rect(ofRow: 89).intersects(tableView.visibleRect))
+        #expect(controller.scrollPacketToVisible(selectedPacket.id))
+        #expect(tableView.rect(ofRow: 89).intersects(tableView.visibleRect))
+    }
+
+    private func makeSnapshot(
+        packets: [PacketSummary],
+        selectedPacketID: PacketSummary.ID? = nil
+    ) -> NetworkInspectorSnapshot {
         var base = TCPViewerWindowSnapshot.foundation
         base.packetIngestState.replace(with: packets, source: .live)
+        base.selectedPacketID = selectedPacketID
         let rows = packets.map(PacketTableRow.init(packet:))
         let visibleIndex = Dictionary(uniqueKeysWithValues: rows.enumerated().map { ($1.id, $0) })
         let content = PacketTableContent(
@@ -465,7 +517,8 @@ struct PacketTableMenuLogicTests {
         infoSummary: String? = nil,
         sniDomainName: String? = nil,
         client: PacketClient? = nil,
-        customComment: String? = nil
+        customComment: String? = nil,
+        streamID: UInt32? = nil
     ) -> PacketSummary {
         PacketSummary(
             packetNumber: packetNumber,
@@ -479,7 +532,8 @@ struct PacketTableMenuLogicTests {
             ),
             originalLength: 128,
             capturedLength: 128,
-            streamID: nil,
+            streamID: streamID,
+            tcpFollowStreamID: streamID,
             infoSummary: infoSummary ?? "Packet \(packetNumber)",
             layers: [PacketLayer(name: "Ethernet"), PacketLayer(name: "TCP")],
             decodeStatus: PacketDecodeStatus(kind: .complete),
@@ -605,6 +659,7 @@ private final class MenuActionHandler: NSObject, PacketTableContextMenuActionHan
     func copyRowsAsCSVFromMenu(_ sender: Any?) {}
     func copyRowsAsCSVWithHeaderFromMenu(_ sender: Any?) {}
     func copyCellFromMenu(_ sender: Any?) {}
+    func followTCPStreamFromMenu(_ sender: Any?) {}
     func pinRowsFromMenu(_ sender: Any?) {}
     func saveRowsFromMenu(_ sender: Any?) {}
     func addPacketCommentFromMenu(_ sender: Any?) {}

@@ -12,6 +12,44 @@ import Testing
 
 @Suite(.serialized)
 struct LiveCaptureLifecycleTests {
+    @Test func lifecycleTransitionCancelsAndDrainsRegisteredFollowOperations() {
+        let coordinator = LiveTCPFollowOperationCoordinator()
+        #expect(coordinator.beginFollow())
+        #expect(coordinator.beginFollow())
+
+        let transitionRequested = DispatchSemaphore(value: 0)
+        let followOperationsDrained = DispatchSemaphore(value: 0)
+        let releaseTransition = DispatchSemaphore(value: 0)
+        let transitionFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            transitionRequested.signal()
+            coordinator.beginLifecycleTransition()
+            followOperationsDrained.signal()
+            releaseTransition.wait()
+            coordinator.finishLifecycleTransition()
+            transitionFinished.signal()
+        }
+
+        #expect(transitionRequested.wait(timeout: .now() + 2) == .success)
+        let cancellationDeadline = Date().addingTimeInterval(2)
+        while !coordinator.shouldCancel && Date() < cancellationDeadline {
+            Thread.sleep(forTimeInterval: 0.001)
+        }
+        #expect(coordinator.shouldCancel)
+        #expect(!coordinator.beginFollow())
+
+        coordinator.finishFollow()
+        #expect(followOperationsDrained.wait(timeout: .now() + .milliseconds(50)) == .timedOut)
+        coordinator.finishFollow()
+        #expect(followOperationsDrained.wait(timeout: .now() + 2) == .success)
+        #expect(!coordinator.beginFollow())
+
+        releaseTransition.signal()
+        #expect(transitionFinished.wait(timeout: .now() + 2) == .success)
+        #expect(coordinator.beginFollow())
+        coordinator.finishFollow()
+    }
+
     @Test func startFailureRollsBackAndAllowsRetry() throws {
         let backend = TestLiveCaptureBackend(openFailuresRemaining: 1)
         let session = makeSession(backend: backend)
@@ -90,6 +128,15 @@ struct LiveCaptureLifecycleTests {
         #expect(inspection.rawBytes == packet)
         #expect(inspection.detailNodes.contains { $0.fieldName == "tcpviewer.wireshark.fallback" })
         try session.stop()
+
+        #expect(throws: NSError.self) {
+            try session.followTCPStream(
+                containing: 1,
+                limits: .default,
+                progress: nil,
+                shouldCancel: nil
+            )
+        }
         #expect(backend.closeCount == 1)
     }
 
@@ -135,6 +182,61 @@ struct LiveCaptureLifecycleTests {
 
         try offlineSession.observe(record)
         #expect(try offlineSession.summarize(record).infoSummary.isEmpty == false)
+    }
+
+    @Test func stoppedLiveCaptureCanFollowRetainedTCPStream() throws {
+        let packets = [
+            makeLiveTCPPacket(identifier: 1, sourceIsClient: true, sequence: 100, acknowledgment: 0, flags: 0x02),
+            makeLiveTCPPacket(identifier: 2, sourceIsClient: false, sequence: 900, acknowledgment: 101, flags: 0x12),
+            makeLiveTCPPacket(
+                identifier: 3,
+                sourceIsClient: true,
+                sequence: 101,
+                acknowledgment: 901,
+                flags: 0x18,
+                payload: Data("hello after stop".utf8)
+            ),
+        ]
+        let reads = packets.enumerated().map { index, packet in
+            let header = pcap_pkthdr(
+                ts: timeval(tv_sec: index + 1, tv_usec: 0),
+                caplen: UInt32(packet.count),
+                len: UInt32(packet.count)
+            )
+            return LibpcapPacketReadResult.packet(header: header, bytes: packet)
+        }
+        let backend = TestLiveCaptureBackend(queuedReads: reads)
+        let session = PCPPNativeLiveSession(
+            interfaceIdentifier: "test0",
+            options: makeOptions(),
+            captureBackend: backend,
+            dissectionSessionFactory: { try WiresharkEpanSession(purpose: .live) }
+        )
+        let packetDelivered = DispatchSemaphore(value: 0)
+        session.packetHandler = { _ in packetDelivered.signal() }
+
+        try session.start()
+        for _ in packets {
+            #expect(packetDelivered.wait(timeout: .now() + 2) == .success)
+        }
+        try session.stop()
+
+        let inspection = try session.inspectPacket(withIdentifier: 3)
+        #expect(inspection.detailNodes.contains { $0.fieldName == "tcpviewer.wireshark.fallback" } == false)
+
+        let stream = try session.followTCPStream(
+            containing: 3,
+            limits: .default,
+            progress: nil,
+            shouldCancel: nil
+        )
+
+        let clientBytes = stream.records
+            .filter { $0.direction == .clientToServer }
+            .reduce(into: Data()) { $0.append($1.data) }
+        #expect(clientBytes == Data("hello after stop".utf8))
+        #expect(stream.capturedThroughPacketID == 3)
+        #expect(backend.closeCount == 1)
     }
 
     @Test func captureOptionsRejectValuesThatWouldTrapInt32Conversion() {
@@ -206,6 +308,53 @@ struct LiveCaptureLifecycleTests {
             interfaceName: "test0",
             packetComment: nil
         )
+    }
+
+    private func makeLiveTCPPacket(
+        identifier: UInt16,
+        sourceIsClient: Bool,
+        sequence: UInt32,
+        acknowledgment: UInt32,
+        flags: UInt8,
+        payload: Data = Data()
+    ) -> Data {
+        let clientAddress: [UInt8] = [192, 0, 2, 1]
+        let serverAddress: [UInt8] = [198, 51, 100, 2]
+        let sourceAddress = sourceIsClient ? clientAddress : serverAddress
+        let destinationAddress = sourceIsClient ? serverAddress : clientAddress
+        let sourcePort: UInt16 = sourceIsClient ? 50_000 : 8_080
+        let destinationPort: UInt16 = sourceIsClient ? 8_080 : 50_000
+        var packet = Data([
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55,
+            0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
+            0x08, 0x00,
+            0x45, 0x00,
+        ])
+        packet.append(contentsOf: bytes(UInt16(40 + payload.count)))
+        packet.append(contentsOf: bytes(identifier))
+        packet.append(contentsOf: [0x40, 0x00, 0x40, 0x06, 0x00, 0x00])
+        packet.append(contentsOf: sourceAddress)
+        packet.append(contentsOf: destinationAddress)
+        packet.append(contentsOf: bytes(sourcePort))
+        packet.append(contentsOf: bytes(destinationPort))
+        packet.append(contentsOf: bytes(sequence))
+        packet.append(contentsOf: bytes(acknowledgment))
+        packet.append(contentsOf: [0x50, flags, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00])
+        packet.append(payload)
+        return packet
+    }
+
+    private func bytes(_ value: UInt16) -> [UInt8] {
+        [UInt8(value >> 8), UInt8(value & 0xff)]
+    }
+
+    private func bytes(_ value: UInt32) -> [UInt8] {
+        [
+            UInt8((value >> 24) & 0xff),
+            UInt8((value >> 16) & 0xff),
+            UInt8((value >> 8) & 0xff),
+            UInt8(value & 0xff),
+        ]
     }
 }
 

@@ -7,6 +7,7 @@
 
 import AppKit
 import Foundation
+import HexFiend
 import Testing
 import PcapPlusPlusCore
 @testable import TCPViewer
@@ -52,6 +53,39 @@ struct PacketHexViewControllerTests {
         #expect(PacketHexHighlight.make(from: nil, byteCount: 5) == nil)
     }
 
+    @Test func followPayloadMatchPrefersReassembledSource() throws {
+        let payload = Data([0xAA, 0xBB])
+        let range = try #require(TCPFollowPayloadMatcher.matchingRange(
+            for: payload,
+            in: [
+                PacketByteView(id: "frame", label: "Frame", bytes: Data([0x00, 0xAA, 0xBB, 0x01])),
+                PacketByteView(id: "reassembled-tcp", label: "Reassembled TCP", bytes: Data([0x02, 0xAA, 0xBB, 0x03])),
+            ]
+        ))
+
+        #expect(range == PacketByteRange(offset: 1, length: 2, sourceID: "reassembled-tcp"))
+    }
+
+    @Test func followPayloadMatchRequiresOneUnambiguousLocation() {
+        let payload = Data([0xAA, 0xBB])
+
+        #expect(TCPFollowPayloadMatcher.matchingRange(
+            for: payload,
+            in: [PacketByteView(
+                id: "reassembled-tcp",
+                label: "Reassembled TCP",
+                bytes: Data([0xAA, 0xBB, 0x00, 0xAA, 0xBB])
+            )]
+        ) == nil)
+        #expect(TCPFollowPayloadMatcher.matchingRange(
+            for: payload,
+            in: [
+                PacketByteView(id: "reassembled-a", label: "Reassembled A", bytes: Data([0x00, 0xAA, 0xBB])),
+                PacketByteView(id: "reassembled-b", label: "Reassembled B", bytes: Data([0x01, 0xAA, 0xBB])),
+            ]
+        ) == nil)
+    }
+
     @MainActor
     @Test func manualByteViewSelectionSurvivesPacketChange() throws {
         let firstPacket = makePacket(packetNumber: 1)
@@ -74,6 +108,70 @@ struct PacketHexViewControllerTests {
         #expect(segmentedControl.label(forSegment: segmentedControl.selectedSegment) == "Reassembled TCP")
     }
 
+    @MainActor
+    @Test func followPayloadRevealSelectsSourceAndSurvivesSamePacketRender() throws {
+        let packet = makePacket(packetNumber: 1)
+        let inspection = makeInspection(for: packet)
+        let snapshot = makeSnapshot(packet: packet, inspection: inspection)
+        let controller = PacketHexViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: snapshot)
+
+        let didReveal = controller.revealTCPFollowPayload(TCPFollowRevealTarget(
+            packetID: packet.id,
+            payload: Data([0xAA, 0x01])
+        ))
+        let segmentedControl = try #require(firstSubview(ofType: NSSegmentedControl.self, in: controller.view))
+
+        #expect(didReveal)
+        #expect(segmentedControl.label(forSegment: segmentedControl.selectedSegment) == "Reassembled TCP")
+
+        controller.render(snapshot: snapshot)
+
+        #expect(segmentedControl.label(forSegment: segmentedControl.selectedSegment) == "Reassembled TCP")
+    }
+
+    @MainActor
+    @Test func followPayloadRevealExplainsWhenNoExactSourceExists() throws {
+        let packet = makePacket(packetNumber: 1)
+        let controller = PacketHexViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: makeSnapshot(packet: packet, inspection: makeInspection(for: packet)))
+
+        let didReveal = controller.revealTCPFollowPayload(TCPFollowRevealTarget(
+            packetID: packet.id,
+            payload: Data([0xFE, 0xED])
+        ))
+        let statusLabel = try #require(allSubviews(ofType: NSTextField.self, in: controller.view).first {
+            $0.stringValue == "Reassembled from multiple packets"
+        })
+
+        #expect(!didReveal)
+        #expect(!statusLabel.isHidden)
+    }
+
+    @MainActor
+    @Test func failedFollowPayloadRevealClearsThePreviousHighlight() throws {
+        let packet = makePacket(packetNumber: 1)
+        let controller = PacketHexViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: makeSnapshot(packet: packet, inspection: makeInspection(for: packet)))
+        let hexTextView = try #require(firstSubview(ofType: HFTextView.self, in: controller.view))
+
+        #expect(controller.revealTCPFollowPayload(TCPFollowRevealTarget(
+            packetID: packet.id,
+            payload: Data([0xAA, 0x01])
+        )))
+        #expect(!hexTextView.controller.selectedContentsRanges.isEmpty)
+
+        #expect(!controller.revealTCPFollowPayload(TCPFollowRevealTarget(
+            packetID: packet.id,
+            payload: Data([0xFE, 0xED])
+        )))
+        let clearedRange = try #require(hexTextView.controller.selectedContentsRanges.first)
+        #expect(clearedRange.hfRange().length == 0)
+    }
+
     private func isolatedDefaults() -> UserDefaults {
         let suiteName = "TCPViewer.PacketHexViewControllerTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -93,6 +191,14 @@ struct PacketHexViewControllerTests {
         }
 
         return nil
+    }
+
+    private func allSubviews<T: NSView>(ofType type: T.Type, in view: NSView) -> [T] {
+        var matches = view.subviews.compactMap { $0 as? T }
+        for subview in view.subviews {
+            matches.append(contentsOf: allSubviews(ofType: type, in: subview))
+        }
+        return matches
     }
 
     private func makeSnapshot(packet: PacketSummary, inspection: PacketInspection) -> NetworkInspectorSnapshot {

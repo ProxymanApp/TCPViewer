@@ -82,15 +82,9 @@ struct DNSResolutionCache {
     // Return the newest unexpired observation for an IP in average O(1) time.
     mutating func domain(forIPAddress address: String, at timestamp: Date) -> String? {
         guard let ipAddress = Self.normalizedIPAddress(address) else {
-            #if DEBUG
-            Self.debugLog("lookup ip=\(address) result=miss reason=invalid-address")
-            #endif
             return nil
         }
         guard var entries = entriesByIPAddress[ipAddress] else {
-            #if DEBUG
-            Self.debugLog("lookup ip=\(ipAddress) result=miss reason=not-cached")
-            #endif
             return nil
         }
 
@@ -98,17 +92,10 @@ struct DNSResolutionCache {
         guard !entries.isEmpty else {
             // Keep the bounded key slot so reinsertion cannot create duplicate FIFO entries.
             entriesByIPAddress[ipAddress] = []
-            #if DEBUG
-            Self.debugLog("lookup ip=\(ipAddress) result=miss reason=expired")
-            #endif
             return nil
         }
         entriesByIPAddress[ipAddress] = entries
-        let domainName = entries.max { $0.observedAt < $1.observedAt }?.domainName
-        #if DEBUG
-        Self.debugLog("lookup ip=\(ipAddress) result=hit domain=\(domainName ?? "-")")
-        #endif
-        return domainName
+        return entries.max { $0.observedAt < $1.observedAt }?.domainName
     }
 
     mutating func reset() {

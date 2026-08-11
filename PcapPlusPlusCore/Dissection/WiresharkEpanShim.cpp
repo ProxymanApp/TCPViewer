@@ -22,13 +22,17 @@
 #include <epan/column.h>
 #include <epan/column-info.h>
 #include <epan/column-utils.h>
+#include <epan/dissectors/packet-tcp.h>
 #include <epan/epan.h>
 #include <epan/epan_dissect.h>
 #include <epan/exceptions.h>
+#include <epan/follow.h>
 #include <epan/frame_data_sequence.h>
 #include <epan/packet.h>
 #include <epan/prefs.h>
 #include <epan/proto.h>
+#include <epan/tap.h>
+#include <epan/to_str.h>
 #include <epan/tvbuff.h>
 #include <wiretap/pcap-encap.h>
 #include <wiretap/wtap.h>
@@ -1159,6 +1163,10 @@ private:
 }  // namespace
 
 struct TCPViewerWiresharkSession {
+    struct TCPFollowTapContext {
+        TCPViewerWiresharkSession *session = nullptr;
+    };
+
     mutable std::mutex mutex;
     std::string unavailableReason = kBackendUnavailableReason;
     std::unique_ptr<packet_provider_data> provider;
@@ -1170,7 +1178,26 @@ struct TCPViewerWiresharkSession {
     std::unordered_set<uint32_t> storedFrameNumbers;
     std::unordered_set<uint32_t> activeFrameNumbers;
     std::unordered_map<uint64_t, uint32_t> frameNumberByPacketIdentifier;
+    std::vector<uint64_t> packetIdentifierByFrameNumber;
+    std::vector<std::optional<uint32_t>> tcpStreamNumberByFrameNumber;
+    std::unordered_map<uint64_t, uint32_t> tcpStreamNumberByPacketIdentifier;
+    std::vector<std::pair<uint32_t, uint32_t>> pendingTCPStreamFrames;
+    std::vector<std::pair<uint64_t, uint32_t>> pendingTCPStreamIndexUpdates;
     std::deque<WiresharkCriticalException> pendingCriticalExceptions;
+    follow_info_t *followInfo = nullptr;
+    TCPFollowTapContext *followTapContext = nullptr;
+    register_follow_t *tcpFollower = nullptr;
+    const frame_data *followReference = nullptr;
+    frame_data followReferenceFrame{};
+    frame_data *followPreviousFrame = nullptr;
+    nstime_t followElapsedTime = NSTIME_INIT_ZERO;
+    bool followTapRegistered = false;
+    bool processingFollowPacket = false;
+    bool tcpIndexTapRegistered = false;
+    bool collectingTCPStreamIndex = false;
+    bool followTruncated = false;
+    uint64_t followPayloadByteCount = 0;
+    GList *followNewestPayloadItem = nullptr;
     std::string personalConfigurationDirectory;
     bool disabled = false;
     bool livePriority = false;
@@ -1181,6 +1208,95 @@ struct TCPViewerWiresharkSession {
     {
         static TCPViewerWiresharkSession *session = nullptr;
         return session;
+    }
+
+    static TCPViewerWiresharkSession *&activeFollowSession()
+    {
+        static TCPViewerWiresharkSession *session = nullptr;
+        return session;
+    }
+
+    static tap_packet_status indexTCPPacket(
+        void *tapData,
+        packet_info *packetInfo,
+        epan_dissect_t *,
+        const void *data,
+        tap_flags_t
+    ) {
+        auto *session = static_cast<TCPViewerWiresharkSession *>(tapData);
+        auto *header = static_cast<const tcp_info_t *>(data);
+        if (session == nullptr || packetInfo == nullptr || header == nullptr || !session->collectingTCPStreamIndex) {
+            return TAP_PACKET_DONT_REDRAW;
+        }
+
+        session->recordTCPStreamFrameLocked(packetInfo->num, header->th_stream);
+        if (packetInfo->fd != nullptr && packetInfo->fd->dependent_frames != nullptr) {
+            GHashTableIter iterator;
+            gpointer frameNumber = nullptr;
+            g_hash_table_iter_init(&iterator, packetInfo->fd->dependent_frames);
+            while (g_hash_table_iter_next(&iterator, &frameNumber, nullptr)) {
+                session->recordTCPStreamFrameLocked(GPOINTER_TO_UINT(frameNumber), header->th_stream);
+            }
+        }
+        return TAP_PACKET_DONT_REDRAW;
+    }
+
+    static tap_packet_status followTCPPacket(
+        void *tapData,
+        packet_info *packetInfo,
+        epan_dissect_t *dissect,
+        const void *data,
+        tap_flags_t flags
+    ) {
+        auto *context = static_cast<TCPFollowTapContext *>(tapData);
+        auto *session = context == nullptr ? nullptr : context->session;
+        if (session == nullptr || !session->processingFollowPacket
+            || session->followInfo == nullptr || session->tcpFollower == nullptr) {
+            return TAP_PACKET_DONT_REDRAW;
+        }
+        return get_follow_tap_handler(session->tcpFollower)(
+            session->followInfo,
+            packetInfo,
+            dissect,
+            data,
+            flags
+        );
+    }
+
+    void recordTCPStreamFrameLocked(uint32_t frameNumber, uint32_t streamNumber)
+    {
+        if (frameNumber == kUnknownFrameNumber) {
+            return;
+        }
+        if (tcpStreamNumberByFrameNumber.size() <= frameNumber) {
+            tcpStreamNumberByFrameNumber.resize(static_cast<size_t>(frameNumber) + 1);
+        }
+        const auto existing = tcpStreamNumberByFrameNumber[frameNumber];
+        if (existing.has_value() && existing.value() == streamNumber) {
+            return;
+        }
+        tcpStreamNumberByFrameNumber[frameNumber] = streamNumber;
+        pendingTCPStreamFrames.emplace_back(frameNumber, streamNumber);
+    }
+
+    // Translate tap frame numbers only after observePacketLocked has published its packet-ID mapping.
+    void finalizeTCPStreamIndexUpdatesLocked()
+    {
+        for (const auto &[frameNumber, streamNumber] : pendingTCPStreamFrames) {
+            if (frameNumber >= packetIdentifierByFrameNumber.size()) {
+                continue;
+            }
+            const uint64_t packetIdentifier = packetIdentifierByFrameNumber[frameNumber];
+            const auto existing = tcpStreamNumberByPacketIdentifier.find(packetIdentifier);
+            // A reactivated offline session may assign new local stream numbers to isolated packets.
+            // Preserve the authoritative index built while the complete capture was first observed.
+            if (existing != tcpStreamNumberByPacketIdentifier.end()) {
+                continue;
+            }
+            tcpStreamNumberByPacketIdentifier[packetIdentifier] = streamNumber;
+            pendingTCPStreamIndexUpdates.emplace_back(packetIdentifier, streamNumber);
+        }
+        pendingTCPStreamFrames.clear();
     }
 
     TCPViewerWiresharkSession(bool disablesWireshark, bool hasLivePriority, const char *personalConfigurationDirectory)
@@ -1260,6 +1376,11 @@ struct TCPViewerWiresharkSession {
         storedFrameNumbers.clear();
         activeFrameNumbers.clear();
         frameNumberByPacketIdentifier.clear();
+        packetIdentifierByFrameNumber.clear();
+        tcpStreamNumberByFrameNumber.clear();
+        pendingTCPStreamFrames.clear();
+        pendingTCPStreamIndexUpdates.clear();
+        collectingTCPStreamIndex = false;
         nstime_set_zero(&elapsedTime);
         referenceFrame = frame_data{};
         cumulativeBytes = 0;
@@ -1272,6 +1393,15 @@ struct TCPViewerWiresharkSession {
 
     void releaseWiresharkResourcesLocked(const std::string &reason, bool finishSession)
     {
+        cancelFollowLocked();
+        if (tcpIndexTapRegistered) {
+            if (auto report = CatchWiresharkException("removing Wireshark TCP stream index listener", std::nullopt, [&] {
+                    remove_tap_listener(this);
+                })) {
+                recordCriticalExceptionLocked(std::move(*report), false);
+            }
+            tcpIndexTapRegistered = false;
+        }
         if (activeSession() == this) {
             activeSession() = nullptr;
         }
@@ -1352,6 +1482,26 @@ struct TCPViewerWiresharkSession {
             return false;
         }
 
+        GString *tapError = register_tap_listener(
+            "tcp",
+            this,
+            nullptr,
+            0,
+            nullptr,
+            indexTCPPacket,
+            nullptr,
+            nullptr
+        );
+        if (tapError != nullptr) {
+            const std::string message = tapError->str == nullptr || tapError->str[0] == '\0'
+                ? "Wireshark TCP stream indexing is unavailable."
+                : tapError->str;
+            g_string_free(tapError, TRUE);
+            releaseWiresharkResourcesLocked(message, true);
+            return false;
+        }
+        tcpIndexTapRegistered = true;
+
         activeSession() = this;
         resetActiveFrameStateLocked();
         firstPassFinished = false;
@@ -1385,19 +1535,23 @@ struct TCPViewerWiresharkSession {
 
         frame_data frame{};
         frame_data *storedFrame = nullptr;
-        if (auto report = CatchWiresharkException("running Wireshark first-pass dissection", context.packetIdentifier, [&] {
+        collectingTCPStreamIndex = true;
+        auto dissectionReport = CatchWiresharkException("running Wireshark first-pass dissection", context.packetIdentifier, [&] {
                 frame_data_init(&frame, frameNumber, record.get(), cumulativeBytes, cumulativeBytes);
                 frame_data_set_before_dissect(&frame, &elapsedTime, &provider->ref, provider->prev_dis);
                 if (provider->ref == &frame) {
                     referenceFrame = frame;
                     provider->ref = &referenceFrame;
                 }
-                epan_dissect_run(firstPassDissect, WTAP_FILE_TYPE_SUBTYPE_UNKNOWN, record.get(), &frame, nullptr);
+                epan_dissect_run_with_taps(firstPassDissect, WTAP_FILE_TYPE_SUBTYPE_UNKNOWN, record.get(), &frame, nullptr);
                 frame_data_set_after_dissect(&frame, &cumulativeBytes);
                 storedFrame = frame_data_sequence_add(provider->frames, &frame);
                 epan_dissect_reset(firstPassDissect);
-            })) {
-            return failWithCriticalExceptionLocked(std::move(*report));
+            });
+        collectingTCPStreamIndex = false;
+        if (dissectionReport) {
+            pendingTCPStreamFrames.clear();
+            return failWithCriticalExceptionLocked(std::move(*dissectionReport));
         }
 
         provider->prev_cap = provider->prev_dis = storedFrame;
@@ -1453,6 +1607,11 @@ struct TCPViewerWiresharkSession {
 
         storedFrameNumbers.insert(frameNumber);
         frameNumberByPacketIdentifier[context.packetIdentifier] = frameNumber;
+        if (packetIdentifierByFrameNumber.size() <= frameNumber) {
+            packetIdentifierByFrameNumber.resize(static_cast<size_t>(frameNumber) + 1);
+        }
+        packetIdentifierByFrameNumber[frameNumber] = context.packetIdentifier;
+        finalizeTCPStreamIndexUpdatesLocked();
         return true;
     }
 
@@ -1481,6 +1640,395 @@ struct TCPViewerWiresharkSession {
         }
         firstPassFinished = true;
         return true;
+    }
+
+    void cancelFollowLocked()
+    {
+        if (followTapRegistered && followTapContext != nullptr) {
+            if (auto report = CatchWiresharkException("removing Wireshark TCP follow listener", std::nullopt, [&] {
+                    remove_tap_listener(followTapContext);
+                })) {
+                recordCriticalExceptionLocked(std::move(*report), false);
+            }
+        }
+        followTapRegistered = false;
+        processingFollowPacket = false;
+        g_free(followTapContext);
+        followTapContext = nullptr;
+        if (activeFollowSession() == this) {
+            activeFollowSession() = nullptr;
+        }
+        if (followInfo != nullptr) {
+            follow_info_free(followInfo);
+            followInfo = nullptr;
+        }
+        tcpFollower = nullptr;
+        followReference = nullptr;
+        followPreviousFrame = nullptr;
+        followReferenceFrame = frame_data{};
+        nstime_set_zero(&followElapsedTime);
+        followTruncated = false;
+        followPayloadByteCount = 0;
+        followNewestPayloadItem = nullptr;
+    }
+
+    bool beginTCPFollowLocked(const PacketContextView &selectedContext)
+    {
+        cancelFollowLocked();
+        if (!hasSession() || activeSession() != this) {
+            unavailableReason = "Wireshark details are no longer active for this capture. Reload it before following a stream.";
+            return false;
+        }
+        if (activeFollowSession() != nullptr && activeFollowSession() != this) {
+            unavailableReason = "Another TCP stream is already being reassembled.";
+            return false;
+        }
+
+        // Followers are keyed by Wireshark's case-sensitive protocol short name.
+        tcpFollower = get_follow_by_name("TCP");
+        if (tcpFollower == nullptr) {
+            unavailableReason = "Wireshark TCP stream following is unavailable.";
+            return false;
+        }
+        const auto frameMatch = frameNumberByPacketIdentifier.find(selectedContext.packetIdentifier);
+        if (frameMatch == frameNumberByPacketIdentifier.end()) {
+            unavailableReason = "The selected packet is not present in the TCP stream snapshot.";
+            return false;
+        }
+        frame_data *frame = frame_data_sequence_find(provider->frames, frameMatch->second);
+        if (frame == nullptr) {
+            unavailableReason = "Wireshark frame state is unavailable for the selected packet.";
+            return false;
+        }
+
+        WiresharkRecord record(selectedContext);
+        if (!record.isValid()) {
+            unavailableReason = record.failureReason();
+            return false;
+        }
+
+        epan_dissect_t *dissect = nullptr;
+        auto *currentEpan = epan;
+        if (auto report = CatchWiresharkException("creating Wireshark TCP follow selector", selectedContext.packetIdentifier, [&] {
+                dissect = epan_dissect_new(currentEpan, true, true);
+            })) {
+            return failWithCriticalExceptionLocked(std::move(*report));
+        }
+        if (dissect == nullptr) {
+            unavailableReason = "Wireshark could not allocate the TCP stream selector.";
+            return false;
+        }
+
+        bool selectedTCP = false;
+        char *followFilter = nullptr;
+        uint32_t cumulativeBytesForPacket = frame->cum_bytes >= frame->pkt_len ? frame->cum_bytes - frame->pkt_len : 0;
+        nstime_t elapsed = NSTIME_INIT_ZERO;
+        const frame_data *reference = nullptr;
+        wtap_block_t block = record.get()->block != nullptr ? wtap_block_ref(record.get()->block) : nullptr;
+        if (auto report = CatchWiresharkException("selecting Wireshark TCP stream", selectedContext.packetIdentifier, [&] {
+                frame_data_set_before_dissect(frame, &elapsed, &reference, nullptr);
+                epan_dissect_run(dissect, WTAP_FILE_TYPE_SUBTYPE_UNKNOWN, record.get(), frame, nullptr);
+                frame_data_set_after_dissect(frame, &cumulativeBytesForPacket);
+                const int protocolID = get_follow_proto_id(tcpFollower);
+                selectedTCP = proto_is_frame_protocol(
+                    dissect->pi.layers,
+                    proto_get_protocol_filter_name(protocolID)
+                );
+                if (selectedTCP) {
+                    unsigned streamNumber = 0;
+                    unsigned substreamNumber = 0;
+                    followFilter = get_follow_conv_func(tcpFollower)(
+                        dissect,
+                        &dissect->pi,
+                        &streamNumber,
+                        &substreamNumber
+                    );
+                }
+                epan_dissect_reset(dissect);
+            })) {
+            record.get()->block = block;
+            if (followFilter != nullptr) {
+                g_free(followFilter);
+            }
+            FreeEpanDissect(dissect, "freeing Wireshark TCP follow selector", selectedContext.packetIdentifier);
+            return failWithCriticalExceptionLocked(std::move(*report));
+        }
+        record.get()->block = block;
+        if (auto cleanupReport = FreeEpanDissect(dissect, "freeing Wireshark TCP follow selector", selectedContext.packetIdentifier)) {
+            if (followFilter != nullptr) {
+                g_free(followFilter);
+            }
+            return failWithCriticalExceptionLocked(std::move(*cleanupReport));
+        }
+        if (!selectedTCP || followFilter == nullptr || followFilter[0] == '\0') {
+            if (followFilter != nullptr) {
+                g_free(followFilter);
+            }
+            unavailableReason = "Select a TCP packet to follow its stream.";
+            return false;
+        }
+
+        followInfo = g_try_new0(follow_info_t, 1);
+        if (followInfo == nullptr) {
+            g_free(followFilter);
+            unavailableReason = "TCP stream follower state could not be allocated.";
+            return false;
+        }
+        followInfo->show_stream = BOTH_HOSTS;
+        followInfo->substream_id = SUBSTREAM_UNUSED;
+        followInfo->filter_out_filter = followFilter;
+        followTapContext = g_try_new0(TCPFollowTapContext, 1);
+        if (followTapContext == nullptr) {
+            follow_info_free(followInfo);
+            followInfo = nullptr;
+            tcpFollower = nullptr;
+            unavailableReason = "TCP stream tap context could not be allocated.";
+            return false;
+        }
+        followTapContext->session = this;
+        GString *registrationError = register_tap_listener(
+            get_follow_tap_string(tcpFollower),
+            followTapContext,
+            followInfo->filter_out_filter,
+            0,
+            nullptr,
+            followTCPPacket,
+            nullptr,
+            nullptr
+        );
+        if (registrationError != nullptr) {
+            unavailableReason = registrationError->str == nullptr || registrationError->str[0] == '\0'
+                ? "Wireshark could not register the TCP follow listener."
+                : registrationError->str;
+            g_string_free(registrationError, TRUE);
+            g_free(followTapContext);
+            followTapContext = nullptr;
+            follow_info_free(followInfo);
+            followInfo = nullptr;
+            tcpFollower = nullptr;
+            return false;
+        }
+
+        followTapRegistered = true;
+        activeFollowSession() = this;
+        followReference = nullptr;
+        followPreviousFrame = nullptr;
+        followReferenceFrame = frame_data{};
+        nstime_set_zero(&followElapsedTime);
+        followTruncated = false;
+        followPayloadByteCount = 0;
+        followNewestPayloadItem = nullptr;
+        return true;
+    }
+
+    TCPViewerWiresharkFollowPacketStatus processFollowPacketLocked(
+        const PacketContextView &context,
+        size_t maximumPayloadBytes
+    ) {
+        if (!followTapRegistered || followInfo == nullptr || activeFollowSession() != this) {
+            unavailableReason = "The TCP stream reassembly is not active.";
+            return TCPViewerWiresharkFollowPacketFailed;
+        }
+        const auto frameMatch = frameNumberByPacketIdentifier.find(context.packetIdentifier);
+        if (frameMatch == frameNumberByPacketIdentifier.end()) {
+            unavailableReason = "A TCP stream packet is missing from the Wireshark snapshot.";
+            return TCPViewerWiresharkFollowPacketFailed;
+        }
+        frame_data *frame = frame_data_sequence_find(provider->frames, frameMatch->second);
+        if (frame == nullptr) {
+            unavailableReason = "Wireshark frame state is unavailable while following the TCP stream.";
+            return TCPViewerWiresharkFollowPacketFailed;
+        }
+
+        WiresharkRecord record(context);
+        if (!record.isValid()) {
+            unavailableReason = record.failureReason();
+            return TCPViewerWiresharkFollowPacketFailed;
+        }
+
+        epan_dissect_t *dissect = nullptr;
+        auto *currentEpan = epan;
+        if (auto report = CatchWiresharkException("creating Wireshark TCP follow dissector", context.packetIdentifier, [&] {
+                dissect = epan_dissect_new(currentEpan, tap_listeners_require_dissection(), false);
+            })) {
+            failWithCriticalExceptionLocked(std::move(*report));
+            return TCPViewerWiresharkFollowPacketFailed;
+        }
+        if (dissect == nullptr) {
+            unavailableReason = "Wireshark could not allocate a TCP follow dissector.";
+            return TCPViewerWiresharkFollowPacketFailed;
+        }
+
+        uint32_t cumulativeBytesForPacket = frame->cum_bytes >= frame->pkt_len ? frame->cum_bytes - frame->pkt_len : 0;
+        wtap_block_t block = record.get()->block != nullptr ? wtap_block_ref(record.get()->block) : nullptr;
+        if (auto report = CatchWiresharkException("reassembling Wireshark TCP stream", context.packetIdentifier, [&] {
+                processingFollowPacket = true;
+                frame_data_set_before_dissect(frame, &followElapsedTime, &followReference, followPreviousFrame);
+                if (followReference == frame) {
+                    followReferenceFrame = *frame;
+                    followReference = &followReferenceFrame;
+                }
+                epan_dissect_run_with_taps(
+                    dissect,
+                    WTAP_FILE_TYPE_SUBTYPE_UNKNOWN,
+                    record.get(),
+                    frame,
+                    nullptr
+                );
+                frame_data_set_after_dissect(frame, &cumulativeBytesForPacket);
+                epan_dissect_reset(dissect);
+            })) {
+            processingFollowPacket = false;
+            record.get()->block = block;
+            FreeEpanDissect(dissect, "freeing Wireshark TCP follow dissector", context.packetIdentifier);
+            failWithCriticalExceptionLocked(std::move(*report));
+            return TCPViewerWiresharkFollowPacketFailed;
+        }
+        processingFollowPacket = false;
+        record.get()->block = block;
+        followPreviousFrame = frame;
+        if (auto cleanupReport = FreeEpanDissect(dissect, "freeing Wireshark TCP follow dissector", context.packetIdentifier)) {
+            failWithCriticalExceptionLocked(std::move(*cleanupReport));
+            return TCPViewerWiresharkFollowPacketFailed;
+        }
+
+        // Wireshark does not add released out-of-order fragments to bytes_written, so count new payload records directly.
+        for (GList *item = followInfo->payload; item != followNewestPayloadItem; item = g_list_next(item)) {
+            auto *record = static_cast<follow_record_t *>(item->data);
+            if (record != nullptr && record->data != nullptr) {
+                followPayloadByteCount += record->data->len;
+            }
+        }
+        followNewestPayloadItem = followInfo->payload;
+        if (followPayloadByteCount > maximumPayloadBytes) {
+            followTruncated = true;
+            return TCPViewerWiresharkFollowPacketLimitReached;
+        }
+        return TCPViewerWiresharkFollowPacketAccepted;
+    }
+
+    TCPViewerWiresharkFollowResult *finishTCPFollowLocked(
+        size_t maximumPayloadBytes,
+        size_t maximumRecordCount
+    )
+    {
+        auto *result = static_cast<TCPViewerWiresharkFollowResult *>(std::calloc(1, sizeof(TCPViewerWiresharkFollowResult)));
+        if (result == nullptr) {
+            cancelFollowLocked();
+            return nullptr;
+        }
+        if (!followTapRegistered || followInfo == nullptr || activeFollowSession() != this) {
+            result->errorMessage = CopyCString("The TCP stream reassembly is not active.", false);
+            cancelFollowLocked();
+            return result;
+        }
+
+        if (auto report = CatchWiresharkException("removing Wireshark TCP follow listener", std::nullopt, [&] {
+                remove_tap_listener(followTapContext);
+            })) {
+            followTapRegistered = false;
+            processingFollowPacket = false;
+            g_free(followTapContext);
+            followTapContext = nullptr;
+            activeFollowSession() = nullptr;
+            result->errorMessage = CopyCString(report->reason, false);
+            recordCriticalExceptionLocked(std::move(*report), true);
+            follow_info_free(followInfo);
+            followInfo = nullptr;
+            tcpFollower = nullptr;
+            return result;
+        }
+        followTapRegistered = false;
+        processingFollowPacket = false;
+        g_free(followTapContext);
+        followTapContext = nullptr;
+        activeFollowSession() = nullptr;
+
+        char clientAddress[256] = {};
+        char serverAddress[256] = {};
+        address_to_str_buf(&followInfo->client_ip, clientAddress, sizeof(clientAddress));
+        address_to_str_buf(&followInfo->server_ip, serverAddress, sizeof(serverAddress));
+        result->clientAddress = CopyCString(clientAddress);
+        result->serverAddress = CopyCString(serverAddress);
+        result->clientPort = static_cast<uint16_t>(std::min(followInfo->client_port, static_cast<unsigned>(UINT16_MAX)));
+        result->serverPort = static_cast<uint16_t>(std::min(followInfo->server_port, static_cast<unsigned>(UINT16_MAX)));
+        for (GList *item = followInfo->payload; item != nullptr; item = g_list_next(item)) {
+            auto *record = static_cast<follow_record_t *>(item->data);
+            if (record == nullptr || record->data == nullptr) {
+                continue;
+            }
+            if (record->is_server) {
+                result->serverByteCount += record->data->len;
+            } else {
+                result->clientByteCount += record->data->len;
+            }
+        }
+
+        const size_t availableRecordCount = static_cast<size_t>(g_list_length(followInfo->payload));
+        const size_t allocatedRecordCount = std::min(availableRecordCount, maximumRecordCount);
+        result->recordCount = allocatedRecordCount;
+        result->isTruncated = followTruncated
+            || followPayloadByteCount > maximumPayloadBytes
+            || availableRecordCount > maximumRecordCount;
+        if (allocatedRecordCount > 0) {
+            result->records = static_cast<TCPViewerWiresharkFollowRecord *>(
+                std::calloc(allocatedRecordCount, sizeof(TCPViewerWiresharkFollowRecord))
+            );
+            if (result->records == nullptr) {
+                result->recordCount = 0;
+                result->errorMessage = CopyCString("TCP stream output could not be allocated.", false);
+                cancelFollowLocked();
+                return result;
+            }
+        }
+
+        size_t outputIndex = 0;
+        size_t remainingPayloadBytes = maximumPayloadBytes;
+        for (GList *item = g_list_last(followInfo->payload);
+             item != nullptr && outputIndex < allocatedRecordCount && remainingPayloadBytes > 0;
+             item = g_list_previous(item)) {
+            auto *source = static_cast<follow_record_t *>(item->data);
+            if (source == nullptr || source->data == nullptr || source->data->len == 0) {
+                continue;
+            }
+            auto &destination = result->records[outputIndex];
+            destination.isServer = source->is_server;
+            destination.packetIdentifier = source->packet_num < packetIdentifierByFrameNumber.size()
+                ? packetIdentifierByFrameNumber[source->packet_num]
+                : static_cast<uint64_t>(source->packet_num);
+            destination.sequenceNumber = source->seq;
+            destination.timestampSeconds = source->abs_ts.secs;
+            destination.timestampNanoseconds = source->abs_ts.nsecs;
+            destination.byteCount = std::min(static_cast<size_t>(source->data->len), remainingPayloadBytes);
+            if (destination.byteCount > 0) {
+                destination.bytes = static_cast<uint8_t *>(std::malloc(destination.byteCount));
+                if (destination.bytes == nullptr) {
+                    result->errorMessage = CopyCString("TCP stream payload could not be allocated.", false);
+                    cancelFollowLocked();
+                    return result;
+                }
+                std::memcpy(destination.bytes, source->data->data, destination.byteCount);
+            }
+            if (destination.byteCount < source->data->len) {
+                result->isTruncated = true;
+            }
+            remainingPayloadBytes -= destination.byteCount;
+            outputIndex += 1;
+        }
+        result->recordCount = outputIndex;
+
+        result->succeeded = true;
+        follow_info_free(followInfo);
+        followInfo = nullptr;
+        tcpFollower = nullptr;
+        followReference = nullptr;
+        followPreviousFrame = nullptr;
+        followReferenceFrame = frame_data{};
+        nstime_set_zero(&followElapsedTime);
+        followTruncated = false;
+        followPayloadByteCount = 0;
+        followNewestPayloadItem = nullptr;
+        return result;
     }
 
     WiresharkDissectionResult runSecondPassLocked(const PacketContextView &context, bool buildTree)
@@ -1562,7 +2110,7 @@ struct TCPViewerWiresharkSession {
                     referenceFrame = *frame;
                     provider->ref = &referenceFrame;
                 }
-                if (buildTree) {
+                if (buildTree && activeFollowSession() == nullptr) {
                     epan_dissect_run_with_taps(rawDissect, WTAP_FILE_TYPE_SUBTYPE_UNKNOWN, record.get(), frame, columnInfo.get());
                 } else {
                     epan_dissect_run(rawDissect, WTAP_FILE_TYPE_SUBTYPE_UNKNOWN, record.get(), frame, columnInfo.get());
@@ -1672,6 +2220,35 @@ bool TCPViewerWiresharkSessionObservePacket(TCPViewerWiresharkSession *session, 
     return session->observePacketLocked(ContextViewFromC(context));
 }
 
+TCPViewerWiresharkTCPStreamIndexResult *TCPViewerWiresharkSessionCopyPendingTCPStreamIndexUpdates(
+    TCPViewerWiresharkSession *session
+) {
+    auto *result = static_cast<TCPViewerWiresharkTCPStreamIndexResult *>(
+        std::calloc(1, sizeof(TCPViewerWiresharkTCPStreamIndexResult))
+    );
+    if (result == nullptr || session == nullptr) {
+        return result;
+    }
+
+    std::lock_guard<std::mutex> sessionLock(session->mutex);
+    result->entryCount = session->pendingTCPStreamIndexUpdates.size();
+    if (result->entryCount > 0) {
+        result->entries = static_cast<TCPViewerWiresharkTCPStreamIndexEntry *>(
+            std::calloc(result->entryCount, sizeof(TCPViewerWiresharkTCPStreamIndexEntry))
+        );
+        if (result->entries == nullptr) {
+            result->entryCount = 0;
+            return result;
+        }
+        for (size_t index = 0; index < result->entryCount; index += 1) {
+            result->entries[index].packetIdentifier = session->pendingTCPStreamIndexUpdates[index].first;
+            result->entries[index].streamIdentifier = session->pendingTCPStreamIndexUpdates[index].second;
+        }
+    }
+    session->pendingTCPStreamIndexUpdates.clear();
+    return result;
+}
+
 bool TCPViewerWiresharkSessionFinishFirstPass(TCPViewerWiresharkSession *session)
 {
     if (session == nullptr) {
@@ -1681,6 +2258,111 @@ bool TCPViewerWiresharkSessionFinishFirstPass(TCPViewerWiresharkSession *session
     std::lock_guard<std::mutex> sessionLock(session->mutex);
     session->clearCriticalExceptionsLocked();
     return session->finishFirstPassLocked();
+}
+
+bool TCPViewerWiresharkSessionCanFollowObservedPacket(TCPViewerWiresharkSession *session, uint64_t packetIdentifier)
+{
+    if (session == nullptr) {
+        return false;
+    }
+    std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
+    std::lock_guard<std::mutex> sessionLock(session->mutex);
+    return session->hasSession()
+        && TCPViewerWiresharkSession::activeSession() == session
+        && session->frameNumberByPacketIdentifier.find(packetIdentifier) != session->frameNumberByPacketIdentifier.end();
+}
+
+bool TCPViewerWiresharkSessionCanFollowObservedPackets(
+    TCPViewerWiresharkSession *session,
+    const uint64_t *packetIdentifiers,
+    size_t packetIdentifierCount
+) {
+    if (session == nullptr || packetIdentifiers == nullptr || packetIdentifierCount == 0) {
+        return false;
+    }
+    std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
+    std::lock_guard<std::mutex> sessionLock(session->mutex);
+    if (!session->hasSession() || TCPViewerWiresharkSession::activeSession() != session) {
+        return false;
+    }
+    for (size_t index = 0; index < packetIdentifierCount; index += 1) {
+        if (session->frameNumberByPacketIdentifier.find(packetIdentifiers[index])
+            == session->frameNumberByPacketIdentifier.end()) {
+            return false;
+        }
+    }
+    return true;
+}
+
+TCPViewerWiresharkFollowCandidateResult *TCPViewerWiresharkSessionCopyTCPFollowCandidates(
+    TCPViewerWiresharkSession *session,
+    uint64_t packetIdentifier,
+    size_t maximumPacketCount
+) {
+    auto *result = static_cast<TCPViewerWiresharkFollowCandidateResult *>(
+        std::calloc(1, sizeof(TCPViewerWiresharkFollowCandidateResult))
+    );
+    if (result == nullptr) {
+        return nullptr;
+    }
+    if (session == nullptr || maximumPacketCount == 0) {
+        result->errorMessage = CopyCString("The TCP stream candidate request is invalid.", false);
+        return result;
+    }
+
+    std::lock_guard<std::mutex> sessionLock(session->mutex);
+    const auto selected = session->tcpStreamNumberByPacketIdentifier.find(packetIdentifier);
+    if (selected == session->tcpStreamNumberByPacketIdentifier.end()) {
+        result->errorMessage = CopyCString("Select a TCP packet to follow its stream.", false);
+        return result;
+    }
+
+    std::vector<uint64_t> identifiers;
+    for (const auto &[candidateIdentifier, streamNumber] : session->tcpStreamNumberByPacketIdentifier) {
+        if (streamNumber == selected->second) {
+            identifiers.push_back(candidateIdentifier);
+        }
+    }
+    std::sort(identifiers.begin(), identifiers.end());
+    if (identifiers.size() > maximumPacketCount) {
+        result->errorMessage = CopyCString(
+            "This TCP stream exceeds the packet candidate safety limit.",
+            false
+        );
+        return result;
+    }
+
+    result->packetIdentifierCount = identifiers.size();
+    if (!identifiers.empty()) {
+        result->packetIdentifiers = static_cast<uint64_t *>(
+            std::calloc(identifiers.size(), sizeof(uint64_t))
+        );
+        if (result->packetIdentifiers == nullptr) {
+            result->packetIdentifierCount = 0;
+            result->errorMessage = CopyCString("TCP stream candidates could not be allocated.", false);
+            return result;
+        }
+        std::copy(identifiers.begin(), identifiers.end(), result->packetIdentifiers);
+    }
+    result->succeeded = true;
+    return result;
+}
+
+bool TCPViewerWiresharkSessionTCPStreamIdentifier(
+    TCPViewerWiresharkSession *session,
+    uint64_t packetIdentifier,
+    uint32_t *streamIdentifier
+) {
+    if (session == nullptr || streamIdentifier == nullptr) {
+        return false;
+    }
+    std::lock_guard<std::mutex> sessionLock(session->mutex);
+    const auto match = session->tcpStreamNumberByPacketIdentifier.find(packetIdentifier);
+    if (match == session->tcpStreamNumberByPacketIdentifier.end()) {
+        return false;
+    }
+    *streamIdentifier = match->second;
+    return true;
 }
 
 TCPViewerWiresharkSummaryResult *TCPViewerWiresharkSessionSummarizePacket(TCPViewerWiresharkSession *session, const TCPViewerWiresharkPacketContext *context)
@@ -1741,6 +2423,57 @@ TCPViewerWiresharkInspectionResult *TCPViewerWiresharkSessionInspectPacket(TCPVi
     return result;
 }
 
+bool TCPViewerWiresharkSessionBeginFollowTCPStream(TCPViewerWiresharkSession *session, const TCPViewerWiresharkPacketContext *selectedContext)
+{
+    if (session == nullptr || selectedContext == nullptr) {
+        return false;
+    }
+    std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
+    std::lock_guard<std::mutex> sessionLock(session->mutex);
+    session->clearCriticalExceptionsLocked();
+    return session->beginTCPFollowLocked(ContextViewFromC(selectedContext));
+}
+
+TCPViewerWiresharkFollowPacketStatus TCPViewerWiresharkSessionProcessFollowPacket(
+    TCPViewerWiresharkSession *session,
+    const TCPViewerWiresharkPacketContext *context,
+    size_t maximumPayloadBytes
+) {
+    if (session == nullptr || context == nullptr || maximumPayloadBytes == 0) {
+        return TCPViewerWiresharkFollowPacketFailed;
+    }
+    std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
+    std::lock_guard<std::mutex> sessionLock(session->mutex);
+    return session->processFollowPacketLocked(ContextViewFromC(context), maximumPayloadBytes);
+}
+
+TCPViewerWiresharkFollowResult *TCPViewerWiresharkSessionFinishFollowTCPStream(
+    TCPViewerWiresharkSession *session,
+    size_t maximumPayloadBytes,
+    size_t maximumRecordCount
+) {
+    if (session == nullptr || maximumPayloadBytes == 0 || maximumRecordCount == 0) {
+        auto *result = static_cast<TCPViewerWiresharkFollowResult *>(std::calloc(1, sizeof(TCPViewerWiresharkFollowResult)));
+        if (result != nullptr) {
+            result->errorMessage = CopyCString("The TCP stream reassembly request is invalid.", false);
+        }
+        return result;
+    }
+    std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
+    std::lock_guard<std::mutex> sessionLock(session->mutex);
+    return session->finishTCPFollowLocked(maximumPayloadBytes, maximumRecordCount);
+}
+
+void TCPViewerWiresharkSessionCancelFollowTCPStream(TCPViewerWiresharkSession *session)
+{
+    if (session == nullptr) {
+        return;
+    }
+    std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
+    std::lock_guard<std::mutex> sessionLock(session->mutex);
+    session->cancelFollowLocked();
+}
+
 TCPViewerWiresharkExceptionReport *TCPViewerWiresharkSessionCopyLastCriticalException(TCPViewerWiresharkSession *session)
 {
     if (session == nullptr) {
@@ -1794,6 +2527,42 @@ void TCPViewerWiresharkInspectionResultDestroy(TCPViewerWiresharkInspectionResul
         DestroyDetailNode(result->nodes[index]);
     }
     std::free(result->nodes);
+    std::free(result);
+}
+
+void TCPViewerWiresharkTCPStreamIndexResultDestroy(TCPViewerWiresharkTCPStreamIndexResult *result)
+{
+    if (result == nullptr) {
+        return;
+    }
+    std::free(result->entries);
+    std::free(result);
+}
+
+void TCPViewerWiresharkFollowCandidateResultDestroy(TCPViewerWiresharkFollowCandidateResult *result)
+{
+    if (result == nullptr) {
+        return;
+    }
+    std::free(const_cast<char *>(result->errorMessage));
+    std::free(result->packetIdentifiers);
+    std::free(result);
+}
+
+void TCPViewerWiresharkFollowResultDestroy(TCPViewerWiresharkFollowResult *result)
+{
+    if (result == nullptr) {
+        return;
+    }
+    std::free(const_cast<char *>(result->errorMessage));
+    std::free(const_cast<char *>(result->clientAddress));
+    std::free(const_cast<char *>(result->serverAddress));
+    if (result->records != nullptr) {
+        for (size_t index = 0; index < result->recordCount; index += 1) {
+            std::free(result->records[index].bytes);
+        }
+    }
+    std::free(result->records);
     std::free(result);
 }
 

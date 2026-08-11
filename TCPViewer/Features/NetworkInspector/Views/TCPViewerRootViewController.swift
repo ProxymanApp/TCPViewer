@@ -58,6 +58,11 @@ private final class TCPViewerCaptureDropView: NSView {
     }
 }
 
+private struct PendingTCPFollowReveal {
+    let target: TCPFollowRevealTarget
+    let captureIdentity: TCPFollowCaptureIdentity
+}
+
 private protocol TCPViewSessionImportSheetViewControllerDelegate: AnyObject {
     func tcpViewSessionImportSheetDidRequestCancel(_ controller: TCPViewSessionImportSheetViewController)
     func tcpViewSessionImportSheetDidRequestClose(_ controller: TCPViewSessionImportSheetViewController)
@@ -205,6 +210,8 @@ final class TCPViewerRootViewController: NSViewController {
     private var temporaryInspectorRestoreThickness: CGFloat?
     private var hasRenderedHelperOnboarding = false
     private var sessionImportSheetViewController: TCPViewSessionImportSheetViewController?
+    private var followStreamWindowControllers: [TCPFollowStreamWindowController] = []
+    private var pendingTCPFollowReveal: PendingTCPFollowReveal?
     private var isMainEmptyStateVisible = false
     #if DEBUG
     private var packetSelectionCrashReproducer: TCPViewerPacketSelectionCrashReproducer?
@@ -521,6 +528,7 @@ final class TCPViewerRootViewController: NSViewController {
         sidebarViewController.render(snapshot: snapshot)
         workspaceViewController.render(snapshot: snapshot)
         inspectorViewController.render(snapshot: snapshot)
+        applyPendingTCPFollowReveal(snapshot)
         mainEmptyStateViewController.render(snapshot: snapshot)
         statusStripViewController.render(snapshot: snapshot, metrics: viewModel.statusMetricsSnapshot)
         applyMainEmptyStateVisibility(snapshot)
@@ -532,6 +540,34 @@ final class TCPViewerRootViewController: NSViewController {
             hasRenderedHelperOnboarding = true
             delegate?.tcpviewerRootViewController(self, didRequestHelperOnboarding: viewModel.networkHelperToolSnapshot)
         }
+    }
+
+    // Wait for asynchronous dissection before asking the Hex pane to reveal reassembled bytes.
+    private func applyPendingTCPFollowReveal(_ snapshot: NetworkInspectorSnapshot) {
+        guard let pendingTCPFollowReveal else {
+            return
+        }
+        guard viewModel.canRevealTCPFollowPacket(
+            pendingTCPFollowReveal.target.packetID,
+            from: pendingTCPFollowReveal.captureIdentity
+        ) else {
+            self.pendingTCPFollowReveal = nil
+            return
+        }
+        let inspectionState = snapshot.base.inspectionState
+        guard inspectionState.selectedPacketID == pendingTCPFollowReveal.target.packetID else {
+            self.pendingTCPFollowReveal = nil
+            return
+        }
+        guard inspectionState.inspection?.packetID == pendingTCPFollowReveal.target.packetID else {
+            if !inspectionState.isLoading {
+                self.pendingTCPFollowReveal = nil
+            }
+            return
+        }
+
+        inspectorViewController.revealTCPFollowPayload(pendingTCPFollowReveal.target)
+        self.pendingTCPFollowReveal = nil
     }
 
     private func applyMainEmptyStateVisibility(_ snapshot: NetworkInspectorSnapshot) {
@@ -1293,6 +1329,10 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
         viewModel.savePackets(identifiers)
     }
 
+    func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestFollowTCPStream packetID: PacketSummary.ID) {
+        presentFollowTCPStreamWindow(packetID: packetID)
+    }
+
     func packetWorkspaceViewController(
         _ controller: PacketWorkspaceViewController,
         didRequestSetComment comment: String,
@@ -1407,6 +1447,83 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
 
     private static func flowCountText(_ count: Int) -> String {
         "\(count) flow\(count == 1 ? "" : "s")"
+    }
+}
+
+private extension TCPViewerRootViewController {
+    // Open a dedicated native workspace and keep its bounded background operation cancellable.
+    func presentFollowTCPStreamWindow(packetID: PacketSummary.ID) {
+        let captureIdentity = viewModel.tcpFollowCaptureIdentity
+        guard let navigation = viewModel.tcpFollowStreamNavigation(containing: packetID) else {
+            return
+        }
+        let controller = TCPFollowStreamWindowController(navigation: navigation)
+        followStreamWindowControllers.append(controller)
+        controller.closeHandler = { [weak self, weak controller] in
+            guard let controller else {
+                return
+            }
+            self?.followStreamWindowControllers.removeAll { $0 === controller }
+        }
+        controller.revealPacket = { [weak self] target in
+            guard let self,
+                  self.viewModel.canRevealTCPFollowPacket(target.packetID, from: captureIdentity) else {
+                return
+            }
+            self.pendingTCPFollowReveal = PendingTCPFollowReveal(
+                target: target,
+                captureIdentity: captureIdentity
+            )
+            self.viewModel.selectPacket(target.packetID)
+            self.viewModel.setInspectorVisible(true)
+            self.workspaceViewController.scrollPacketToVisible(target.packetID)
+            self.view.window?.makeKeyAndOrderFront(nil)
+        }
+        controller.streamSelectionHandler = { [weak self, weak controller] entry in
+            guard let self, let controller else {
+                return
+            }
+            guard self.viewModel.canRevealTCPFollowPacket(entry.packetID, from: captureIdentity) else {
+                controller.show(error: TCPViewerCoreError(
+                    code: .offlineFileOpenFailed,
+                    message: "The capture changed, so this TCP stream is no longer available."
+                ))
+                return
+            }
+            self.loadFollowTCPStream(containing: entry.packetID, into: controller)
+        }
+        controller.present()
+        loadFollowTCPStream(containing: packetID, into: controller)
+    }
+
+    // Reuse the same bounded callback-based reassembly path for initial and stepped streams.
+    func loadFollowTCPStream(
+        containing packetID: PacketSummary.ID,
+        into controller: TCPFollowStreamWindowController
+    ) {
+        viewModel.followTCPStream(
+            containing: packetID,
+            progress: { [weak controller] progress in
+                DispatchQueue.main.async {
+                    controller?.updateProgress(progress)
+                }
+            },
+            shouldCancel: { [weak controller] in
+                controller?.cancellationFlag.isCancelled ?? true
+            }
+        ) { [weak controller] result in
+            DispatchQueue.main.async {
+                guard let controller else {
+                    return
+                }
+                switch result {
+                case .success(let stream):
+                    controller.show(stream: stream)
+                case .failure(let error):
+                    controller.show(error: error)
+                }
+            }
+        }
     }
 }
 

@@ -16,6 +16,7 @@ protocol PacketTableViewControllerDelegate: AnyObject {
         didRequestPinPackets identifiers: [PacketSummary.ID]
     )
     func packetTableViewController(_ controller: PacketTableViewController, didRequestSavePackets identifiers: [PacketSummary.ID])
+    func packetTableViewController(_ controller: PacketTableViewController, didRequestFollowTCPStream packetID: PacketSummary.ID)
     func packetTableViewController(
         _ controller: PacketTableViewController,
         didRequestSetComment comment: String,
@@ -349,6 +350,18 @@ final class PacketTableViewController: NSViewController {
         }
 
         enqueueCustomColumnResolution(after: updatePlan, previousRowCount: previousRowCount)
+    }
+
+    // Scroll the current sorted and filtered table row into view.
+    @discardableResult
+    func scrollPacketToVisible(_ identifier: PacketSummary.ID) -> Bool {
+        guard let rowIndex = viewModel.rowIndex(for: identifier),
+              (0..<tableView.numberOfRows).contains(rowIndex) else {
+            return false
+        }
+
+        tableView.scrollRowToVisible(rowIndex)
+        return true
     }
 
     private func applyAppendPlan(range: Range<Int>, previousRowCount: Int) {
@@ -1047,6 +1060,14 @@ final class PacketTableViewController: NSViewController {
         }
 
         delegate?.packetTableViewController(self, didRequestSavePackets: identifiers)
+    }
+
+    @objc func followTCPStreamFromMenu(_ sender: Any?) {
+        let packetIDs = targetPacketIDs()
+        guard packetIDs.count == 1, let packetID = packetIDs.first else {
+            return
+        }
+        delegate?.packetTableViewController(self, didRequestFollowTCPStream: packetID)
     }
 
     @objc func addPacketCommentFromMenu(_ sender: Any?) {

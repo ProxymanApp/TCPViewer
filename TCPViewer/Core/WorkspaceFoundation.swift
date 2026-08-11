@@ -491,6 +491,84 @@ struct PacketIngestState: Sendable, Equatable {
     }
 }
 
+struct TCPFollowStreamNavigation: Equatable {
+    struct Entry: Equatable {
+        let streamID: UInt32
+        let packetID: PacketSummary.ID
+    }
+
+    let entries: [Entry]
+    let selectedIndex: Int
+
+    var selectedEntry: Entry {
+        entries[selectedIndex]
+    }
+
+    // Build a sorted stream list without crossing imported capture-file boundaries.
+    init?(ingestState: PacketIngestState, selectedPacketID: PacketSummary.ID) {
+        guard let selectedPacket = ingestState.packet(withID: selectedPacketID),
+              let selectedStreamID = selectedPacket.tcpFollowStreamID else {
+            return nil
+        }
+
+        let selectedReference = ingestState.importedPacketReference(for: selectedPacketID)
+        var packetIDByStreamID: [UInt32: PacketSummary.ID] = [:]
+        for packet in ingestState.packets {
+            guard let streamID = packet.tcpFollowStreamID else {
+                continue
+            }
+            let candidateReference = ingestState.importedPacketReference(for: packet.id)
+            let belongsToSelectedCapture = selectedReference.map { selected in
+                candidateReference?.fileID == selected.fileID
+            } ?? (candidateReference == nil)
+            guard belongsToSelectedCapture, packetIDByStreamID[streamID] == nil else {
+                continue
+            }
+            packetIDByStreamID[streamID] = packet.id
+        }
+        packetIDByStreamID[selectedStreamID] = selectedPacketID
+
+        let entries = packetIDByStreamID.keys.sorted().compactMap { streamID in
+            packetIDByStreamID[streamID].map { Entry(streamID: streamID, packetID: $0) }
+        }
+        guard let selectedIndex = entries.firstIndex(where: { $0.streamID == selectedStreamID }) else {
+            return nil
+        }
+        self.entries = entries
+        self.selectedIndex = selectedIndex
+    }
+
+    private init(entries: [Entry], selectedIndex: Int) {
+        self.entries = entries
+        self.selectedIndex = selectedIndex
+    }
+
+    // Return the same capture-scoped list focused on another available stream.
+    func selecting(index: Int) -> TCPFollowStreamNavigation? {
+        guard entries.indices.contains(index) else {
+            return nil
+        }
+        return TCPFollowStreamNavigation(entries: entries, selectedIndex: index)
+    }
+}
+
+struct TCPFollowCaptureIdentity: Sendable, Equatable {
+    let backingIdentity: String?
+    let packetLineageRevision: UInt64
+
+    init(ingestState: PacketIngestState) {
+        backingIdentity = ingestState.backingIdentity
+        packetLineageRevision = ingestState.packetLineageRevision
+    }
+
+    // Reveal only when the packet still belongs to the capture that produced the follow result.
+    func canReveal(packetID: PacketSummary.ID, in ingestState: PacketIngestState) -> Bool {
+        backingIdentity == ingestState.backingIdentity &&
+            packetLineageRevision == ingestState.packetLineageRevision &&
+            ingestState.packet(withID: packetID) != nil
+    }
+}
+
 struct CaptureDocumentState: Sendable, Equatable {
     enum Phase: String, Sendable {
         case idle
@@ -2864,6 +2942,23 @@ final class TCPViewerWorkspaceController {
         scheduleInspection(for: identifier)
     }
 
+    var tcpFollowCaptureIdentity: TCPFollowCaptureIdentity {
+        TCPFollowCaptureIdentity(ingestState: snapshot.packetIngestState)
+    }
+
+    // List the TCP streams that belong to the selected packet's capture source.
+    func tcpFollowStreamNavigation(containing identifier: PacketSummary.ID) -> TCPFollowStreamNavigation? {
+        TCPFollowStreamNavigation(
+            ingestState: snapshot.packetIngestState,
+            selectedPacketID: identifier
+        )
+    }
+
+    // Check both lineage and membership before navigating from a detached follow window.
+    func canRevealTCPFollowPacket(_ identifier: PacketSummary.ID, from identity: TCPFollowCaptureIdentity) -> Bool {
+        identity.canReveal(packetID: identifier, in: snapshot.packetIngestState)
+    }
+
     func inspectPacket(id identifier: PacketSummary.ID, completion: @escaping TCPViewerCompletion<PacketInspection>) {
         guard let packet = snapshot.packetIngestState.packet(withID: identifier) else {
             completion(.failure(TCPViewerCoreError(
@@ -2874,6 +2969,30 @@ final class TCPViewerWorkspaceController {
         }
 
         inspectPacket(packet, identifier: identifier, completion: completion)
+    }
+
+    func followTCPStream(
+        containing identifier: PacketSummary.ID,
+        limits: TCPFollowLimits = .default,
+        progress: TCPFollowProgressHandler? = nil,
+        shouldCancel: TCPFollowCancellationCheck? = nil,
+        completion: @escaping TCPViewerCompletion<TCPFollowStream>
+    ) {
+        guard let packet = snapshot.packetIngestState.packet(withID: identifier) else {
+            completion(.failure(TCPViewerCoreError(
+                code: .offlineFileOpenFailed,
+                message: "Packet \(identifier) is no longer available."
+            )))
+            return
+        }
+        followTCPStream(
+            packet,
+            identifier: identifier,
+            limits: limits,
+            progress: progress,
+            shouldCancel: shouldCancel,
+            completion: completion
+        )
     }
 
     func cancelBackgroundWork() {
@@ -3857,6 +3976,80 @@ final class TCPViewerWorkspaceController {
         }
     }
 
+    // Route follow requests to the packet's backing source and preserve workspace packet IDs.
+    private func followTCPStream(
+        _ packet: PacketSummary,
+        identifier: PacketSummary.ID,
+        limits: TCPFollowLimits,
+        progress: TCPFollowProgressHandler?,
+        shouldCancel: TCPFollowCancellationCheck?,
+        completion: @escaping TCPViewerCompletion<TCPFollowStream>
+    ) {
+        switch packet.source {
+        case .live:
+            guard let liveSession else {
+                completion(.failure(TCPViewerCoreError(
+                    code: .offlineFileOpenFailed,
+                    message: "Live packet \(identifier) is no longer available."
+                )))
+                return
+            }
+            liveSession.followTCPStream(
+                containing: identifier,
+                limits: limits,
+                progress: progress,
+                shouldCancel: shouldCancel,
+                completion: completion
+            )
+        case .offline:
+            if let reference = snapshot.packetIngestState.importedPacketReference(for: identifier),
+               let importedDocument = importedDocumentsByFileID[reference.fileID] {
+                let importedReferences = snapshot.packetIngestState.importedPacketReferenceByID
+                importedDocument.followTCPStream(
+                    containing: reference.originalPacketID,
+                    limits: limits,
+                    progress: progress,
+                    shouldCancel: shouldCancel
+                ) { result in
+                    completion(result.map { stream in
+                        let relevantOriginalIDs = Set(stream.records.map(\.packetID) + [stream.capturedThroughPacketID])
+                        let workspaceIDByOriginalID = Dictionary(
+                            uniqueKeysWithValues: importedReferences.compactMap { workspaceID, candidate in
+                                candidate.fileID == reference.fileID && relevantOriginalIDs.contains(candidate.originalPacketID)
+                                    ? (candidate.originalPacketID, workspaceID)
+                                    : nil
+                            }
+                        )
+                        return stream.tcpviewerRemapping(
+                            packetIDByOriginalID: workspaceIDByOriginalID,
+                            fallbackPacketID: identifier
+                        )
+                    })
+                }
+            } else {
+                guard let document else {
+                    completion(.failure(TCPViewerCoreError(
+                        code: .offlineFileOpenFailed,
+                        message: "Packet \(identifier) is no longer available."
+                    )))
+                    return
+                }
+                document.followTCPStream(
+                    containing: identifier,
+                    limits: limits,
+                    progress: progress,
+                    shouldCancel: shouldCancel,
+                    completion: completion
+                )
+            }
+        @unknown default:
+            completion(.failure(TCPViewerCoreError(
+                code: .unavailableFeature,
+                message: "Packet \(identifier) cannot be followed."
+            )))
+        }
+    }
+
     private func detailNode(with identifier: String?) -> PacketDetailNode? {
         guard let identifier,
               let inspection = snapshot.inspectionState.inspection else {
@@ -3958,6 +4151,32 @@ final class TCPViewerWorkspaceController {
 
     private func displayName(for interface: CaptureInterfaceSummary) -> String {
         interface.friendlyName ?? interface.displayName
+    }
+}
+
+extension TCPFollowStream {
+    func tcpviewerRemapping(
+        packetIDByOriginalID: [PacketSummary.ID: PacketSummary.ID],
+        fallbackPacketID: PacketSummary.ID
+    ) -> TCPFollowStream {
+        TCPFollowStream(
+            client: client,
+            server: server,
+            records: records.map { record in
+                TCPFollowRecord(
+                    direction: record.direction,
+                    packetID: packetIDByOriginalID[record.packetID] ?? fallbackPacketID,
+                    timestamp: record.timestamp,
+                    sequenceNumber: record.sequenceNumber,
+                    data: record.data
+                )
+            },
+            clientByteCount: clientByteCount,
+            serverByteCount: serverByteCount,
+            capturedThroughPacketID: packetIDByOriginalID[capturedThroughPacketID] ?? fallbackPacketID,
+            capturedAt: capturedAt,
+            isTruncated: isTruncated
+        )
     }
 }
 
