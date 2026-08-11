@@ -63,15 +63,15 @@ private final class TCPFollowTextView: NSTextView {
     }
 
     private func setupRevealButton() {
-        revealButton.title = ""
-        revealButton.image = TCPViewerUI.image("arrow.right.circle")
-        revealButton.imagePosition = .imageOnly
+        revealButton.title = "Show Packet"
+        revealButton.image = nil
+        revealButton.imagePosition = .noImage
         revealButton.bezelStyle = .inline
         revealButton.controlSize = .small
         revealButton.target = self
         revealButton.action = #selector(revealHoveredPacket(_:))
-        revealButton.toolTip = "Reveal packet in main table"
-        revealButton.setAccessibilityLabel("Reveal packet in main table")
+        revealButton.toolTip = "Show this packet in the packet list"
+        revealButton.setAccessibilityLabel("Show Packet")
         revealButton.isHidden = true
         addSubview(revealButton)
     }
@@ -131,7 +131,7 @@ private final class TCPFollowTextView: NSTextView {
         let headerRange = NSRange(location: headerLineRange.location, length: headerLength)
         let glyphRange = layoutManager.glyphRange(forCharacterRange: headerRange, actualCharacterRange: nil)
         let headerBounds = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
-        let buttonSize = NSSize(width: 22, height: 18)
+        let buttonSize = NSSize(width: ceil(revealButton.fittingSize.width), height: 18)
         let origin = textContainerOrigin
         let maximumX = max(origin.x, bounds.width - buttonSize.width - 6)
         return NSRect(

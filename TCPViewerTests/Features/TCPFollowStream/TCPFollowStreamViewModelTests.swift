@@ -177,7 +177,7 @@ struct TCPFollowStreamViewModelTests {
         let scrollView = try #require(firstSubview(ofType: NSScrollView.self, in: contentView))
         let textView = try #require(scrollView.documentView as? NSTextView)
         let revealButton = try #require(allSubviews(ofType: NSButton.self, in: textView).first {
-            $0.toolTip == "Reveal packet in main table"
+            $0.toolTip == "Show this packet in the packet list"
         })
         var revealedTarget: TCPFollowRevealTarget?
         windowController.revealPacket = { revealedTarget = $0 }
@@ -205,6 +205,8 @@ struct TCPFollowStreamViewModelTests {
         textView.mouseMoved(with: hoverEvent)
 
         #expect(!revealButton.isHidden)
+        #expect(revealButton.title == "Show Packet")
+        #expect(revealButton.image == nil)
         revealButton.performClick(nil)
         #expect(revealedTarget?.packetID == 10)
         #expect(revealedTarget?.payload == Data([0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x00]))
