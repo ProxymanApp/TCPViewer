@@ -1,13 +1,153 @@
 # TCP Viewer
 
-TCP Viewer is a macOS packet viewer for live captures and capture files. It uses AppKit for the main app, system libpcap for capture, and vendored Wireshark libraries for deep packet details.
+<p align="center">
+  <img src="README.assets/hero.png" alt="TCP Viewer. A simpler Wireshark alternative for Mac developers." width="900">
+</p>
+
+<p align="center">
+  A simple, native packet viewer for Mac.
+</p>
+
+<p align="center">
+  <a href="https://tcpviewer.proxyman.com">Website</a> ·
+  <a href="https://api-tcpviewer.proxyman.com/api/releases/download/tcpviewer.dmg">Download</a> ·
+  <a href="https://tcpviewer.proxyman.com/docs/">Docs</a> ·
+  <a href="https://github.com/ProxymanApp/TCPViewer/releases">Releases</a>
+</p>
+
+TCP Viewer captures and reads network packets on macOS. It uses system `libpcap` for capture and Wireshark libraries for deep packet details.
+
+## Features
+
+- Native macOS app, built with AppKit
+- Built on top of Wireshark Lib, alternative to Wireshark
+- Capture live traffic.
+- Group packets by app, domain, or IP address.
+- Filter TCP, UDP, DNS, HTTP, TLS, WebSocket, and more.
+- Read protocol fields and raw bytes.
+- Open PCAP and PCAPNG files.
+- Follow a full TCP stream.
+- Export packets as PCAP or PCAPNG.
+- Ask an AI agent about your capture with TCP Viewer MCP.
+- Review the full source code.
+
+### Easy packet capture
+
+- Pick a network interface.
+- Start or stop with one click.
+- Keep busy captures easy to read.
+
+[![TCP Viewer live packet capture](README.assets/live-capture.jpg)](https://tcpviewer.proxyman.com/demo/main-demo.mp4)
+
+[Watch the live capture video](https://tcpviewer.proxyman.com/demo/main-demo.mp4)
+
+### TCP Viewer MCP
+
+- Connect TCP Viewer to Codex or another MCP client.
+- Check the capture status.
+- List network interfaces.
+- Find packets with a simple prompt.
+- Available with TCP Viewer PRO.
+
+<p align="center">
+  <img src="README.assets/tcp-viewer-mcp.jpg" alt="Codex asking TCP Viewer MCP about capture status, interfaces, and packets" width="760">
+</p>
+
+### Open capture files
+
+- Drag in a PCAP or PCAPNG file.
+- Preview packets right away.
+- Use the same view as a live capture.
+
+[![Open a PCAP or PCAPNG file in TCP Viewer](README.assets/open-capture-files.jpg)](https://tcpviewer.proxyman.com/demo/open-pcap.mp4)
+
+[Watch the file preview video](https://tcpviewer.proxyman.com/demo/open-pcap.mp4)
+
+### Follow TCP Stream
+
+- Rebuild one full TCP conversation.
+- Show both directions together.
+- Show only client or server data.
+- Switch between text and hex.
+- Search the stream.
+- Jump back to the source packet.
+
+[![Follow a TCP stream in TCP Viewer](README.assets/follow-tcp-stream.jpg)](https://tcpviewer.proxyman.com/demo/follow-tcp.mp4)
+
+[Watch the Follow TCP Stream video](https://tcpviewer.proxyman.com/demo/follow-tcp.mp4)
+
+### Group traffic
+
+- Group packets by app.
+- Group packets by domain.
+- Group packets by IP address.
+- Jump to the traffic you need.
+
+[![Group packets by app, domain, and IP address](README.assets/group-traffic.jpg)](https://tcpviewer.proxyman.com/demo/group-by-app-domains.mp4)
+
+[Watch the grouped traffic video](https://tcpviewer.proxyman.com/demo/group-by-app-domains.mp4)
+
+### Protocol filters
+
+- Use quick filters for common protocols.
+- Combine filters with text search.
+- Focus on useful packets fast.
+
+[![Filter captured packets by protocol](README.assets/protocol-filters.jpg)](https://tcpviewer.proxyman.com/demo/advanced-filter.mp4)
+
+[Watch the protocol filter video](https://tcpviewer.proxyman.com/demo/advanced-filter.mp4)
+
+### Export captures
+
+- Export all, filtered, or selected packets.
+- Save as PCAP or PCAPNG.
+- Open the result in other packet tools.
+
+<p align="center">
+  <img src="README.assets/export-captures.png" alt="Export selected packets as PCAP or PCAPNG" width="620">
+</p>
+
+### Packet details
+
+- Read Wireshark-grade protocol trees.
+- Inspect field names and values.
+- Match fields to raw bytes.
+- Search packet details.
+
+[![Inspect protocol fields and raw packet bytes](README.assets/packet-details.jpg)](https://tcpviewer.proxyman.com/demo/detail-packet.mp4)
+
+[Watch the packet details video](https://tcpviewer.proxyman.com/demo/detail-packet.mp4)
+
+## Open source
+
+- Licensed under GPL-2.0-or-later.
+- Review the capture pipeline.
+- Review packet decoding.
+- Review the native macOS interface.
+- Report issues or send a pull request.
+
+![TCP Viewer is GPL open source](README.assets/open-source.png)
+
+## Built by the Proxyman Team
+
+- Made by the team behind [Proxyman](https://proxyman.com) and [Tiny Shield](https://tinyshield.proxyman.com/).
+- Built for macOS.
+- Focused on privacy and clear network debugging.
+
+![TCP Viewer is built by the Proxyman Team](README.assets/proxyman-team.png)
 
 ## Requirements
 
-- macOS 15+
-- Xcode 16+
-- Git
-- CMake, Ninja, Meson, pkg-config, and autotools
+To run TCP Viewer:
+
+- Apple Silicon Mac.
+- macOS 15 or later.
+
+To build TCP Viewer:
+
+- Xcode 16 or later.
+- Git.
+- CMake, Ninja, Meson, pkg-config, and autotools.
 
 ```bash
 brew install cmake ninja meson pkg-config autoconf automake libtool
@@ -15,7 +155,7 @@ brew install cmake ninja meson pkg-config autoconf automake libtool
 
 ## Setup
 
-Clone with submodules and bootstrap the pinned Wireshark dependency:
+Clone with submodules. Then bootstrap the pinned Wireshark dependency.
 
 ```bash
 git clone --recurse-submodules <repo-url>
@@ -24,20 +164,23 @@ cp Config/TCPViewer.local.xcconfig.example Config/TCPViewer.local.xcconfig
 ./scripts/bootstrap-wireshark.sh
 ```
 
-If you already cloned without submodules:
+Already cloned without submodules?
 
 ```bash
 git submodule update --init --recursive
 ./scripts/bootstrap-wireshark.sh
 ```
 
-`scripts/bootstrap-wireshark.sh` first runs
-`scripts/bootstrap-wireshark-deps.sh`, which builds Wireshark's bundled runtime
-libraries from source into `Vendor/.install/wireshark-deps` with macOS 15.0 as
-the deployment target. Homebrew is used only for build tools; release bundles
-must not copy Homebrew bottle dylibs from `/opt/homebrew` or `/usr/local`.
+The bootstrap scripts:
 
-Keep local signing, appcast, Sparkle, Sentry, and release values out of Git. Use ignored local files such as `Config/TCPViewer.local.xcconfig`, `.env`, shell environment variables, or Keychain-backed tools.
+- Run `scripts/bootstrap-wireshark-deps.sh` first.
+- Build Wireshark's runtime libraries from source.
+- Write them to `Vendor/.install/wireshark-deps`.
+- Use macOS 15 as the deployment target.
+- Use Homebrew only for build tools.
+- Never copy Homebrew bottle dylibs into a release.
+
+Keep local signing, appcast, Sparkle, Sentry, and release values out of Git. Use `Config/TCPViewer.local.xcconfig`, `.env`, environment variables, or Keychain-backed tools.
 
 ## Run
 
@@ -65,11 +208,16 @@ xcodebuild test \
   -destination 'platform=macOS'
 ```
 
-## Deploy
+## Release
 
-TCP Viewer releases are built, notarized, signed for Sparkle, uploaded to Cloudflare R2, and optionally published to the release backend by the release script.
+The release script can:
 
-First-time release setup:
+- Build and notarize the app.
+- Sign the Sparkle update.
+- Upload files to Cloudflare R2.
+- Publish the release to the backend.
+
+First-time setup:
 
 ```bash
 npm install
@@ -77,15 +225,25 @@ bundle install
 gh auth login
 ```
 
-Create a local `.env` from `.env.example` and fill in the required release values. Never commit real secrets. Keep comments in `.env` as `#` comments because `sentry-cli` does not accept `//` comments when it loads the file.
+Create a local `.env` from `.env.example`. Add the required release values. Never commit real secrets.
 
-For production releases, add a matching entry to `ReleaseNote.json`, then run:
+Use `#` for comments in `.env`. `sentry-cli` does not accept `//` comments.
+
+For a production release, add a matching entry to `ReleaseNote.json`. Then run:
 
 ```bash
 npm run release
 ```
 
-Choose `beta` or `production` when prompted. Production releases also create the Sparkle appcast, push the `v<version>` tag, and publish the GitHub release. Artifacts are written under:
+Choose `beta` or `production` when asked.
+
+Production releases also:
+
+- Create the Sparkle appcast.
+- Push the `v<version>` tag.
+- Publish the GitHub release.
+
+Artifacts are written to:
 
 ```bash
 ~/Desktop/tcpviewer-production/
@@ -93,10 +251,15 @@ Choose `beta` or `production` when prompted. Production releases also create the
 
 ## License
 
-TCP Viewer is licensed under GPL-2.0-or-later. This matches the app's Wireshark integration: `libwireshark`, `libwiretap`, and `libwsutil` are GPL-covered Wireshark libraries.
+TCP Viewer is licensed under GPL-2.0-or-later. This matches its use of Wireshark libraries.
 
-The full GPL text is in `COPYING`, third-party notices are in `THIRD_PARTY_NOTICES.md`, and binary-release source availability terms are in `SOURCE_CODE_OFFER.md`.
+- See `COPYING` for the full GPL text.
+- See `THIRD_PARTY_NOTICES.md` for third-party notices.
+- See `SOURCE_CODE_OFFER.md` for binary release source terms.
 
 ## Acknowledgements
 
-TCP Viewer builds on Wireshark for packet dissection and HexFiend for the embedded hex viewer. See `THIRD_PARTY_NOTICES.md` for details.
+- [Wireshark](https://www.wireshark.org/) provides packet dissection.
+- [HexFiend](https://github.com/HexFiend/HexFiend) provides the embedded hex viewer.
+
+Wireshark is a trademark of the Wireshark Foundation. TCP Viewer is not affiliated with or endorsed by the Wireshark Foundation.
