@@ -72,6 +72,77 @@ struct PacketInspectorTreeViewModelTests {
     }
 
     @MainActor
+    @Test func requestAndResponseTabsShareOneDecryptedStreamLoad() async throws {
+        let packet = makePacket()
+        let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        let delegate = PacketInspectorDelegateSpy()
+        delegate.decryptedStreamResult = .success(DecryptedStreamResult(
+            protocolName: .tls,
+            client: PacketEndpoint(address: "10.0.0.1", port: 1234),
+            server: PacketEndpoint(address: "10.0.0.2", port: 443),
+            request: DecryptedStreamPayload(data: Data("GET / HTTP/1.1\r\n\r\n".utf8), observedByteCount: 18, isTruncated: false),
+            response: DecryptedStreamPayload(data: Data("HTTP/1.1 200 OK\r\n\r\n".utf8), observedByteCount: 19, isTruncated: false)
+        ))
+        controller.delegate = delegate
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: makeSnapshot(
+            packet: packet,
+            inspectionState: loadedInspectionState(packet: packet, inspection: makeFrameInspection(for: packet))
+        ))
+        let tabs = try #require(firstSubview(ofType: NSSegmentedControl.self, in: controller.view))
+        let textView = try #require(allSubviews(ofType: NSTextView.self, in: controller.view).first { $0.usesFindBar })
+
+        tabs.selectedSegment = 1
+        tabs.sendAction(tabs.action, to: tabs.target)
+        await drainMainQueue()
+
+        #expect(delegate.decryptedStreamLoadCount == 1)
+        #expect(textView.string == "GET / HTTP/1.1\r\n\r\n")
+
+        tabs.selectedSegment = 2
+        tabs.sendAction(tabs.action, to: tabs.target)
+        await drainMainQueue()
+
+        #expect(delegate.decryptedStreamLoadCount == 1)
+        #expect(textView.string == "HTTP/1.1 200 OK\r\n\r\n")
+    }
+
+    @MainActor
+    @Test func packetChangeRejectsStaleDecryptedStreamCompletion() async throws {
+        let firstPacket = makePacket(packetNumber: 1)
+        let secondPacket = makePacket(packetNumber: 2)
+        let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        let delegate = PacketInspectorDelegateSpy()
+        delegate.defersDecryptedStreamCompletions = true
+        controller.delegate = delegate
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: makeSnapshot(
+            packet: firstPacket,
+            inspectionState: loadedInspectionState(packet: firstPacket, inspection: makeFrameInspection(for: firstPacket))
+        ))
+        let tabs = try #require(firstSubview(ofType: NSSegmentedControl.self, in: controller.view))
+        let textView = try #require(allSubviews(ofType: NSTextView.self, in: controller.view).first { $0.usesFindBar })
+        tabs.selectedSegment = 1
+        tabs.sendAction(tabs.action, to: tabs.target)
+
+        controller.render(snapshot: makeSnapshot(
+            packet: secondPacket,
+            inspectionState: loadedInspectionState(packet: secondPacket, inspection: makeFrameInspection(for: secondPacket))
+        ))
+        #expect(delegate.decryptedStreamLoadCount == 2)
+        #expect(delegate.decryptedStreamCancellationChecks[0]())
+        #expect(!delegate.decryptedStreamCancellationChecks[1]())
+
+        delegate.completeDecryptedStream(at: 0, with: .success(makeDecryptedResult(packet: firstPacket, request: "STALE")))
+        await drainMainQueue()
+        #expect(textView.string != "STALE")
+
+        delegate.completeDecryptedStream(at: 1, with: .success(makeDecryptedResult(packet: secondPacket, request: "CURRENT")))
+        await drainMainQueue()
+        #expect(textView.string == "CURRENT")
+    }
+
+    @MainActor
     @Test func inspectorFilterIsAlwaysVisibleAndCommandShiftFIsReservedForSidebarMenu() throws {
         let packet = makePacket()
         let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
@@ -132,7 +203,7 @@ struct PacketInspectorTreeViewModelTests {
         #expect(!splitView.isVertical)
         #expect(frame(outlineFrame, isVisuallyAbove: hexFrame, in: splitView))
         #expect(abs(splitFrame.width - controller.view.bounds.width) <= 1)
-        #expect(abs(splitFrame.height - (controller.view.bounds.height - 34)) <= 1)
+        #expect(abs(splitFrame.height - (controller.view.bounds.height - 68)) <= 1)
         #expect(abs(outlineFrame.height - availableHeight * 0.70) <= 2)
         #expect(abs(hexFrame.height - availableHeight * 0.30) <= 2)
     }
@@ -921,6 +992,14 @@ struct PacketInspectorTreeViewModelTests {
         return defaults
     }
 
+    private func drainMainQueue() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async {
+                continuation.resume()
+            }
+        }
+    }
+
     private func firstSubview<T: NSView>(ofType type: T.Type, in view: NSView) -> T? {
         if let view = view as? T {
             return view
@@ -1139,11 +1218,26 @@ struct PacketInspectorTreeViewModelTests {
             captureMetadata: PacketCaptureMetadata(linkType: .ethernet, isTruncated: false)
         )
     }
+
+    private func makeDecryptedResult(packet: PacketSummary, request: String) -> DecryptedStreamResult {
+        DecryptedStreamResult(
+            protocolName: .tls,
+            client: PacketEndpoint(address: "10.0.0.1", port: 1234),
+            server: PacketEndpoint(address: "10.0.0.2", port: 443),
+            request: DecryptedStreamPayload(data: Data(request.utf8), observedByteCount: request.utf8.count, isTruncated: false),
+            response: DecryptedStreamPayload(data: Data(), observedByteCount: 0, isTruncated: false)
+        )
+    }
 }
 
 private final class PacketInspectorDelegateSpy: PacketInspectorViewControllerDelegate {
     var selectedDetailNodeID: String?
     var customColumnRequest: PacketCustomColumnRequest?
+    var decryptedStreamResult: Result<DecryptedStreamResult, Error>?
+    var decryptedStreamLoadCount = 0
+    var decryptedStreamCancellationChecks: [TCPFollowCancellationCheck] = []
+    var defersDecryptedStreamCompletions = false
+    private var decryptedStreamCompletions: [TCPViewerCompletion<DecryptedStreamResult>] = []
 
     func packetInspectorViewController(_ controller: PacketInspectorViewController, didSelectDetailNode identifier: String?) {
         selectedDetailNodeID = identifier
@@ -1154,5 +1248,28 @@ private final class PacketInspectorDelegateSpy: PacketInspectorViewControllerDel
         didRequestCreateCustomColumn request: PacketCustomColumnRequest
     ) {
         customColumnRequest = request
+    }
+
+    func packetInspectorViewController(
+        _ controller: PacketInspectorViewController,
+        loadDecryptedStreamFor packetID: PacketSummary.ID,
+        progress: @escaping TCPFollowProgressHandler,
+        shouldCancel: @escaping TCPFollowCancellationCheck,
+        completion: @escaping TCPViewerCompletion<DecryptedStreamResult>
+    ) {
+        decryptedStreamLoadCount += 1
+        decryptedStreamCancellationChecks.append(shouldCancel)
+        if defersDecryptedStreamCompletions {
+            decryptedStreamCompletions.append(completion)
+            return
+        }
+        completion(decryptedStreamResult ?? .failure(TCPViewerCoreError(
+            code: .unavailableFeature,
+            message: "No decrypted stream result was configured."
+        )))
+    }
+
+    func completeDecryptedStream(at index: Int, with result: Result<DecryptedStreamResult, Error>) {
+        decryptedStreamCompletions[index](result)
     }
 }

@@ -1071,6 +1071,10 @@ struct TCPViewerWorkspaceMemoryDebugSnapshot: Equatable {
 #endif
 
 final class TCPViewerWorkspaceController {
+    static let liveCaptureDidReleaseWiresharkNotification = Notification.Name(
+        "TCPViewerWorkspaceControllerLiveCaptureDidReleaseWireshark"
+    )
+
     private struct ImportedSessionCaptureExportGroup {
         let fileID: ImportedCaptureFileID
         var originalPacketIDs: [PacketSummary.ID]
@@ -1965,6 +1969,16 @@ final class TCPViewerWorkspaceController {
                 completion?()
             }
         }
+    }
+
+    // Reopen one document directly or rebuild a merged offline workspace from its original files.
+    func reloadOfflineCapturesAfterTLSKeyLogChange(completion: (() -> Void)? = nil) {
+        let importedURLs = snapshot.packetIngestState.importedFiles.map(\.url)
+        if importedURLs.count > 1 {
+            openDocuments(at: importedURLs, replacingCurrent: true, completion: completion)
+            return
+        }
+        reopenDocument(completion: completion)
     }
 
     func saveDocument(completion: (() -> Void)? = nil) {
@@ -2995,6 +3009,28 @@ final class TCPViewerWorkspaceController {
         )
     }
 
+    func loadDecryptedStream(
+        containing identifier: PacketSummary.ID,
+        progress: TCPFollowProgressHandler? = nil,
+        shouldCancel: TCPFollowCancellationCheck? = nil,
+        completion: @escaping TCPViewerCompletion<DecryptedStreamResult>
+    ) {
+        guard let packet = snapshot.packetIngestState.packet(withID: identifier) else {
+            completion(.failure(TCPViewerCoreError(
+                code: .offlineFileOpenFailed,
+                message: "Packet \(identifier) is no longer available."
+            )))
+            return
+        }
+        loadDecryptedStream(
+            packet,
+            identifier: identifier,
+            progress: progress,
+            shouldCancel: shouldCancel,
+            completion: completion
+        )
+    }
+
     func cancelBackgroundWork() {
         cancelControllerTasks()
 
@@ -3285,10 +3321,17 @@ final class TCPViewerWorkspaceController {
     private func applyPacketIngestEvent(_ event: PacketIngestEvent) {
         switch event {
         case .liveStateChanged(let phase, let message):
+            let previouslyOwnedWireshark = snapshot.sessionState.canStop
             snapshot.sessionState.phase = mappedPhase(phase)
             snapshot.sessionState.statusMessage = message
             if mappedPhase(phase) != .failed {
                 snapshot.sessionState.lastError = nil
+            }
+            if previouslyOwnedWireshark && !snapshot.sessionState.canStop {
+                NotificationCenter.default.post(
+                    name: Self.liveCaptureDidReleaseWiresharkNotification,
+                    object: self
+                )
             }
         case .documentStateChanged(let phase, let message):
             snapshot.documentState.phase = mappedPhase(phase)
@@ -4047,6 +4090,54 @@ final class TCPViewerWorkspaceController {
                 code: .unavailableFeature,
                 message: "Packet \(identifier) cannot be followed."
             )))
+        }
+    }
+
+    private func loadDecryptedStream(
+        _ packet: PacketSummary,
+        identifier: PacketSummary.ID,
+        progress: TCPFollowProgressHandler?,
+        shouldCancel: TCPFollowCancellationCheck?,
+        completion: @escaping TCPViewerCompletion<DecryptedStreamResult>
+    ) {
+        switch packet.source {
+        case .live:
+            guard let liveSession else {
+                completion(.failure(TCPViewerCoreError(code: .offlineFileOpenFailed, message: "Live packet \(identifier) is no longer available.")))
+                return
+            }
+            liveSession.loadDecryptedStream(
+                containing: identifier,
+                limits: .default,
+                progress: progress,
+                shouldCancel: shouldCancel,
+                completion: completion
+            )
+        case .offline:
+            if let reference = snapshot.packetIngestState.importedPacketReference(for: identifier),
+               let importedDocument = importedDocumentsByFileID[reference.fileID] {
+                importedDocument.loadDecryptedStream(
+                    containing: reference.originalPacketID,
+                    limits: .default,
+                    progress: progress,
+                    shouldCancel: shouldCancel,
+                    completion: completion
+                )
+            } else {
+                guard let document else {
+                    completion(.failure(TCPViewerCoreError(code: .offlineFileOpenFailed, message: "Packet \(identifier) is no longer available.")))
+                    return
+                }
+                document.loadDecryptedStream(
+                    containing: identifier,
+                    limits: .default,
+                    progress: progress,
+                    shouldCancel: shouldCancel,
+                    completion: completion
+                )
+            }
+        @unknown default:
+            completion(.failure(TCPViewerCoreError(code: .unavailableFeature, message: "Packet \(identifier) cannot be decrypted.")))
         }
     }
 

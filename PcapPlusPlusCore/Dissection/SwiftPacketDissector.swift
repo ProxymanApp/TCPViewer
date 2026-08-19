@@ -1547,8 +1547,16 @@ extension TransportProtocolHint {
             return .dns
         case .http1:
             return .http1
+        case .http2:
+            return .http2
+        case .http3:
+            return .http3
         case .tls:
             return .tls
+        case .dtls:
+            return .dtls
+        case .quic:
+            return .quic
         case .websocket:
             return .websocket
         case .payload:

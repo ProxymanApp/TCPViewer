@@ -65,6 +65,22 @@ public final class NativeLiveCaptureSession: LiveCaptureSessionProviding, @unche
         )
     }
 
+    public func loadDecryptedStream(
+        containing packetID: PacketSummary.ID,
+        limits: DecryptedStreamLimits,
+        progress: TCPFollowProgressHandler?,
+        shouldCancel: TCPFollowCancellationCheck?,
+        completion: @escaping TCPViewerCompletion<DecryptedStreamResult>
+    ) {
+        state.loadDecryptedStream(
+            containing: packetID,
+            limits: limits,
+            progress: progress,
+            shouldCancel: shouldCancel,
+            completion: completion
+        )
+    }
+
     public func exportPackets(
         withIDs identifiers: [PacketSummary.ID],
         to url: URL,
@@ -486,6 +502,37 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
             let result = Result {
                 do {
                     return try self.nativeSession.followTCPStream(
+                        containing: packetID,
+                        limits: limits,
+                        progress: progress,
+                        shouldCancel: {
+                            self.followOperationCoordinator.shouldCancel || shouldCancel?() == true
+                        }
+                    )
+                } catch {
+                    throw NativeBridgeMapper.coreError(error, defaultCode: .unavailableFeature)
+                }
+            }
+            self.followOperationCoordinator.finishFollow()
+            completion(result)
+        }
+    }
+
+    func loadDecryptedStream(
+        containing packetID: PacketSummary.ID,
+        limits: DecryptedStreamLimits,
+        progress: TCPFollowProgressHandler?,
+        shouldCancel: TCPFollowCancellationCheck?,
+        completion: @escaping TCPViewerCompletion<DecryptedStreamResult>
+    ) {
+        guard followOperationCoordinator.beginFollow() else {
+            completion(.failure(TCPViewerCoreError(code: .operationCancelled, message: "TLS stream decryption was cancelled for a capture lifecycle change.")))
+            return
+        }
+        followQueue.async {
+            let result = Result {
+                do {
+                    return try self.nativeSession.loadDecryptedStream(
                         containing: packetID,
                         limits: limits,
                         progress: progress,

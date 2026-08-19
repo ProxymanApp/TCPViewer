@@ -1538,6 +1538,21 @@ extension TCPViewerRootViewController: PacketInspectorViewControllerDelegate {
     ) {
         workspaceViewController.createCustomColumn(from: request)
     }
+
+    func packetInspectorViewController(
+        _ controller: PacketInspectorViewController,
+        loadDecryptedStreamFor packetID: PacketSummary.ID,
+        progress: @escaping TCPFollowProgressHandler,
+        shouldCancel: @escaping TCPFollowCancellationCheck,
+        completion: @escaping TCPViewerCompletion<DecryptedStreamResult>
+    ) {
+        viewModel.loadDecryptedStream(
+            containing: packetID,
+            progress: progress,
+            shouldCancel: shouldCancel,
+            completion: completion
+        )
+    }
 }
 
 extension TCPViewerRootViewController: StatusStripViewControllerDelegate {

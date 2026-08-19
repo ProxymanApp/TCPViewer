@@ -1835,6 +1835,23 @@ final class NetworkInspectorViewModel {
         }
     }
 
+    func invalidateInspectionAfterTLSKeyLogChange() {
+        controller.selectPacket(nil)
+        rebuildSnapshot()
+    }
+
+    // Reopen all active offline files so Wireshark rebuilds summaries with the current TLS keys.
+    func reloadAfterTLSKeyLogChange(completion: (() -> Void)? = nil) {
+        guard snapshot.base.packetIngestState.source == .offline else {
+            completion?()
+            return
+        }
+        controller.reloadOfflineCapturesAfterTLSKeyLogChange { [weak self] in
+            self?.rebuildSnapshot()
+            completion?()
+        }
+    }
+
     func importDocuments(at fileURLs: [URL], completion: (() -> Void)? = nil) {
         let hasSessionFile = fileURLs
             .map(TCPViewerCaptureFileImportPolicy.standardizedFileURL)
@@ -2171,6 +2188,20 @@ final class NetworkInspectorViewModel {
         completion: @escaping TCPViewerCompletion<TCPFollowStream>
     ) {
         controller.followTCPStream(
+            containing: identifier,
+            progress: progress,
+            shouldCancel: shouldCancel,
+            completion: completion
+        )
+    }
+
+    func loadDecryptedStream(
+        containing identifier: PacketSummary.ID,
+        progress: TCPFollowProgressHandler?,
+        shouldCancel: TCPFollowCancellationCheck?,
+        completion: @escaping TCPViewerCompletion<DecryptedStreamResult>
+    ) {
+        controller.loadDecryptedStream(
             containing: identifier,
             progress: progress,
             shouldCancel: shouldCancel,
