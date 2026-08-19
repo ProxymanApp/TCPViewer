@@ -77,7 +77,6 @@ struct PacketInspectorTreeViewModelTests {
         let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
         let delegate = PacketInspectorDelegateSpy()
         delegate.decryptedStreamResult = .success(DecryptedStreamResult(
-            reference: DecryptedStreamReference(packetID: packet.id, protocolName: .tls),
             protocolName: .tls,
             client: PacketEndpoint(address: "10.0.0.1", port: 1234),
             server: PacketEndpoint(address: "10.0.0.2", port: 443),
@@ -1220,7 +1219,6 @@ struct PacketInspectorTreeViewModelTests {
 
     private func makeDecryptedResult(packet: PacketSummary, request: String) -> DecryptedStreamResult {
         DecryptedStreamResult(
-            reference: DecryptedStreamReference(packetID: packet.id, protocolName: .tls),
             protocolName: .tls,
             client: PacketEndpoint(address: "10.0.0.1", port: 1234),
             server: PacketEndpoint(address: "10.0.0.2", port: 443),

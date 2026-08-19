@@ -123,7 +123,6 @@ typedef enum TCPViewerWiresharkFollowPacketStatus {
 bool TCPViewerWiresharkConfigureTLSKeyLog(
     const char *filePath,
     const char *personalConfigurationDirectory,
-    uint64_t *configurationGeneration,
     char **errorMessage
 );
 bool TCPViewerWiresharkHasTLSKeyLog(void);

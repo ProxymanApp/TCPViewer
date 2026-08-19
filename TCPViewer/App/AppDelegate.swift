@@ -17,9 +17,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var aboutWindowController: TCPViewerAboutWindowController?
     private var settingsWindowController: NSWindowController?
     private var tlsKeyLogWindowController: TLSKeyLogWindowController?
-    private var tlsKeyLogReloadTimer: Timer?
-    private var hasPendingTLSKeyLogReload = false
-    private var isReloadingTLSKeyLogCaptures = false
     private var licenseWindowController: TCPViewerLicenseWindowController?
     private var updaterController: SPUStandardUpdaterController?
     private let sparkleUpdaterDelegate = TCPViewerSparkleUpdaterDelegate()
@@ -667,59 +664,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func handleTLSKeyLogConfigurationChange() {
-        workspaceWindowControllers().forEach {
+        let controllers = workspaceWindowControllers()
+        controllers.forEach {
             $0.rootViewController.viewModel.invalidateInspectionAfterTLSKeyLogChange()
         }
-        hasPendingTLSKeyLogReload = true
-        processPendingTLSKeyLogReload()
-    }
-
-    // A live capture has EPAN priority, so wait until Stop before reopening offline captures.
-    private func processPendingTLSKeyLogReload() {
-        guard hasPendingTLSKeyLogReload, !isReloadingTLSKeyLogCaptures else {
+        // Keep an active live capture untouched; users can reload offline files after stopping it.
+        guard !controllers.contains(where: { $0.rootViewController.viewModel.snapshot.base.sessionState.canStop }) else {
             return
         }
-        guard !workspaceWindowControllers().contains(where: { $0.rootViewController.viewModel.snapshot.base.sessionState.phase.ownsWiresharkRuntime }) else {
-            scheduleTLSKeyLogReloadRetry()
-            return
-        }
-
-        tlsKeyLogReloadTimer?.invalidate()
-        tlsKeyLogReloadTimer = nil
-        hasPendingTLSKeyLogReload = false
-        isReloadingTLSKeyLogCaptures = true
-        let offlineControllers = workspaceWindowControllers().filter {
+        let offlineControllers = controllers.filter {
             $0.rootViewController.viewModel.snapshot.base.packetIngestState.source == .offline
         }
-        reloadOfflineCaptures(offlineControllers, index: 0) { [weak self] in
-            guard let self else {
-                return
-            }
-            self.isReloadingTLSKeyLogCaptures = false
-            self.processPendingTLSKeyLogReload()
-        }
+        reloadOfflineCaptures(offlineControllers, index: 0)
     }
 
+    // Reopen offline windows one at a time because Wireshark has one process-wide dissection session.
     private func reloadOfflineCaptures(
         _ controllers: [TCPViewerWindowController],
-        index: Int,
-        completion: @escaping () -> Void
+        index: Int
     ) {
         guard index < controllers.count else {
-            completion()
             return
         }
         controllers[index].rootViewController.viewModel.reloadAfterTLSKeyLogChange { [weak self] in
-            self?.reloadOfflineCaptures(controllers, index: index + 1, completion: completion)
-        }
-    }
-
-    private func scheduleTLSKeyLogReloadRetry() {
-        guard tlsKeyLogReloadTimer == nil else {
-            return
-        }
-        tlsKeyLogReloadTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            self?.processPendingTLSKeyLogReload()
+            self?.reloadOfflineCaptures(controllers, index: index + 1)
         }
     }
 
@@ -1023,17 +991,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             TCPViewerLicenseWebsiteService.open(.renewLicense)
         }
         isShowingRenewalRequiredAlert = false
-    }
-}
-
-private extension CaptureSessionState.Phase {
-    var ownsWiresharkRuntime: Bool {
-        switch self {
-        case .starting, .running, .paused, .stopping:
-            true
-        case .idle, .ready, .stopped, .failed:
-            false
-        }
     }
 }
 

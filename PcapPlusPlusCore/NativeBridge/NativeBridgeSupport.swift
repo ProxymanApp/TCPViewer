@@ -366,39 +366,14 @@ enum NativeBridgeMapper {
     }
 
     static func packetInspection(_ descriptor: PCPPNativePacketInspectionDescriptor) -> PacketInspection {
-        let detailNodes = descriptor.detailNodes.map(packetDetailNode)
-        return PacketInspection(
+        PacketInspection(
             packetID: descriptor.packetIdentifier,
             packetNumber: descriptor.packetNumber,
             rawBytes: descriptor.rawBytes,
             byteViews: descriptor.byteViews.map(packetByteView),
-            detailNodes: detailNodes,
-            decodeStatus: decodeStatus(descriptor.decodeStatus),
-            decryptedStreamReference: decryptedStreamReference(packetID: descriptor.packetIdentifier, nodes: detailNodes)
+            detailNodes: descriptor.detailNodes.map(packetDetailNode),
+            decodeStatus: decodeStatus(descriptor.decodeStatus)
         )
-    }
-
-    private static func decryptedStreamReference(
-        packetID: PacketSummary.ID,
-        nodes: [PacketDetailNode]
-    ) -> DecryptedStreamReference? {
-        let fieldNames = recursiveFieldNames(nodes)
-        if fieldNames.contains(where: { $0.hasPrefix("tls.") }) {
-            return DecryptedStreamReference(packetID: packetID, protocolName: .tls)
-        }
-        if fieldNames.contains(where: { $0.hasPrefix("dtls.") }) {
-            return DecryptedStreamReference(packetID: packetID, protocolName: .dtls)
-        }
-        if fieldNames.contains(where: { $0.hasPrefix("quic.") }) {
-            return DecryptedStreamReference(packetID: packetID, protocolName: .quic)
-        }
-        return nil
-    }
-
-    private static func recursiveFieldNames(_ nodes: [PacketDetailNode]) -> [String] {
-        nodes.flatMap { node in
-            [node.fieldName].compactMap(\.self) + recursiveFieldNames(node.children)
-        }
     }
 
     static func packetSummary(

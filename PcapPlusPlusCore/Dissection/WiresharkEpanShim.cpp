@@ -1167,12 +1167,6 @@ std::string &TLSKeyLogPath()
     return path;
 }
 
-uint64_t &TLSKeyLogConfigurationGeneration()
-{
-    static uint64_t generation = 0;
-    return generation;
-}
-
 }  // namespace
 
 struct TCPViewerWiresharkSession {
@@ -1208,7 +1202,6 @@ struct TCPViewerWiresharkSession {
     bool processingFollowPacket = false;
     bool tcpIndexTapRegistered = false;
     bool collectingTCPStreamIndex = false;
-    uint64_t tlsKeyLogConfigurationGeneration = 0;
     bool followTruncated = false;
     bool followUsesPerDirectionLimit = false;
     uint64_t followPayloadByteCount = 0;
@@ -1522,7 +1515,6 @@ struct TCPViewerWiresharkSession {
         activeSession() = this;
         resetActiveFrameStateLocked();
         firstPassFinished = false;
-        tlsKeyLogConfigurationGeneration = TLSKeyLogConfigurationGeneration();
         return true;
     }
 
@@ -1589,14 +1581,7 @@ struct TCPViewerWiresharkSession {
             return false;
         }
         if (hasSession() && activeSession() == this) {
-            if (tlsKeyLogConfigurationGeneration == TLSKeyLogConfigurationGeneration()) {
-                return true;
-            }
-            // A live session resumes from the next packet; offline documents are reopened by the app.
-            releaseWiresharkResourcesLocked("Wireshark TLS keys changed; reload this capture to refresh packet details.", false);
-            if (livePriority) {
-                firstPassFinished = false;
-            }
+            return true;
         }
         if (!initializeWiresharkResourcesLocked()) {
             return false;
@@ -2238,7 +2223,6 @@ struct TCPViewerWiresharkSession {
 bool TCPViewerWiresharkConfigureTLSKeyLog(
     const char *filePath,
     const char *personalConfigurationDirectory,
-    uint64_t *configurationGeneration,
     char **errorMessage
 ) {
     if (errorMessage != nullptr) {
@@ -2280,13 +2264,7 @@ bool TCPViewerWiresharkConfigureTLSKeyLog(
         return false;
     }
 
-    if (TLSKeyLogPath() != nextPath) {
-        TLSKeyLogPath() = nextPath;
-        TLSKeyLogConfigurationGeneration() += 1;
-    }
-    if (configurationGeneration != nullptr) {
-        *configurationGeneration = TLSKeyLogConfigurationGeneration();
-    }
+    TLSKeyLogPath() = nextPath;
     return true;
 }
 

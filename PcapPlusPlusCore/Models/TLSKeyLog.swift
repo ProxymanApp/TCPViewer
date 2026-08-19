@@ -20,18 +20,17 @@ public struct TLSKeyLogValidation: Sendable, Equatable {
         self.reachedScanLimit = reachedScanLimit
     }
 }
+
 public struct TLSKeyLogState: Sendable, Equatable {
     public let fileURL: URL?
     public let validation: TLSKeyLogValidation?
-    public let configurationGeneration: UInt64
 
-    public init(fileURL: URL?, validation: TLSKeyLogValidation?, configurationGeneration: UInt64) {
+    public init(fileURL: URL?, validation: TLSKeyLogValidation?) {
         self.fileURL = fileURL
         self.validation = validation
-        self.configurationGeneration = configurationGeneration
     }
 
-    public static let empty = TLSKeyLogState(fileURL: nil, validation: nil, configurationGeneration: 0)
+    public static let empty = TLSKeyLogState(fileURL: nil, validation: nil)
 }
 
 public protocol TLSKeyLogManaging: AnyObject {

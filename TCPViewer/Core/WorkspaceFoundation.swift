@@ -934,10 +934,7 @@ private extension PacketInspection {
             rawBytes: rawBytes,
             byteViews: byteViews,
             detailNodes: detailNodes,
-            decodeStatus: decodeStatus,
-            decryptedStreamReference: decryptedStreamReference.map {
-                DecryptedStreamReference(packetID: packetID, protocolName: $0.protocolName)
-            }
+            decodeStatus: decodeStatus
         )
     }
 }
@@ -4112,19 +4109,9 @@ final class TCPViewerWorkspaceController {
                     containing: reference.originalPacketID,
                     limits: .default,
                     progress: progress,
-                    shouldCancel: shouldCancel
-                ) { result in
-                    completion(result.map { value in
-                        DecryptedStreamResult(
-                            reference: DecryptedStreamReference(packetID: identifier, protocolName: value.protocolName),
-                            protocolName: value.protocolName,
-                            client: value.client,
-                            server: value.server,
-                            request: value.request,
-                            response: value.response
-                        )
-                    })
-                }
+                    shouldCancel: shouldCancel,
+                    completion: completion
+                )
             } else {
                 guard let document else {
                     completion(.failure(TCPViewerCoreError(code: .offlineFileOpenFailed, message: "Packet \(identifier) is no longer available.")))

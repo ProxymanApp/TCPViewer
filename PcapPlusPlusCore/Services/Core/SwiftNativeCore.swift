@@ -338,7 +338,6 @@ final class PCPPNativeOfflineDocument {
             )
         }
         return DecryptedStreamResult(
-            reference: DecryptedStreamReference(packetID: identifier, protocolName: fields.protocolName),
             protocolName: fields.protocolName,
             client: fields.client,
             server: fields.server,
@@ -943,7 +942,6 @@ final class PCPPNativeLiveSession {
             shouldCancel: shouldCancel
         )
         return DecryptedStreamResult(
-            reference: DecryptedStreamReference(packetID: identifier, protocolName: fields.protocolName),
             protocolName: fields.protocolName,
             client: fields.client,
             server: fields.server,

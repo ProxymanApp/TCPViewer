@@ -39,12 +39,8 @@ public final class NativeTLSKeyLogManager: TLSKeyLogManaging, @unchecked Sendabl
         queue.async {
             completion(Result {
                 let validation = try Self.validateFile(at: fileURL)
-                let generation = try self.configureWireshark(filePath: fileURL.path)
-                let nextState = TLSKeyLogState(
-                    fileURL: fileURL,
-                    validation: validation,
-                    configurationGeneration: generation
-                )
+                try self.configureWireshark(filePath: fileURL.path)
+                let nextState = TLSKeyLogState(fileURL: fileURL, validation: validation)
                 self.state = nextState
                 return nextState
             })
@@ -54,12 +50,8 @@ public final class NativeTLSKeyLogManager: TLSKeyLogManaging, @unchecked Sendabl
     public func remove(completion: @escaping TCPViewerCompletion<TLSKeyLogState>) {
         queue.async {
             completion(Result {
-                let generation = try self.configureWireshark(filePath: nil)
-                let nextState = TLSKeyLogState(
-                    fileURL: nil,
-                    validation: nil,
-                    configurationGeneration: generation
-                )
+                try self.configureWireshark(filePath: nil)
+                let nextState = TLSKeyLogState.empty
                 self.state = nextState
                 return nextState
             })
@@ -215,7 +207,7 @@ public final class NativeTLSKeyLogManager: TLSKeyLogManaging, @unchecked Sendabl
         }
     }
 
-    private func configureWireshark(filePath: String?) throws -> UInt64 {
+    private func configureWireshark(filePath: String?) throws {
         let directory: URL
         do {
             directory = try runtimeConfiguration.createPersonalConfigurationDirectoryIfNeeded()
@@ -223,14 +215,13 @@ public final class NativeTLSKeyLogManager: TLSKeyLogManaging, @unchecked Sendabl
             throw Self.invalidFile("TCP Viewer could not prepare its Wireshark runtime.")
         }
 
-        var generation: UInt64 = 0
         var errorPointer: UnsafeMutablePointer<CChar>?
         let succeeded = directory.path.withCString { directoryPath in
             guard let filePath else {
-                return TCPViewerWiresharkConfigureTLSKeyLog(nil, directoryPath, &generation, &errorPointer)
+                return TCPViewerWiresharkConfigureTLSKeyLog(nil, directoryPath, &errorPointer)
             }
             return filePath.withCString { path in
-                TCPViewerWiresharkConfigureTLSKeyLog(path, directoryPath, &generation, &errorPointer)
+                TCPViewerWiresharkConfigureTLSKeyLog(path, directoryPath, &errorPointer)
             }
         }
         defer { TCPViewerWiresharkCStringDestroy(errorPointer) }
@@ -239,7 +230,6 @@ public final class NativeTLSKeyLogManager: TLSKeyLogManaging, @unchecked Sendabl
                 ?? "Wireshark could not apply the TLS key-log file."
             throw Self.invalidFile(message)
         }
-        return generation
     }
 
     private static func invalidFile(_ message: String) -> TCPViewerCoreError {

@@ -88,7 +88,7 @@ struct NativeTLSKeyLogManagerTests {
         #expect(result.reachedScanLimit)
     }
 
-    @Test func replacementAndRemovalAdvanceGenerationButSameFileAppendDoesNot() throws {
+    @Test func replacementAndRemovalUpdateState() throws {
         let firstURL = try temporaryFile(contents: "CLIENT_RANDOM \(hex(bytes: 32)) \(hex(bytes: 48))\n")
         let directory = firstURL.deletingLastPathComponent()
         let secondURL = directory.appendingPathComponent("replacement.log")
@@ -97,17 +97,11 @@ struct NativeTLSKeyLogManagerTests {
         let manager = NativeTLSKeyLogManager()
 
         let first = try apply(manager, fileURL: firstURL)
-        let handle = try FileHandle(forWritingTo: firstURL)
-        try handle.seekToEnd()
-        try handle.write(contentsOf: Data("# appended\n".utf8))
-        try handle.close()
-        let appended = try apply(manager, fileURL: firstURL)
         let replacement = try apply(manager, fileURL: secondURL)
         let removed = try remove(manager)
 
-        #expect(appended.configurationGeneration == first.configurationGeneration)
-        #expect(replacement.configurationGeneration == first.configurationGeneration + 1)
-        #expect(removed.configurationGeneration == replacement.configurationGeneration + 1)
+        #expect(first.fileURL == firstURL)
+        #expect(replacement.fileURL == secondURL)
         #expect(removed.fileURL == nil)
     }
 

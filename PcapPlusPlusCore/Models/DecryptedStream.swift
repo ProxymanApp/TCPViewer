@@ -12,20 +12,6 @@ public enum DecryptedStreamProtocol: String, Sendable, Codable, Hashable {
     case dtls = "DTLS"
     case quic = "QUIC"
 }
-public struct DecryptedStreamReference: Sendable, Codable, Hashable {
-    public let packetID: PacketSummary.ID
-    public let protocolName: DecryptedStreamProtocol?
-
-    public init(packetID: PacketSummary.ID, protocolName: DecryptedStreamProtocol? = nil) {
-        self.packetID = packetID
-        self.protocolName = protocolName
-    }
-}
-
-public enum DecryptedStreamSide: String, Sendable, Codable, Hashable {
-    case request
-    case response
-}
 
 public struct DecryptedStreamPayload: Sendable, Codable, Hashable {
     public let data: Data
@@ -40,7 +26,6 @@ public struct DecryptedStreamPayload: Sendable, Codable, Hashable {
 }
 
 public struct DecryptedStreamResult: Sendable, Codable, Hashable {
-    public let reference: DecryptedStreamReference
     public let protocolName: DecryptedStreamProtocol
     public let client: PacketEndpoint
     public let server: PacketEndpoint
@@ -48,14 +33,12 @@ public struct DecryptedStreamResult: Sendable, Codable, Hashable {
     public let response: DecryptedStreamPayload
 
     public init(
-        reference: DecryptedStreamReference,
         protocolName: DecryptedStreamProtocol,
         client: PacketEndpoint,
         server: PacketEndpoint,
         request: DecryptedStreamPayload,
         response: DecryptedStreamPayload
     ) {
-        self.reference = reference
         self.protocolName = protocolName
         self.client = client
         self.server = server
