@@ -25,6 +25,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private weak var licenseMenuItem: NSMenuItem?
     private var licenseStatusObserver: NSObjectProtocol?
     private var configurationObserver: NSObjectProtocol?
+    private var liveCaptureReleaseObserver: NSObjectProtocol?
     private lazy var sentryService = TCPViewerSentryService(configuration: appConfiguration)
     private lazy var factoryResetService = TCPViewerFactoryResetService(helperToolManager: networkHelperToolManager)
     private let tlsKeyLogManager = NativeTLSKeyLogManager()
@@ -35,6 +36,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var didCheckForUpdatesAtLaunch = false
     private var availableUpdateCount = 0
     private var isTerminatingAfterFactoryReset = false
+    private var hasPendingTLSKeyLogReload = false
+    private var isReloadingTLSKeyLogCaptures = false
     #if DEBUG
     private var shouldOpenUntitledDocumentAfterIgnoringDebugLaunchFiles = false
     #endif
@@ -45,6 +48,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         appConfiguration.applyAppearance()
         observeLicenseStatusChanges()
         observeConfigurationChanges()
+        observeLiveCaptureRelease()
         wireAboutMenu()
         wirePreferencesMenu()
         wireUpdatesMenu()
@@ -92,6 +96,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if let configurationObserver {
             NotificationCenter.default.removeObserver(configurationObserver)
+        }
+        if let liveCaptureReleaseObserver {
+            NotificationCenter.default.removeObserver(liveCaptureReleaseObserver)
         }
     }
 
@@ -668,26 +675,54 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         controllers.forEach {
             $0.rootViewController.viewModel.invalidateInspectionAfterTLSKeyLogChange()
         }
-        // Keep an active live capture untouched; users can reload offline files after stopping it.
+        hasPendingTLSKeyLogReload = true
+        reloadPendingTLSKeyLogCapturesIfPossible()
+    }
+
+    private func observeLiveCaptureRelease() {
+        liveCaptureReleaseObserver = NotificationCenter.default.addObserver(
+            forName: TCPViewerWorkspaceController.liveCaptureDidReleaseWiresharkNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.reloadPendingTLSKeyLogCapturesIfPossible()
+        }
+    }
+
+    private func reloadPendingTLSKeyLogCapturesIfPossible() {
+        guard hasPendingTLSKeyLogReload, !isReloadingTLSKeyLogCaptures else {
+            return
+        }
+        let controllers = workspaceWindowControllers()
         guard !controllers.contains(where: { $0.rootViewController.viewModel.snapshot.base.sessionState.canStop }) else {
             return
         }
+        hasPendingTLSKeyLogReload = false
         let offlineControllers = controllers.filter {
             $0.rootViewController.viewModel.snapshot.base.packetIngestState.source == .offline
         }
-        reloadOfflineCaptures(offlineControllers, index: 0)
+        guard !offlineControllers.isEmpty else {
+            return
+        }
+        isReloadingTLSKeyLogCaptures = true
+        reloadOfflineCaptures(offlineControllers, index: 0) { [weak self] in
+            self?.isReloadingTLSKeyLogCaptures = false
+            self?.reloadPendingTLSKeyLogCapturesIfPossible()
+        }
     }
 
     // Reopen offline windows one at a time because Wireshark has one process-wide dissection session.
     private func reloadOfflineCaptures(
         _ controllers: [TCPViewerWindowController],
-        index: Int
+        index: Int,
+        completion: @escaping () -> Void
     ) {
         guard index < controllers.count else {
+            completion()
             return
         }
         controllers[index].rootViewController.viewModel.reloadAfterTLSKeyLogChange { [weak self] in
-            self?.reloadOfflineCaptures(controllers, index: index + 1)
+            self?.reloadOfflineCaptures(controllers, index: index + 1, completion: completion)
         }
     }
 

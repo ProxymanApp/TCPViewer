@@ -48,16 +48,13 @@ public struct DecryptedStreamResult: Sendable, Codable, Hashable {
 }
 
 public struct DecryptedStreamLimits: Sendable, Equatable, Hashable {
-    public let maximumCandidatePacketCount: Int
     public let maximumBytesPerDirection: Int
     public let maximumRecordCount: Int
 
     public init(
-        maximumCandidatePacketCount: Int = 250_000,
         maximumBytesPerDirection: Int = 8 * 1_024 * 1_024,
         maximumRecordCount: Int = 100_000
     ) {
-        self.maximumCandidatePacketCount = max(maximumCandidatePacketCount, 1)
         self.maximumBytesPerDirection = max(maximumBytesPerDirection, 1)
         self.maximumRecordCount = max(maximumRecordCount, 1)
     }

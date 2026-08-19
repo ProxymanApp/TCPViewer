@@ -1206,7 +1206,7 @@ struct TCPViewerWiresharkSession {
     bool followUsesPerDirectionLimit = false;
     uint64_t followPayloadByteCount = 0;
     uint64_t followObservedByteCountByDirection[2] = {};
-    uint64_t followRetainedByteCountByDirection[2] = {};
+    std::vector<uint8_t> followRetainedPayloadByDirection[2];
     GList *followNewestPayloadItem = nullptr;
     std::string personalConfigurationDirectory;
     bool disabled = false;
@@ -1682,8 +1682,8 @@ struct TCPViewerWiresharkSession {
         followPayloadByteCount = 0;
         followObservedByteCountByDirection[0] = 0;
         followObservedByteCountByDirection[1] = 0;
-        followRetainedByteCountByDirection[0] = 0;
-        followRetainedByteCountByDirection[1] = 0;
+        followRetainedPayloadByDirection[0].clear();
+        followRetainedPayloadByDirection[1].clear();
         followNewestPayloadItem = nullptr;
     }
 
@@ -1835,8 +1835,8 @@ struct TCPViewerWiresharkSession {
         followPayloadByteCount = 0;
         followObservedByteCountByDirection[0] = 0;
         followObservedByteCountByDirection[1] = 0;
-        followRetainedByteCountByDirection[0] = 0;
-        followRetainedByteCountByDirection[1] = 0;
+        followRetainedPayloadByDirection[0].clear();
+        followRetainedPayloadByDirection[1].clear();
         followNewestPayloadItem = nullptr;
         return true;
     }
@@ -1912,8 +1912,13 @@ struct TCPViewerWiresharkSession {
             return TCPViewerWiresharkFollowPacketFailed;
         }
 
-        // Wireshark does not add released out-of-order fragments to bytes_written, so count new payload records directly.
+        // Wireshark prepends records, so drain each packet's new records from oldest to newest.
+        GList *oldestNewPayloadItem = nullptr;
         for (GList *item = followInfo->payload; item != followNewestPayloadItem; item = g_list_next(item)) {
+            oldestNewPayloadItem = item;
+        }
+        for (GList *item = oldestNewPayloadItem; item != nullptr;) {
+            GList *nextItem = g_list_previous(item);
             auto *record = static_cast<follow_record_t *>(item->data);
             if (record != nullptr && record->data != nullptr) {
                 const size_t byteCount = record->data->len;
@@ -1921,17 +1926,36 @@ struct TCPViewerWiresharkSession {
                 if (followUsesPerDirectionLimit) {
                     const size_t direction = record->is_server ? 1 : 0;
                     followObservedByteCountByDirection[direction] += byteCount;
-                    const size_t retained = static_cast<size_t>(followRetainedByteCountByDirection[direction]);
+                    auto &payload = followRetainedPayloadByDirection[direction];
+                    const size_t retained = payload.size();
                     const size_t remaining = retained >= maximumPayloadBytes ? 0 : maximumPayloadBytes - retained;
-                    if (byteCount > remaining) {
-                        g_byte_array_set_size(record->data, static_cast<guint>(remaining));
+                    const size_t retainedByteCount = std::min(byteCount, remaining);
+                    if (retainedByteCount > 0) {
+                        try {
+                            payload.insert(payload.end(), record->data->data, record->data->data + retainedByteCount);
+                        } catch (const std::bad_alloc &) {
+                            unavailableReason = "Decrypted stream payload could not be allocated.";
+                            return TCPViewerWiresharkFollowPacketFailed;
+                        }
+                    }
+                    if (retainedByteCount < byteCount) {
                         followTruncated = true;
                     }
-                    followRetainedByteCountByDirection[direction] += std::min(byteCount, remaining);
+                    // Decrypted output needs only two directional byte streams, so release Wireshark's record immediately.
+                    followInfo->payload = g_list_delete_link(followInfo->payload, item);
+                    g_byte_array_free(record->data, true);
+                    g_free(record);
                 }
             }
+            item = nextItem;
         }
         followNewestPayloadItem = followInfo->payload;
+        if (followUsesPerDirectionLimit
+            && followRetainedPayloadByDirection[0].size() >= maximumPayloadBytes
+            && followRetainedPayloadByDirection[1].size() >= maximumPayloadBytes) {
+            followTruncated = true;
+            return TCPViewerWiresharkFollowPacketLimitReached;
+        }
         if (!followUsesPerDirectionLimit && followPayloadByteCount > maximumPayloadBytes) {
             followTruncated = true;
             return TCPViewerWiresharkFollowPacketLimitReached;
@@ -2000,7 +2024,10 @@ struct TCPViewerWiresharkSession {
             result->serverByteCount = followObservedByteCountByDirection[1];
         }
 
-        const size_t availableRecordCount = static_cast<size_t>(g_list_length(followInfo->payload));
+        const size_t availableRecordCount = followUsesPerDirectionLimit
+            ? static_cast<size_t>(!followRetainedPayloadByDirection[0].empty())
+                + static_cast<size_t>(!followRetainedPayloadByDirection[1].empty())
+            : static_cast<size_t>(g_list_length(followInfo->payload));
         const size_t allocatedRecordCount = std::min(availableRecordCount, maximumRecordCount);
         result->recordCount = allocatedRecordCount;
         result->isTruncated = followTruncated
@@ -2019,45 +2046,57 @@ struct TCPViewerWiresharkSession {
         }
 
         size_t outputIndex = 0;
-        size_t remainingPayloadBytes = maximumPayloadBytes;
-        size_t remainingPayloadBytesByDirection[2] = {maximumPayloadBytes, maximumPayloadBytes};
-        for (GList *item = g_list_last(followInfo->payload);
-             item != nullptr && outputIndex < allocatedRecordCount
-                && (followUsesPerDirectionLimit
-                    ? remainingPayloadBytesByDirection[0] > 0 || remainingPayloadBytesByDirection[1] > 0
-                    : remainingPayloadBytes > 0);
-             item = g_list_previous(item)) {
-            auto *source = static_cast<follow_record_t *>(item->data);
-            if (source == nullptr || source->data == nullptr || source->data->len == 0) {
-                continue;
-            }
-            auto &destination = result->records[outputIndex];
-            destination.isServer = source->is_server;
-            destination.packetIdentifier = source->packet_num < packetIdentifierByFrameNumber.size()
-                ? packetIdentifierByFrameNumber[source->packet_num]
-                : static_cast<uint64_t>(source->packet_num);
-            destination.sequenceNumber = source->seq;
-            destination.timestampSeconds = source->abs_ts.secs;
-            destination.timestampNanoseconds = source->abs_ts.nsecs;
-            const size_t direction = source->is_server ? 1 : 0;
-            size_t &remainingForRecord = followUsesPerDirectionLimit
-                ? remainingPayloadBytesByDirection[direction]
-                : remainingPayloadBytes;
-            destination.byteCount = std::min(static_cast<size_t>(source->data->len), remainingForRecord);
-            if (destination.byteCount > 0) {
+        if (followUsesPerDirectionLimit) {
+            for (size_t direction = 0; direction < 2 && outputIndex < allocatedRecordCount; direction += 1) {
+                const auto &source = followRetainedPayloadByDirection[direction];
+                if (source.empty()) {
+                    continue;
+                }
+                auto &destination = result->records[outputIndex];
+                destination.isServer = direction == 1;
+                destination.byteCount = source.size();
                 destination.bytes = static_cast<uint8_t *>(std::malloc(destination.byteCount));
                 if (destination.bytes == nullptr) {
                     result->errorMessage = CopyCString("TCP stream payload could not be allocated.", false);
                     cancelFollowLocked();
                     return result;
                 }
-                std::memcpy(destination.bytes, source->data->data, destination.byteCount);
+                std::memcpy(destination.bytes, source.data(), destination.byteCount);
+                outputIndex += 1;
             }
-            if (destination.byteCount < source->data->len) {
-                result->isTruncated = true;
+        } else {
+            size_t remainingPayloadBytes = maximumPayloadBytes;
+            for (GList *item = g_list_last(followInfo->payload);
+                 item != nullptr && outputIndex < allocatedRecordCount && remainingPayloadBytes > 0;
+                 item = g_list_previous(item)) {
+                auto *source = static_cast<follow_record_t *>(item->data);
+                if (source == nullptr || source->data == nullptr || source->data->len == 0) {
+                    continue;
+                }
+                auto &destination = result->records[outputIndex];
+                destination.isServer = source->is_server;
+                destination.packetIdentifier = source->packet_num < packetIdentifierByFrameNumber.size()
+                    ? packetIdentifierByFrameNumber[source->packet_num]
+                    : static_cast<uint64_t>(source->packet_num);
+                destination.sequenceNumber = source->seq;
+                destination.timestampSeconds = source->abs_ts.secs;
+                destination.timestampNanoseconds = source->abs_ts.nsecs;
+                destination.byteCount = std::min(static_cast<size_t>(source->data->len), remainingPayloadBytes);
+                if (destination.byteCount > 0) {
+                    destination.bytes = static_cast<uint8_t *>(std::malloc(destination.byteCount));
+                    if (destination.bytes == nullptr) {
+                        result->errorMessage = CopyCString("TCP stream payload could not be allocated.", false);
+                        cancelFollowLocked();
+                        return result;
+                    }
+                    std::memcpy(destination.bytes, source->data->data, destination.byteCount);
+                }
+                if (destination.byteCount < source->data->len) {
+                    result->isTruncated = true;
+                }
+                remainingPayloadBytes -= destination.byteCount;
+                outputIndex += 1;
             }
-            remainingForRecord -= destination.byteCount;
-            outputIndex += 1;
         }
         result->recordCount = outputIndex;
 
@@ -2074,8 +2113,8 @@ struct TCPViewerWiresharkSession {
         followPayloadByteCount = 0;
         followObservedByteCountByDirection[0] = 0;
         followObservedByteCountByDirection[1] = 0;
-        followRetainedByteCountByDirection[0] = 0;
-        followRetainedByteCountByDirection[1] = 0;
+        followRetainedPayloadByDirection[0].clear();
+        followRetainedPayloadByDirection[1].clear();
         followNewestPayloadItem = nullptr;
         return result;
     }

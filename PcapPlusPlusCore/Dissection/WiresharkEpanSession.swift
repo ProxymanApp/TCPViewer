@@ -312,7 +312,35 @@ final class WiresharkEpanSession {
         shouldCancel: TCPFollowCancellationCheck?
     ) throws -> WiresharkTCPFollowFields {
         try Self.validateFollowRequest(selectedRecord: selectedRecord, records: records, limits: limits)
+        return try followObservedStream(
+            containing: selectedRecord,
+            limits: limits,
+            protocolName: protocolName,
+            progressOffset: progressOffset,
+            progressTotal: progressTotal,
+            progress: progress,
+            shouldCancel: shouldCancel,
+            replay: { consume in
+                for record in records {
+                    if try !consume(record) {
+                        break
+                    }
+                }
+            }
+        )
+    }
 
+    // Consume replayed packets one at a time so stopped live captures never load all packet bytes into memory.
+    private func followObservedStream(
+        containing selectedRecord: NativePacketRecord,
+        limits: TCPFollowLimits,
+        protocolName: String,
+        progressOffset: Int,
+        progressTotal: Int,
+        progress: TCPFollowProgressHandler?,
+        shouldCancel: TCPFollowCancellationCheck?,
+        replay: (_ consume: (NativePacketRecord) throws -> Bool) throws -> Void
+    ) throws -> WiresharkTCPFollowFields {
         var followIsActive = false
         defer {
             if followIsActive {
@@ -332,7 +360,8 @@ final class WiresharkEpanSession {
         }
         followIsActive = true
 
-        for (index, record) in records.enumerated() {
+        var processedPacketCount = 0
+        try replay { record in
             if shouldCancel?() == true {
                 throw NativeNSError(.operationCancelled, "TCP stream reassembly was cancelled.")
             }
@@ -349,14 +378,13 @@ final class WiresharkEpanSession {
                 }
                 throw unavailableError()
             }
+            processedPacketCount += 1
             Self.reportFollowProgress(
-                processedPacketCount: progressOffset + index + 1,
+                processedPacketCount: progressOffset + processedPacketCount,
                 totalPacketCount: progressTotal,
                 handler: progress
             )
-            if status == TCPViewerWiresharkFollowPacketLimitReached {
-                break
-            }
+            return status != TCPViewerWiresharkFollowPacketLimitReached
         }
 
         guard let resultPointer = TCPViewerWiresharkSessionFinishFollowTCPStream(
@@ -400,30 +428,59 @@ final class WiresharkEpanSession {
         progress: TCPFollowProgressHandler?,
         shouldCancel: TCPFollowCancellationCheck?
     ) throws -> WiresharkDecryptedFollowFields {
+        guard records.contains(where: { $0.identifier == selectedRecord.identifier }) else {
+            throw NativeNSError(.fileReadFailed, "The selected packet is not available in the stream snapshot.")
+        }
+        return try followDecryptedStreamInTemporarySession(
+            containing: selectedRecord,
+            recordCount: records.count,
+            replay: { consume in
+                for record in records {
+                    if try !consume(record) {
+                        break
+                    }
+                }
+            },
+            limits: limits,
+            progress: progress,
+            shouldCancel: shouldCancel
+        )
+    }
+
+    // Build a temporary first pass while reading each retained packet only when Wireshark needs it.
+    static func followDecryptedStreamInTemporarySession(
+        containing selectedRecord: NativePacketRecord,
+        recordCount: Int,
+        replay: (_ consume: (NativePacketRecord) throws -> Bool) throws -> Void,
+        limits: DecryptedStreamLimits,
+        progress: TCPFollowProgressHandler?,
+        shouldCancel: TCPFollowCancellationCheck?
+    ) throws -> WiresharkDecryptedFollowFields {
         guard TCPViewerWiresharkHasTLSKeyLog() else {
             throw NativeNSError(.unavailableFeature, "No TLS key-log file is selected. Open Tools → TLS Key Log… first.")
         }
-        let tcpLimits = TCPFollowLimits(
-            maximumCandidatePacketCount: limits.maximumCandidatePacketCount,
-            maximumPayloadBytes: limits.maximumBytesPerDirection,
-            maximumRecordCount: limits.maximumRecordCount
-        )
-        try validateFollowRequest(selectedRecord: selectedRecord, records: records, limits: tcpLimits)
         let session = try WiresharkEpanSession(purpose: .follow)
-        let totalWorkCount = records.count * 2
-        for (index, record) in records.enumerated() {
+        let totalWorkCount = recordCount > Int.max / 2 ? Int.max : recordCount * 2
+        var processedPacketCount = 0
+        try replay { record in
             if shouldCancel?() == true {
                 throw NativeNSError(.operationCancelled, "TLS stream decryption was cancelled.")
             }
             try session.observe(record)
-            reportFollowProgress(processedPacketCount: index + 1, totalPacketCount: totalWorkCount, handler: progress)
+            processedPacketCount += 1
+            reportFollowProgress(
+                processedPacketCount: processedPacketCount,
+                totalPacketCount: totalWorkCount,
+                handler: progress
+            )
+            return true
         }
         try session.finishFirstPass()
         return try session.followObservedDecryptedStream(
             containing: selectedRecord,
-            records: records,
+            replay: replay,
             limits: limits,
-            progressOffset: records.count,
+            progressOffset: recordCount,
             progressTotal: totalWorkCount,
             progress: progress,
             shouldCancel: shouldCancel
@@ -440,9 +497,18 @@ final class WiresharkEpanSession {
         guard TCPViewerWiresharkHasTLSKeyLog() else {
             throw NativeNSError(.unavailableFeature, "No TLS key-log file is selected. Open Tools → TLS Key Log… first.")
         }
+        guard records.contains(where: { $0.identifier == selectedRecord.identifier }) else {
+            throw NativeNSError(.fileReadFailed, "The selected packet is not available in the stream snapshot.")
+        }
         return try followObservedDecryptedStream(
             containing: selectedRecord,
-            records: records,
+            replay: { consume in
+                for record in records {
+                    if try !consume(record) {
+                        break
+                    }
+                }
+            },
             limits: limits,
             progressOffset: 0,
             progressTotal: records.count,
@@ -453,7 +519,7 @@ final class WiresharkEpanSession {
 
     private func followObservedDecryptedStream(
         containing selectedRecord: NativePacketRecord,
-        records: [NativePacketRecord],
+        replay: (_ consume: (NativePacketRecord) throws -> Bool) throws -> Void,
         limits: DecryptedStreamLimits,
         progressOffset: Int,
         progressTotal: Int,
@@ -461,7 +527,6 @@ final class WiresharkEpanSession {
         shouldCancel: TCPFollowCancellationCheck?
     ) throws -> WiresharkDecryptedFollowFields {
         let followLimits = TCPFollowLimits(
-            maximumCandidatePacketCount: limits.maximumCandidatePacketCount,
             maximumPayloadBytes: limits.maximumBytesPerDirection,
             maximumRecordCount: limits.maximumRecordCount
         )
@@ -470,16 +535,19 @@ final class WiresharkEpanSession {
             do {
                 let fields = try followObservedStream(
                     containing: selectedRecord,
-                    records: records,
                     limits: followLimits,
                     protocolName: protocolName.rawValue,
                     progressOffset: progressOffset,
                     progressTotal: progressTotal,
                     progress: progress,
-                    shouldCancel: shouldCancel
+                    shouldCancel: shouldCancel,
+                    replay: replay
                 )
                 return decryptedFields(protocolName: protocolName, fields: fields, limit: limits.maximumBytesPerDirection)
             } catch {
+                if shouldCancel?() == true {
+                    throw error
+                }
                 lastError = error
             }
         }

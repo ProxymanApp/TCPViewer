@@ -130,6 +130,8 @@ struct PacketInspectorTreeViewModelTests {
             inspectionState: loadedInspectionState(packet: secondPacket, inspection: makeFrameInspection(for: secondPacket))
         ))
         #expect(delegate.decryptedStreamLoadCount == 2)
+        #expect(delegate.decryptedStreamCancellationChecks[0]())
+        #expect(!delegate.decryptedStreamCancellationChecks[1]())
 
         delegate.completeDecryptedStream(at: 0, with: .success(makeDecryptedResult(packet: firstPacket, request: "STALE")))
         await drainMainQueue()
@@ -1233,6 +1235,7 @@ private final class PacketInspectorDelegateSpy: PacketInspectorViewControllerDel
     var customColumnRequest: PacketCustomColumnRequest?
     var decryptedStreamResult: Result<DecryptedStreamResult, Error>?
     var decryptedStreamLoadCount = 0
+    var decryptedStreamCancellationChecks: [TCPFollowCancellationCheck] = []
     var defersDecryptedStreamCompletions = false
     private var decryptedStreamCompletions: [TCPViewerCompletion<DecryptedStreamResult>] = []
 
@@ -1255,6 +1258,7 @@ private final class PacketInspectorDelegateSpy: PacketInspectorViewControllerDel
         completion: @escaping TCPViewerCompletion<DecryptedStreamResult>
     ) {
         decryptedStreamLoadCount += 1
+        decryptedStreamCancellationChecks.append(shouldCancel)
         if defersDecryptedStreamCompletions {
             decryptedStreamCompletions.append(completion)
             return

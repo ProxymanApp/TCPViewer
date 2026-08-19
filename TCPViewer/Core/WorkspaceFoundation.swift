@@ -1071,6 +1071,10 @@ struct TCPViewerWorkspaceMemoryDebugSnapshot: Equatable {
 #endif
 
 final class TCPViewerWorkspaceController {
+    static let liveCaptureDidReleaseWiresharkNotification = Notification.Name(
+        "TCPViewerWorkspaceControllerLiveCaptureDidReleaseWireshark"
+    )
+
     private struct ImportedSessionCaptureExportGroup {
         let fileID: ImportedCaptureFileID
         var originalPacketIDs: [PacketSummary.ID]
@@ -3317,10 +3321,17 @@ final class TCPViewerWorkspaceController {
     private func applyPacketIngestEvent(_ event: PacketIngestEvent) {
         switch event {
         case .liveStateChanged(let phase, let message):
+            let previouslyOwnedWireshark = snapshot.sessionState.canStop
             snapshot.sessionState.phase = mappedPhase(phase)
             snapshot.sessionState.statusMessage = message
             if mappedPhase(phase) != .failed {
                 snapshot.sessionState.lastError = nil
+            }
+            if previouslyOwnedWireshark && !snapshot.sessionState.canStop {
+                NotificationCenter.default.post(
+                    name: Self.liveCaptureDidReleaseWiresharkNotification,
+                    object: self
+                )
             }
         case .documentStateChanged(let phase, let message):
             snapshot.documentState.phase = mappedPhase(phase)

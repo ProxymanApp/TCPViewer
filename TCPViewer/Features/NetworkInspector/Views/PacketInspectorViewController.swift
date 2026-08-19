@@ -740,6 +740,7 @@ final class PacketInspectorViewController: NSViewController {
     private var decryptedPacketID: PacketSummary.ID?
     private var decryptedLoadGeneration = 0
     private var isLoadingDecryptedStream = false
+    private var decryptedCancellationFlag: TCPFollowCancellationFlag?
 
     init(configuration: AppConfiguration) {
         self.configuration = configuration
@@ -750,6 +751,10 @@ final class PacketInspectorViewController: NSViewController {
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        decryptedCancellationFlag?.cancel()
     }
 
     override func loadView() {
@@ -1074,6 +1079,8 @@ final class PacketInspectorViewController: NSViewController {
         guard packetID != decryptedPacketID else {
             return
         }
+        decryptedCancellationFlag?.cancel()
+        decryptedCancellationFlag = nil
         decryptedLoadGeneration += 1
         decryptedPacketID = packetID
         decryptedStream = nil
@@ -1102,6 +1109,9 @@ final class PacketInspectorViewController: NSViewController {
     }
 
     private func loadDecryptedStream(packetID: PacketSummary.ID) {
+        decryptedCancellationFlag?.cancel()
+        let cancellationFlag = TCPFollowCancellationFlag()
+        decryptedCancellationFlag = cancellationFlag
         isLoadingDecryptedStream = true
         decryptedLoadGeneration += 1
         let generation = decryptedLoadGeneration
@@ -1120,12 +1130,18 @@ final class PacketInspectorViewController: NSViewController {
                     self.showDecryptedMessage("Loading the complete decrypted stream… \(percent)% (\(progress.processedPacketCount)/\(progress.totalPacketCount) packets)")
                 }
             },
-            shouldCancel: { [weak self] in
-                self?.decryptedLoadGeneration != generation
+            shouldCancel: {
+                cancellationFlag.isCancelled
             }
         ) { [weak self] result in
             DispatchQueue.main.async {
-                guard let self, self.decryptedLoadGeneration == generation, self.decryptedPacketID == packetID else {
+                guard let self else {
+                    return
+                }
+                if self.decryptedCancellationFlag === cancellationFlag {
+                    self.decryptedCancellationFlag = nil
+                }
+                guard self.decryptedLoadGeneration == generation, self.decryptedPacketID == packetID else {
                     return
                 }
                 self.isLoadingDecryptedStream = false

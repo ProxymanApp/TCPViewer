@@ -307,9 +307,6 @@ final class PCPPNativeOfflineDocument {
         shouldCancel: TCPFollowCancellationCheck?
     ) throws -> DecryptedStreamResult {
         let snapshot = try state.read { state -> (NativePacketRecord, [NativePacketRecord], WiresharkEpanSession) in
-            guard state.file.records.count <= limits.maximumCandidatePacketCount else {
-                throw NativeNSError(.unavailableFeature, "This capture has more than \(limits.maximumCandidatePacketCount) packets.")
-            }
             guard let selected = state.file.records.first(where: { $0.identifier == identifier }) else {
                 throw NativeNSError(.fileReadFailed, "Packet \(identifier) is not available in the backing store.")
             }
@@ -926,17 +923,16 @@ final class PCPPNativeLiveSession {
                 throw NativeNSError(.unavailableFeature, "Wireshark TLS stream decryption is unavailable for this capture.")
             }
             return try state.packetStore.snapshotAll(
-                maximumPacketCount: limits.maximumCandidatePacketCount,
                 shouldCancel: shouldCancel
             )
         }
-        let records = try snapshot.records(maximumBytes: 256 * 1_024 * 1_024, shouldCancel: shouldCancel)
-        guard let selected = records.first(where: { $0.identifier == identifier }) else {
-            throw NativeNSError(.fileReadFailed, "The selected packet is no longer in the live snapshot.")
-        }
+        let selected = try snapshot.record(withIdentifier: identifier)
         let fields = try WiresharkEpanSession.followDecryptedStreamInTemporarySession(
             containing: selected,
-            records: records,
+            recordCount: snapshot.packetCount,
+            replay: { consume in
+                try snapshot.replayRecords(shouldCancel: shouldCancel, consume)
+            },
             limits: limits,
             progress: progress,
             shouldCancel: shouldCancel
