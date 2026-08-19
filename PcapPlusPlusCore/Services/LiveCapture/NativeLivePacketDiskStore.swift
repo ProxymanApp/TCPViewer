@@ -253,6 +253,32 @@ final class NativeLivePacketDiskStore {
         )
     }
 
+    // Duplicate the anonymous store so stopped-capture TLS replay never holds the writer lock.
+    func snapshotAll(
+        maximumPacketCount: Int,
+        shouldCancel: TCPFollowCancellationCheck? = nil
+    ) throws -> NativeLivePacketDiskSnapshot {
+        guard entries.count <= maximumPacketCount else {
+            throw NativeNSError(.unavailableFeature, "This capture has more than \(maximumPacketCount) packets.")
+        }
+        if shouldCancel?() == true {
+            throw NativeNSError(.operationCancelled, "TLS stream decryption was cancelled.")
+        }
+        try openHandlesIfNeeded()
+        guard let reader else {
+            throw NativeNSError(.fileReadFailed, "The live packet backing store could not be opened for reading.")
+        }
+        let descriptor = Darwin.dup(reader.fileDescriptor)
+        guard descriptor >= 0 else {
+            throw NativeNSError(.fileReadFailed, "The live packet backing store could not create a stable snapshot.")
+        }
+        return NativeLivePacketDiskSnapshot(
+            fileDescriptor: descriptor,
+            entries: entries,
+            capturedThroughPacketID: entries.last?.identifier ?? 0
+        )
+    }
+
     // Rehydrate only the requested packet bytes from disk.
     func record(withIdentifier identifier: UInt64) throws -> NativePacketRecord {
         guard let index = entryIndexByID[identifier] else {

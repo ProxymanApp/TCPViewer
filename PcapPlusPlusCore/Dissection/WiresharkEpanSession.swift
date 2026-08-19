@@ -29,6 +29,14 @@ struct WiresharkTCPFollowFields {
     let isTruncated: Bool
 }
 
+struct WiresharkDecryptedFollowFields {
+    let protocolName: DecryptedStreamProtocol
+    let client: PacketEndpoint
+    let server: PacketEndpoint
+    let request: DecryptedStreamPayload
+    let response: DecryptedStreamPayload
+}
+
 struct WiresharkTCPStreamIndexEntry: Sendable, Equatable {
     let packetIdentifier: UInt64
     let streamIdentifier: UInt32
@@ -261,10 +269,11 @@ final class WiresharkEpanSession {
             )
         }
         try session.finishFirstPass()
-        return try session.followObservedTCPStream(
+        return try session.followObservedStream(
             containing: selectedRecord,
             records: records,
             limits: limits,
+            protocolName: "TCP",
             progressOffset: records.count,
             progressTotal: totalWorkCount,
             progress: progress,
@@ -280,10 +289,11 @@ final class WiresharkEpanSession {
         progress: TCPFollowProgressHandler?,
         shouldCancel: TCPFollowCancellationCheck?
     ) throws -> WiresharkTCPFollowFields {
-        try followObservedTCPStream(
+        try followObservedStream(
             containing: selectedRecord,
             records: records,
             limits: limits,
+            protocolName: "TCP",
             progressOffset: 0,
             progressTotal: records.count,
             progress: progress,
@@ -291,10 +301,11 @@ final class WiresharkEpanSession {
         )
     }
 
-    private func followObservedTCPStream(
+    private func followObservedStream(
         containing selectedRecord: NativePacketRecord,
         records: [NativePacketRecord],
         limits: TCPFollowLimits,
+        protocolName: String,
         progressOffset: Int,
         progressTotal: Int,
         progress: TCPFollowProgressHandler?,
@@ -309,7 +320,10 @@ final class WiresharkEpanSession {
             }
         }
         try withContext(for: selectedRecord) { context in
-            guard TCPViewerWiresharkSessionBeginFollowTCPStream(handle, context) else {
+            let didBegin = protocolName.withCString { name in
+                TCPViewerWiresharkSessionBeginFollowStream(handle, context, name)
+            }
+            guard didBegin else {
                 if let criticalError = criticalExceptionErrorIfNeeded() {
                     throw criticalError
                 }
@@ -375,6 +389,134 @@ final class WiresharkEpanSession {
             clientByteCount: Int(clamping: result.clientByteCount),
             serverByteCount: Int(clamping: result.serverByteCount),
             isTruncated: result.isTruncated
+        )
+    }
+
+    // Build a temporary first pass, then let Wireshark choose TLS, DTLS, or QUIC follow semantics.
+    static func followDecryptedStreamInTemporarySession(
+        containing selectedRecord: NativePacketRecord,
+        records: [NativePacketRecord],
+        limits: DecryptedStreamLimits,
+        progress: TCPFollowProgressHandler?,
+        shouldCancel: TCPFollowCancellationCheck?
+    ) throws -> WiresharkDecryptedFollowFields {
+        guard TCPViewerWiresharkHasTLSKeyLog() else {
+            throw NativeNSError(.unavailableFeature, "No TLS key-log file is selected. Open Tools → TLS Key Log… first.")
+        }
+        let tcpLimits = TCPFollowLimits(
+            maximumCandidatePacketCount: limits.maximumCandidatePacketCount,
+            maximumPayloadBytes: limits.maximumBytesPerDirection,
+            maximumRecordCount: limits.maximumRecordCount
+        )
+        try validateFollowRequest(selectedRecord: selectedRecord, records: records, limits: tcpLimits)
+        let session = try WiresharkEpanSession(purpose: .follow)
+        let totalWorkCount = records.count * 2
+        for (index, record) in records.enumerated() {
+            if shouldCancel?() == true {
+                throw NativeNSError(.operationCancelled, "TLS stream decryption was cancelled.")
+            }
+            try session.observe(record)
+            reportFollowProgress(processedPacketCount: index + 1, totalPacketCount: totalWorkCount, handler: progress)
+        }
+        try session.finishFirstPass()
+        return try session.followObservedDecryptedStream(
+            containing: selectedRecord,
+            records: records,
+            limits: limits,
+            progressOffset: records.count,
+            progressTotal: totalWorkCount,
+            progress: progress,
+            shouldCancel: shouldCancel
+        )
+    }
+
+    func followObservedDecryptedStream(
+        containing selectedRecord: NativePacketRecord,
+        records: [NativePacketRecord],
+        limits: DecryptedStreamLimits,
+        progress: TCPFollowProgressHandler?,
+        shouldCancel: TCPFollowCancellationCheck?
+    ) throws -> WiresharkDecryptedFollowFields {
+        guard TCPViewerWiresharkHasTLSKeyLog() else {
+            throw NativeNSError(.unavailableFeature, "No TLS key-log file is selected. Open Tools → TLS Key Log… first.")
+        }
+        return try followObservedDecryptedStream(
+            containing: selectedRecord,
+            records: records,
+            limits: limits,
+            progressOffset: 0,
+            progressTotal: records.count,
+            progress: progress,
+            shouldCancel: shouldCancel
+        )
+    }
+
+    private func followObservedDecryptedStream(
+        containing selectedRecord: NativePacketRecord,
+        records: [NativePacketRecord],
+        limits: DecryptedStreamLimits,
+        progressOffset: Int,
+        progressTotal: Int,
+        progress: TCPFollowProgressHandler?,
+        shouldCancel: TCPFollowCancellationCheck?
+    ) throws -> WiresharkDecryptedFollowFields {
+        let followLimits = TCPFollowLimits(
+            maximumCandidatePacketCount: limits.maximumCandidatePacketCount,
+            maximumPayloadBytes: limits.maximumBytesPerDirection,
+            maximumRecordCount: limits.maximumRecordCount
+        )
+        var lastError: Error?
+        for protocolName in [DecryptedStreamProtocol.tls, .dtls, .quic] {
+            do {
+                let fields = try followObservedStream(
+                    containing: selectedRecord,
+                    records: records,
+                    limits: followLimits,
+                    protocolName: protocolName.rawValue,
+                    progressOffset: progressOffset,
+                    progressTotal: progressTotal,
+                    progress: progress,
+                    shouldCancel: shouldCancel
+                )
+                return decryptedFields(protocolName: protocolName, fields: fields, limit: limits.maximumBytesPerDirection)
+            } catch {
+                lastError = error
+            }
+        }
+        throw lastError ?? NativeNSError(.unavailableFeature, "Select a TLS, DTLS, or QUIC packet to decrypt its stream.")
+    }
+
+    private func decryptedFields(
+        protocolName: DecryptedStreamProtocol,
+        fields: WiresharkTCPFollowFields,
+        limit: Int
+    ) -> WiresharkDecryptedFollowFields {
+        var request = Data()
+        var response = Data()
+        for record in fields.records {
+            switch record.direction {
+            case .clientToServer:
+                let remaining = max(limit - request.count, 0)
+                request.append(record.data.prefix(remaining))
+            case .serverToClient:
+                let remaining = max(limit - response.count, 0)
+                response.append(record.data.prefix(remaining))
+            }
+        }
+        return WiresharkDecryptedFollowFields(
+            protocolName: protocolName,
+            client: fields.client,
+            server: fields.server,
+            request: DecryptedStreamPayload(
+                data: request,
+                observedByteCount: fields.clientByteCount,
+                isTruncated: fields.isTruncated || fields.clientByteCount > request.count
+            ),
+            response: DecryptedStreamPayload(
+                data: response,
+                observedByteCount: fields.serverByteCount,
+                isTruncated: fields.isTruncated || fields.serverByteCount > response.count
+            )
         )
     }
 

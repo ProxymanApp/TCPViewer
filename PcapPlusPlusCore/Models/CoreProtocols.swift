@@ -56,7 +56,7 @@ public protocol CaptureFilterValidating {
     func validateCaptureFilter(_ expression: String, completion: @escaping (CaptureFilterValidation) -> Void)
 }
 
-public protocol LiveCaptureSessionProviding: TCPStreamFollowing {
+public protocol LiveCaptureSessionProviding: TCPStreamFollowing, DecryptedStreamLoading {
     var eventHandler: PacketIngestEventHandler? { get set }
 
     func start(completion: @escaping TCPViewerVoidCompletion)
@@ -96,7 +96,7 @@ public extension LiveCaptureSessionProviding {
 }
 #endif
 
-public protocol OfflineCaptureDocumentProviding: TCPStreamFollowing {
+public protocol OfflineCaptureDocumentProviding: TCPStreamFollowing, DecryptedStreamLoading {
     var eventHandler: PacketIngestEventHandler? { get set }
 
     func open(completion: @escaping TCPViewerCompletion<[PacketSummary]>)

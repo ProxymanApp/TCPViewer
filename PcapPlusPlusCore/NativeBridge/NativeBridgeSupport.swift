@@ -112,6 +112,14 @@ enum NativeBridgeMapper {
             .payload
         case 12:
             .unknown
+        case 13:
+            .http2
+        case 14:
+            .http3
+        case 15:
+            .dtls
+        case 16:
+            .quic
         default:
             .unknown
         }
@@ -358,14 +366,39 @@ enum NativeBridgeMapper {
     }
 
     static func packetInspection(_ descriptor: PCPPNativePacketInspectionDescriptor) -> PacketInspection {
-        PacketInspection(
+        let detailNodes = descriptor.detailNodes.map(packetDetailNode)
+        return PacketInspection(
             packetID: descriptor.packetIdentifier,
             packetNumber: descriptor.packetNumber,
             rawBytes: descriptor.rawBytes,
             byteViews: descriptor.byteViews.map(packetByteView),
-            detailNodes: descriptor.detailNodes.map(packetDetailNode),
-            decodeStatus: decodeStatus(descriptor.decodeStatus)
+            detailNodes: detailNodes,
+            decodeStatus: decodeStatus(descriptor.decodeStatus),
+            decryptedStreamReference: decryptedStreamReference(packetID: descriptor.packetIdentifier, nodes: detailNodes)
         )
+    }
+
+    private static func decryptedStreamReference(
+        packetID: PacketSummary.ID,
+        nodes: [PacketDetailNode]
+    ) -> DecryptedStreamReference? {
+        let fieldNames = recursiveFieldNames(nodes)
+        if fieldNames.contains(where: { $0.hasPrefix("tls.") }) {
+            return DecryptedStreamReference(packetID: packetID, protocolName: .tls)
+        }
+        if fieldNames.contains(where: { $0.hasPrefix("dtls.") }) {
+            return DecryptedStreamReference(packetID: packetID, protocolName: .dtls)
+        }
+        if fieldNames.contains(where: { $0.hasPrefix("quic.") }) {
+            return DecryptedStreamReference(packetID: packetID, protocolName: .quic)
+        }
+        return nil
+    }
+
+    private static func recursiveFieldNames(_ nodes: [PacketDetailNode]) -> [String] {
+        nodes.flatMap { node in
+            [node.fieldName].compactMap(\.self) + recursiveFieldNames(node.children)
+        }
     }
 
     static func packetSummary(

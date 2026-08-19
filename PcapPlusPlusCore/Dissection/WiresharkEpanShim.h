@@ -120,6 +120,15 @@ typedef enum TCPViewerWiresharkFollowPacketStatus {
     TCPViewerWiresharkFollowPacketLimitReached = 1,
 } TCPViewerWiresharkFollowPacketStatus;
 
+bool TCPViewerWiresharkConfigureTLSKeyLog(
+    const char *filePath,
+    const char *personalConfigurationDirectory,
+    uint64_t *configurationGeneration,
+    char **errorMessage
+);
+bool TCPViewerWiresharkHasTLSKeyLog(void);
+void TCPViewerWiresharkCStringDestroy(char *value);
+
 typedef struct TCPViewerWiresharkExceptionReport {
     bool isCriticalException;
     unsigned long exceptionGroup;
@@ -158,6 +167,11 @@ bool TCPViewerWiresharkSessionTCPStreamIdentifier(
 TCPViewerWiresharkSummaryResult *TCPViewerWiresharkSessionSummarizePacket(TCPViewerWiresharkSession *session, const TCPViewerWiresharkPacketContext *context);
 TCPViewerWiresharkInspectionResult *TCPViewerWiresharkSessionInspectPacket(TCPViewerWiresharkSession *session, const TCPViewerWiresharkPacketContext *context);
 bool TCPViewerWiresharkSessionBeginFollowTCPStream(TCPViewerWiresharkSession *session, const TCPViewerWiresharkPacketContext *selectedContext);
+bool TCPViewerWiresharkSessionBeginFollowStream(
+    TCPViewerWiresharkSession *session,
+    const TCPViewerWiresharkPacketContext *selectedContext,
+    const char *protocolName
+);
 TCPViewerWiresharkFollowPacketStatus TCPViewerWiresharkSessionProcessFollowPacket(
     TCPViewerWiresharkSession *session,
     const TCPViewerWiresharkPacketContext *context,

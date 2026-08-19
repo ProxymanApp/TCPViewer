@@ -934,7 +934,10 @@ private extension PacketInspection {
             rawBytes: rawBytes,
             byteViews: byteViews,
             detailNodes: detailNodes,
-            decodeStatus: decodeStatus
+            decodeStatus: decodeStatus,
+            decryptedStreamReference: decryptedStreamReference.map {
+                DecryptedStreamReference(packetID: packetID, protocolName: $0.protocolName)
+            }
         )
     }
 }
@@ -1967,6 +1970,16 @@ final class TCPViewerWorkspaceController {
         }
     }
 
+    // Reopen one document directly or rebuild a merged offline workspace from its original files.
+    func reloadOfflineCapturesAfterTLSKeyLogChange(completion: (() -> Void)? = nil) {
+        let importedURLs = snapshot.packetIngestState.importedFiles.map(\.url)
+        if importedURLs.count > 1 {
+            openDocuments(at: importedURLs, replacingCurrent: true, completion: completion)
+            return
+        }
+        reopenDocument(completion: completion)
+    }
+
     func saveDocument(completion: (() -> Void)? = nil) {
         guard let document else {
             completion?()
@@ -2989,6 +3002,28 @@ final class TCPViewerWorkspaceController {
             packet,
             identifier: identifier,
             limits: limits,
+            progress: progress,
+            shouldCancel: shouldCancel,
+            completion: completion
+        )
+    }
+
+    func loadDecryptedStream(
+        containing identifier: PacketSummary.ID,
+        progress: TCPFollowProgressHandler? = nil,
+        shouldCancel: TCPFollowCancellationCheck? = nil,
+        completion: @escaping TCPViewerCompletion<DecryptedStreamResult>
+    ) {
+        guard let packet = snapshot.packetIngestState.packet(withID: identifier) else {
+            completion(.failure(TCPViewerCoreError(
+                code: .offlineFileOpenFailed,
+                message: "Packet \(identifier) is no longer available."
+            )))
+            return
+        }
+        loadDecryptedStream(
+            packet,
+            identifier: identifier,
             progress: progress,
             shouldCancel: shouldCancel,
             completion: completion
@@ -4047,6 +4082,64 @@ final class TCPViewerWorkspaceController {
                 code: .unavailableFeature,
                 message: "Packet \(identifier) cannot be followed."
             )))
+        }
+    }
+
+    private func loadDecryptedStream(
+        _ packet: PacketSummary,
+        identifier: PacketSummary.ID,
+        progress: TCPFollowProgressHandler?,
+        shouldCancel: TCPFollowCancellationCheck?,
+        completion: @escaping TCPViewerCompletion<DecryptedStreamResult>
+    ) {
+        switch packet.source {
+        case .live:
+            guard let liveSession else {
+                completion(.failure(TCPViewerCoreError(code: .offlineFileOpenFailed, message: "Live packet \(identifier) is no longer available.")))
+                return
+            }
+            liveSession.loadDecryptedStream(
+                containing: identifier,
+                limits: .default,
+                progress: progress,
+                shouldCancel: shouldCancel,
+                completion: completion
+            )
+        case .offline:
+            if let reference = snapshot.packetIngestState.importedPacketReference(for: identifier),
+               let importedDocument = importedDocumentsByFileID[reference.fileID] {
+                importedDocument.loadDecryptedStream(
+                    containing: reference.originalPacketID,
+                    limits: .default,
+                    progress: progress,
+                    shouldCancel: shouldCancel
+                ) { result in
+                    completion(result.map { value in
+                        DecryptedStreamResult(
+                            reference: DecryptedStreamReference(packetID: identifier, protocolName: value.protocolName),
+                            protocolName: value.protocolName,
+                            client: value.client,
+                            server: value.server,
+                            request: value.request,
+                            response: value.response
+                        )
+                    })
+                }
+            } else {
+                guard let document else {
+                    completion(.failure(TCPViewerCoreError(code: .offlineFileOpenFailed, message: "Packet \(identifier) is no longer available.")))
+                    return
+                }
+                document.loadDecryptedStream(
+                    containing: identifier,
+                    limits: .default,
+                    progress: progress,
+                    shouldCancel: shouldCancel,
+                    completion: completion
+                )
+            }
+        @unknown default:
+            completion(.failure(TCPViewerCoreError(code: .unavailableFeature, message: "Packet \(identifier) cannot be decrypted.")))
         }
     }
 

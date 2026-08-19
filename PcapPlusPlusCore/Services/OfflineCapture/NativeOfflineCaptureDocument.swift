@@ -52,6 +52,22 @@ public final class NativeOfflineCaptureDocument: OfflineCaptureDocumentProviding
         )
     }
 
+    public func loadDecryptedStream(
+        containing packetID: PacketSummary.ID,
+        limits: DecryptedStreamLimits,
+        progress: TCPFollowProgressHandler?,
+        shouldCancel: TCPFollowCancellationCheck?,
+        completion: @escaping TCPViewerCompletion<DecryptedStreamResult>
+    ) {
+        state.loadDecryptedStream(
+            containing: packetID,
+            limits: limits,
+            progress: progress,
+            shouldCancel: shouldCancel,
+            completion: completion
+        )
+    }
+
     public func save(completion: @escaping TCPViewerVoidCompletion) {
         state.save(completion: completion)
     }
@@ -284,6 +300,33 @@ private final class NativeOfflineCaptureDocumentState: @unchecked Sendable {
                         capturedThroughPacketID: packets.last?.id ?? packetID,
                         capturedAt: Date(),
                         isTruncated: fields.isTruncated
+                    )
+                } catch {
+                    throw NativeBridgeMapper.coreError(error, defaultCode: .unavailableFeature)
+                }
+            })
+        }
+    }
+
+    func loadDecryptedStream(
+        containing packetID: PacketSummary.ID,
+        limits: DecryptedStreamLimits,
+        progress: TCPFollowProgressHandler?,
+        shouldCancel: TCPFollowCancellationCheck?,
+        completion: @escaping TCPViewerCompletion<DecryptedStreamResult>
+    ) {
+        let packets = packetCache.get()
+        followQueue.async {
+            completion(Result {
+                guard packets.contains(where: { $0.id == packetID }) else {
+                    throw TCPViewerCoreError(code: .offlineFileOpenFailed, message: "Packet \(packetID) is not available.")
+                }
+                do {
+                    return try self.nativeDocument.loadDecryptedStream(
+                        containing: packetID,
+                        limits: limits,
+                        progress: progress,
+                        shouldCancel: shouldCancel
                     )
                 } catch {
                     throw NativeBridgeMapper.coreError(error, defaultCode: .unavailableFeature)

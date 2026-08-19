@@ -42,6 +42,10 @@ enum PCPPNativeTransportHint: Int {
     case websocket = 10
     case payload = 11
     case unknown = 12
+    case http2 = 13
+    case http3 = 14
+    case dtls = 15
+    case quic = 16
 }
 
 enum PCPPNativeDecodeStatusKind: Int {

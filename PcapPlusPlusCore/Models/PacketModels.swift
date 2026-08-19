@@ -17,7 +17,11 @@ public enum TransportProtocolHint: String, Sendable, Codable {
     case udp
     case dns
     case http1
+    case http2
+    case http3
     case tls
+    case dtls
+    case quic
     case websocket
     case payload
     case unknown
@@ -126,6 +130,7 @@ public struct PacketInspection: Sendable, Codable, Hashable {
     public let byteViews: [PacketByteView]
     public let detailNodes: [PacketDetailNode]
     public let decodeStatus: PacketDecodeStatus
+    public let decryptedStreamReference: DecryptedStreamReference?
 
     public init(
         packetID: UInt64,
@@ -133,7 +138,8 @@ public struct PacketInspection: Sendable, Codable, Hashable {
         rawBytes: Data,
         byteViews: [PacketByteView]? = nil,
         detailNodes: [PacketDetailNode],
-        decodeStatus: PacketDecodeStatus
+        decodeStatus: PacketDecodeStatus,
+        decryptedStreamReference: DecryptedStreamReference? = nil
     ) {
         self.packetID = packetID
         self.packetNumber = packetNumber
@@ -141,6 +147,7 @@ public struct PacketInspection: Sendable, Codable, Hashable {
         self.byteViews = byteViews ?? [PacketByteView(id: "frame", label: "Frame", bytes: rawBytes)]
         self.detailNodes = detailNodes
         self.decodeStatus = decodeStatus
+        self.decryptedStreamReference = decryptedStreamReference
     }
 }
 

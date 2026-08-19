@@ -299,6 +299,54 @@ final class PCPPNativeOfflineDocument {
         )
     }
 
+    // Explicit inspector loading may replay the capture once; live ingestion never calls this path.
+    func loadDecryptedStream(
+        containing identifier: UInt64,
+        limits: DecryptedStreamLimits,
+        progress: TCPFollowProgressHandler?,
+        shouldCancel: TCPFollowCancellationCheck?
+    ) throws -> DecryptedStreamResult {
+        let snapshot = try state.read { state -> (NativePacketRecord, [NativePacketRecord], WiresharkEpanSession) in
+            guard state.file.records.count <= limits.maximumCandidatePacketCount else {
+                throw NativeNSError(.unavailableFeature, "This capture has more than \(limits.maximumCandidatePacketCount) packets.")
+            }
+            guard let selected = state.file.records.first(where: { $0.identifier == identifier }) else {
+                throw NativeNSError(.fileReadFailed, "Packet \(identifier) is not available in the backing store.")
+            }
+            guard let session = state.dissectionSession else {
+                throw NativeNSError(.unavailableFeature, "Wireshark TLS stream decryption is unavailable for this capture.")
+            }
+            return (selected, state.file.records, session)
+        }
+        let identifiers = snapshot.1.map(\.identifier)
+        let fields: WiresharkDecryptedFollowFields
+        if snapshot.2.canFollowObservedPackets(withIdentifiers: identifiers) {
+            fields = try snapshot.2.followObservedDecryptedStream(
+                containing: snapshot.0,
+                records: snapshot.1,
+                limits: limits,
+                progress: progress,
+                shouldCancel: shouldCancel
+            )
+        } else {
+            fields = try WiresharkEpanSession.followDecryptedStreamInTemporarySession(
+                containing: snapshot.0,
+                records: snapshot.1,
+                limits: limits,
+                progress: progress,
+                shouldCancel: shouldCancel
+            )
+        }
+        return DecryptedStreamResult(
+            reference: DecryptedStreamReference(packetID: identifier, protocolName: fields.protocolName),
+            protocolName: fields.protocolName,
+            client: fields.client,
+            server: fields.server,
+            request: fields.request,
+            response: fields.response
+        )
+    }
+
     func save() throws {
         let snapshot = state.read { ($0.file, $0.currentURL) }
         try NativeCaptureFile.write(records: snapshot.0.records, to: snapshot.1, format: snapshot.0.format)
@@ -865,6 +913,45 @@ final class PCPPNativeLiveSession {
         )
     }
 
+    func loadDecryptedStream(
+        containing identifier: UInt64,
+        limits: DecryptedStreamLimits,
+        progress: TCPFollowProgressHandler?,
+        shouldCancel: TCPFollowCancellationCheck?
+    ) throws -> DecryptedStreamResult {
+        let snapshot = try state.read { state -> NativeLivePacketDiskSnapshot in
+            guard state.phase == .stopped else {
+                throw NativeNSError(.unavailableFeature, "Stop the live capture to load the complete decrypted stream.")
+            }
+            guard state.hadWorkingDissectionSession else {
+                throw NativeNSError(.unavailableFeature, "Wireshark TLS stream decryption is unavailable for this capture.")
+            }
+            return try state.packetStore.snapshotAll(
+                maximumPacketCount: limits.maximumCandidatePacketCount,
+                shouldCancel: shouldCancel
+            )
+        }
+        let records = try snapshot.records(maximumBytes: 256 * 1_024 * 1_024, shouldCancel: shouldCancel)
+        guard let selected = records.first(where: { $0.identifier == identifier }) else {
+            throw NativeNSError(.fileReadFailed, "The selected packet is no longer in the live snapshot.")
+        }
+        let fields = try WiresharkEpanSession.followDecryptedStreamInTemporarySession(
+            containing: selected,
+            records: records,
+            limits: limits,
+            progress: progress,
+            shouldCancel: shouldCancel
+        )
+        return DecryptedStreamResult(
+            reference: DecryptedStreamReference(packetID: identifier, protocolName: fields.protocolName),
+            protocolName: fields.protocolName,
+            client: fields.client,
+            server: fields.server,
+            request: fields.request,
+            response: fields.response
+        )
+    }
+
     func reanalyzePacketSummaries() throws -> [PCPPNativePacketSummaryDescriptor] {
         try reanalyzePacketSummaries(withIdentifiers: nil)
     }
@@ -1150,6 +1237,18 @@ private func transportHint(analyzed: AnalyzedPacket, wireshark: WiresharkPacketS
 
     // Wireshark has conversation/reassembly state that the metadata analyzer intentionally does not keep.
     // Let epan's decoded protocol win for app-level hints when it has stronger evidence.
+    if protocolSummary.contains("http3") || protocolSummary.contains("http/3") {
+        return .http3
+    }
+    if protocolSummary.contains("http2") || protocolSummary.contains("http/2") {
+        return .http2
+    }
+    if protocolSummary.contains("quic") {
+        return .quic
+    }
+    if protocolSummary.contains("dtls") {
+        return .dtls
+    }
     if wireshark.sniDomainName?.isEmpty == false
         || protocolSummary.contains("tls")
         || infoSummary.contains("client hello")

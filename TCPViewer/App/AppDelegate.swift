@@ -16,6 +16,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var aboutWindowController: TCPViewerAboutWindowController?
     private var settingsWindowController: NSWindowController?
+    private var tlsKeyLogWindowController: TLSKeyLogWindowController?
+    private var tlsKeyLogReloadTimer: Timer?
+    private var hasPendingTLSKeyLogReload = false
+    private var isReloadingTLSKeyLogCaptures = false
     private var licenseWindowController: TCPViewerLicenseWindowController?
     private var updaterController: SPUStandardUpdaterController?
     private let sparkleUpdaterDelegate = TCPViewerSparkleUpdaterDelegate()
@@ -26,6 +30,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var configurationObserver: NSObjectProtocol?
     private lazy var sentryService = TCPViewerSentryService(configuration: appConfiguration)
     private lazy var factoryResetService = TCPViewerFactoryResetService(helperToolManager: networkHelperToolManager)
+    private let tlsKeyLogManager = NativeTLSKeyLogManager()
     private var isHandlingTermination = false
     private var skipsNextQuitConfirmation = false
     private var isShowingRenewalRequiredAlert = false
@@ -49,6 +54,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         checkForAvailableUpdatesAtLaunch()
         wireClearAllPacketsMenu()
         wireFilterMenu()
+        wireToolsMenu()
         wireHelpMenu()
         verifyLicenseAtLaunch()
         updateMCPServerAvailability()
@@ -114,6 +120,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @IBAction func openDocument(_ sender: Any?) {
         presentCaptureOpenPanel()
+    }
+
+    @objc private func showTLSKeyLog(_ sender: Any?) {
+        if let tlsKeyLogWindowController {
+            tlsKeyLogWindowController.showWindow(sender)
+            tlsKeyLogWindowController.window?.makeKeyAndOrderFront(sender)
+            return
+        }
+
+        let controller = TLSKeyLogWindowController(manager: tlsKeyLogManager)
+        controller.configurationDidChange = { [weak self] in
+            self?.handleTLSKeyLogConfigurationChange()
+        }
+        tlsKeyLogWindowController = controller
+        controller.showWindow(sender)
+        controller.window?.center()
+        controller.window?.makeKeyAndOrderFront(sender)
     }
 
     private func prepareForTermination(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -617,6 +640,93 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         editMenu.insertItem(item, at: insertionIndex)
     }
 
+    // Insert one idempotent app-level Tools menu immediately before Window.
+    func wireToolsMenu() {
+        guard let mainMenu = NSApp.mainMenu else {
+            return
+        }
+        let toolsItem: NSMenuItem
+        if let existing = mainMenu.items.first(where: { $0.title == "Tools" }) {
+            toolsItem = existing
+        } else {
+            toolsItem = NSMenuItem(title: "Tools", action: nil, keyEquivalent: "")
+            let windowIndex = mainMenu.items.firstIndex(where: { $0.title == "Window" }) ?? mainMenu.items.count
+            mainMenu.insertItem(toolsItem, at: windowIndex)
+        }
+
+        let toolsMenu = toolsItem.submenu ?? NSMenu(title: "Tools")
+        toolsItem.submenu = toolsMenu
+        if let existing = toolsMenu.items.first(where: { $0.action == #selector(showTLSKeyLog(_:)) }) {
+            existing.title = "TLS Key Log…"
+            existing.target = self
+            return
+        }
+        let keyLogItem = NSMenuItem(title: "TLS Key Log…", action: #selector(showTLSKeyLog(_:)), keyEquivalent: "")
+        keyLogItem.target = self
+        toolsMenu.addItem(keyLogItem)
+    }
+
+    private func handleTLSKeyLogConfigurationChange() {
+        workspaceWindowControllers().forEach {
+            $0.rootViewController.viewModel.invalidateInspectionAfterTLSKeyLogChange()
+        }
+        hasPendingTLSKeyLogReload = true
+        processPendingTLSKeyLogReload()
+    }
+
+    // A live capture has EPAN priority, so wait until Stop before reopening offline captures.
+    private func processPendingTLSKeyLogReload() {
+        guard hasPendingTLSKeyLogReload, !isReloadingTLSKeyLogCaptures else {
+            return
+        }
+        guard !workspaceWindowControllers().contains(where: { $0.rootViewController.viewModel.snapshot.base.sessionState.phase.ownsWiresharkRuntime }) else {
+            scheduleTLSKeyLogReloadRetry()
+            return
+        }
+
+        tlsKeyLogReloadTimer?.invalidate()
+        tlsKeyLogReloadTimer = nil
+        hasPendingTLSKeyLogReload = false
+        isReloadingTLSKeyLogCaptures = true
+        let offlineControllers = workspaceWindowControllers().filter {
+            $0.rootViewController.viewModel.snapshot.base.packetIngestState.source == .offline
+        }
+        reloadOfflineCaptures(offlineControllers, index: 0) { [weak self] in
+            guard let self else {
+                return
+            }
+            self.isReloadingTLSKeyLogCaptures = false
+            self.processPendingTLSKeyLogReload()
+        }
+    }
+
+    private func reloadOfflineCaptures(
+        _ controllers: [TCPViewerWindowController],
+        index: Int,
+        completion: @escaping () -> Void
+    ) {
+        guard index < controllers.count else {
+            completion()
+            return
+        }
+        controllers[index].rootViewController.viewModel.reloadAfterTLSKeyLogChange { [weak self] in
+            self?.reloadOfflineCaptures(controllers, index: index + 1, completion: completion)
+        }
+    }
+
+    private func scheduleTLSKeyLogReloadRetry() {
+        guard tlsKeyLogReloadTimer == nil else {
+            return
+        }
+        tlsKeyLogReloadTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            self?.processPendingTLSKeyLogReload()
+        }
+    }
+
+    private func workspaceWindowControllers() -> [TCPViewerWindowController] {
+        NSApp.windows.compactMap { $0.windowController as? TCPViewerWindowController }
+    }
+
     private func configureClearAllPacketsMenuItem(_ item: NSMenuItem) {
         item.title = "Clear All Packets"
         item.target = nil
@@ -913,6 +1023,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             TCPViewerLicenseWebsiteService.open(.renewLicense)
         }
         isShowingRenewalRequiredAlert = false
+    }
+}
+
+private extension CaptureSessionState.Phase {
+    var ownsWiresharkRuntime: Bool {
+        switch self {
+        case .starting, .running, .paused, .stopping:
+            true
+        case .idle, .ready, .stopped, .failed:
+            false
+        }
     }
 }
 
