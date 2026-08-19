@@ -326,6 +326,139 @@ export function normalizeBetaDMGCustomName(value) {
   return normalizeFileNameSegment(normalized, "Beta DMG custom name");
 }
 
+export function makeHomebrewCaskBranchName({ version, buildNumber }) {
+  const safeVersion = normalizeFileNameSegment(version, "Homebrew Cask version");
+  const safeBuildNumber = normalizeFileNameSegment(buildNumber, "Homebrew Cask build number");
+  return `tcpviewer-${safeVersion}-${safeBuildNumber}`;
+}
+
+export function makeHomebrewCaskAuditArgs({ isInitialCask, token = "tcpviewer" }) {
+  const args = ["audit", "--cask", "--online"];
+  if (isInitialCask) {
+    args.push("--new");
+  }
+  args.push(token);
+  return args;
+}
+
+export function validateHomebrewLivecheckOutput(output, expectedVersion) {
+  let entries;
+  try {
+    entries = JSON.parse(String(output));
+  } catch {
+    throw new Error("Homebrew livecheck did not return valid JSON.");
+  }
+  const entry = Array.isArray(entries) ? entries[0] : null;
+  if (!entry?.version) {
+    throw new Error(`Homebrew livecheck did not return a version: ${entry?.status ?? "missing result"}.`);
+  }
+  if (entry.version.current !== expectedVersion || entry.version.latest !== expectedVersion) {
+    throw new Error(
+      `Homebrew livecheck must report ${expectedVersion} as current and latest; `
+      + `found ${entry.version.current ?? "unknown"} and ${entry.version.latest ?? "unknown"}.`
+    );
+  }
+}
+
+export function makeHomebrewCaskPullRequestBody({ isInitialCask, githubMetrics, token = "tcpviewer" }) {
+  const lines = [
+    "-----",
+    "",
+    "- [x] The submission is for "
+    + "[a stable version](https://docs.brew.sh/Acceptable-Casks#stable-versions) or documented exception.",
+    `- [x] \`brew audit --cask --online ${token}\` is error-free.`,
+    `- [x] \`brew style --fix ${token}\` reports no offenses.`,
+    ""
+  ];
+  if (isInitialCask) {
+    if (!githubMetrics) {
+      throw new Error("GitHub metrics are required for an initial Homebrew Cask pull request.");
+    }
+    lines.push(
+      "Additionally, for this new cask:",
+      "",
+      "- [x] Named the cask according to the "
+      + "[token reference](https://docs.brew.sh/Cask-Cookbook#token-reference).",
+      "- [x] Checked that the cask was not previously refused.",
+      `- [x] \`brew audit --cask --new ${token}\` worked successfully.`,
+      `- [x] \`HOMEBREW_NO_INSTALL_FROM_API=1 brew install --cask ${token}\` worked successfully.`,
+      `- [x] \`brew uninstall --cask ${token}\` worked successfully.`,
+      "",
+      "Canonical repository: https://github.com/ProxymanApp/TCPViewer ",
+      `(${githubMetrics.stars} stars, ${githubMetrics.forks} forks, `
+      + `${githubMetrics.watchers} watchers when this PR was created).`,
+      ""
+    );
+  }
+  lines.push(
+    "-----",
+    "",
+    "- [x] I disclosed the AI/LLM tool below and reviewed its output, including the "
+    + "[zap stanza](https://docs.brew.sh/Cask-Cookbook#stanza-zap) paths; I did not attribute commits to AI "
+    + "and will answer maintainer questions and review comments myself without AI/LLM.",
+    "",
+    "OpenAI Codex assisted with the release automation that updated this cask. The maintainer reviewed the "
+    + "cask, verified the release artifact, and ran the checked Homebrew validation commands.",
+    "",
+    "-----"
+  );
+  return lines.join("\n");
+}
+
+export function parseHomebrewCaskVersion(content) {
+  const match = String(content).match(/^  version "([^"]+),([^"]+)"$/m);
+  if (!match) {
+    throw new Error("TCP Viewer Homebrew Cask must contain one version with a version and build number.");
+  }
+
+  return { version: match[1], buildNumber: match[2] };
+}
+
+export function githubRepoFromRemoteURL(remoteURL) {
+  const match = String(remoteURL).trim().match(
+    /^(?:git@github\.com:|ssh:\/\/git@github\.com\/|https:\/\/github\.com\/)([^/]+\/[^/]+?)(?:\.git)?$/i
+  );
+  return match ? match[1].toLowerCase() : null;
+}
+
+export function validateHomebrewCaskContent(content) {
+  const current = String(content);
+  const parsedVersion = parseHomebrewCaskVersion(current);
+  const versionMatches = current.match(/^  version ".*"$/gm) ?? [];
+  const shaMatches = current.match(/^  sha256 ".*"$/gm) ?? [];
+  if (versionMatches.length !== 1 || shaMatches.length !== 1) {
+    throw new Error("TCP Viewer Homebrew Cask must contain exactly one version and one SHA-256 stanza.");
+  }
+  if (!/^  depends_on arch: :arm64$/m.test(current)) {
+    throw new Error("TCP Viewer Homebrew Cask must require Apple Silicon.");
+  }
+  if (!/^  app "TCP Viewer\.app"$/m.test(current)) {
+    throw new Error("TCP Viewer Homebrew Cask must install TCP Viewer.app.");
+  }
+
+  return parsedVersion;
+}
+
+export function updateHomebrewCaskContent(content, { version, buildNumber, sha256 }) {
+  const current = String(content);
+  validateHomebrewCaskContent(current);
+  const safeVersion = normalizeFileNameSegment(version, "Homebrew Cask version");
+  const safeBuildNumber = normalizeFileNameSegment(buildNumber, "Homebrew Cask build number");
+  const safeSHA256 = String(sha256 ?? "").trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(safeSHA256)) {
+    throw new Error("Homebrew Cask SHA-256 must contain 64 hexadecimal characters.");
+  }
+
+  const versionMatch = current.match(/^  version ".*"$/m)[0];
+  const shaMatch = current.match(/^  sha256 ".*"$/m)[0];
+
+  const updated = current
+    .replace(versionMatch, `  version "${safeVersion},${safeBuildNumber}"`)
+    .replace(shaMatch, `  sha256 "${safeSHA256}"`);
+  validateHomebrewCaskContent(updated);
+  return updated;
+}
+
 export function makeR2ObjectKey({ releaseType, version, buildNumber, timestamp, fileName }) {
   const safeFileName = validateDMGFileName(fileName ?? makeDMGFileName({ version, buildNumber }));
 

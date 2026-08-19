@@ -20,6 +20,12 @@ function parseArgs(argv) {
       args.betaName = arg.slice("--beta-name=".length).trim();
     } else if (arg === "--yes" || arg === "-y") {
       args.yes = true;
+    } else if (arg === "--bump-homebrew") {
+      args.bumpHomebrew = true;
+    } else if (arg === "--no-bump-homebrew") {
+      args.bumpHomebrew = false;
+    } else if (arg === "--homebrew-install-tested") {
+      args.homebrewInstallTested = true;
     }
   }
   return args;
@@ -102,6 +108,12 @@ function buildReleaseArgs(type, args) {
   }
   if (args.yes) {
     releaseArgs.push("--yes");
+  }
+  if (typeof args.bumpHomebrew === "boolean") {
+    releaseArgs.push(args.bumpHomebrew ? "--bump-homebrew" : "--no-bump-homebrew");
+  }
+  if (args.homebrewInstallTested) {
+    releaseArgs.push("--homebrew-install-tested");
   }
   return releaseArgs;
 }
