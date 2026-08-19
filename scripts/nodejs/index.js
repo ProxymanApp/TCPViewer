@@ -24,6 +24,8 @@ function parseArgs(argv) {
       args.bumpHomebrew = true;
     } else if (arg === "--no-bump-homebrew") {
       args.bumpHomebrew = false;
+    } else if (arg === "--homebrew-install-tested") {
+      args.homebrewInstallTested = true;
     }
   }
   return args;
@@ -109,6 +111,9 @@ function buildReleaseArgs(type, args) {
   }
   if (typeof args.bumpHomebrew === "boolean") {
     releaseArgs.push(args.bumpHomebrew ? "--bump-homebrew" : "--no-bump-homebrew");
+  }
+  if (args.homebrewInstallTested) {
+    releaseArgs.push("--homebrew-install-tested");
   }
   return releaseArgs;
 }

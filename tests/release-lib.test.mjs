@@ -7,11 +7,14 @@ import {
   emptyPayloadSHA256,
   findReleaseNote,
   generateAppcastXML,
+  githubRepoFromRemoteURL,
   isRetryableHTTPStatus,
   makeBetaDMGFileName,
   makeDMGFileName,
   makeGitHubReleaseTagName,
+  makeHomebrewCaskAuditArgs,
   makeHomebrewCaskBranchName,
+  makeHomebrewCaskPullRequestBody,
   makeR2ObjectURL,
   makeR2ObjectKey,
   makeR2StorageObjectKey,
@@ -32,7 +35,9 @@ import {
   releaseNotesToHTML,
   requiredEnvNames,
   signR2Request,
-  updateHomebrewCaskContent
+  updateHomebrewCaskContent,
+  validateHomebrewCaskContent,
+  validateHomebrewLivecheckOutput
 } from "../scripts/release-lib.mjs";
 
 test("parses and validates release notes", () => {
@@ -189,6 +194,8 @@ test("updates only Homebrew Cask release metadata", () => {
     '  version "1.9.0,30"',
     `  sha256 "${"a".repeat(64)}"`,
     "",
+    "  depends_on arch: :arm64",
+    "",
     '  app "TCP Viewer.app"',
     "end",
     ""
@@ -202,6 +209,7 @@ test("updates only Homebrew Cask release metadata", () => {
   assert.deepEqual(parseHomebrewCaskVersion(updated), { version: "1.10.0", buildNumber: "31" });
   assert.match(updated, new RegExp(`sha256 "${"b".repeat(64)}"`));
   assert.match(updated, /app "TCP Viewer\.app"/);
+  assert.match(updated, /depends_on arch: :arm64/);
   assert.equal(makeHomebrewCaskBranchName({ version: "1.10.0", buildNumber: "31" }), "tcpviewer-1.10.0-31");
   assert.throws(
     () => updateHomebrewCaskContent(cask, { version: "../1.10.0", buildNumber: "31", sha256: "b".repeat(64) }),
@@ -211,6 +219,68 @@ test("updates only Homebrew Cask release metadata", () => {
     () => updateHomebrewCaskContent(cask, { version: "1.10.0", buildNumber: "31", sha256: "invalid" }),
     /SHA-256/
   );
+  assert.throws(
+    () => validateHomebrewCaskContent(cask.replace("  depends_on arch: :arm64\n", "")),
+    /Apple Silicon/
+  );
+});
+
+test("ships an initial Homebrew Cask template for the ARM64 release", () => {
+  const content = readFileSync(new URL("../scripts/homebrew/tcpviewer.rb", import.meta.url), "utf8");
+  const documentation = readFileSync(new URL("../scripts/homebrew/README.md", import.meta.url), "utf8");
+
+  assert.deepEqual(validateHomebrewCaskContent(content), { version: "0.0.0", buildNumber: "0" });
+  assert.match(content, /depends_on macos: :sequoia/);
+  assert.match(content, /homepage "https:\/\/tcpviewer\.proxyman\.com\/"/);
+  assert.match(content, /strategy :sparkle/);
+  assert.match(content, /uninstall launchctl: "com\.proxyman\.tcpviewer\.helpertool"/);
+  assert.doesNotMatch(content, /verified:/);
+  assert.match(documentation, /brew tap --force homebrew\/cask/);
+  assert.match(documentation, /--homebrew-install-tested/);
+});
+
+test("recognizes supported GitHub remote URLs", () => {
+  assert.equal(githubRepoFromRemoteURL("git@github.com:Homebrew/homebrew-cask.git"), "homebrew/homebrew-cask");
+  assert.equal(githubRepoFromRemoteURL("https://github.com/ProxymanApp/homebrew-cask"), "proxymanapp/homebrew-cask");
+  assert.equal(githubRepoFromRemoteURL("ssh://git@github.com/ProxymanApp/homebrew-cask.git"), "proxymanapp/homebrew-cask");
+  assert.equal(githubRepoFromRemoteURL("https://example.com/Homebrew/homebrew-cask.git"), null);
+});
+
+test("builds Homebrew validation and pull request metadata", () => {
+  assert.deepEqual(
+    makeHomebrewCaskAuditArgs({ isInitialCask: true }),
+    ["audit", "--cask", "--online", "--new", "tcpviewer"]
+  );
+  assert.deepEqual(
+    makeHomebrewCaskAuditArgs({ isInitialCask: false }),
+    ["audit", "--cask", "--online", "tcpviewer"]
+  );
+
+  const initialBody = makeHomebrewCaskPullRequestBody({
+    isInitialCask: true,
+    githubMetrics: { stars: 163, forks: 7, watchers: 0 }
+  });
+  assert.match(initialBody, /brew install --cask tcpviewer/);
+  assert.match(initialBody, /163 stars, 7 forks, 0 watchers/);
+  assert.match(initialBody, /OpenAI Codex assisted/);
+
+  const updateBody = makeHomebrewCaskPullRequestBody({ isInitialCask: false });
+  assert.doesNotMatch(updateBody, /brew install --cask tcpviewer/);
+  assert.throws(
+    () => makeHomebrewCaskPullRequestBody({ isInitialCask: true }),
+    /GitHub metrics/
+  );
+
+  const livecheck = JSON.stringify([{
+    cask: "tcpviewer",
+    version: { current: "1.12.0,36", latest: "1.12.0,36", outdated: false }
+  }]);
+  assert.doesNotThrow(() => validateHomebrewLivecheckOutput(livecheck, "1.12.0,36"));
+  assert.throws(
+    () => validateHomebrewLivecheckOutput(livecheck, "1.13.0,37"),
+    /current and latest/
+  );
+  assert.throws(() => validateHomebrewLivecheckOutput("not json", "1.12.0,36"), /valid JSON/);
 });
 
 test("parses xcconfig-style env files and redacts secrets", () => {
