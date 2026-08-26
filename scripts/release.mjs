@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { createReadStream } from "node:fs";
+import { createReadStream, createWriteStream } from "node:fs";
 import { createHash } from "node:crypto";
 import {
   access,
@@ -16,6 +16,8 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import prompts from "prompts";
 import {
   assertReleaseTitleReflectsChanges,
@@ -48,6 +50,7 @@ import {
   redactEnvValue,
   releaseBackendRequiredEnvNames,
   releaseNotesToMarkdown,
+  resolvePublishedGitHubReleaseArtifact,
   requiredEnvNames,
   signR2Request,
   updateHomebrewCaskContent,
@@ -69,10 +72,17 @@ const homebrewCaskForkRemote = "proxyman";
 const homebrewCaskDefaultBranch = "main";
 const homebrewCaskToken = "tcpviewer";
 const homebrewCaskRelativePath = "Casks/t/tcpviewer.rb";
+const homebrewPullRequestTemplateRelativePath = ".github/PULL_REQUEST_TEMPLATE.md";
 const homebrewCaskTemplatePath = path.join(repoRoot, "scripts/homebrew/tcpviewer.rb");
+const githubReleaseRepo = "ProxymanApp/TCPViewer";
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  if (args.homebrewOnly) {
+    await createHomebrewPullRequestForExistingRelease(args);
+    return;
+  }
+
   const releaseType = args.type ?? await askReleaseType();
   if (!["beta", "production"].includes(releaseType)) {
     throw new Error("Release type must be beta or production.");
@@ -210,6 +220,76 @@ async function main() {
   }
 
   console.log(`${releaseType === "production" ? "Production" : "BETA"} release is ready: ${downloadURL}`);
+}
+
+// Submit an already published production DMG without recreating any release records.
+async function createHomebrewPullRequestForExistingRelease(args) {
+  if (args.type && args.type !== "production") {
+    throw new Error("--homebrew-only supports production releases only.");
+  }
+  if (args.bumpHomebrew === false) {
+    throw new Error("--homebrew-only cannot be combined with --no-bump-homebrew.");
+  }
+
+  const { env, envFileExists } = await loadReleaseEnv();
+  const missing = missingRequiredEnv(env, ["TCPVIEWER_R2_PUBLIC_BASE_URL"]);
+  if (missing.length) {
+    throw new Error(`Missing required env values: ${missing.join(", ")}`);
+  }
+
+  const githubRelease = await loadLatestPublishedGitHubRelease();
+  const { version, buildNumber, dmgFileName } = githubRelease.asset;
+  const objectKey = makeR2ObjectKey({
+    releaseType: "production",
+    version,
+    buildNumber,
+    fileName: dmgFileName
+  });
+  const downloadURL = publicR2URL(env.TCPVIEWER_R2_PUBLIC_BASE_URL, objectKey);
+  const homebrewRelease = resolveHomebrewRelease({ env, version, buildNumber });
+
+  console.log("");
+  console.log("Homebrew release summary:");
+  console.log(`- App version: ${version}`);
+  console.log(`- Build number: ${buildNumber}`);
+  console.log(`- Existing GitHub release: ${githubRelease.repo} ${githubRelease.tagName}`);
+  console.log(`- Existing DMG: ${downloadURL}`);
+  console.log(`- Environment source: ${envFileExists ? ".env + shell environment" : "shell environment only"}`);
+  console.log(`- Fork branch: ${homebrewCaskForkRepo}:${homebrewRelease.branchName}`);
+  console.log(`- Pull request target: ${homebrewCaskUpstreamRepo}:${homebrewCaskDefaultBranch}`);
+  if (!args.yes && !await askHomebrewReleaseConfirmation()) {
+    console.log("Homebrew release cancelled.");
+    return;
+  }
+
+  await preflightHomebrewRelease(homebrewRelease);
+  if (
+    homebrewRelease.isInitialCask
+    && args.yes
+    && args.homebrewInstallTested !== true
+  ) {
+    throw new Error(
+      "Non-interactive initial Homebrew Cask publishing requires --homebrew-install-tested. "
+      + "Use an interactive release to pause and run the required install and uninstall checks."
+    );
+  }
+
+  const temporaryDirectory = await mkdtemp(path.join(tmpdir(), "tcpviewer-homebrew-"));
+  const dmgPath = path.join(temporaryDirectory, dmgFileName);
+  try {
+    await downloadPublishedDMG({ downloadURL, dmgPath, expectedAsset: githubRelease.asset });
+    await verifyFinalDMG({ dmgPath });
+    await createHomebrewCaskPullRequest({
+      homebrewRelease,
+      dmgPath,
+      installTested: args.homebrewInstallTested === true,
+      nonInteractive: args.yes === true
+    });
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+
+  console.log(`Homebrew Cask pull request is ready for ${version} (${buildNumber}).`);
 }
 
 async function loadReleaseEnv() {
@@ -463,6 +543,7 @@ async function preflightHomebrewRelease(homebrewRelease) {
     capture: true
   });
   await ensureHomebrewGitReady(homebrewRelease);
+  homebrewRelease.pullRequestTemplate = await readHomebrewPullRequestTemplate(homebrewRelease);
 
   const source = await readHomebrewCaskSource(homebrewRelease);
   const currentVersion = validateHomebrewCaskContent(source.content);
@@ -533,6 +614,18 @@ async function readHomebrewCaskSource(homebrewRelease) {
 
   const template = await readFile(homebrewRelease.templatePath, "utf8");
   return { content: template, isInitialCask: true };
+}
+
+async function readHomebrewPullRequestTemplate(homebrewRelease) {
+  const upstreamObject = `${homebrewCaskUpstreamRemote}/${homebrewCaskDefaultBranch}:${homebrewPullRequestTemplateRelativePath}`;
+  const result = await runCommand("git", ["show", upstreamObject], {
+    cwd: homebrewRelease.repoPath,
+    capture: true
+  });
+  if (!result.stdout.trim()) {
+    throw new Error("The upstream Homebrew Cask pull request template is empty.");
+  }
+  return result.stdout;
 }
 
 async function ensureHomebrewCaskWasNotRefused() {
@@ -646,6 +739,7 @@ async function createHomebrewCaskPullRequest({ homebrewRelease, dmgPath, install
       `tcpviewer ${homebrewRelease.version}`,
       "--body",
       makeHomebrewCaskPullRequestBody({
+        template: homebrewRelease.pullRequestTemplate,
         isInitialCask: source.isInitialCask,
         githubMetrics: homebrewRelease.githubMetrics
       })
@@ -1078,6 +1172,38 @@ async function ensureR2ObjectDoesNotExist(env, objectKey) {
   throw new Error(`R2 object already exists: ${objectKey}`);
 }
 
+// Read the latest public production release instead of trusting local project version settings.
+async function loadLatestPublishedGitHubRelease() {
+  await requireTool("gh", ["--version"]);
+  let result;
+  try {
+    result = await runCommand("gh", [
+      "release",
+      "view",
+      "--repo",
+      githubReleaseRepo,
+      "--json",
+      "assets,isDraft,isPrerelease,tagName"
+    ], { capture: true });
+  } catch (error) {
+    throw new Error(`The latest published GitHub release for ${githubReleaseRepo} was not found.\n${error.message}`);
+  }
+
+  let release;
+  try {
+    release = JSON.parse(result.stdout);
+  } catch {
+    throw new Error(`Could not parse the latest GitHub release for ${githubReleaseRepo}.`);
+  }
+
+  const asset = resolvePublishedGitHubReleaseArtifact(release);
+  return {
+    repo: githubReleaseRepo,
+    tagName: asset.tagName,
+    asset
+  };
+}
+
 async function preflightGitHubRelease({ githubRelease }) {
   await requireTool("gh", ["--version"]);
   await requireTool("gh", ["auth", "status"]);
@@ -1216,6 +1342,62 @@ async function sha256File(filePath) {
     hash.update(chunk);
   }
   return hash.digest("hex");
+}
+
+async function downloadPublishedDMG({ downloadURL, dmgPath, expectedAsset }) {
+  let requestedURL;
+  try {
+    requestedURL = new URL(downloadURL);
+  } catch {
+    throw new Error("The published DMG URL is invalid.");
+  }
+  if (requestedURL.protocol !== "https:") {
+    throw new Error("The published DMG URL must use HTTPS.");
+  }
+
+  console.log(`Downloading published DMG: ${downloadURL}`);
+  let response;
+  try {
+    response = await fetch(requestedURL, {
+      redirect: "follow",
+      signal: AbortSignal.timeout(r2UploadAttemptTimeoutMs)
+    });
+  } catch (error) {
+    throw new Error(`Published DMG download failed: ${describeFetchError(error)}`);
+  }
+  if (!response.ok) {
+    throw new Error(`Published DMG download failed: ${response.status} ${response.statusText}`);
+  }
+  if (!response.body) {
+    throw new Error("Published DMG download returned an empty response body.");
+  }
+  if (new URL(response.url).protocol !== "https:") {
+    throw new Error("The published DMG download redirected to a non-HTTPS URL.");
+  }
+
+  const contentLength = Number(response.headers.get("content-length"));
+  if (Number.isSafeInteger(contentLength) && contentLength > 0 && contentLength !== expectedAsset.size) {
+    throw new Error(
+      `Published DMG size ${contentLength} does not match GitHub release asset size ${expectedAsset.size}.`
+    );
+  }
+
+  await pipeline(
+    Readable.fromWeb(response.body),
+    createWriteStream(dmgPath, { mode: 0o600 })
+  );
+  const downloadedSize = (await stat(dmgPath)).size;
+  if (downloadedSize !== expectedAsset.size) {
+    throw new Error(
+      `Downloaded DMG size ${downloadedSize} does not match GitHub release asset size ${expectedAsset.size}.`
+    );
+  }
+
+  const downloadedSHA256 = await sha256File(dmgPath);
+  if (downloadedSHA256 !== expectedAsset.sha256) {
+    throw new Error("Downloaded DMG SHA-256 does not match the published GitHub release asset.");
+  }
+  console.log(`Published DMG verified: sha256 ${downloadedSHA256}`);
 }
 
 async function findSparkleSignUpdate(env, settings) {
@@ -1402,6 +1584,20 @@ async function askReleaseConfirmation() {
   return response.confirmed;
 }
 
+async function askHomebrewReleaseConfirmation() {
+  const response = await prompts({
+    type: "confirm",
+    name: "confirmed",
+    message: "Create the Homebrew Cask pull request from this published release?",
+    initial: false
+  });
+
+  if (typeof response.confirmed !== "boolean") {
+    throw new Error("Homebrew release cancelled.");
+  }
+  return response.confirmed;
+}
+
 function requirePromptValue(value, label) {
   if (value === undefined) {
     throw new Error(`${label} was cancelled.`);
@@ -1472,6 +1668,8 @@ function parseArgs(argv) {
       args.bumpHomebrew = false;
     } else if (arg === "--homebrew-install-tested") {
       args.homebrewInstallTested = true;
+    } else if (arg === "--homebrew-only") {
+      args.homebrewOnly = true;
     }
   }
   return args;
