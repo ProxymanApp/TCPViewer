@@ -360,49 +360,134 @@ export function validateHomebrewLivecheckOutput(output, expectedVersion) {
   }
 }
 
-export function makeHomebrewCaskPullRequestBody({ isInitialCask, githubMetrics, token = "tcpviewer" }) {
-  const lines = [
-    "-----",
-    "",
-    "- [x] The submission is for "
-    + "[a stable version](https://docs.brew.sh/Acceptable-Casks#stable-versions) or documented exception.",
-    `- [x] \`brew audit --cask --online ${token}\` is error-free.`,
-    `- [x] \`brew style --fix ${token}\` reports no offenses.`,
-    ""
-  ];
-  if (isInitialCask) {
-    if (!githubMetrics) {
-      throw new Error("GitHub metrics are required for an initial Homebrew Cask pull request.");
+export function validatePublishedGitHubReleaseAsset(release, { tagName, assetName }) {
+  if (release?.tagName !== tagName) {
+    throw new Error(`GitHub release must use tag ${tagName}.`);
+  }
+  if (release.isDraft || release.isPrerelease) {
+    throw new Error(`GitHub release ${tagName} must be a published production release.`);
+  }
+
+  const matches = Array.isArray(release.assets)
+    ? release.assets.filter((asset) => asset?.name === assetName)
+    : [];
+  if (matches.length !== 1) {
+    throw new Error(`GitHub release ${tagName} must contain exactly one ${assetName} asset.`);
+  }
+
+  const asset = matches[0];
+  const digest = String(asset.digest ?? "").trim().toLowerCase();
+  if (!/^sha256:[a-f0-9]{64}$/.test(digest)) {
+    throw new Error(`GitHub release asset ${assetName} must include a SHA-256 digest.`);
+  }
+  if (!Number.isSafeInteger(asset.size) || asset.size <= 0) {
+    throw new Error(`GitHub release asset ${assetName} must include a positive file size.`);
+  }
+
+  return {
+    name: assetName,
+    sha256: digest.slice("sha256:".length),
+    size: asset.size
+  };
+}
+
+export function resolvePublishedGitHubReleaseArtifact(release) {
+  const tagName = String(release?.tagName ?? "").trim();
+  if (!tagName.startsWith("v")) {
+    throw new Error("The latest GitHub release tag must start with v.");
+  }
+
+  const version = tagName.slice(1);
+  if (makeGitHubReleaseTagName(version) !== tagName) {
+    throw new Error(`The latest GitHub release tag is invalid: ${tagName}.`);
+  }
+
+  const prefix = `${releaseDMGAppName}_${version}_`;
+  const suffix = ".dmg";
+  const candidates = Array.isArray(release.assets)
+    ? release.assets.flatMap((asset) => {
+        const name = String(asset?.name ?? "");
+        if (!name.startsWith(prefix) || !name.endsWith(suffix)) {
+          return [];
+        }
+
+        const buildNumber = name.slice(prefix.length, -suffix.length);
+        try {
+          return makeDMGFileName({ version, buildNumber }) === name
+            ? [{ asset, buildNumber }]
+            : [];
+        } catch {
+          return [];
+        }
+      })
+    : [];
+  if (candidates.length !== 1) {
+    throw new Error(`GitHub release ${tagName} must contain exactly one production DMG asset.`);
+  }
+
+  const candidate = candidates[0];
+  const validated = validatePublishedGitHubReleaseAsset(release, {
+    tagName,
+    assetName: candidate.asset.name
+  });
+  return {
+    tagName,
+    version,
+    buildNumber: candidate.buildNumber,
+    dmgFileName: validated.name,
+    sha256: validated.sha256,
+    size: validated.size
+  };
+}
+
+export function makeHomebrewCaskPullRequestBody({ template, isInitialCask, githubMetrics }) {
+  const templateLines = String(template ?? "").replaceAll("\r\n", "\n").trim().split("\n");
+  const checkboxLines = templateLines.filter((line) => /^- \[ \] /.test(line));
+  if (checkboxLines.length === 0 || !checkboxLines.some((line) => /\b(?:AI|LLM)\b/i.test(line))) {
+    throw new Error("The Homebrew Cask pull request template is missing its checklist or AI disclosure.");
+  }
+  if (isInitialCask && !githubMetrics) {
+    throw new Error("GitHub metrics are required for an initial Homebrew Cask pull request.");
+  }
+
+  let inNewCaskSection = false;
+  const completedTemplate = templateLines.map((line) => {
+    if (line.startsWith("Additionally, if adding a new cask:")) {
+      inNewCaskSection = true;
+      return line;
     }
-    lines.push(
-      "Additionally, for this new cask:",
-      "",
-      "- [x] Named the cask according to the "
-      + "[token reference](https://docs.brew.sh/Cask-Cookbook#token-reference).",
-      "- [x] Checked that the cask was not previously refused.",
-      `- [x] \`brew audit --cask --new ${token}\` worked successfully.`,
-      `- [x] \`HOMEBREW_NO_INSTALL_FROM_API=1 brew install --cask ${token}\` worked successfully.`,
-      `- [x] \`brew uninstall --cask ${token}\` worked successfully.`,
-      "",
-      "Canonical repository: https://github.com/ProxymanApp/TCPViewer ",
-      `(${githubMetrics.stars} stars, ${githubMetrics.forks} forks, `
-      + `${githubMetrics.watchers} watchers when this PR was created).`,
+    if (inNewCaskSection && /^-+$/.test(line.trim())) {
+      inNewCaskSection = false;
+      return line;
+    }
+    if (/^- \[ \] /.test(line) && (isInitialCask || !inNewCaskSection)) {
+      return line.replace("- [ ] ", "- [x] ");
+    }
+    return line;
+  });
+
+  const finalSeparatorIndex = completedTemplate.findLastIndex((line) => /^-+$/.test(line.trim()));
+  if (finalSeparatorIndex === -1) {
+    throw new Error("The Homebrew Cask pull request template is missing its final separator.");
+  }
+
+  const details = [];
+  if (isInitialCask) {
+    details.push(
+      "Canonical repository: https://github.com/ProxymanApp/TCPViewer",
+      `Repository metrics: ${githubMetrics.stars} stars, ${githubMetrics.forks} forks, `
+      + `${githubMetrics.watchers} watchers when this PR was created.`,
       ""
     );
   }
-  lines.push(
-    "-----",
-    "",
-    "- [x] I disclosed the AI/LLM tool below and reviewed its output, including the "
-    + "[zap stanza](https://docs.brew.sh/Cask-Cookbook#stanza-zap) paths; I did not attribute commits to AI "
-    + "and will answer maintainer questions and review comments myself without AI/LLM.",
-    "",
-    "OpenAI Codex assisted with the release automation that updated this cask. The maintainer reviewed the "
-    + "cask, verified the release artifact, and ran the checked Homebrew validation commands.",
-    "",
-    "-----"
+  details.push(
+    "AI/LLM disclosure: OpenAI Codex assisted with the release automation that updated this cask. The maintainer "
+    + "reviewed the cask, verified the release artifact, and ran the checked Homebrew validation commands.",
+    ""
   );
-  return lines.join("\n");
+
+  completedTemplate.splice(finalSeparatorIndex, 0, ...details);
+  return completedTemplate.join("\n");
 }
 
 export function parseHomebrewCaskVersion(content) {

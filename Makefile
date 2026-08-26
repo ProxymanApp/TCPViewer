@@ -1,4 +1,4 @@
-.PHONY: build release beta production nodejs-install
+.PHONY: build release beta production homebrew nodejs-install
 
 build: release
 
@@ -10,6 +10,9 @@ beta:
 
 production:
 	cd scripts/nodejs && npm start -- --type=production
+
+homebrew:
+	npm run release:homebrew
 
 nodejs-install:
 	npm install

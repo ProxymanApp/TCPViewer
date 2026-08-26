@@ -243,6 +243,18 @@ Production releases also:
 - Push the `v<version>` tag.
 - Publish the GitHub release.
 
+To create only the Homebrew Cask pull request for the latest public production
+release, run `make build` and choose `Homebrew Cask PR from latest release`.
+You can also run the direct command:
+
+```bash
+npm run release:homebrew
+```
+
+This verifies the public DMG against the GitHub release asset, pushes a branch to
+`ProxymanApp/homebrew-cask`, and opens the contribution pull request in
+`Homebrew/homebrew-cask`.
+
 Artifacts are written to:
 
 ```bash

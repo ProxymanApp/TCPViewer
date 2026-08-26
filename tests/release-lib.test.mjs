@@ -33,11 +33,13 @@ import {
   releaseBackendRequiredEnvNames,
   releaseNotesToMarkdown,
   releaseNotesToHTML,
+  resolvePublishedGitHubReleaseArtifact,
   requiredEnvNames,
   signR2Request,
   updateHomebrewCaskContent,
   validateHomebrewCaskContent,
-  validateHomebrewLivecheckOutput
+  validateHomebrewLivecheckOutput,
+  validatePublishedGitHubReleaseAsset
 } from "../scripts/release-lib.mjs";
 
 test("parses and validates release notes", () => {
@@ -256,19 +258,62 @@ test("builds Homebrew validation and pull request metadata", () => {
     ["audit", "--cask", "--online", "tcpviewer"]
   );
 
+  const pullRequestTemplate = [
+    "-----",
+    "",
+    "<!-- Do not tick a checkbox if you haven’t performed its action. -->",
+    "",
+    "After making any changes to a cask, existing or new, verify:",
+    "",
+    "- [ ] The submission is for [a stable version](https://docs.brew.sh/Acceptable-Casks#stable-versions) or [documented exception](https://docs.brew.sh/Acceptable-Casks#but-there-is-no-stable-version).",
+    "- [ ] `brew audit --cask --online <cask>` is error-free.",
+    "- [ ] `brew style --fix <cask>` reports no offenses.",
+    "",
+    "Additionally, if adding a new cask:",
+    "",
+    "- [ ] Named the cask according to the [token reference](https://docs.brew.sh/Cask-Cookbook#token-reference).",
+    "- [ ] Checked the cask was not [already refused](https://github.com/search?q=refused).",
+    "- [ ] `brew audit --cask --new <cask>` worked successfully.",
+    "- [ ] `HOMEBREW_NO_INSTALL_FROM_API=1 brew install --cask <cask>` worked successfully.",
+    "- [ ] `brew uninstall --cask <cask>` worked successfully.",
+    "",
+    "-----",
+    "",
+    "- [ ] I did not use AI/LLM to create this PR, or I disclosed the tool/model below and reviewed its output.",
+    "",
+    "<!-- If AI was used, explain below how it was used and how you verified the changes. -->",
+    "",
+    "-----",
+    ""
+  ].join("\n");
   const initialBody = makeHomebrewCaskPullRequestBody({
+    template: pullRequestTemplate,
     isInitialCask: true,
     githubMetrics: { stars: 163, forks: 7, watchers: 0 }
   });
-  assert.match(initialBody, /brew install --cask tcpviewer/);
+  assert.match(initialBody, /brew install --cask <cask>/);
   assert.match(initialBody, /163 stars, 7 forks, 0 watchers/);
-  assert.match(initialBody, /OpenAI Codex assisted/);
+  assert.match(initialBody, /AI\/LLM disclosure: OpenAI Codex assisted/);
+  assert.match(initialBody, /<!-- Do not tick a checkbox/);
+  for (const checkbox of pullRequestTemplate.split("\n").filter((line) => line.startsWith("- [ ] "))) {
+    assert.ok(initialBody.includes(checkbox.replace("- [ ] ", "- [x] ")));
+  }
 
-  const updateBody = makeHomebrewCaskPullRequestBody({ isInitialCask: false });
+  const updateBody = makeHomebrewCaskPullRequestBody({
+    template: pullRequestTemplate,
+    isInitialCask: false
+  });
   assert.doesNotMatch(updateBody, /brew install --cask tcpviewer/);
+  assert.match(updateBody, /- \[ \] `brew uninstall --cask <cask>`/);
+  assert.match(updateBody, /- \[x\] `brew audit --cask --online <cask>`/);
+  assert.match(updateBody, /- \[x\] I did not use AI\/LLM/);
   assert.throws(
-    () => makeHomebrewCaskPullRequestBody({ isInitialCask: true }),
+    () => makeHomebrewCaskPullRequestBody({ template: pullRequestTemplate, isInitialCask: true }),
     /GitHub metrics/
+  );
+  assert.throws(
+    () => makeHomebrewCaskPullRequestBody({ template: "missing checklist", isInitialCask: false }),
+    /missing its checklist/
   );
 
   const livecheck = JSON.stringify([{
@@ -281,6 +326,66 @@ test("builds Homebrew validation and pull request metadata", () => {
     /current and latest/
   );
   assert.throws(() => validateHomebrewLivecheckOutput("not json", "1.12.0,36"), /valid JSON/);
+});
+
+test("validates the published DMG used by a Homebrew-only release", () => {
+  const release = {
+    tagName: "v1.12.0",
+    isDraft: false,
+    isPrerelease: false,
+    assets: [{
+      name: "tcpviewer_1.12.0_36.dmg",
+      size: 45_209_211,
+      digest: `sha256:${"a".repeat(64)}`
+    }]
+  };
+  const expected = {
+    tagName: "v1.12.0",
+    assetName: "tcpviewer_1.12.0_36.dmg"
+  };
+
+  assert.deepEqual(validatePublishedGitHubReleaseAsset(release, expected), {
+    name: "tcpviewer_1.12.0_36.dmg",
+    size: 45_209_211,
+    sha256: "a".repeat(64)
+  });
+  assert.deepEqual(resolvePublishedGitHubReleaseArtifact(release), {
+    tagName: "v1.12.0",
+    version: "1.12.0",
+    buildNumber: "36",
+    dmgFileName: "tcpviewer_1.12.0_36.dmg",
+    size: 45_209_211,
+    sha256: "a".repeat(64)
+  });
+  assert.throws(
+    () => validatePublishedGitHubReleaseAsset({ ...release, isDraft: true }, expected),
+    /published production release/
+  );
+  assert.throws(
+    () => validatePublishedGitHubReleaseAsset({ ...release, assets: [] }, expected),
+    /exactly one/
+  );
+  assert.throws(
+    () => validatePublishedGitHubReleaseAsset({
+      ...release,
+      assets: [{ ...release.assets[0], digest: null }]
+    }, expected),
+    /SHA-256 digest/
+  );
+  assert.throws(
+    () => resolvePublishedGitHubReleaseArtifact({
+      ...release,
+      tagName: "latest"
+    }),
+    /must start with v/
+  );
+  assert.throws(
+    () => resolvePublishedGitHubReleaseArtifact({
+      ...release,
+      assets: [{ ...release.assets[0], name: "tcpviewer_1.11.0_35.dmg" }]
+    }),
+    /exactly one production DMG/
+  );
 });
 
 test("parses xcconfig-style env files and redacts secrets", () => {
