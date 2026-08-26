@@ -7,10 +7,14 @@ import {
   emptyPayloadSHA256,
   findReleaseNote,
   generateAppcastXML,
+  githubRepoFromRemoteURL,
   isRetryableHTTPStatus,
   makeBetaDMGFileName,
   makeDMGFileName,
   makeGitHubReleaseTagName,
+  makeHomebrewCaskAuditArgs,
+  makeHomebrewCaskBranchName,
+  makeHomebrewCaskPullRequestBody,
   makeR2ObjectURL,
   makeR2ObjectKey,
   makeR2StorageObjectKey,
@@ -20,6 +24,7 @@ import {
   normalizeReleaseBackendURL,
   normalizeSparklePrivateKey,
   parseEnvFile,
+  parseHomebrewCaskVersion,
   parseReleaseNotes,
   parseSparkleSignatureOutput,
   publicR2URL,
@@ -28,8 +33,13 @@ import {
   releaseBackendRequiredEnvNames,
   releaseNotesToMarkdown,
   releaseNotesToHTML,
+  resolvePublishedGitHubReleaseArtifact,
   requiredEnvNames,
-  signR2Request
+  signR2Request,
+  updateHomebrewCaskContent,
+  validateHomebrewCaskContent,
+  validateHomebrewLivecheckOutput,
+  validatePublishedGitHubReleaseAsset
 } from "../scripts/release-lib.mjs";
 
 test("parses and validates release notes", () => {
@@ -180,6 +190,204 @@ test("builds versioned DMG file names", () => {
   );
 });
 
+test("updates only Homebrew Cask release metadata", () => {
+  const cask = [
+    'cask "tcpviewer" do',
+    '  version "1.9.0,30"',
+    `  sha256 "${"a".repeat(64)}"`,
+    "",
+    "  depends_on arch: :arm64",
+    "",
+    '  app "TCP Viewer.app"',
+    "end",
+    ""
+  ].join("\n");
+  const updated = updateHomebrewCaskContent(cask, {
+    version: "1.10.0",
+    buildNumber: "31",
+    sha256: "B".repeat(64)
+  });
+
+  assert.deepEqual(parseHomebrewCaskVersion(updated), { version: "1.10.0", buildNumber: "31" });
+  assert.match(updated, new RegExp(`sha256 "${"b".repeat(64)}"`));
+  assert.match(updated, /app "TCP Viewer\.app"/);
+  assert.match(updated, /depends_on arch: :arm64/);
+  assert.equal(makeHomebrewCaskBranchName({ version: "1.10.0", buildNumber: "31" }), "tcpviewer-1.10.0-31");
+  assert.throws(
+    () => updateHomebrewCaskContent(cask, { version: "../1.10.0", buildNumber: "31", sha256: "b".repeat(64) }),
+    /Homebrew Cask version/
+  );
+  assert.throws(
+    () => updateHomebrewCaskContent(cask, { version: "1.10.0", buildNumber: "31", sha256: "invalid" }),
+    /SHA-256/
+  );
+  assert.throws(
+    () => validateHomebrewCaskContent(cask.replace("  depends_on arch: :arm64\n", "")),
+    /Apple Silicon/
+  );
+});
+
+test("ships an initial Homebrew Cask template for the ARM64 release", () => {
+  const content = readFileSync(new URL("../scripts/homebrew/tcpviewer.rb", import.meta.url), "utf8");
+  const documentation = readFileSync(new URL("../scripts/homebrew/README.md", import.meta.url), "utf8");
+
+  assert.deepEqual(validateHomebrewCaskContent(content), { version: "0.0.0", buildNumber: "0" });
+  assert.match(content, /depends_on macos: :sequoia/);
+  assert.match(content, /homepage "https:\/\/tcpviewer\.proxyman\.com\/"/);
+  assert.match(content, /strategy :sparkle/);
+  assert.match(content, /uninstall launchctl: "com\.proxyman\.tcpviewer\.helpertool"/);
+  assert.doesNotMatch(content, /verified:/);
+  assert.match(documentation, /brew tap --force homebrew\/cask/);
+  assert.match(documentation, /--homebrew-install-tested/);
+});
+
+test("recognizes supported GitHub remote URLs", () => {
+  assert.equal(githubRepoFromRemoteURL("git@github.com:Homebrew/homebrew-cask.git"), "homebrew/homebrew-cask");
+  assert.equal(githubRepoFromRemoteURL("https://github.com/ProxymanApp/homebrew-cask"), "proxymanapp/homebrew-cask");
+  assert.equal(githubRepoFromRemoteURL("ssh://git@github.com/ProxymanApp/homebrew-cask.git"), "proxymanapp/homebrew-cask");
+  assert.equal(githubRepoFromRemoteURL("https://example.com/Homebrew/homebrew-cask.git"), null);
+});
+
+test("builds Homebrew validation and pull request metadata", () => {
+  assert.deepEqual(
+    makeHomebrewCaskAuditArgs({ isInitialCask: true }),
+    ["audit", "--cask", "--online", "--new", "tcpviewer"]
+  );
+  assert.deepEqual(
+    makeHomebrewCaskAuditArgs({ isInitialCask: false }),
+    ["audit", "--cask", "--online", "tcpviewer"]
+  );
+
+  const pullRequestTemplate = [
+    "-----",
+    "",
+    "<!-- Do not tick a checkbox if you haven’t performed its action. -->",
+    "",
+    "After making any changes to a cask, existing or new, verify:",
+    "",
+    "- [ ] The submission is for [a stable version](https://docs.brew.sh/Acceptable-Casks#stable-versions) or [documented exception](https://docs.brew.sh/Acceptable-Casks#but-there-is-no-stable-version).",
+    "- [ ] `brew audit --cask --online <cask>` is error-free.",
+    "- [ ] `brew style --fix <cask>` reports no offenses.",
+    "",
+    "Additionally, if adding a new cask:",
+    "",
+    "- [ ] Named the cask according to the [token reference](https://docs.brew.sh/Cask-Cookbook#token-reference).",
+    "- [ ] Checked the cask was not [already refused](https://github.com/search?q=refused).",
+    "- [ ] `brew audit --cask --new <cask>` worked successfully.",
+    "- [ ] `HOMEBREW_NO_INSTALL_FROM_API=1 brew install --cask <cask>` worked successfully.",
+    "- [ ] `brew uninstall --cask <cask>` worked successfully.",
+    "",
+    "-----",
+    "",
+    "- [ ] I did not use AI/LLM to create this PR, or I disclosed the tool/model below and reviewed its output.",
+    "",
+    "<!-- If AI was used, explain below how it was used and how you verified the changes. -->",
+    "",
+    "-----",
+    ""
+  ].join("\n");
+  const initialBody = makeHomebrewCaskPullRequestBody({
+    template: pullRequestTemplate,
+    isInitialCask: true,
+    githubMetrics: { stars: 163, forks: 7, watchers: 0 }
+  });
+  assert.match(initialBody, /brew install --cask <cask>/);
+  assert.match(initialBody, /163 stars, 7 forks, 0 watchers/);
+  assert.match(initialBody, /AI\/LLM disclosure: OpenAI Codex assisted/);
+  assert.match(initialBody, /<!-- Do not tick a checkbox/);
+  for (const checkbox of pullRequestTemplate.split("\n").filter((line) => line.startsWith("- [ ] "))) {
+    assert.ok(initialBody.includes(checkbox.replace("- [ ] ", "- [x] ")));
+  }
+
+  const updateBody = makeHomebrewCaskPullRequestBody({
+    template: pullRequestTemplate,
+    isInitialCask: false
+  });
+  assert.doesNotMatch(updateBody, /brew install --cask tcpviewer/);
+  assert.match(updateBody, /- \[ \] `brew uninstall --cask <cask>`/);
+  assert.match(updateBody, /- \[x\] `brew audit --cask --online <cask>`/);
+  assert.match(updateBody, /- \[x\] I did not use AI\/LLM/);
+  assert.throws(
+    () => makeHomebrewCaskPullRequestBody({ template: pullRequestTemplate, isInitialCask: true }),
+    /GitHub metrics/
+  );
+  assert.throws(
+    () => makeHomebrewCaskPullRequestBody({ template: "missing checklist", isInitialCask: false }),
+    /missing its checklist/
+  );
+
+  const livecheck = JSON.stringify([{
+    cask: "tcpviewer",
+    version: { current: "1.12.0,36", latest: "1.12.0,36", outdated: false }
+  }]);
+  assert.doesNotThrow(() => validateHomebrewLivecheckOutput(livecheck, "1.12.0,36"));
+  assert.throws(
+    () => validateHomebrewLivecheckOutput(livecheck, "1.13.0,37"),
+    /current and latest/
+  );
+  assert.throws(() => validateHomebrewLivecheckOutput("not json", "1.12.0,36"), /valid JSON/);
+});
+
+test("validates the published DMG used by a Homebrew-only release", () => {
+  const release = {
+    tagName: "v1.12.0",
+    isDraft: false,
+    isPrerelease: false,
+    assets: [{
+      name: "tcpviewer_1.12.0_36.dmg",
+      size: 45_209_211,
+      digest: `sha256:${"a".repeat(64)}`
+    }]
+  };
+  const expected = {
+    tagName: "v1.12.0",
+    assetName: "tcpviewer_1.12.0_36.dmg"
+  };
+
+  assert.deepEqual(validatePublishedGitHubReleaseAsset(release, expected), {
+    name: "tcpviewer_1.12.0_36.dmg",
+    size: 45_209_211,
+    sha256: "a".repeat(64)
+  });
+  assert.deepEqual(resolvePublishedGitHubReleaseArtifact(release), {
+    tagName: "v1.12.0",
+    version: "1.12.0",
+    buildNumber: "36",
+    dmgFileName: "tcpviewer_1.12.0_36.dmg",
+    size: 45_209_211,
+    sha256: "a".repeat(64)
+  });
+  assert.throws(
+    () => validatePublishedGitHubReleaseAsset({ ...release, isDraft: true }, expected),
+    /published production release/
+  );
+  assert.throws(
+    () => validatePublishedGitHubReleaseAsset({ ...release, assets: [] }, expected),
+    /exactly one/
+  );
+  assert.throws(
+    () => validatePublishedGitHubReleaseAsset({
+      ...release,
+      assets: [{ ...release.assets[0], digest: null }]
+    }, expected),
+    /SHA-256 digest/
+  );
+  assert.throws(
+    () => resolvePublishedGitHubReleaseArtifact({
+      ...release,
+      tagName: "latest"
+    }),
+    /must start with v/
+  );
+  assert.throws(
+    () => resolvePublishedGitHubReleaseArtifact({
+      ...release,
+      assets: [{ ...release.assets[0], name: "tcpviewer_1.11.0_35.dmg" }]
+    }),
+    /exactly one production DMG/
+  );
+});
+
 test("parses xcconfig-style env files and redacts secrets", () => {
   const parsed = parseEnvFile([
     "TCPVIEWER_APPCAST_URL=https:/$()/updates.example.com/appcast.xml",
@@ -218,7 +426,8 @@ test("documents required release env values with safe placeholders", () => {
   const documentedNames = [
     ...requiredEnvNames("production"),
     "TCPVIEWER_PUBLISH_RELEASE_TO_BACKEND",
-    ...releaseBackendRequiredEnvNames
+    ...releaseBackendRequiredEnvNames,
+    "TCPVIEWER_HOMEBREW_CASK_REPO"
   ];
 
   assert.doesNotMatch(content, /^\s*\/\//m);

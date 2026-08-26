@@ -9,6 +9,7 @@ const releaseScriptPath = path.join(repoRoot, "scripts", "release.mjs");
 const RELEASE_TYPE = {
   BETA: "beta",
   PRODUCTION: "production",
+  HOMEBREW: "homebrew",
 };
 
 function parseArgs(argv) {
@@ -20,6 +21,14 @@ function parseArgs(argv) {
       args.betaName = arg.slice("--beta-name=".length).trim();
     } else if (arg === "--yes" || arg === "-y") {
       args.yes = true;
+    } else if (arg === "--bump-homebrew") {
+      args.bumpHomebrew = true;
+    } else if (arg === "--no-bump-homebrew") {
+      args.bumpHomebrew = false;
+    } else if (arg === "--homebrew-install-tested") {
+      args.homebrewInstallTested = true;
+    } else if (arg === "--homebrew-only") {
+      args.homebrewOnly = true;
     }
   }
   return args;
@@ -75,16 +84,17 @@ async function resolveReleaseType(type) {
     if (Object.values(RELEASE_TYPE).includes(type)) {
       return type;
     }
-    throw new Error("Release type must be beta or production.");
+    throw new Error("Release type must be beta, production, or homebrew.");
   }
 
   const response = await prompts({
     type: "select",
     name: "type",
-    message: "What would you like to build?",
+    message: "What would you like to do?",
     choices: [
       { title: "BETA Build", value: RELEASE_TYPE.BETA },
       { title: "Production Build", value: RELEASE_TYPE.PRODUCTION },
+      { title: "Homebrew Cask PR from latest release", value: RELEASE_TYPE.HOMEBREW },
     ],
     initial: 0,
   });
@@ -96,12 +106,25 @@ async function resolveReleaseType(type) {
 }
 
 function buildReleaseArgs(type, args) {
-  const releaseArgs = [releaseScriptPath, `--type=${type}`];
+  const releaseArgs = [releaseScriptPath];
+  const homebrewOnly = args.homebrewOnly || type === RELEASE_TYPE.HOMEBREW;
+  if (type && !homebrewOnly) {
+    releaseArgs.push(`--type=${type}`);
+  }
+  if (homebrewOnly) {
+    releaseArgs.push("--homebrew-only");
+  }
   if (args.betaName) {
     releaseArgs.push(`--beta-name=${args.betaName}`);
   }
   if (args.yes) {
     releaseArgs.push("--yes");
+  }
+  if (typeof args.bumpHomebrew === "boolean") {
+    releaseArgs.push(args.bumpHomebrew ? "--bump-homebrew" : "--no-bump-homebrew");
+  }
+  if (args.homebrewInstallTested) {
+    releaseArgs.push("--homebrew-install-tested");
   }
   return releaseArgs;
 }
@@ -131,7 +154,7 @@ async function main() {
   console.log("-------------------------------");
 
   const args = parseArgs(process.argv.slice(2));
-  const type = await resolveReleaseType(args.type);
+  const type = args.homebrewOnly ? RELEASE_TYPE.HOMEBREW : await resolveReleaseType(args.type);
   await runRelease(type, args);
 }
 

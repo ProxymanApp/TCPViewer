@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { createReadStream } from "node:fs";
+import { createReadStream, createWriteStream } from "node:fs";
 import { createHash } from "node:crypto";
 import {
   access,
@@ -16,6 +16,8 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import prompts from "prompts";
 import {
   assertReleaseTitleReflectsChanges,
@@ -23,7 +25,11 @@ import {
   emptyPayloadSHA256,
   findReleaseNote,
   generateAppcastXML,
+  githubRepoFromRemoteURL,
   isRetryableHTTPStatus,
+  makeHomebrewCaskAuditArgs,
+  makeHomebrewCaskBranchName,
+  makeHomebrewCaskPullRequestBody,
   makeGitHubReleaseTagName,
   makeBetaDMGFileName,
   makeDMGFileName,
@@ -44,8 +50,12 @@ import {
   redactEnvValue,
   releaseBackendRequiredEnvNames,
   releaseNotesToMarkdown,
+  resolvePublishedGitHubReleaseArtifact,
   requiredEnvNames,
-  signR2Request
+  signR2Request,
+  updateHomebrewCaskContent,
+  validateHomebrewCaskContent,
+  validateHomebrewLivecheckOutput
 } from "./release-lib.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -55,13 +65,30 @@ const r2UploadMaxAttempts = 3;
 const r2UploadConfirmationAttempts = 3;
 const r2UploadAttemptTimeoutMs = 300_000;
 const r2UploadConfirmationTimeoutMs = 30_000;
+const homebrewCaskForkRepo = "ProxymanApp/homebrew-cask";
+const homebrewCaskUpstreamRepo = "Homebrew/homebrew-cask";
+const homebrewCaskUpstreamRemote = "origin";
+const homebrewCaskForkRemote = "proxyman";
+const homebrewCaskDefaultBranch = "main";
+const homebrewCaskToken = "tcpviewer";
+const homebrewCaskRelativePath = "Casks/t/tcpviewer.rb";
+const homebrewPullRequestTemplateRelativePath = ".github/PULL_REQUEST_TEMPLATE.md";
+const homebrewCaskTemplatePath = path.join(repoRoot, "scripts/homebrew/tcpviewer.rb");
+const githubReleaseRepo = "ProxymanApp/TCPViewer";
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  if (args.homebrewOnly) {
+    await createHomebrewPullRequestForExistingRelease(args);
+    return;
+  }
+
   const releaseType = args.type ?? await askReleaseType();
   if (!["beta", "production"].includes(releaseType)) {
     throw new Error("Release type must be beta or production.");
   }
+  const bumpHomebrew = releaseType === "production"
+    && (args.bumpHomebrew ?? (args.yes ? false : await askHomebrewCaskBump()));
 
   const { env, envFileExists } = await loadReleaseEnv();
   const settings = await readXcodeBuildSettings(env);
@@ -89,6 +116,9 @@ async function main() {
   const downloadURL = publicR2URL(env.TCPVIEWER_R2_PUBLIC_BASE_URL, releaseObjectKey);
   const outputDir = releaseOutputDir({ releaseType, version, buildNumber, timestamp });
   const releaseBackend = resolveReleaseBackend({ env, releaseType });
+  const homebrewRelease = bumpHomebrew
+    ? resolveHomebrewRelease({ env, version, buildNumber })
+    : null;
 
   console.log(`Preparing ${releaseType} release ${version} (${buildNumber})`);
   if (!envFileExists) {
@@ -106,7 +136,27 @@ async function main() {
     };
   }
 
-  await preflight({ env, releaseType, objectKey, settings, releaseBackend, version, buildNumber, githubRelease });
+  await preflight({
+    env,
+    releaseType,
+    objectKey,
+    settings,
+    releaseBackend,
+    version,
+    buildNumber,
+    githubRelease,
+    homebrewRelease
+  });
+  if (
+    homebrewRelease?.isInitialCask
+    && args.yes
+    && args.homebrewInstallTested !== true
+  ) {
+    throw new Error(
+      "Non-interactive initial Homebrew Cask publishing requires --homebrew-install-tested. "
+      + "Use an interactive release to pause and run the required install and uninstall checks."
+    );
+  }
 
   printReleaseSummary({
     releaseType,
@@ -119,7 +169,8 @@ async function main() {
     envFileExists,
     releaseNote,
     githubRelease,
-    releaseBackend
+    releaseBackend,
+    homebrewRelease
   });
   if (!args.yes && !await askReleaseConfirmation()) {
     console.log("Release cancelled.");
@@ -158,9 +209,87 @@ async function main() {
       dmgPath,
       outputDir
     });
+    if (homebrewRelease) {
+      await createHomebrewCaskPullRequest({
+        homebrewRelease,
+        dmgPath,
+        installTested: args.homebrewInstallTested === true,
+        nonInteractive: args.yes === true
+      });
+    }
   }
 
   console.log(`${releaseType === "production" ? "Production" : "BETA"} release is ready: ${downloadURL}`);
+}
+
+// Submit an already published production DMG without recreating any release records.
+async function createHomebrewPullRequestForExistingRelease(args) {
+  if (args.type && args.type !== "production") {
+    throw new Error("--homebrew-only supports production releases only.");
+  }
+  if (args.bumpHomebrew === false) {
+    throw new Error("--homebrew-only cannot be combined with --no-bump-homebrew.");
+  }
+
+  const { env, envFileExists } = await loadReleaseEnv();
+  const missing = missingRequiredEnv(env, ["TCPVIEWER_R2_PUBLIC_BASE_URL"]);
+  if (missing.length) {
+    throw new Error(`Missing required env values: ${missing.join(", ")}`);
+  }
+
+  const githubRelease = await loadLatestPublishedGitHubRelease();
+  const { version, buildNumber, dmgFileName } = githubRelease.asset;
+  const objectKey = makeR2ObjectKey({
+    releaseType: "production",
+    version,
+    buildNumber,
+    fileName: dmgFileName
+  });
+  const downloadURL = publicR2URL(env.TCPVIEWER_R2_PUBLIC_BASE_URL, objectKey);
+  const homebrewRelease = resolveHomebrewRelease({ env, version, buildNumber });
+
+  console.log("");
+  console.log("Homebrew release summary:");
+  console.log(`- App version: ${version}`);
+  console.log(`- Build number: ${buildNumber}`);
+  console.log(`- Existing GitHub release: ${githubRelease.repo} ${githubRelease.tagName}`);
+  console.log(`- Existing DMG: ${downloadURL}`);
+  console.log(`- Environment source: ${envFileExists ? ".env + shell environment" : "shell environment only"}`);
+  console.log(`- Fork branch: ${homebrewCaskForkRepo}:${homebrewRelease.branchName}`);
+  console.log(`- Pull request target: ${homebrewCaskUpstreamRepo}:${homebrewCaskDefaultBranch}`);
+  if (!args.yes && !await askHomebrewReleaseConfirmation()) {
+    console.log("Homebrew release cancelled.");
+    return;
+  }
+
+  await preflightHomebrewRelease(homebrewRelease);
+  if (
+    homebrewRelease.isInitialCask
+    && args.yes
+    && args.homebrewInstallTested !== true
+  ) {
+    throw new Error(
+      "Non-interactive initial Homebrew Cask publishing requires --homebrew-install-tested. "
+      + "Use an interactive release to pause and run the required install and uninstall checks."
+    );
+  }
+
+  const temporaryDirectory = await mkdtemp(path.join(tmpdir(), "tcpviewer-homebrew-"));
+  const dmgPath = path.join(temporaryDirectory, dmgFileName);
+  try {
+    await downloadPublishedDMG({ downloadURL, dmgPath, expectedAsset: githubRelease.asset });
+    await verifyFinalDMG({ dmgPath });
+    await createHomebrewCaskPullRequest({
+      homebrewRelease,
+      dmgPath,
+      installTested: args.homebrewInstallTested === true,
+      nonInteractive: args.yes === true
+    });
+  } finally {
+    await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+
+  console.log(`Homebrew Cask pull request is ready for ${version} (${buildNumber}).`);
 }
 
 async function loadReleaseEnv() {
@@ -182,7 +311,17 @@ async function loadReleaseEnv() {
   };
 }
 
-async function preflight({ env, releaseType, objectKey, settings, releaseBackend, version, buildNumber, githubRelease }) {
+async function preflight({
+  env,
+  releaseType,
+  objectKey,
+  settings,
+  releaseBackend,
+  version,
+  buildNumber,
+  githubRelease,
+  homebrewRelease
+}) {
   // Keep preflight strict because it runs before long signing and notarization work.
   const missing = missingRequiredEnv(env, requiredEnvNames(releaseType));
   if (missing.length) {
@@ -190,6 +329,9 @@ async function preflight({ env, releaseType, objectKey, settings, releaseBackend
   }
 
   await requireTool("git", ["--version"]);
+  if (homebrewRelease) {
+    await preflightHomebrewRelease(homebrewRelease);
+  }
   await requireTool("node", ["--version"]);
   await requireTool("npm", ["--version"]);
   await ensureCreateDMGTool();
@@ -307,6 +449,371 @@ async function createGitHubRelease({ githubRelease, releaseNote, dmgPath, output
   ], { capture: true });
   const releaseURL = result.stdout.trim() || `https://github.com/${githubRelease.repo}/releases/tag/${githubRelease.tagName}`;
   console.log(`GitHub release created: ${releaseURL}`);
+}
+
+// Resolve the fixed cask and branch locations before release preflight starts.
+function resolveHomebrewRelease({ env, version, buildNumber }) {
+  const configuredPath = String(env.TCPVIEWER_HOMEBREW_CASK_REPO ?? "").trim();
+  if (!configuredPath) {
+    throw new Error("TCPVIEWER_HOMEBREW_CASK_REPO is required when Homebrew Cask publishing is selected.");
+  }
+
+  const repoPath = configuredPath === "~"
+    ? homedir()
+    : configuredPath.startsWith("~/")
+      ? path.join(homedir(), configuredPath.slice(2))
+      : path.resolve(configuredPath);
+  return {
+    version,
+    buildNumber,
+    repoPath,
+    caskPath: path.join(repoPath, homebrewCaskRelativePath),
+    templatePath: homebrewCaskTemplatePath,
+    branchName: makeHomebrewCaskBranchName({ version, buildNumber })
+  };
+}
+
+// Validate the official tap checkout before any release side effects occur.
+async function preflightHomebrewRelease(homebrewRelease) {
+  await requireTool("brew", ["--version"]);
+  await requireTool("gh", ["--version"]);
+  await requireTool("gh", ["auth", "status"]);
+
+  let repoStat;
+  try {
+    repoStat = await stat(homebrewRelease.repoPath);
+  } catch {
+    throw new Error(`Homebrew Cask repository was not found: ${homebrewRelease.repoPath}`);
+  }
+  if (!repoStat.isDirectory()) {
+    throw new Error(`Homebrew Cask repository is not a directory: ${homebrewRelease.repoPath}`);
+  }
+
+  const repoRootResult = await runCommand("git", ["rev-parse", "--show-toplevel"], {
+    cwd: homebrewRelease.repoPath,
+    capture: true
+  });
+  if (path.resolve(repoRootResult.stdout.trim()) !== path.resolve(homebrewRelease.repoPath)) {
+    throw new Error(`TCPVIEWER_HOMEBREW_CASK_REPO must point to the repository root: ${homebrewRelease.repoPath}`);
+  }
+
+  const tapRepoPath = (await runCommand("brew", ["--repository", "homebrew/cask"], {
+    capture: true
+  })).stdout.trim();
+  if (path.resolve(tapRepoPath) !== path.resolve(homebrewRelease.repoPath)) {
+    throw new Error(
+      `TCPVIEWER_HOMEBREW_CASK_REPO must match brew --repository homebrew/cask: ${tapRepoPath}`
+    );
+  }
+
+  const originURL = (await runCommand("git", ["remote", "get-url", homebrewCaskUpstreamRemote], {
+    cwd: homebrewRelease.repoPath,
+    capture: true
+  })).stdout.trim();
+  if (githubRepoFromRemoteURL(originURL) !== homebrewCaskUpstreamRepo.toLowerCase()) {
+    throw new Error(`Homebrew Cask origin must be ${homebrewCaskUpstreamRepo}; found ${originURL}.`);
+  }
+
+  const forkURL = (await runCommand("git", ["remote", "get-url", homebrewCaskForkRemote], {
+    cwd: homebrewRelease.repoPath,
+    capture: true
+  })).stdout.trim();
+  if (githubRepoFromRemoteURL(forkURL) !== homebrewCaskForkRepo.toLowerCase()) {
+    throw new Error(
+      `Homebrew Cask ${homebrewCaskForkRemote} remote must be ${homebrewCaskForkRepo}; found ${forkURL}.`
+    );
+  }
+
+  const parentRepo = (await runCommand("gh", [
+    "api",
+    `repos/${homebrewCaskForkRepo}`,
+    "--jq",
+    ".parent.full_name"
+  ], { capture: true })).stdout.trim();
+  if (parentRepo !== homebrewCaskUpstreamRepo) {
+    throw new Error(`${homebrewCaskForkRepo} must be a fork of ${homebrewCaskUpstreamRepo}.`);
+  }
+
+  await runCommand("git", ["fetch", homebrewCaskUpstreamRemote, homebrewCaskDefaultBranch, "--prune"], {
+    cwd: homebrewRelease.repoPath,
+    capture: true
+  });
+  await runCommand("git", ["fetch", homebrewCaskForkRemote, "--prune"], {
+    cwd: homebrewRelease.repoPath,
+    capture: true
+  });
+  await ensureHomebrewGitReady(homebrewRelease);
+  homebrewRelease.pullRequestTemplate = await readHomebrewPullRequestTemplate(homebrewRelease);
+
+  const source = await readHomebrewCaskSource(homebrewRelease);
+  const currentVersion = validateHomebrewCaskContent(source.content);
+  if (
+    !source.isInitialCask
+    &&
+    currentVersion.version === homebrewRelease.version
+    && currentVersion.buildNumber === homebrewRelease.buildNumber
+  ) {
+    throw new Error(`Homebrew Cask already contains ${homebrewRelease.version},${homebrewRelease.buildNumber}.`);
+  }
+
+  homebrewRelease.isInitialCask = source.isInitialCask;
+  if (source.isInitialCask) {
+    await ensureHomebrewCaskWasNotRefused();
+    homebrewRelease.githubMetrics = await loadTCPViewerGitHubMetrics();
+    console.warn(
+      `Review Homebrew's current notability policy before submitting. `
+      + `TCPViewer currently has ${homebrewRelease.githubMetrics.stars} stars, `
+      + `${homebrewRelease.githubMetrics.forks} forks, and ${homebrewRelease.githubMetrics.watchers} watchers.`
+    );
+  }
+
+  await ensureHomebrewBranchDoesNotExist(homebrewRelease);
+  console.log(
+    `Homebrew Cask ${source.isInitialCask ? "initial submission" : "update"} preflight passed `
+    + `for ${homebrewRelease.repoPath}.`
+  );
+}
+
+// A clean named branch lets the release restore the maintainer's checkout after publishing.
+async function ensureHomebrewGitReady(homebrewRelease) {
+  const status = await runCommand("git", ["status", "--porcelain"], {
+    cwd: homebrewRelease.repoPath,
+    capture: true
+  });
+  if (status.stdout.trim()) {
+    throw new Error("Homebrew Cask working tree must be clean before a production release.");
+  }
+
+  const branch = (await runCommand("git", ["branch", "--show-current"], {
+    cwd: homebrewRelease.repoPath,
+    capture: true
+  })).stdout.trim();
+  if (!branch) {
+    throw new Error("Homebrew Cask repository must be on a named branch, not a detached HEAD.");
+  }
+  homebrewRelease.originalBranch = branch;
+}
+
+async function readHomebrewCaskSource(homebrewRelease) {
+  const upstreamRef = `${homebrewCaskUpstreamRemote}/${homebrewCaskDefaultBranch}`;
+  const listing = await runCommand("git", [
+    "ls-tree",
+    "--name-only",
+    upstreamRef,
+    "--",
+    homebrewCaskRelativePath
+  ], { cwd: homebrewRelease.repoPath, capture: true });
+  if (listing.stdout.trim() === homebrewCaskRelativePath) {
+    const upstreamObject = `${upstreamRef}:${homebrewCaskRelativePath}`;
+    const result = await runCommand("git", ["show", upstreamObject], {
+      cwd: homebrewRelease.repoPath,
+      capture: true
+    });
+    return { content: result.stdout, isInitialCask: false };
+  }
+
+  const template = await readFile(homebrewRelease.templatePath, "utf8");
+  return { content: template, isInitialCask: true };
+}
+
+async function readHomebrewPullRequestTemplate(homebrewRelease) {
+  const upstreamObject = `${homebrewCaskUpstreamRemote}/${homebrewCaskDefaultBranch}:${homebrewPullRequestTemplateRelativePath}`;
+  const result = await runCommand("git", ["show", upstreamObject], {
+    cwd: homebrewRelease.repoPath,
+    capture: true
+  });
+  if (!result.stdout.trim()) {
+    throw new Error("The upstream Homebrew Cask pull request template is empty.");
+  }
+  return result.stdout;
+}
+
+async function ensureHomebrewCaskWasNotRefused() {
+  const result = await runCommand("gh", [
+    "pr",
+    "list",
+    "--repo",
+    homebrewCaskUpstreamRepo,
+    "--state",
+    "closed",
+    "--search",
+    `${homebrewCaskToken} in:title`,
+    "--limit",
+    "100",
+    "--json",
+    "number,title,url,mergedAt"
+  ], { capture: true });
+  const refused = JSON.parse(result.stdout).filter((pullRequest) => !pullRequest.mergedAt);
+  if (refused.length) {
+    throw new Error(
+      `A previous TCP Viewer Homebrew Cask pull request was closed without merging: ${refused[0].url}`
+    );
+  }
+}
+
+async function loadTCPViewerGitHubMetrics() {
+  const result = await runCommand("gh", [
+    "api",
+    "repos/ProxymanApp/TCPViewer",
+    "--jq",
+    "{stars: .stargazers_count, forks: .forks_count, watchers: .subscribers_count}"
+  ], { capture: true });
+  return JSON.parse(result.stdout);
+}
+
+async function ensureHomebrewBranchDoesNotExist(homebrewRelease) {
+  try {
+    await runCommand("git", ["show-ref", "--verify", "--quiet", `refs/heads/${homebrewRelease.branchName}`], {
+      cwd: homebrewRelease.repoPath,
+      capture: true
+    });
+    throw new Error(`Homebrew Cask branch already exists locally: ${homebrewRelease.branchName}`);
+  } catch (error) {
+    if (String(error.message).startsWith("Homebrew Cask branch already exists")) {
+      throw error;
+    }
+  }
+
+  const remoteBranch = await runCommand("git", [
+    "ls-remote",
+    "--heads",
+    homebrewCaskForkRemote,
+    `refs/heads/${homebrewRelease.branchName}`
+  ], { cwd: homebrewRelease.repoPath, capture: true });
+  if (remoteBranch.stdout.trim()) {
+    throw new Error(
+      `Homebrew Cask branch already exists on ${homebrewCaskForkRemote}: ${homebrewRelease.branchName}`
+    );
+  }
+}
+
+// Create the cask change from current upstream main so stale fork branches cannot leak into the PR.
+async function createHomebrewCaskPullRequest({ homebrewRelease, dmgPath, installTested, nonInteractive }) {
+  const sha256 = await sha256File(dmgPath);
+  const source = await readHomebrewCaskSource(homebrewRelease);
+  const updatedContent = updateHomebrewCaskContent(source.content, {
+    version: homebrewRelease.version,
+    buildNumber: homebrewRelease.buildNumber,
+    sha256
+  });
+
+  await runCommand("git", [
+    "switch",
+    "-c",
+    homebrewRelease.branchName,
+    `${homebrewCaskUpstreamRemote}/${homebrewCaskDefaultBranch}`
+  ], {
+    cwd: homebrewRelease.repoPath
+  });
+  try {
+    await mkdir(path.dirname(homebrewRelease.caskPath), { recursive: true });
+    await writeFile(homebrewRelease.caskPath, updatedContent);
+    await runCommand("git", ["add", homebrewCaskRelativePath], { cwd: homebrewRelease.repoPath });
+    await validateHomebrewCaskChange(homebrewRelease);
+    if (source.isInitialCask) {
+      await confirmInitialHomebrewInstallTest({ installTested, nonInteractive });
+    }
+
+    await runCommand("git", ["add", homebrewCaskRelativePath], { cwd: homebrewRelease.repoPath });
+    await runCommand("git", ["diff", "--cached", "--check"], { cwd: homebrewRelease.repoPath });
+    const commitMessage = source.isInitialCask
+      ? `tcpviewer ${homebrewRelease.version} (new cask)`
+      : `tcpviewer ${homebrewRelease.version}`;
+    await runCommand("git", ["commit", "--no-gpg-sign", "-m", commitMessage], {
+      cwd: homebrewRelease.repoPath
+    });
+    await runCommand("git", ["push", "--set-upstream", homebrewCaskForkRemote, homebrewRelease.branchName], {
+      cwd: homebrewRelease.repoPath
+    });
+
+    const result = await runCommand("gh", [
+      "pr",
+      "create",
+      "--repo",
+      homebrewCaskUpstreamRepo,
+      "--base",
+      homebrewCaskDefaultBranch,
+      "--head",
+      `ProxymanApp:${homebrewRelease.branchName}`,
+      "--title",
+      `tcpviewer ${homebrewRelease.version}`,
+      "--body",
+      makeHomebrewCaskPullRequestBody({
+        template: homebrewRelease.pullRequestTemplate,
+        isInitialCask: source.isInitialCask,
+        githubMetrics: homebrewRelease.githubMetrics
+      })
+    ], { capture: true });
+    const pullRequestURL = result.stdout.trim();
+    console.log(`Homebrew Cask pull request created: ${pullRequestURL}`);
+  } catch (error) {
+    throw new Error(
+      `Homebrew Cask update failed. Branch ${homebrewRelease.branchName} was kept for recovery.\n${error.message}`
+    );
+  }
+
+  await runCommand("git", ["switch", homebrewRelease.originalBranch], { cwd: homebrewRelease.repoPath });
+}
+
+async function validateHomebrewCaskChange(homebrewRelease) {
+  const brewEnv = { HOMEBREW_DEVELOPER: "1", HOMEBREW_NO_AUTO_UPDATE: "1" };
+  await runCommand("brew", ["style", "--fix", "--cask", homebrewCaskToken], {
+    cwd: homebrewRelease.repoPath,
+    env: brewEnv
+  });
+  const auditArgs = makeHomebrewCaskAuditArgs({
+    isInitialCask: homebrewRelease.isInitialCask,
+    token: homebrewCaskToken
+  });
+  await runCommand("brew", auditArgs, { cwd: homebrewRelease.repoPath, env: brewEnv });
+  const livecheckResult = await runCommand("brew", [
+    "livecheck",
+    "--json",
+    "--cask",
+    "--autobump",
+    homebrewCaskToken
+  ], {
+    cwd: homebrewRelease.repoPath,
+    env: brewEnv,
+    capture: true
+  });
+  validateHomebrewLivecheckOutput(
+    livecheckResult.stdout,
+    `${homebrewRelease.version},${homebrewRelease.buildNumber}`
+  );
+  await runCommand("brew", ["lgtm", "--online"], { cwd: homebrewRelease.repoPath, env: brewEnv });
+
+  validateHomebrewCaskContent(await readFile(homebrewRelease.caskPath, "utf8"));
+}
+
+async function confirmInitialHomebrewInstallTest({ installTested, nonInteractive }) {
+  if (installTested) {
+    return;
+  }
+  const commands = [
+    `HOMEBREW_NO_INSTALL_FROM_API=1 brew install --cask ${homebrewCaskToken}`,
+    `brew uninstall --cask ${homebrewCaskToken}`
+  ];
+  if (nonInteractive) {
+    throw new Error(
+      `Initial Homebrew Cask submissions require manual install and uninstall testing. `
+      + `Run ${commands.join(" and ")}, then rerun with --homebrew-install-tested.`
+    );
+  }
+
+  console.log("Run these commands in another terminal before continuing:");
+  for (const command of commands) {
+    console.log(`- ${command}`);
+  }
+  const response = await prompts({
+    type: "confirm",
+    name: "installTested",
+    message: "Did the Homebrew Cask install and uninstall commands both succeed?",
+    initial: false
+  });
+  if (response.installTested !== true) {
+    throw new Error("Initial Homebrew Cask install validation was not confirmed.");
+  }
 }
 
 async function signDMG({ env, dmgPath, settings }) {
@@ -665,6 +1172,38 @@ async function ensureR2ObjectDoesNotExist(env, objectKey) {
   throw new Error(`R2 object already exists: ${objectKey}`);
 }
 
+// Read the latest public production release instead of trusting local project version settings.
+async function loadLatestPublishedGitHubRelease() {
+  await requireTool("gh", ["--version"]);
+  let result;
+  try {
+    result = await runCommand("gh", [
+      "release",
+      "view",
+      "--repo",
+      githubReleaseRepo,
+      "--json",
+      "assets,isDraft,isPrerelease,tagName"
+    ], { capture: true });
+  } catch (error) {
+    throw new Error(`The latest published GitHub release for ${githubReleaseRepo} was not found.\n${error.message}`);
+  }
+
+  let release;
+  try {
+    release = JSON.parse(result.stdout);
+  } catch {
+    throw new Error(`Could not parse the latest GitHub release for ${githubReleaseRepo}.`);
+  }
+
+  const asset = resolvePublishedGitHubReleaseArtifact(release);
+  return {
+    repo: githubReleaseRepo,
+    tagName: asset.tagName,
+    asset
+  };
+}
+
 async function preflightGitHubRelease({ githubRelease }) {
   await requireTool("gh", ["--version"]);
   await requireTool("gh", ["auth", "status"]);
@@ -805,6 +1344,62 @@ async function sha256File(filePath) {
   return hash.digest("hex");
 }
 
+async function downloadPublishedDMG({ downloadURL, dmgPath, expectedAsset }) {
+  let requestedURL;
+  try {
+    requestedURL = new URL(downloadURL);
+  } catch {
+    throw new Error("The published DMG URL is invalid.");
+  }
+  if (requestedURL.protocol !== "https:") {
+    throw new Error("The published DMG URL must use HTTPS.");
+  }
+
+  console.log(`Downloading published DMG: ${downloadURL}`);
+  let response;
+  try {
+    response = await fetch(requestedURL, {
+      redirect: "follow",
+      signal: AbortSignal.timeout(r2UploadAttemptTimeoutMs)
+    });
+  } catch (error) {
+    throw new Error(`Published DMG download failed: ${describeFetchError(error)}`);
+  }
+  if (!response.ok) {
+    throw new Error(`Published DMG download failed: ${response.status} ${response.statusText}`);
+  }
+  if (!response.body) {
+    throw new Error("Published DMG download returned an empty response body.");
+  }
+  if (new URL(response.url).protocol !== "https:") {
+    throw new Error("The published DMG download redirected to a non-HTTPS URL.");
+  }
+
+  const contentLength = Number(response.headers.get("content-length"));
+  if (Number.isSafeInteger(contentLength) && contentLength > 0 && contentLength !== expectedAsset.size) {
+    throw new Error(
+      `Published DMG size ${contentLength} does not match GitHub release asset size ${expectedAsset.size}.`
+    );
+  }
+
+  await pipeline(
+    Readable.fromWeb(response.body),
+    createWriteStream(dmgPath, { mode: 0o600 })
+  );
+  const downloadedSize = (await stat(dmgPath)).size;
+  if (downloadedSize !== expectedAsset.size) {
+    throw new Error(
+      `Downloaded DMG size ${downloadedSize} does not match GitHub release asset size ${expectedAsset.size}.`
+    );
+  }
+
+  const downloadedSHA256 = await sha256File(dmgPath);
+  if (downloadedSHA256 !== expectedAsset.sha256) {
+    throw new Error("Downloaded DMG SHA-256 does not match the published GitHub release asset.");
+  }
+  console.log(`Published DMG verified: sha256 ${downloadedSHA256}`);
+}
+
 async function findSparkleSignUpdate(env, settings) {
   if (env.TCPVIEWER_SPARKLE_SIGN_UPDATE_PATH) {
     await access(env.TCPVIEWER_SPARKLE_SIGN_UPDATE_PATH);
@@ -898,10 +1493,10 @@ function isNativeModuleVersionMismatch(error) {
   return message.includes("NODE_MODULE_VERSION") || message.includes("ERR_DLOPEN_FAILED");
 }
 
-function runCommand(command, args, { env = {}, capture = false } = {}) {
+function runCommand(command, args, { env = {}, capture = false, cwd = repoRoot } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
-      cwd: repoRoot,
+      cwd,
       env: { ...process.env, ...env },
       stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit"
     });
@@ -961,6 +1556,20 @@ async function askBetaDMGCustomName(version, buildNumber) {
   return requirePromptValue(response.customName, "Beta DMG custom name");
 }
 
+async function askHomebrewCaskBump() {
+  const response = await prompts({
+    type: "confirm",
+    name: "bumpHomebrew",
+    message: "Create a Homebrew Cask update pull request after this production release?",
+    initial: false
+  });
+
+  if (typeof response.bumpHomebrew !== "boolean") {
+    throw new Error("Homebrew Cask selection was cancelled.");
+  }
+  return response.bumpHomebrew;
+}
+
 async function askReleaseConfirmation() {
   const response = await prompts({
     type: "confirm",
@@ -971,6 +1580,20 @@ async function askReleaseConfirmation() {
 
   if (typeof response.confirmed !== "boolean") {
     throw new Error("Release cancelled.");
+  }
+  return response.confirmed;
+}
+
+async function askHomebrewReleaseConfirmation() {
+  const response = await prompts({
+    type: "confirm",
+    name: "confirmed",
+    message: "Create the Homebrew Cask pull request from this published release?",
+    initial: false
+  });
+
+  if (typeof response.confirmed !== "boolean") {
+    throw new Error("Homebrew release cancelled.");
   }
   return response.confirmed;
 }
@@ -994,7 +1617,8 @@ function printReleaseSummary({
   envFileExists,
   releaseNote,
   githubRelease,
-  releaseBackend
+  releaseBackend,
+  homebrewRelease
 }) {
   console.log("");
   console.log("Release summary:");
@@ -1014,6 +1638,11 @@ function printReleaseSummary({
   if (githubRelease) {
     console.log(`- GitHub release: ${githubRelease.repo} ${githubRelease.tagName}`);
   }
+  console.log(
+    `- Homebrew Cask PR: ${homebrewRelease
+      ? `enabled (${homebrewRelease.isInitialCask ? "initial cask" : "update"}; ${homebrewRelease.repoPath})`
+      : "disabled"}`
+  );
 }
 
 function validateRequiredBuildSettings(settings) {
@@ -1033,6 +1662,14 @@ function parseArgs(argv) {
       args.betaName = arg.slice("--beta-name=".length);
     } else if (arg === "--yes" || arg === "-y") {
       args.yes = true;
+    } else if (arg === "--bump-homebrew") {
+      args.bumpHomebrew = true;
+    } else if (arg === "--no-bump-homebrew") {
+      args.bumpHomebrew = false;
+    } else if (arg === "--homebrew-install-tested") {
+      args.homebrewInstallTested = true;
+    } else if (arg === "--homebrew-only") {
+      args.homebrewOnly = true;
     }
   }
   return args;

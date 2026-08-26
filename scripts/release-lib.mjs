@@ -326,6 +326,224 @@ export function normalizeBetaDMGCustomName(value) {
   return normalizeFileNameSegment(normalized, "Beta DMG custom name");
 }
 
+export function makeHomebrewCaskBranchName({ version, buildNumber }) {
+  const safeVersion = normalizeFileNameSegment(version, "Homebrew Cask version");
+  const safeBuildNumber = normalizeFileNameSegment(buildNumber, "Homebrew Cask build number");
+  return `tcpviewer-${safeVersion}-${safeBuildNumber}`;
+}
+
+export function makeHomebrewCaskAuditArgs({ isInitialCask, token = "tcpviewer" }) {
+  const args = ["audit", "--cask", "--online"];
+  if (isInitialCask) {
+    args.push("--new");
+  }
+  args.push(token);
+  return args;
+}
+
+export function validateHomebrewLivecheckOutput(output, expectedVersion) {
+  let entries;
+  try {
+    entries = JSON.parse(String(output));
+  } catch {
+    throw new Error("Homebrew livecheck did not return valid JSON.");
+  }
+  const entry = Array.isArray(entries) ? entries[0] : null;
+  if (!entry?.version) {
+    throw new Error(`Homebrew livecheck did not return a version: ${entry?.status ?? "missing result"}.`);
+  }
+  if (entry.version.current !== expectedVersion || entry.version.latest !== expectedVersion) {
+    throw new Error(
+      `Homebrew livecheck must report ${expectedVersion} as current and latest; `
+      + `found ${entry.version.current ?? "unknown"} and ${entry.version.latest ?? "unknown"}.`
+    );
+  }
+}
+
+export function validatePublishedGitHubReleaseAsset(release, { tagName, assetName }) {
+  if (release?.tagName !== tagName) {
+    throw new Error(`GitHub release must use tag ${tagName}.`);
+  }
+  if (release.isDraft || release.isPrerelease) {
+    throw new Error(`GitHub release ${tagName} must be a published production release.`);
+  }
+
+  const matches = Array.isArray(release.assets)
+    ? release.assets.filter((asset) => asset?.name === assetName)
+    : [];
+  if (matches.length !== 1) {
+    throw new Error(`GitHub release ${tagName} must contain exactly one ${assetName} asset.`);
+  }
+
+  const asset = matches[0];
+  const digest = String(asset.digest ?? "").trim().toLowerCase();
+  if (!/^sha256:[a-f0-9]{64}$/.test(digest)) {
+    throw new Error(`GitHub release asset ${assetName} must include a SHA-256 digest.`);
+  }
+  if (!Number.isSafeInteger(asset.size) || asset.size <= 0) {
+    throw new Error(`GitHub release asset ${assetName} must include a positive file size.`);
+  }
+
+  return {
+    name: assetName,
+    sha256: digest.slice("sha256:".length),
+    size: asset.size
+  };
+}
+
+export function resolvePublishedGitHubReleaseArtifact(release) {
+  const tagName = String(release?.tagName ?? "").trim();
+  if (!tagName.startsWith("v")) {
+    throw new Error("The latest GitHub release tag must start with v.");
+  }
+
+  const version = tagName.slice(1);
+  if (makeGitHubReleaseTagName(version) !== tagName) {
+    throw new Error(`The latest GitHub release tag is invalid: ${tagName}.`);
+  }
+
+  const prefix = `${releaseDMGAppName}_${version}_`;
+  const suffix = ".dmg";
+  const candidates = Array.isArray(release.assets)
+    ? release.assets.flatMap((asset) => {
+        const name = String(asset?.name ?? "");
+        if (!name.startsWith(prefix) || !name.endsWith(suffix)) {
+          return [];
+        }
+
+        const buildNumber = name.slice(prefix.length, -suffix.length);
+        try {
+          return makeDMGFileName({ version, buildNumber }) === name
+            ? [{ asset, buildNumber }]
+            : [];
+        } catch {
+          return [];
+        }
+      })
+    : [];
+  if (candidates.length !== 1) {
+    throw new Error(`GitHub release ${tagName} must contain exactly one production DMG asset.`);
+  }
+
+  const candidate = candidates[0];
+  const validated = validatePublishedGitHubReleaseAsset(release, {
+    tagName,
+    assetName: candidate.asset.name
+  });
+  return {
+    tagName,
+    version,
+    buildNumber: candidate.buildNumber,
+    dmgFileName: validated.name,
+    sha256: validated.sha256,
+    size: validated.size
+  };
+}
+
+export function makeHomebrewCaskPullRequestBody({ template, isInitialCask, githubMetrics }) {
+  const templateLines = String(template ?? "").replaceAll("\r\n", "\n").trim().split("\n");
+  const checkboxLines = templateLines.filter((line) => /^- \[ \] /.test(line));
+  if (checkboxLines.length === 0 || !checkboxLines.some((line) => /\b(?:AI|LLM)\b/i.test(line))) {
+    throw new Error("The Homebrew Cask pull request template is missing its checklist or AI disclosure.");
+  }
+  if (isInitialCask && !githubMetrics) {
+    throw new Error("GitHub metrics are required for an initial Homebrew Cask pull request.");
+  }
+
+  let inNewCaskSection = false;
+  const completedTemplate = templateLines.map((line) => {
+    if (line.startsWith("Additionally, if adding a new cask:")) {
+      inNewCaskSection = true;
+      return line;
+    }
+    if (inNewCaskSection && /^-+$/.test(line.trim())) {
+      inNewCaskSection = false;
+      return line;
+    }
+    if (/^- \[ \] /.test(line) && (isInitialCask || !inNewCaskSection)) {
+      return line.replace("- [ ] ", "- [x] ");
+    }
+    return line;
+  });
+
+  const finalSeparatorIndex = completedTemplate.findLastIndex((line) => /^-+$/.test(line.trim()));
+  if (finalSeparatorIndex === -1) {
+    throw new Error("The Homebrew Cask pull request template is missing its final separator.");
+  }
+
+  const details = [];
+  if (isInitialCask) {
+    details.push(
+      "Canonical repository: https://github.com/ProxymanApp/TCPViewer",
+      `Repository metrics: ${githubMetrics.stars} stars, ${githubMetrics.forks} forks, `
+      + `${githubMetrics.watchers} watchers when this PR was created.`,
+      ""
+    );
+  }
+  details.push(
+    "AI/LLM disclosure: OpenAI Codex assisted with the release automation that updated this cask. The maintainer "
+    + "reviewed the cask, verified the release artifact, and ran the checked Homebrew validation commands.",
+    ""
+  );
+
+  completedTemplate.splice(finalSeparatorIndex, 0, ...details);
+  return completedTemplate.join("\n");
+}
+
+export function parseHomebrewCaskVersion(content) {
+  const match = String(content).match(/^  version "([^"]+),([^"]+)"$/m);
+  if (!match) {
+    throw new Error("TCP Viewer Homebrew Cask must contain one version with a version and build number.");
+  }
+
+  return { version: match[1], buildNumber: match[2] };
+}
+
+export function githubRepoFromRemoteURL(remoteURL) {
+  const match = String(remoteURL).trim().match(
+    /^(?:git@github\.com:|ssh:\/\/git@github\.com\/|https:\/\/github\.com\/)([^/]+\/[^/]+?)(?:\.git)?$/i
+  );
+  return match ? match[1].toLowerCase() : null;
+}
+
+export function validateHomebrewCaskContent(content) {
+  const current = String(content);
+  const parsedVersion = parseHomebrewCaskVersion(current);
+  const versionMatches = current.match(/^  version ".*"$/gm) ?? [];
+  const shaMatches = current.match(/^  sha256 ".*"$/gm) ?? [];
+  if (versionMatches.length !== 1 || shaMatches.length !== 1) {
+    throw new Error("TCP Viewer Homebrew Cask must contain exactly one version and one SHA-256 stanza.");
+  }
+  if (!/^  depends_on arch: :arm64$/m.test(current)) {
+    throw new Error("TCP Viewer Homebrew Cask must require Apple Silicon.");
+  }
+  if (!/^  app "TCP Viewer\.app"$/m.test(current)) {
+    throw new Error("TCP Viewer Homebrew Cask must install TCP Viewer.app.");
+  }
+
+  return parsedVersion;
+}
+
+export function updateHomebrewCaskContent(content, { version, buildNumber, sha256 }) {
+  const current = String(content);
+  validateHomebrewCaskContent(current);
+  const safeVersion = normalizeFileNameSegment(version, "Homebrew Cask version");
+  const safeBuildNumber = normalizeFileNameSegment(buildNumber, "Homebrew Cask build number");
+  const safeSHA256 = String(sha256 ?? "").trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(safeSHA256)) {
+    throw new Error("Homebrew Cask SHA-256 must contain 64 hexadecimal characters.");
+  }
+
+  const versionMatch = current.match(/^  version ".*"$/m)[0];
+  const shaMatch = current.match(/^  sha256 ".*"$/m)[0];
+
+  const updated = current
+    .replace(versionMatch, `  version "${safeVersion},${safeBuildNumber}"`)
+    .replace(shaMatch, `  sha256 "${safeSHA256}"`);
+  validateHomebrewCaskContent(updated);
+  return updated;
+}
+
 export function makeR2ObjectKey({ releaseType, version, buildNumber, timestamp, fileName }) {
   const safeFileName = validateDMGFileName(fileName ?? makeDMGFileName({ version, buildNumber }));
 
