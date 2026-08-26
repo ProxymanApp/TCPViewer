@@ -1835,9 +1835,12 @@ final class NetworkInspectorViewModel {
         }
     }
 
-    func invalidateInspectionAfterTLSKeyLogChange() {
+    @discardableResult
+    func invalidateInspectionAfterTLSKeyLogChange() -> PacketSummary.ID? {
+        let selectedPacketID = snapshot.selectedPacketID
         controller.selectPacket(nil)
         rebuildSnapshot()
+        return selectedPacketID
     }
 
     // Reopen all active offline files so Wireshark rebuilds summaries with the current TLS keys.

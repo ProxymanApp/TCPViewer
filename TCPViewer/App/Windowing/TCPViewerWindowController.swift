@@ -227,6 +227,21 @@ extension TCPViewerWindowController: TCPViewerRootViewControllerDelegate {
     func tcpviewerRootViewControllerDidRequestPaywall(_ controller: TCPViewerRootViewController) {
         (NSApp.delegate as? AppDelegate)?.showPaywall(self)
     }
+
+    func tcpviewerRootViewController(
+        _ controller: TCPViewerRootViewController,
+        didRequestChooseTLSKeyLog completion: @escaping (TLSKeyLogSelectionOutcome) -> Void
+    ) {
+        guard let window,
+              let appDelegate = NSApp.delegate as? AppDelegate else {
+            completion(.failed(TCPViewerCoreError(
+                code: .unavailableFeature,
+                message: "TLS key-log selection is unavailable."
+            )))
+            return
+        }
+        appDelegate.chooseTLSKeyLog(for: window, completion: completion)
+    }
 }
 
 extension TCPViewerWindowController: TCPViewerToolbarDataSourceDelegate {

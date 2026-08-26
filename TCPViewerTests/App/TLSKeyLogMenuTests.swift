@@ -31,7 +31,7 @@ struct TLSKeyLogMenuTests {
         #expect(toolsItems.count == 1)
         #expect(menu.index(of: toolsItem) < menu.items.firstIndex(where: { $0.title == "Window" })!)
         #expect(toolsItem.submenu?.items.count == 1)
-        #expect(toolsItem.submenu?.items.first?.title == "TLS Key Log…")
+        #expect(toolsItem.submenu?.items.first?.title == "TLS Decryption…")
         #expect(toolsItem.submenu?.items.first?.target === delegate)
     }
 }

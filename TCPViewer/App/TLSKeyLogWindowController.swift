@@ -9,15 +9,33 @@ import AppKit
 import PcapPlusPlusCore
 import UniformTypeIdentifiers
 
+enum TLSKeyLogSelectionOutcome {
+    case cancelled
+    case applied(TLSKeyLogState)
+    case failed(Error)
+}
+
+enum TLSKeyLogOpenPanel {
+    static func make() -> NSOpenPanel {
+        let panel = NSOpenPanel()
+        panel.title = "Choose TLS Key Log"
+        panel.message = "Choose a TLS key log created for the same captured connections."
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.plainText, .data]
+        return panel
+    }
+}
+
 final class TLSKeyLogWindowController: NSWindowController {
     var configurationDidChange: (() -> Void)?
 
     private let manager: any TLSKeyLogManaging
     private let fileLabel = NSTextField(labelWithString: "No key-log file selected")
     private let pathLabel = NSTextField(labelWithString: "")
-    private let statusLabel = NSTextField(wrappingLabelWithString: "Choose an NSS/SSL key-log file to enable Wireshark decryption.")
+    private let statusLabel = NSTextField(wrappingLabelWithString: "Choose a TLS key log to decrypt matching connections.")
     private let chooseButton = NSButton(title: "Choose File…", target: nil, action: nil)
-    private let reloadButton = NSButton(title: "Reload", target: nil, action: nil)
     private let removeButton = NSButton(title: "Remove", target: nil, action: nil)
     private let progressIndicator = NSProgressIndicator()
     private var selectedURL: URL?
@@ -26,7 +44,7 @@ final class TLSKeyLogWindowController: NSWindowController {
         self.manager = manager
         let contentController = NSViewController()
         let window = NSWindow(contentViewController: contentController)
-        window.title = "TLS Key Log"
+        window.title = "TLS Decryption"
         window.styleMask = [.titled, .closable, .miniaturizable]
         window.setContentSize(NSSize(width: 560, height: 330))
         window.isReleasedWhenClosed = false
@@ -51,8 +69,6 @@ final class TLSKeyLogWindowController: NSWindowController {
 
         chooseButton.target = self
         chooseButton.action = #selector(chooseFile(_:))
-        reloadButton.target = self
-        reloadButton.action = #selector(reloadFile(_:))
         removeButton.target = self
         removeButton.action = #selector(removeFile(_:))
 
@@ -60,10 +76,10 @@ final class TLSKeyLogWindowController: NSWindowController {
         progressIndicator.controlSize = .small
         progressIndicator.isDisplayedWhenStopped = false
 
-        let warning = NSTextField(wrappingLabelWithString: "TLS key logs expose encrypted session contents. Keep the file private. TCP Viewer uses the original file by reference, does not copy it, and forgets the selection when the app quits.")
+        let warning = NSTextField(wrappingLabelWithString: "Keep this file private. TCP Viewer uses it in place and forgets it when the app quits.")
         warning.textColor = .systemOrange
 
-        let buttonRow = NSStackView(views: [chooseButton, reloadButton, removeButton, progressIndicator])
+        let buttonRow = NSStackView(views: [chooseButton, removeButton, progressIndicator])
         buttonRow.orientation = .horizontal
         buttonRow.alignment = .centerY
         buttonRow.spacing = 8
@@ -100,47 +116,31 @@ final class TLSKeyLogWindowController: NSWindowController {
         fileLabel.stringValue = state.fileURL?.lastPathComponent ?? "No key-log file selected"
         pathLabel.stringValue = state.fileURL?.path ?? ""
         chooseButton.title = state.fileURL == nil ? "Choose File…" : "Replace…"
-        reloadButton.isEnabled = state.fileURL != nil
         removeButton.isEnabled = state.fileURL != nil
         if let validation = state.validation {
-            var message = "Valid records: \(validation.validRecordCount). Warnings: \(validation.warningCount)."
+            var message = "TLS keys loaded. TCP Viewer will decrypt matching connections in open captures. \(validation.validRecordCount) recognized records, \(validation.warningCount) warnings."
             if validation.reachedScanLimit {
-                message += " Validation stopped at the safe scan limit."
+                message += " Validation stopped at the scan limit."
             }
-            message += " Syntax validation cannot prove that these secrets match the capture."
             statusLabel.stringValue = message
         } else {
-            statusLabel.stringValue = "Choose an NSS/SSL key-log file to enable Wireshark decryption."
+            statusLabel.stringValue = "Choose a TLS key log to decrypt matching connections."
         }
     }
 
     private func setLoading(_ loading: Bool, message: String) {
         statusLabel.stringValue = message
         chooseButton.isEnabled = !loading
-        reloadButton.isEnabled = !loading && selectedURL != nil
         removeButton.isEnabled = !loading && selectedURL != nil
         loading ? progressIndicator.startAnimation(nil) : progressIndicator.stopAnimation(nil)
     }
 
     @objc private func chooseFile(_ sender: Any?) {
-        let panel = NSOpenPanel()
-        panel.title = "Choose TLS Key Log"
-        panel.message = "Choose a .txt, .log, .keys, or extensionless NSS/SSL key-log file."
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.plainText, .data]
+        let panel = TLSKeyLogOpenPanel.make()
         guard panel.runModal() == .OK, let url = panel.url else {
             return
         }
         apply(url)
-    }
-
-    @objc private func reloadFile(_ sender: Any?) {
-        guard let selectedURL else {
-            return
-        }
-        apply(selectedURL)
     }
 
     @objc private func removeFile(_ sender: Any?) {
@@ -169,7 +169,6 @@ final class TLSKeyLogWindowController: NSWindowController {
             render(state)
             configurationDidChange?()
         case .failure(let error):
-            reloadButton.isEnabled = selectedURL != nil
             removeButton.isEnabled = selectedURL != nil
             statusLabel.stringValue = (error as? TCPViewerCoreError)?.message ?? error.localizedDescription
         }

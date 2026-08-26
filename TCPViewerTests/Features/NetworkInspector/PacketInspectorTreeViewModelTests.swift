@@ -72,8 +72,8 @@ struct PacketInspectorTreeViewModelTests {
     }
 
     @MainActor
-    @Test func requestAndResponseTabsShareOneDecryptedStreamLoad() async throws {
-        let packet = makePacket()
+    @Test func decryptedDirectionsShareOneStreamLoad() async throws {
+        let packet = makePacket(sniDomainName: "api.example.com")
         let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
         let delegate = PacketInspectorDelegateSpy()
         delegate.decryptedStreamResult = .success(DecryptedStreamResult(
@@ -89,7 +89,8 @@ struct PacketInspectorTreeViewModelTests {
             packet: packet,
             inspectionState: loadedInspectionState(packet: packet, inspection: makeFrameInspection(for: packet))
         ))
-        let tabs = try #require(firstSubview(ofType: NSSegmentedControl.self, in: controller.view))
+        let tabs = try #require(segmentedControl(labels: ["Packet", "Decrypted"], in: controller.view))
+        let directions = try #require(segmentedControl(labels: ["Client → Server", "Server → Client"], in: controller.view))
         let textView = try #require(allSubviews(ofType: NSTextView.self, in: controller.view).first { $0.usesFindBar })
 
         tabs.selectedSegment = 1
@@ -98,13 +99,115 @@ struct PacketInspectorTreeViewModelTests {
 
         #expect(delegate.decryptedStreamLoadCount == 1)
         #expect(textView.string == "GET / HTTP/1.1\r\n\r\n")
+        #expect(textFieldValues(in: controller.view).contains("api.example.com"))
 
-        tabs.selectedSegment = 2
-        tabs.sendAction(tabs.action, to: tabs.target)
+        directions.selectedSegment = 1
+        directions.sendAction(directions.action, to: directions.target)
         await drainMainQueue()
 
         #expect(delegate.decryptedStreamLoadCount == 1)
         #expect(textView.string == "HTTP/1.1 200 OK\r\n\r\n")
+    }
+
+    @MainActor
+    @Test func missingKeyLogOffersChooserInsideDecryptedView() async throws {
+        let packet = makePacket()
+        let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        let delegate = PacketInspectorDelegateSpy()
+        delegate.decryptedStreamResult = .failure(TCPViewerCoreError(
+            code: .unavailableFeature,
+            message: "No TLS key-log file is selected. Choose one in Decrypted or open Tools → TLS Decryption… first."
+        ))
+        controller.delegate = delegate
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: makeSnapshot(
+            packet: packet,
+            inspectionState: loadedInspectionState(packet: packet, inspection: makeFrameInspection(for: packet))
+        ))
+        let tabs = try #require(segmentedControl(labels: ["Packet", "Decrypted"], in: controller.view))
+
+        tabs.selectedSegment = 1
+        tabs.sendAction(tabs.action, to: tabs.target)
+        await drainMainQueue()
+
+        let chooseButton = try #require(allSubviews(ofType: NSButton.self, in: controller.view).first {
+            $0.title == "Choose TLS Key Log…"
+        })
+        #expect(!isEffectivelyHidden(chooseButton))
+
+        chooseButton.sendAction(chooseButton.action, to: chooseButton.target)
+        await drainMainQueue()
+
+        #expect(delegate.tlsKeyLogSelectionCount == 1)
+        #expect(!isEffectivelyHidden(chooseButton))
+    }
+
+    @MainActor
+    @Test func emptyDecryptedStreamOffersDifferentKeyLog() async throws {
+        let packet = makePacket()
+        let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        let delegate = PacketInspectorDelegateSpy()
+        delegate.decryptedStreamResult = .success(DecryptedStreamResult(
+            protocolName: .tls,
+            client: packet.endpoints.source,
+            server: packet.endpoints.destination,
+            request: DecryptedStreamPayload(data: Data(), observedByteCount: 0, isTruncated: false),
+            response: DecryptedStreamPayload(data: Data(), observedByteCount: 0, isTruncated: false)
+        ))
+        controller.delegate = delegate
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: makeSnapshot(
+            packet: packet,
+            inspectionState: loadedInspectionState(packet: packet, inspection: makeFrameInspection(for: packet))
+        ))
+        let tabs = try #require(segmentedControl(labels: ["Packet", "Decrypted"], in: controller.view))
+
+        tabs.selectedSegment = 1
+        tabs.sendAction(tabs.action, to: tabs.target)
+        await drainMainQueue()
+
+        let chooseButton = try #require(allSubviews(ofType: NSButton.self, in: controller.view).first {
+            $0.title == "Choose Different Key Log…"
+        })
+        #expect(!isEffectivelyHidden(chooseButton))
+        #expect(textFieldValues(in: controller.view).contains("No decrypted data found"))
+    }
+
+    @MainActor
+    @Test func runningCaptureOffersStopAndRetriesDecryption() async throws {
+        let packet = makePacket()
+        let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        let delegate = PacketInspectorDelegateSpy()
+        delegate.decryptedStreamResult = .failure(TCPViewerCoreError(
+            code: .unavailableFeature,
+            message: "Stop the live capture to load the complete decrypted stream."
+        ))
+        delegate.stopAndDecryptHandler = {
+            delegate.decryptedStreamResult = .success(self.makeDecryptedResult(packet: packet, request: "GET /after-stop"))
+        }
+        controller.delegate = delegate
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: makeSnapshot(
+            packet: packet,
+            inspectionState: loadedInspectionState(packet: packet, inspection: makeFrameInspection(for: packet))
+        ))
+        let tabs = try #require(segmentedControl(labels: ["Packet", "Decrypted"], in: controller.view))
+        let textView = try #require(allSubviews(ofType: NSTextView.self, in: controller.view).first { $0.usesFindBar })
+
+        tabs.selectedSegment = 1
+        tabs.sendAction(tabs.action, to: tabs.target)
+        await drainMainQueue()
+
+        let stopButton = try #require(allSubviews(ofType: NSButton.self, in: controller.view).first {
+            $0.title == "Stop and Decrypt"
+        })
+        stopButton.sendAction(stopButton.action, to: stopButton.target)
+        await drainMainQueue()
+        await drainMainQueue()
+
+        #expect(delegate.stopAndDecryptCount == 1)
+        #expect(delegate.decryptedStreamLoadCount == 2)
+        #expect(textView.string == "GET /after-stop")
     }
 
     @MainActor
@@ -120,7 +223,7 @@ struct PacketInspectorTreeViewModelTests {
             packet: firstPacket,
             inspectionState: loadedInspectionState(packet: firstPacket, inspection: makeFrameInspection(for: firstPacket))
         ))
-        let tabs = try #require(firstSubview(ofType: NSSegmentedControl.self, in: controller.view))
+        let tabs = try #require(segmentedControl(labels: ["Packet", "Decrypted"], in: controller.view))
         let textView = try #require(allSubviews(ofType: NSTextView.self, in: controller.view).first { $0.usesFindBar })
         tabs.selectedSegment = 1
         tabs.sendAction(tabs.action, to: tabs.target)
@@ -1032,6 +1135,13 @@ struct PacketInspectorTreeViewModelTests {
         }
     }
 
+    private func segmentedControl(labels: [String], in view: NSView) -> NSSegmentedControl? {
+        allSubviews(ofType: NSSegmentedControl.self, in: view).first { control in
+            control.segmentCount == labels.count &&
+                labels.indices.allSatisfy { control.label(forSegment: $0) == labels[$0] }
+        }
+    }
+
     private func frame(_ upperFrame: NSRect, isVisuallyAbove lowerFrame: NSRect, in view: NSView) -> Bool {
         let tolerance: CGFloat = 1
         if view.isFlipped {
@@ -1200,7 +1310,7 @@ struct PacketInspectorTreeViewModelTests {
         )
     }
 
-    private func makePacket(packetNumber: UInt64 = 1) -> PacketSummary {
+    private func makePacket(packetNumber: UInt64 = 1, sniDomainName: String? = nil) -> PacketSummary {
         PacketSummary(
             packetNumber: packetNumber,
             timestamp: Date(timeIntervalSince1970: 0),
@@ -1215,7 +1325,8 @@ struct PacketInspectorTreeViewModelTests {
             infoSummary: "TCP packet",
             layers: [PacketLayer(name: "TCP")],
             decodeStatus: PacketDecodeStatus(kind: .complete),
-            captureMetadata: PacketCaptureMetadata(linkType: .ethernet, isTruncated: false)
+            captureMetadata: PacketCaptureMetadata(linkType: .ethernet, isTruncated: false),
+            sniDomainName: sniDomainName
         )
     }
 
@@ -1237,6 +1348,10 @@ private final class PacketInspectorDelegateSpy: PacketInspectorViewControllerDel
     var decryptedStreamLoadCount = 0
     var decryptedStreamCancellationChecks: [TCPFollowCancellationCheck] = []
     var defersDecryptedStreamCompletions = false
+    var tlsKeyLogSelectionCount = 0
+    var tlsKeyLogSelectionOutcome: TLSKeyLogSelectionOutcome = .cancelled
+    var stopAndDecryptCount = 0
+    var stopAndDecryptHandler: (() -> Void)?
     private var decryptedStreamCompletions: [TCPViewerCompletion<DecryptedStreamResult>] = []
 
     func packetInspectorViewController(_ controller: PacketInspectorViewController, didSelectDetailNode identifier: String?) {
@@ -1248,6 +1363,23 @@ private final class PacketInspectorDelegateSpy: PacketInspectorViewControllerDel
         didRequestCreateCustomColumn request: PacketCustomColumnRequest
     ) {
         customColumnRequest = request
+    }
+
+    func packetInspectorViewController(
+        _ controller: PacketInspectorViewController,
+        didRequestChooseTLSKeyLog completion: @escaping (TLSKeyLogSelectionOutcome) -> Void
+    ) {
+        tlsKeyLogSelectionCount += 1
+        completion(tlsKeyLogSelectionOutcome)
+    }
+
+    func packetInspectorViewControllerDidRequestStopAndDecrypt(
+        _ controller: PacketInspectorViewController,
+        completion: @escaping () -> Void
+    ) {
+        stopAndDecryptCount += 1
+        stopAndDecryptHandler?()
+        completion()
     }
 
     func packetInspectorViewController(

@@ -457,7 +457,7 @@ final class WiresharkEpanSession {
         shouldCancel: TCPFollowCancellationCheck?
     ) throws -> WiresharkDecryptedFollowFields {
         guard TCPViewerWiresharkHasTLSKeyLog() else {
-            throw NativeNSError(.unavailableFeature, "No TLS key-log file is selected. Open Tools → TLS Key Log… first.")
+            throw NativeNSError(.unavailableFeature, "No TLS key-log file is selected. Choose one in Decrypted or open Tools → TLS Decryption… first.")
         }
         let session = try WiresharkEpanSession(purpose: .follow)
         let totalWorkCount = recordCount > Int.max / 2 ? Int.max : recordCount * 2
@@ -495,7 +495,7 @@ final class WiresharkEpanSession {
         shouldCancel: TCPFollowCancellationCheck?
     ) throws -> WiresharkDecryptedFollowFields {
         guard TCPViewerWiresharkHasTLSKeyLog() else {
-            throw NativeNSError(.unavailableFeature, "No TLS key-log file is selected. Open Tools → TLS Key Log… first.")
+            throw NativeNSError(.unavailableFeature, "No TLS key-log file is selected. Choose one in Decrypted or open Tools → TLS Decryption… first.")
         }
         guard records.contains(where: { $0.identifier == selectedRecord.identifier }) else {
             throw NativeNSError(.fileReadFailed, "The selected packet is not available in the stream snapshot.")

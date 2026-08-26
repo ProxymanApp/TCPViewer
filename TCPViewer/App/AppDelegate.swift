@@ -38,6 +38,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var isTerminatingAfterFactoryReset = false
     private var hasPendingTLSKeyLogReload = false
     private var isReloadingTLSKeyLogCaptures = false
+    private var pendingTLSKeyLogSelectionByController: [ObjectIdentifier: PacketSummary.ID] = [:]
     #if DEBUG
     private var shouldOpenUntitledDocumentAfterIgnoringDebugLaunchFiles = false
     #endif
@@ -141,6 +142,45 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         controller.showWindow(sender)
         controller.window?.center()
         controller.window?.makeKeyAndOrderFront(sender)
+    }
+
+    // Apply keys from the selected connection so users do not have to leave the inspector first.
+    func chooseTLSKeyLog(
+        for window: NSWindow,
+        completion: @escaping (TLSKeyLogSelectionOutcome) -> Void
+    ) {
+        let panel = TLSKeyLogOpenPanel.make()
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let url = panel.url else {
+                completion(.cancelled)
+                return
+            }
+            guard let self else {
+                completion(.failed(TCPViewerCoreError(
+                    code: .unavailableFeature,
+                    message: "TLS key-log selection is unavailable."
+                )))
+                return
+            }
+            self.tlsKeyLogManager.apply(fileURL: url) { [weak self] result in
+                DispatchQueue.main.async {
+                    guard let self else {
+                        completion(.failed(TCPViewerCoreError(
+                            code: .unavailableFeature,
+                            message: "TLS key-log selection is unavailable."
+                        )))
+                        return
+                    }
+                    switch result {
+                    case .success(let state):
+                        self.handleTLSKeyLogConfigurationChange()
+                        completion(.applied(state))
+                    case .failure(let error):
+                        completion(.failed(error))
+                    }
+                }
+            }
+        }
     }
 
     private func prepareForTermination(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -661,11 +701,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let toolsMenu = toolsItem.submenu ?? NSMenu(title: "Tools")
         toolsItem.submenu = toolsMenu
         if let existing = toolsMenu.items.first(where: { $0.action == #selector(showTLSKeyLog(_:)) }) {
-            existing.title = "TLS Key Log…"
+            existing.title = "TLS Decryption…"
             existing.target = self
             return
         }
-        let keyLogItem = NSMenuItem(title: "TLS Key Log…", action: #selector(showTLSKeyLog(_:)), keyEquivalent: "")
+        let keyLogItem = NSMenuItem(title: "TLS Decryption…", action: #selector(showTLSKeyLog(_:)), keyEquivalent: "")
         keyLogItem.target = self
         toolsMenu.addItem(keyLogItem)
     }
@@ -673,7 +713,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func handleTLSKeyLogConfigurationChange() {
         let controllers = workspaceWindowControllers()
         controllers.forEach {
-            $0.rootViewController.viewModel.invalidateInspectionAfterTLSKeyLogChange()
+            let viewModel = $0.rootViewController.viewModel
+            let selectedPacketID = viewModel.invalidateInspectionAfterTLSKeyLogChange()
+            if let selectedPacketID {
+                pendingTLSKeyLogSelectionByController[ObjectIdentifier($0)] = selectedPacketID
+            }
+            if viewModel.snapshot.base.packetIngestState.source != .offline,
+               let selectedPacketID {
+                viewModel.selectPacket(selectedPacketID)
+                pendingTLSKeyLogSelectionByController.removeValue(forKey: ObjectIdentifier($0))
+            }
         }
         hasPendingTLSKeyLogReload = true
         reloadPendingTLSKeyLogCapturesIfPossible()
@@ -702,6 +751,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             $0.rootViewController.viewModel.snapshot.base.packetIngestState.source == .offline
         }
         guard !offlineControllers.isEmpty else {
+            restorePendingTLSKeyLogSelections(in: controllers)
             return
         }
         isReloadingTLSKeyLogCaptures = true
@@ -722,8 +772,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         controllers[index].rootViewController.viewModel.reloadAfterTLSKeyLogChange { [weak self] in
-            self?.reloadOfflineCaptures(controllers, index: index + 1, completion: completion)
+            guard let self else {
+                completion()
+                return
+            }
+            self.restorePendingTLSKeyLogSelection(in: controllers[index])
+            self.reloadOfflineCaptures(controllers, index: index + 1, completion: completion)
         }
+    }
+
+    private func restorePendingTLSKeyLogSelections(in controllers: [TCPViewerWindowController]) {
+        controllers.forEach(restorePendingTLSKeyLogSelection)
+    }
+
+    private func restorePendingTLSKeyLogSelection(in controller: TCPViewerWindowController) {
+        let key = ObjectIdentifier(controller)
+        guard let selectedPacketID = pendingTLSKeyLogSelectionByController.removeValue(forKey: key),
+              controller.rootViewController.viewModel.snapshot.base.packetIngestState.packet(withID: selectedPacketID) != nil else {
+            return
+        }
+        controller.rootViewController.viewModel.selectPacket(selectedPacketID)
     }
 
     private func workspaceWindowControllers() -> [TCPViewerWindowController] {
