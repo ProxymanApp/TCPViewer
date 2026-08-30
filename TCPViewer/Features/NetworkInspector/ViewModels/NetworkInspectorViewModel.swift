@@ -1135,7 +1135,9 @@ final class NetworkInspectorViewModel {
         self.wiresharkFilterMembership = nil
         self.wiresharkFilterMembershipLineageRevision = nil
         self.displayFilterText = preferences.displayFilterText
-        self.structuredFilterGroup = structuredFilterStore.load()
+        self.structuredFilterGroup = preferences.filterMode == .wireshark
+            ? .wireshark(expression: preferences.wiresharkFilterDraft)
+            : structuredFilterStore.load()
         let sourceListSnapshot = sourceListService.snapshot(
             for: controller.snapshot.packetIngestState,
             pinnedItems: pinService.pins(),
@@ -1354,8 +1356,41 @@ final class NetworkInspectorViewModel {
         cancelPendingInspectorFilterApplication()
         structuredFilterGroup = PacketStructuredFilterGroup(filters: group.filters, operator: group.operator)
         selectedCustomFilterID = nil
+
+        pendingDisplayFilterValidationWorkItem?.cancel()
+        displayFilterValidationGeneration &+= 1
+        if structuredFilterGroup.usesWiresharkFilter {
+            filterMode = .wireshark
+            let filter = structuredFilterGroup.filters[0]
+            wiresharkFilterState.draftExpression = filter.normalizedText
+            if filter.isEnabled, !filter.normalizedText.isEmpty {
+                cancelWiresharkFilterEvaluation(clearMembership: false)
+                wiresharkFilterState.isValidating = true
+                let generation = displayFilterValidationGeneration
+                let expression = filter.normalizedText
+                let workItem = DispatchWorkItem { [weak self] in
+                    self?.validateWiresharkFilterDraft(
+                        expression,
+                        generation: generation,
+                        appliesAutomatically: true
+                    )
+                }
+                pendingDisplayFilterValidationWorkItem = workItem
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: workItem)
+            } else {
+                cancelWiresharkFilterEvaluation(clearMembership: true)
+                wiresharkFilterState = PacketWiresharkFilterState(draftExpression: filter.normalizedText)
+            }
+        } else {
+            cancelWiresharkFilterEvaluation(clearMembership: true)
+            filterMode = .builder
+            wiresharkFilterState = PacketWiresharkFilterState()
+        }
+
         if !isUsingSessionDocumentState {
             structuredFilterStore.save(structuredFilterGroup)
+            preferences.persistFilterMode(filterMode)
+            preferences.persistWiresharkFilterDraft(wiresharkFilterState.draftExpression)
         }
         rebuildSnapshot()
     }
@@ -1402,16 +1437,24 @@ final class NetworkInspectorViewModel {
 
     func updateWiresharkFilterDraft(_ expression: String) {
         cancelPendingInspectorFilterApplication()
+        structuredFilterGroup = .wireshark(expression: expression)
+        filterMode = .wireshark
         wiresharkFilterState.draftExpression = expression
         wiresharkFilterState.isValidating = true
         if !isUsingSessionDocumentState {
+            structuredFilterStore.save(structuredFilterGroup)
+            preferences.persistFilterMode(.wireshark)
             preferences.persistWiresharkFilterDraft(expression)
         }
         pendingDisplayFilterValidationWorkItem?.cancel()
         displayFilterValidationGeneration &+= 1
         let generation = displayFilterValidationGeneration
         let workItem = DispatchWorkItem { [weak self] in
-            self?.validateWiresharkFilterDraft(expression, generation: generation)
+            self?.validateWiresharkFilterDraft(
+                expression,
+                generation: generation,
+                appliesAutomatically: false
+            )
         }
         pendingDisplayFilterValidationWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: workItem)
@@ -1525,7 +1568,18 @@ final class NetworkInspectorViewModel {
     // Save the current structured filter group as a reusable custom titlebar filter.
     @discardableResult
     func saveCustomFilter(name: String, group: PacketStructuredFilterGroup) throws -> PacketCustomFilter {
-        let savedFilter = try customFilterService.save(name: name, group: group)
+        let normalizedGroup = PacketStructuredFilterGroup(filters: group.filters, operator: group.operator)
+        let savedFilter: PacketCustomFilter
+        if let expression = normalizedGroup.wiresharkExpression {
+            savedFilter = try customFilterService.save(
+                name: name,
+                mode: .wireshark,
+                group: .default,
+                wiresharkExpression: expression
+            )
+        } else {
+            savedFilter = try customFilterService.save(name: name, group: normalizedGroup)
+        }
         selectedCustomFilterID = savedFilter.id
         rebuildSnapshot()
         return savedFilter
@@ -1575,8 +1629,10 @@ final class NetworkInspectorViewModel {
             }
         case .wireshark:
             let expression = filter.wiresharkExpression ?? ""
+            structuredFilterGroup = .wireshark(expression: expression)
             wiresharkFilterState.draftExpression = expression
             if !isUsingSessionDocumentState {
+                structuredFilterStore.save(structuredFilterGroup)
                 preferences.persistWiresharkFilterDraft(expression)
             }
         }
@@ -1596,13 +1652,23 @@ final class NetworkInspectorViewModel {
         rebuildSnapshot()
     }
 
-    // Replace one saved custom filter with the current structured filter group.
+    // Replace a saved filter only with the matching editor mode so its payload stays valid.
     func overrideCustomFilter(id: PacketCustomFilter.ID, group: PacketStructuredFilterGroup) throws {
-        guard customFilterService.filter(id: id)?.mode == .builder else {
+        let replacementGroup = PacketStructuredFilterGroup(filters: group.filters, operator: group.operator)
+        let replacementMode: PacketFilterMode = replacementGroup.usesWiresharkFilter ? .wireshark : .builder
+        guard customFilterService.filter(id: id)?.mode == replacementMode else {
             return
         }
-        let replacementGroup = PacketStructuredFilterGroup(filters: group.filters, operator: group.operator)
-        try customFilterService.updateGroup(id: id, group: replacementGroup)
+        if let expression = replacementGroup.wiresharkExpression {
+            try customFilterService.update(
+                id: id,
+                mode: .wireshark,
+                group: .default,
+                wiresharkExpression: expression
+            )
+        } else {
+            try customFilterService.updateGroup(id: id, group: replacementGroup)
+        }
         structuredFilterGroup = replacementGroup
         if !isUsingSessionDocumentState {
             structuredFilterStore.save(replacementGroup)
@@ -1641,7 +1707,11 @@ final class NetworkInspectorViewModel {
         rebuildSnapshot()
     }
 
-    private func validateWiresharkFilterDraft(_ expression: String, generation: UInt64) {
+    private func validateWiresharkFilterDraft(
+        _ expression: String,
+        generation: UInt64,
+        appliesAutomatically: Bool
+    ) {
         controller.validateDisplayFilter(expression) { [weak self] validation in
             DispatchQueue.main.async {
                 guard let self,
@@ -1652,16 +1722,35 @@ final class NetworkInspectorViewModel {
                 self.pendingDisplayFilterValidationWorkItem = nil
                 self.wiresharkFilterState.isValidating = false
                 self.wiresharkFilterState.validation = validation
-                self.rebuildSnapshot()
+                guard appliesAutomatically,
+                      validation.isApplicable,
+                      self.isStructuredFilterVisible,
+                      self.filterMode == .wireshark else {
+                    self.rebuildSnapshot()
+                    return
+                }
+                self.evaluateWiresharkFilter(
+                    validation.normalizedExpression,
+                    validation: validation
+                )
             }
         }
     }
 
     private func reapplyWiresharkFilterIfNeeded() {
         let expression = wiresharkFilterState.appliedExpression
-        guard !expression.isEmpty,
-              isStructuredFilterVisible,
+        guard isStructuredFilterVisible,
               filterMode == .wireshark else {
+            return
+        }
+        if wiresharkFilterState.draftExpression != expression {
+            applyWiresharkFilter()
+            return
+        }
+        guard !expression.isEmpty else {
+            if !wiresharkFilterState.draftExpression.isEmpty {
+                applyWiresharkFilter()
+            }
             return
         }
         evaluateWiresharkFilter(
@@ -1677,7 +1766,7 @@ final class NetworkInspectorViewModel {
         packetLineageRevision: UInt64
     ) {
         resetFilteringScopesForInspectorRequest()
-        structuredFilterGroup = .default
+        structuredFilterGroup = .wireshark(expression: expression)
         filterMode = .wireshark
         isStructuredFilterVisible = true
         wiresharkFilterMembership = membership
@@ -2580,6 +2669,9 @@ final class NetworkInspectorViewModel {
         isStructuredFilterVisible = state.isStructuredFilterVisible
         filterMode = state.filterMode ?? .builder
         let wiresharkExpression = state.wiresharkExpression ?? ""
+        if filterMode == .wireshark {
+            structuredFilterGroup = .wireshark(expression: wiresharkExpression)
+        }
         wiresharkFilterState = PacketWiresharkFilterState(
             draftExpression: wiresharkExpression,
             validation: DisplayFilterValidation(
@@ -2619,7 +2711,11 @@ final class NetworkInspectorViewModel {
         structuredFilterGroup = structuredFilterStore.load()
         isStructuredFilterVisible = preferences.isStructuredFilterVisible
         filterMode = preferences.filterMode
-        wiresharkFilterState = PacketWiresharkFilterState(draftExpression: preferences.wiresharkFilterDraft)
+        let wiresharkExpression = preferences.wiresharkFilterDraft
+        if filterMode == .wireshark {
+            structuredFilterGroup = .wireshark(expression: wiresharkExpression)
+        }
+        wiresharkFilterState = PacketWiresharkFilterState(draftExpression: wiresharkExpression)
         wiresharkFilterMembership = nil
         wiresharkFilterMembershipLineageRevision = nil
         displayFilterResultCache.removeAll()

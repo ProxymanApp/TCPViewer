@@ -108,7 +108,7 @@ private extension PacketStructuredFilterQuery {
     var menuToolTip: String {
         switch self {
         case .anyText:
-            "Search across packet number, protocol, endpoints, client, summary, layers, status, and interface."
+            "Apply a Wireshark display-filter expression."
         case .urlDomain:
             "Search URL and domain-like values such as SNI, summary text, and decoded layer details."
         case .protocol:
@@ -322,6 +322,10 @@ private final class PacketStructuredFilterRowView: NSView {
         enabledCheckbox.state = filter.isEnabled ? .on : .off
         queryPopup.selectItem(withTitle: filter.query.title)
         conditionPopup.selectItem(withTitle: filter.condition.title)
+        conditionPopup.isHidden = filter.query == .anyText
+        textField.placeholderString = filter.query == .anyText
+            ? "Wireshark display filter…"
+            : "Filter… (⌘F)"
         textField.stringValue = filter.text
     }
 
@@ -435,7 +439,8 @@ final class PacketStructuredFilterViewController: NSViewController {
     ) {
         let normalizedGroup = PacketStructuredFilterGroup(filters: group.filters, operator: group.operator)
         let rebuildsRows = normalizedGroup != self.group
-        self.customFilterItems = customFilterItems.filter { $0.mode == .builder }
+        let currentMode: PacketFilterMode = normalizedGroup.usesWiresharkFilter ? .wireshark : .builder
+        self.customFilterItems = customFilterItems.filter { $0.mode == currentMode }
         self.isFiltering = isFiltering
         updateFilteringIndicator()
 
@@ -530,7 +535,7 @@ final class PacketStructuredFilterViewController: NSViewController {
         saveButton.bezelStyle = .rounded
         saveButton.controlSize = .small
         saveButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
-        saveButton.toolTip = "Save the current structured filter as a custom filter."
+        saveButton.toolTip = "Save the current filter as a custom filter."
         NSLayoutConstraint.activate([
             saveButton.heightAnchor.constraint(equalToConstant: 24),
             saveButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 68),
@@ -816,7 +821,7 @@ final class PacketStructuredFilterViewController: NSViewController {
         }
 
         filter.query = query
-        apply(currentGroup.replacing(filter))
+        apply(currentGroup.replacing(filter), rebuildsRows: true, focusFilterID: filter.id)
     }
 
     @objc private func changeCondition(_ sender: Any?) {

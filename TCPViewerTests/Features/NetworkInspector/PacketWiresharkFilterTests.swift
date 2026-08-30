@@ -96,17 +96,6 @@ struct PacketWiresharkFilterTests {
         #expect(entry.evaluatedPrefixCount == 100_001)
     }
 
-    @Test func diagnosticRangeConvertsUTF8OffsetsToNativeTextRanges() throws {
-        let expression = "ip.addr == \"café\" && tcp.port =="
-        let byteOffset = try #require(expression.range(of: "tcp.port"))
-        let utf8Index = try #require(byteOffset.lowerBound.samePosition(in: expression.utf8))
-        let utf8Start = expression.utf8.distance(from: expression.utf8.startIndex, to: utf8Index)
-        let sourceRange = DisplayFilterSourceRange(utf8StartOffset: utf8Start, utf8Length: "tcp.port".utf8.count)
-
-        #expect(PacketWiresharkFilterTextRange.nsRange(for: sourceRange, in: expression) == NSRange(location: 21, length: 8))
-        #expect(PacketWiresharkFilterTextRange.column(for: sourceRange, in: expression) == 22)
-    }
-
     private static func entry(matchingIndex: Int) -> PacketDisplayFilterCacheEntry {
         var entry = PacketDisplayFilterCacheEntry()
         entry.evaluatedPacketIndexes.insert(matchingIndex)

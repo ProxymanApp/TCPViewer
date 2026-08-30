@@ -11,8 +11,7 @@ import PcapPlusPlusCore
 protocol StatusStripViewControllerDelegate: AnyObject {
     func statusStripViewControllerDidRequestCancelLoad(_ controller: StatusStripViewController)
     func statusStripViewControllerDidRequestClearPackets(_ controller: StatusStripViewController)
-    func statusStripViewController(_ controller: StatusStripViewController, didSelectFilterMode mode: PacketFilterMode)
-    func statusStripViewControllerDidRequestHideFilter(_ controller: StatusStripViewController)
+    func statusStripViewControllerDidRequestToggleFilter(_ controller: StatusStripViewController)
 }
 
 final class StatusStripViewModel {
@@ -20,7 +19,6 @@ final class StatusStripViewModel {
     private(set) var canCancelLoad = false
     private(set) var canClear = false
     private(set) var isStructuredFilterVisible = false
-    private(set) var filterMode: PacketFilterMode = .builder
     private(set) var metricsText = TCPViewerStatusMetricsFormatter.displayText(for: .empty)
 
     // Build the compact bottom strip controls from the current packet/capture snapshot.
@@ -30,7 +28,6 @@ final class StatusStripViewModel {
         canCancelLoad = snapshot.base.loadState.canCancel
         canClear = snapshot.visiblePacketCount > 0 && !canCancelLoad
         isStructuredFilterVisible = snapshot.isStructuredFilterVisible
-        filterMode = snapshot.filterMode
     }
 
     // Format the lightweight process and captured-traffic metrics for the strip.
@@ -69,7 +66,7 @@ final class StatusStripViewController: NSViewController {
         clearButton.target = self
         clearButton.action = #selector(clearPackets(_:))
         filterButton.target = self
-        filterButton.action = #selector(showFilterMenu(_:))
+        filterButton.action = #selector(toggleFilter(_:))
     }
 
     func render(snapshot: NetworkInspectorSnapshot, metrics: TCPViewerStatusMetricsSnapshot = .empty) {
@@ -160,32 +157,7 @@ final class StatusStripViewController: NSViewController {
         delegate?.statusStripViewControllerDidRequestClearPackets(self)
     }
 
-    @objc private func showFilterMenu(_ sender: Any?) {
-        let menu = NSMenu()
-        for mode in PacketFilterMode.allCases {
-            let item = NSMenuItem(title: mode.title, action: #selector(selectFilterMode(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = mode.rawValue
-            item.state = viewModel.isStructuredFilterVisible && viewModel.filterMode == mode ? .on : .off
-            menu.addItem(item)
-        }
-        menu.addItem(.separator())
-        let hideItem = NSMenuItem(title: "Hide Filter", action: #selector(hideFilter(_:)), keyEquivalent: "")
-        hideItem.target = self
-        hideItem.isEnabled = viewModel.isStructuredFilterVisible
-        menu.addItem(hideItem)
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: filterButton.bounds.maxY + 2), in: filterButton)
-    }
-
-    @objc private func selectFilterMode(_ sender: NSMenuItem) {
-        guard let rawValue = sender.representedObject as? String,
-              let mode = PacketFilterMode(rawValue: rawValue) else {
-            return
-        }
-        delegate?.statusStripViewController(self, didSelectFilterMode: mode)
-    }
-
-    @objc private func hideFilter(_ sender: Any?) {
-        delegate?.statusStripViewControllerDidRequestHideFilter(self)
+    @objc private func toggleFilter(_ sender: Any?) {
+        delegate?.statusStripViewControllerDidRequestToggleFilter(self)
     }
 }

@@ -191,7 +191,11 @@ struct PacketStructuredFilterGroup: Codable, Sendable, Hashable {
         `operator`: PacketStructuredFilterGroupOperator = .and
     ) {
         let clampedFilters = Array(filters.prefix(Self.maxFilterCount))
-        self.filters = clampedFilters.isEmpty ? [PacketStructuredFilter()] : clampedFilters
+        if let wiresharkFilter = clampedFilters.first(where: { $0.query == .anyText }) {
+            self.filters = [wiresharkFilter]
+        } else {
+            self.filters = clampedFilters.isEmpty ? [PacketStructuredFilter()] : clampedFilters
+        }
         self.operator = `operator`
     }
 
@@ -200,7 +204,29 @@ struct PacketStructuredFilterGroup: Codable, Sendable, Hashable {
     }
 
     var canAddFilter: Bool {
-        filters.count < Self.maxFilterCount
+        !usesWiresharkFilter && filters.count < Self.maxFilterCount
+    }
+
+    var usesWiresharkFilter: Bool {
+        filters.count == 1 && filters[0].query == .anyText
+    }
+
+    var wiresharkExpression: String? {
+        guard usesWiresharkFilter else {
+            return nil
+        }
+        return filters[0].isEnabled ? filters[0].normalizedText : ""
+    }
+
+    static func wireshark(expression: String, isEnabled: Bool = true) -> PacketStructuredFilterGroup {
+        PacketStructuredFilterGroup(filters: [
+            PacketStructuredFilter(
+                query: .anyText,
+                condition: .contains,
+                text: expression,
+                isEnabled: isEnabled
+            ),
+        ])
     }
 
     func replacing(_ updatedFilter: PacketStructuredFilter) -> PacketStructuredFilterGroup {

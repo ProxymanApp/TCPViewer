@@ -324,6 +324,35 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.packetRows.map(\.id) == [firstPacket.id])
     }
 
+    @Test func wiresharkRowInDefaultFilterEditorValidatesAndAppliesAutomatically() async {
+        let openURL = URL(fileURLWithPath: "/tmp/default-editor-wireshark-filter.pcapng")
+        let tcpPacket = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp)
+        let udpPacket = makePacket(packetNumber: 2, source: .offline, transportHint: .udp)
+        let expression = "tcp.port == 443"
+        let document = InspectorFakeDocument(url: openURL, packets: [tcpPacket, udpPacket])
+        document.displayFilterMatchesByExpression[expression] = [tcpPacket.id]
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                document: document
+            )),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.openDocument(at: openURL)
+        await waitUntil { viewModel.snapshot.packetRows.count == 2 }
+        viewModel.setStructuredFilterVisible(true)
+        viewModel.updateStructuredFilterGroup(.wireshark(expression: expression))
+
+        await waitUntil {
+            viewModel.snapshot.wiresharkFilterState.appliedExpression == expression
+                && viewModel.snapshot.packetRows.map(\.id) == [tcpPacket.id]
+        }
+        #expect(viewModel.snapshot.filterMode == .wireshark)
+        #expect(viewModel.snapshot.structuredFilterGroup.wiresharkExpression == expression)
+        #expect(viewModel.snapshot.isStructuredFilterVisible)
+    }
+
     @Test func inspectorWiresharkFilterReplacesEveryFilteringScopeAndPersists() async throws {
         let openURL = URL(fileURLWithPath: "/tmp/inspector-row-wireshark-filter.pcapng")
         let tcpPacket = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp)
@@ -364,7 +393,7 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.selectedSourceListSelection == .allPackets)
         #expect(viewModel.snapshot.quickFilterSelection == .all)
         #expect(viewModel.snapshot.displayFilterText.isEmpty)
-        #expect(viewModel.snapshot.structuredFilterGroup == .default)
+        #expect(viewModel.snapshot.structuredFilterGroup.wiresharkExpression == expression)
         #expect(viewModel.snapshot.filterMode == .wireshark)
         #expect(viewModel.snapshot.isStructuredFilterVisible)
 
@@ -373,7 +402,7 @@ struct NetworkInspectorViewModelTests {
             userDefaults: defaults
         )
         #expect(restoredViewModel.snapshot.displayFilterText.isEmpty)
-        #expect(restoredViewModel.snapshot.structuredFilterGroup == .default)
+        #expect(restoredViewModel.snapshot.structuredFilterGroup.wiresharkExpression == expression)
         #expect(restoredViewModel.snapshot.filterMode == .wireshark)
         #expect(restoredViewModel.snapshot.isStructuredFilterVisible)
         #expect(restoredViewModel.snapshot.wiresharkFilterState.draftExpression == expression)
@@ -1434,6 +1463,43 @@ struct NetworkInspectorViewModelTests {
         })
         #expect(filterButton.title == "Filter ⌘F")
         #expect(filterButton.toolTip == "Show or hide packet filters (⌘F)")
+    }
+
+    @Test func statusStripFilterButtonTogglesDirectlyWithoutAMenu() throws {
+        let controller = StatusStripViewController()
+        let delegate = StatusStripDelegateSpy()
+        controller.delegate = delegate
+        controller.loadViewIfNeeded()
+        let filterButton = try #require(allSubviews(ofType: NSButton.self, in: controller.view).first { button in
+            button.title.contains("Filter")
+        })
+
+        filterButton.performClick(nil)
+
+        #expect(delegate.toggleFilterRequestCount == 1)
+        #expect(filterButton.menu == nil)
+    }
+
+    @Test func defaultFilterEditorUsesOneExpressionRowForWiresharkMode() throws {
+        let controller = PacketStructuredFilterViewController()
+        controller.loadViewIfNeeded()
+        controller.render(
+            group: .wireshark(expression: "tls.handshake.extensions_server_name == \"example.com\""),
+            isFiltering: false,
+            customFilterItems: []
+        )
+
+        let conditionPopup = try #require(allSubviews(ofType: NSPopUpButton.self, in: controller.view).first { popup in
+            popup.itemTitles.contains(PacketStructuredFilterCondition.contains.title)
+        })
+        let expressionField = try #require(allSubviews(ofType: NSSearchField.self, in: controller.view).first)
+        let addButton = try #require(allSubviews(ofType: NSButton.self, in: controller.view).first { button in
+            button.toolTip == "Add filter"
+        })
+
+        #expect(conditionPopup.isHidden)
+        #expect(expressionField.placeholderString == "Wireshark display filter…")
+        #expect(!addButton.isEnabled)
     }
 
     @Test func toolbarStatusShowsYellowBPFFilterIndicatorOnlyForNondefaultFilter() throws {
@@ -3853,7 +3919,7 @@ struct NetworkInspectorViewModelTests {
 
         let unfilteredIDs = viewModel.snapshot.packetRows.map(\.id)
         viewModel.updateStructuredFilterGroup(PacketStructuredFilterGroup(filters: [
-            PacketStructuredFilter(query: .anyText, condition: .matchesRegex, text: "visible-marker-[0-9]+")
+            PacketStructuredFilter(query: .summary, condition: .matchesRegex, text: "visible-marker-[0-9]+")
         ]))
         viewModel.setStructuredFilterVisible(true)
 
@@ -4223,6 +4289,18 @@ private func frame(_ lowerFrame: NSRect, isVisuallyBelow upperFrame: NSRect, in 
     }
 
     return lowerFrame.maxY <= upperFrame.minY + tolerance
+}
+
+private final class StatusStripDelegateSpy: StatusStripViewControllerDelegate {
+    private(set) var toggleFilterRequestCount = 0
+
+    func statusStripViewControllerDidRequestCancelLoad(_ controller: StatusStripViewController) {}
+
+    func statusStripViewControllerDidRequestClearPackets(_ controller: StatusStripViewController) {}
+
+    func statusStripViewControllerDidRequestToggleFilter(_ controller: StatusStripViewController) {
+        toggleFilterRequestCount += 1
+    }
 }
 
 private final class PacketFilterBuildGate: @unchecked Sendable {

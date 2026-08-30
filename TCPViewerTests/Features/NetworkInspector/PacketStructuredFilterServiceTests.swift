@@ -44,6 +44,13 @@ struct PacketStructuredFilterServiceTests {
         let unchangedGroup = defaultGroup.removing(filterID: singleFilterID)
         #expect(unchangedGroup == defaultGroup)
 
+        let wiresharkGroup = PacketStructuredFilterGroup(
+            filters: [sourceFilter, PacketStructuredFilter(query: .anyText, text: "tcp.port == 443")]
+        )
+        #expect(wiresharkGroup.filters.count == 1)
+        #expect(wiresharkGroup.wiresharkExpression == "tcp.port == 443")
+        #expect(!wiresharkGroup.canAddFilter)
+
         let data = try JSONEncoder().encode(clampedGroup)
         let decodedGroup = try JSONDecoder().decode(PacketStructuredFilterGroup.self, from: data)
         #expect(decodedGroup == clampedGroup)
