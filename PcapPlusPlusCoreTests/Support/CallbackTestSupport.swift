@@ -142,6 +142,23 @@ extension OfflineCaptureDocumentProviding {
         }
     }
 
+    func activateDisplayFilter(_ expression: String, generation: UInt64) async -> DisplayFilterValidation {
+        await withCheckedContinuation { continuation in
+            activateDisplayFilter(expression, generation: generation) { validation in
+                continuation.resume(returning: validation)
+            }
+        }
+    }
+
+    func evaluateDisplayFilter(
+        packetIDs: [PacketSummary.ID],
+        generation: UInt64
+    ) async throws -> DisplayFilterMatchBatch {
+        try await waitForResult { completion in
+            evaluateDisplayFilter(packetIDs: packetIDs, generation: generation, completion: completion)
+        }
+    }
+
     func save() async throws {
         try await waitForResult { completion in
             save(completion: completion)

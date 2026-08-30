@@ -23,6 +23,7 @@
 #include <epan/column-info.h>
 #include <epan/column-utils.h>
 #include <epan/dissectors/packet-tcp.h>
+#include <epan/dfilter/dfilter.h>
 #include <epan/epan.h>
 #include <epan/epan_dissect.h>
 #include <epan/exceptions.h>
@@ -32,6 +33,7 @@
 #include <epan/prefs.h>
 #include <epan/proto.h>
 #include <epan/tap.h>
+#include <epan/timestamp.h>
 #include <epan/to_str.h>
 #include <epan/tvbuff.h>
 #include <wiretap/pcap-encap.h>
@@ -43,6 +45,8 @@
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
 #endif
+
+extern "C" void TCPViewerWiresharkIPDisplayFilterPluginRegister(void);
 
 struct packet_provider_data {
     wtap *wth = nullptr;
@@ -120,6 +124,24 @@ struct WiresharkDissectionResult {
     std::vector<WiresharkByteSource> byteSources;
     std::vector<DetailNode> nodes;
     std::string sniDomainName;
+    bool hasDisplayFilterMatch = false;
+    bool displayFilterMatched = false;
+    uint64_t displayFilterGeneration = 0;
+};
+
+struct DisplayFilterDiagnosticCopy {
+    TCPViewerDisplayFilterDiagnosticSeverity severity = TCPViewerDisplayFilterDiagnosticError;
+    std::string message;
+    size_t utf8StartOffset = 0;
+    size_t utf8Length = 0;
+    bool hasRange = false;
+};
+
+struct DisplayFilterValidationCopy {
+    TCPViewerDisplayFilterValidationStatus status = TCPViewerDisplayFilterValidationUnavailable;
+    std::string normalizedExpression;
+    std::vector<DisplayFilterDiagnosticCopy> diagnostics;
+    dfilter_t *compiledFilter = nullptr;
 };
 
 struct PacketContextView {
@@ -154,6 +176,10 @@ std::mutex &WiresharkAPIMutex()
     static auto *mutex = new std::mutex();
     return *mutex;
 }
+
+#if DEBUG
+size_t gDisplayFilterCompilationCount = 0;
+#endif
 
 std::string CurrentExecutablePath()
 {
@@ -204,6 +230,209 @@ char *CopyCString(const std::string &value, bool allowNull = true)
         return nullptr;
     }
     return strdup(value.c_str());
+}
+
+std::string TrimASCIIWhitespace(const char *expression)
+{
+    if (expression == nullptr) {
+        return "";
+    }
+    std::string value(expression);
+    const auto first = value.find_first_not_of(" \t\r\n\f\v");
+    if (first == std::string::npos) {
+        return "";
+    }
+    const auto last = value.find_last_not_of(" \t\r\n\f\v");
+    return value.substr(first, last - first + 1);
+}
+
+std::optional<std::pair<size_t, size_t>> UnsupportedDollarTokenRange(const std::string &expression)
+{
+    enum class LiteralState { None, Quoted, Raw, Character };
+    LiteralState state = LiteralState::None;
+    bool escaped = false;
+
+    for (size_t index = 0; index < expression.size(); index += 1) {
+        const char character = expression[index];
+        switch (state) {
+            case LiteralState::Quoted:
+            case LiteralState::Character:
+                if (escaped) {
+                    escaped = false;
+                } else if (character == '\\') {
+                    escaped = true;
+                } else if ((state == LiteralState::Quoted && character == '"')
+                           || (state == LiteralState::Character && character == '\'')) {
+                    state = LiteralState::None;
+                }
+                continue;
+            case LiteralState::Raw:
+                if (character == '"') {
+                    state = LiteralState::None;
+                }
+                continue;
+            case LiteralState::None:
+                break;
+        }
+
+        if ((character == 'r' || character == 'R')
+            && index + 1 < expression.size() && expression[index + 1] == '"') {
+            state = LiteralState::Raw;
+            index += 1;
+            continue;
+        }
+        if (character == '"') {
+            state = LiteralState::Quoted;
+            continue;
+        }
+        if (character == '\'') {
+            state = LiteralState::Character;
+            continue;
+        }
+        if (character != '$') {
+            continue;
+        }
+
+        size_t end = index + 1;
+        if (end < expression.size() && expression[end] == '{') {
+            end += 1;
+            while (end < expression.size() && expression[end] != '}') {
+                end += 1;
+            }
+            if (end < expression.size()) {
+                end += 1;
+            }
+        } else {
+            while (end < expression.size()) {
+                const unsigned char next = static_cast<unsigned char>(expression[end]);
+                if (!(std::isalnum(next) || next == '_' || next == '.')) {
+                    break;
+                }
+                end += 1;
+            }
+        }
+        return std::pair<size_t, size_t>{index, end - index};
+    }
+    return std::nullopt;
+}
+
+DisplayFilterValidationCopy CompileDisplayFilter(const char *expression)
+{
+    DisplayFilterValidationCopy validation;
+    const std::string sourceExpression = expression == nullptr ? "" : expression;
+    validation.normalizedExpression = TrimASCIIWhitespace(expression);
+    if (validation.normalizedExpression.empty()) {
+        validation.status = TCPViewerDisplayFilterValidationValid;
+        return validation;
+    }
+
+    if (auto range = UnsupportedDollarTokenRange(sourceExpression)) {
+        validation.status = TCPViewerDisplayFilterValidationInvalid;
+        validation.diagnostics.push_back(DisplayFilterDiagnosticCopy{
+            TCPViewerDisplayFilterDiagnosticError,
+            "Macros and selected-frame $field references are not supported.",
+            range->first,
+            range->second,
+            true,
+        });
+        return validation;
+    }
+
+#if DEBUG
+    gDisplayFilterCompilationCount += 1;
+#endif
+    dfilter_t *compiled = nullptr;
+    df_error_t *error = nullptr;
+    const bool succeeded = dfilter_compile_full(
+        sourceExpression.c_str(),
+        &compiled,
+        &error,
+        DF_OPTIMIZE,
+        "TCPViewerDisplayFilter"
+    );
+    if (!succeeded) {
+        validation.status = TCPViewerDisplayFilterValidationInvalid;
+        DisplayFilterDiagnosticCopy diagnostic;
+        diagnostic.message = error != nullptr && error->msg != nullptr
+            ? error->msg
+            : "Wireshark could not compile this display filter.";
+        if (error != nullptr && error->loc.col_start >= 0) {
+            diagnostic.hasRange = true;
+            diagnostic.utf8StartOffset = static_cast<size_t>(error->loc.col_start);
+            diagnostic.utf8Length = error->loc.col_len;
+        } else {
+            // Wireshark omits locations for incomplete trailing grammar, so place the caret at the end.
+            diagnostic.hasRange = true;
+            diagnostic.utf8StartOffset = sourceExpression.size();
+            diagnostic.utf8Length = 0;
+        }
+        validation.diagnostics.push_back(std::move(diagnostic));
+        df_error_free(&error);
+        dfilter_free(compiled);
+        return validation;
+    }
+
+    validation.status = TCPViewerDisplayFilterValidationValid;
+    validation.compiledFilter = compiled;
+    if (compiled != nullptr) {
+        for (GSList *item = dfilter_get_warnings(compiled); item != nullptr; item = item->next) {
+            const auto *message = static_cast<const char *>(item->data);
+            if (message != nullptr && message[0] != '\0') {
+                validation.diagnostics.push_back(DisplayFilterDiagnosticCopy{
+                    TCPViewerDisplayFilterDiagnosticWarning,
+                    message,
+                    0,
+                    0,
+                    false,
+                });
+            }
+        }
+        if (GPtrArray *deprecated = dfilter_deprecated_tokens(compiled)) {
+            for (guint index = 0; index < deprecated->len; index += 1) {
+                const auto *token = static_cast<const char *>(g_ptr_array_index(deprecated, index));
+                if (token != nullptr && token[0] != '\0') {
+                    validation.diagnostics.push_back(DisplayFilterDiagnosticCopy{
+                        TCPViewerDisplayFilterDiagnosticWarning,
+                        std::string("Deprecated display-filter token: ") + token,
+                        0,
+                        0,
+                        false,
+                    });
+                }
+            }
+        }
+    }
+    return validation;
+}
+
+TCPViewerDisplayFilterValidationResult *CopyDisplayFilterValidation(const DisplayFilterValidationCopy &source)
+{
+    auto *result = static_cast<TCPViewerDisplayFilterValidationResult *>(std::calloc(1, sizeof(TCPViewerDisplayFilterValidationResult)));
+    if (result == nullptr) {
+        return nullptr;
+    }
+    result->status = source.status;
+    result->normalizedExpression = CopyCString(source.normalizedExpression, false);
+    result->diagnosticCount = source.diagnostics.size();
+    if (result->diagnosticCount == 0) {
+        return result;
+    }
+    result->diagnostics = static_cast<TCPViewerDisplayFilterDiagnostic *>(
+        std::calloc(result->diagnosticCount, sizeof(TCPViewerDisplayFilterDiagnostic))
+    );
+    if (result->diagnostics == nullptr) {
+        result->diagnosticCount = 0;
+        return result;
+    }
+    for (size_t index = 0; index < result->diagnosticCount; index += 1) {
+        const auto &diagnostic = source.diagnostics[index];
+        result->diagnostics[index].severity = diagnostic.severity;
+        result->diagnostics[index].message = CopyCString(diagnostic.message, false);
+        result->diagnostics[index].utf8StartOffset = diagnostic.utf8StartOffset;
+        result->diagnostics[index].utf8Length = diagnostic.utf8Length;
+        result->diagnostics[index].hasRange = diagnostic.hasRange;
+    }
+    return result;
 }
 
 const char *WiresharkExceptionName(unsigned long code)
@@ -516,16 +745,26 @@ private:
 
 class WiresharkColumnInfo {
 public:
-    WiresharkColumnInfo()
+    WiresharkColumnInfo(bool isNeeded, bool includesAllRegisteredColumns)
     {
-        // TCP Viewer only needs packet-list protocol and info columns from Wireshark.
-        col_setup(&info_, 2);
-        info_.columns[0].col_fmt = COL_PROTOCOL;
-        info_.columns[0].col_title = nullptr;
-        info_.columns[0].col_fence = 0;
-        info_.columns[1].col_fmt = COL_INFO;
-        info_.columns[1].col_title = nullptr;
-        info_.columns[1].col_fence = 0;
+        if (!isNeeded) {
+            return;
+        }
+        if (includesAllRegisteredColumns) {
+            // Mirror Wireshark's registered preference columns so _ws.col.* fields use valid column metadata.
+            build_column_format_array(&info_, prefs.num_cols, true);
+            initialized_ = true;
+            return;
+        }
+
+        const int formats[] = {COL_PROTOCOL, COL_INFO};
+        const int columnCount = 2;
+        col_setup(&info_, columnCount);
+        for (int index = 0; index < columnCount; index += 1) {
+            info_.columns[index].col_fmt = formats[index];
+            info_.columns[index].col_title = nullptr;
+            info_.columns[index].col_fence = 0;
+        }
         col_finalize(&info_);
         initialized_ = true;
     }
@@ -1082,6 +1321,10 @@ private:
             return;
         }
         initializedExceptions_ = true;
+        // Column-backed filters need the same timestamp defaults as Wireshark's command-line tools.
+        timestamp_set_type(TS_RELATIVE);
+        timestamp_set_precision(TS_PREC_AUTO);
+        timestamp_set_seconds_type(TS_SECONDS_DEFAULT);
         if (auto report = CatchWiresharkException("initializing Wireshark Wiretap", std::nullopt, [] {
                 wtap_init(false);
             })) {
@@ -1091,6 +1334,7 @@ private:
             return;
         }
         initializedWiretap_ = true;
+        TCPViewerWiresharkIPDisplayFilterPluginRegister();
         bool didInitializeEpan = false;
         if (auto report = CatchWiresharkException("initializing Wireshark protocol registry", std::nullopt, [&didInitializeEpan] {
                 didInitializeEpan = epan_init(nullptr, nullptr, false);
@@ -1185,6 +1429,9 @@ struct TCPViewerWiresharkSession {
     std::vector<std::pair<uint32_t, uint32_t>> pendingTCPStreamFrames;
     std::vector<std::pair<uint64_t, uint32_t>> pendingTCPStreamIndexUpdates;
     std::deque<WiresharkCriticalException> pendingCriticalExceptions;
+    dfilter_t *activeDisplayFilter = nullptr;
+    std::string activeDisplayFilterExpression;
+    uint64_t activeDisplayFilterGeneration = 0;
     follow_info_t *followInfo = nullptr;
     TCPFollowTapContext *followTapContext = nullptr;
     register_follow_t *tcpFollower = nullptr;
@@ -1394,9 +1641,20 @@ struct TCPViewerWiresharkSession {
         }
     }
 
+    void clearActiveDisplayFilterLocked()
+    {
+        if (activeDisplayFilter != nullptr) {
+            dfilter_free(activeDisplayFilter);
+            activeDisplayFilter = nullptr;
+        }
+        activeDisplayFilterExpression.clear();
+        activeDisplayFilterGeneration = 0;
+    }
+
     void releaseWiresharkResourcesLocked(const std::string &reason, bool finishSession)
     {
         cancelFollowLocked();
+        clearActiveDisplayFilterLocked();
         if (tcpIndexTapRegistered) {
             if (auto report = CatchWiresharkException("removing Wireshark TCP stream index listener", std::nullopt, [&] {
                     remove_tap_listener(this);
@@ -1421,6 +1679,43 @@ struct TCPViewerWiresharkSession {
         if (finishSession) {
             firstPassFinished = true;
         }
+    }
+
+    DisplayFilterValidationCopy activateDisplayFilterLocked(const char *expression, uint64_t generation)
+    {
+        DisplayFilterValidationCopy validation;
+        if (!ensureActiveSessionLocked()) {
+            validation.normalizedExpression = TrimASCIIWhitespace(expression);
+            validation.status = TCPViewerDisplayFilterValidationUnavailable;
+            validation.diagnostics.push_back(DisplayFilterDiagnosticCopy{
+                TCPViewerDisplayFilterDiagnosticError,
+                unavailableReason.empty() ? kBackendUnavailableReason : unavailableReason,
+                0,
+                0,
+                false,
+            });
+            return validation;
+        }
+
+        const std::string normalizedExpression = TrimASCIIWhitespace(expression);
+        if (activeDisplayFilter != nullptr
+            && activeDisplayFilterExpression == normalizedExpression
+            && activeDisplayFilterGeneration == generation) {
+            validation.normalizedExpression = normalizedExpression;
+            validation.status = TCPViewerDisplayFilterValidationValid;
+            return validation;
+        }
+
+        validation = CompileDisplayFilter(expression);
+        if (validation.status != TCPViewerDisplayFilterValidationValid) {
+            return validation;
+        }
+        clearActiveDisplayFilterLocked();
+        activeDisplayFilter = validation.compiledFilter;
+        validation.compiledFilter = nullptr;
+        activeDisplayFilterExpression = validation.normalizedExpression;
+        activeDisplayFilterGeneration = generation;
+        return validation;
     }
 
     bool initializeWiresharkResourcesLocked()
@@ -2084,7 +2379,11 @@ struct TCPViewerWiresharkSession {
         }
     }
 
-    WiresharkDissectionResult runSecondPassLocked(const PacketContextView &context, bool buildTree)
+    WiresharkDissectionResult runSecondPassLocked(
+        const PacketContextView &context,
+        bool buildTree,
+        bool includesSummaryColumns = true
+    )
     {
         WiresharkDissectionResult result;
         if (!ensureActiveSessionLocked()) {
@@ -2113,11 +2412,14 @@ struct TCPViewerWiresharkSession {
             return result;
         }
 
-        WiresharkColumnInfo columnInfo;
+        const bool evaluatesDisplayFilter = activeDisplayFilter != nullptr;
+        const bool filterRequiresColumns = evaluatesDisplayFilter && dfilter_requires_columns(activeDisplayFilter);
+        WiresharkColumnInfo columnInfo(includesSummaryColumns || filterRequiresColumns, filterRequiresColumns);
+        const bool createsProtocolTree = buildTree || evaluatesDisplayFilter;
         epan_dissect_t *rawDissect = nullptr;
         auto *currentEpan = epan;
-        if (auto report = CatchWiresharkException("creating Wireshark second-pass dissector", context.packetIdentifier, [&rawDissect, currentEpan, buildTree] {
-                rawDissect = epan_dissect_new(currentEpan, buildTree, buildTree);
+        if (auto report = CatchWiresharkException("creating Wireshark second-pass dissector", context.packetIdentifier, [&rawDissect, currentEpan, createsProtocolTree, buildTree] {
+                rawDissect = epan_dissect_new(currentEpan, createsProtocolTree, buildTree);
             })) {
             failWithCriticalExceptionLocked(std::move(*report));
             result.fallbackReason = unavailableReason;
@@ -2156,6 +2458,15 @@ struct TCPViewerWiresharkSession {
             }
         }
 
+        if (evaluatesDisplayFilter) {
+            if (auto report = CatchWiresharkException("priming Wireshark display filter", context.packetIdentifier, [&] {
+                    epan_dissect_prime_with_dfilter(rawDissect, activeDisplayFilter);
+                })) {
+                failWithLocalCriticalException(std::move(*report));
+                return result;
+            }
+        }
+
         wtap_block_t block = record.get()->block != nullptr ? wtap_block_ref(record.get()->block) : nullptr;
         if (auto report = CatchWiresharkException("running Wireshark second-pass dissection", context.packetIdentifier, [&] {
                 frame_data_set_before_dissect(frame, &elapsedTime, &provider->ref, provider->prev_dis);
@@ -2177,6 +2488,18 @@ struct TCPViewerWiresharkSession {
         }
 
         result.columns = ColumnsFromInfo(columnInfo.get());
+        if (evaluatesDisplayFilter) {
+            bool matched = false;
+            if (auto report = CatchWiresharkException("applying Wireshark display filter", context.packetIdentifier, [&] {
+                    matched = dfilter_apply_edt(activeDisplayFilter, rawDissect);
+                })) {
+                failWithLocalCriticalException(std::move(*report));
+                return result;
+            }
+            result.hasDisplayFilterMatch = true;
+            result.displayFilterMatched = matched;
+            result.displayFilterGeneration = activeDisplayFilterGeneration;
+        }
         if (buildTree) {
             auto sourceSet = ExtractByteSources(rawDissect->pi.data_src);
             result.nodes = MapProtoTree(rawDissect->tree, sourceSet);
@@ -2200,6 +2523,31 @@ struct TCPViewerWiresharkSession {
         if (!freeSecondPassDissector()) {
             return result;
         }
+        return result;
+    }
+
+    TCPViewerDisplayFilterMatchResult *evaluateDisplayFilterLocked(
+        const PacketContextView &context,
+        uint64_t generation
+    ) {
+        auto *result = static_cast<TCPViewerDisplayFilterMatchResult *>(std::calloc(1, sizeof(TCPViewerDisplayFilterMatchResult)));
+        if (result == nullptr) {
+            return nullptr;
+        }
+        if (generation != activeDisplayFilterGeneration || activeDisplayFilter == nullptr) {
+            result->errorMessage = CopyCString("The Wireshark display-filter generation is no longer active.", false);
+            return result;
+        }
+        const auto dissection = runSecondPassLocked(context, false, false);
+        if (!dissection.hasDisplayFilterMatch || dissection.displayFilterGeneration != generation) {
+            result->errorMessage = CopyCString(
+                dissection.fallbackReason.empty() ? "Wireshark could not evaluate this packet." : dissection.fallbackReason,
+                false
+            );
+            return result;
+        }
+        result->succeeded = true;
+        result->matched = dissection.displayFilterMatched;
         return result;
     }
 
@@ -2260,6 +2608,115 @@ const char *TCPViewerWiresharkSessionUnavailableReason(TCPViewerWiresharkSession
     }
     std::lock_guard<std::mutex> lock(session->mutex);
     return session->unavailableReason.empty() ? kBackendUnavailableReason : session->unavailableReason.c_str();
+}
+
+TCPViewerDisplayFilterValidationResult *TCPViewerWiresharkValidateDisplayFilter(
+    const char *expression,
+    const char *personalConfigurationDirectory
+) {
+    auto &runtime = WiresharkRuntime::shared(personalConfigurationDirectory);
+    if (!runtime.isAvailable()) {
+        DisplayFilterValidationCopy validation;
+        validation.normalizedExpression = TrimASCIIWhitespace(expression);
+        validation.status = TCPViewerDisplayFilterValidationUnavailable;
+        validation.diagnostics.push_back(DisplayFilterDiagnosticCopy{
+            TCPViewerDisplayFilterDiagnosticError,
+            runtime.unavailableReason(),
+            0,
+            0,
+            false,
+        });
+        return CopyDisplayFilterValidation(validation);
+    }
+
+    std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
+    DisplayFilterValidationCopy validation;
+    if (auto report = CatchWiresharkException("compiling Wireshark display filter", std::nullopt, [&] {
+            validation = CompileDisplayFilter(expression);
+        })) {
+        validation.status = TCPViewerDisplayFilterValidationUnavailable;
+        validation.normalizedExpression = TrimASCIIWhitespace(expression);
+        validation.diagnostics = {DisplayFilterDiagnosticCopy{
+            TCPViewerDisplayFilterDiagnosticError,
+            report->reason,
+            0,
+            0,
+            false,
+        }};
+    }
+    auto *result = CopyDisplayFilterValidation(validation);
+    dfilter_free(validation.compiledFilter);
+    return result;
+}
+
+TCPViewerDisplayFilterValidationResult *TCPViewerWiresharkSessionActivateDisplayFilter(
+    TCPViewerWiresharkSession *session,
+    const char *expression,
+    uint64_t generation
+) {
+    if (session == nullptr) {
+        DisplayFilterValidationCopy validation;
+        validation.normalizedExpression = TrimASCIIWhitespace(expression);
+        validation.status = TCPViewerDisplayFilterValidationUnavailable;
+        validation.diagnostics.push_back(DisplayFilterDiagnosticCopy{
+            TCPViewerDisplayFilterDiagnosticError,
+            kBackendUnavailableReason,
+            0,
+            0,
+            false,
+        });
+        return CopyDisplayFilterValidation(validation);
+    }
+
+    std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
+    std::lock_guard<std::mutex> sessionLock(session->mutex);
+    session->clearCriticalExceptionsLocked();
+    DisplayFilterValidationCopy validation;
+    if (auto report = CatchWiresharkException("activating Wireshark display filter", std::nullopt, [&] {
+            validation = session->activateDisplayFilterLocked(expression, generation);
+        })) {
+        session->failWithCriticalExceptionLocked(*report);
+        validation.status = TCPViewerDisplayFilterValidationUnavailable;
+        validation.normalizedExpression = TrimASCIIWhitespace(expression);
+        validation.diagnostics = {DisplayFilterDiagnosticCopy{
+            TCPViewerDisplayFilterDiagnosticError,
+            report->reason,
+            0,
+            0,
+            false,
+        }};
+    }
+    auto *result = CopyDisplayFilterValidation(validation);
+    dfilter_free(validation.compiledFilter);
+    return result;
+}
+
+TCPViewerDisplayFilterMatchResult *TCPViewerWiresharkSessionEvaluateDisplayFilter(
+    TCPViewerWiresharkSession *session,
+    const TCPViewerWiresharkPacketContext *context,
+    uint64_t generation
+) {
+    if (session == nullptr || context == nullptr) {
+        auto *result = static_cast<TCPViewerDisplayFilterMatchResult *>(std::calloc(1, sizeof(TCPViewerDisplayFilterMatchResult)));
+        if (result != nullptr) {
+            result->errorMessage = CopyCString("The Wireshark display-filter request is invalid.", false);
+        }
+        return result;
+    }
+    std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
+    std::lock_guard<std::mutex> sessionLock(session->mutex);
+    session->clearCriticalExceptionsLocked();
+    return session->evaluateDisplayFilterLocked(ContextViewFromC(context), generation);
+}
+
+void TCPViewerWiresharkSessionClearDisplayFilter(TCPViewerWiresharkSession *session)
+{
+    if (session == nullptr) {
+        return;
+    }
+    std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
+    std::lock_guard<std::mutex> sessionLock(session->mutex);
+    session->clearActiveDisplayFilterLocked();
 }
 
 bool TCPViewerWiresharkSessionObservePacket(TCPViewerWiresharkSession *session, const TCPViewerWiresharkPacketContext *context)
@@ -2636,6 +3093,28 @@ void TCPViewerWiresharkExceptionReportDestroy(TCPViewerWiresharkExceptionReport 
     std::free(report);
 }
 
+void TCPViewerDisplayFilterValidationResultDestroy(TCPViewerDisplayFilterValidationResult *result)
+{
+    if (result == nullptr) {
+        return;
+    }
+    std::free(const_cast<char *>(result->normalizedExpression));
+    for (size_t index = 0; index < result->diagnosticCount; index += 1) {
+        std::free(const_cast<char *>(result->diagnostics[index].message));
+    }
+    std::free(result->diagnostics);
+    std::free(result);
+}
+
+void TCPViewerDisplayFilterMatchResultDestroy(TCPViewerDisplayFilterMatchResult *result)
+{
+    if (result == nullptr) {
+        return;
+    }
+    std::free(const_cast<char *>(result->errorMessage));
+    std::free(result);
+}
+
 #if DEBUG
 TCPViewerWiresharkExceptionReport *TCPViewerWiresharkTestCopyCaughtExceptionReport(const char *personalConfigurationDirectory)
 {
@@ -2668,5 +3147,27 @@ bool TCPViewerWiresharkSessionTestInjectCriticalException(TCPViewerWiresharkSess
         return session->failWithCriticalExceptionLocked(std::move(*report));
     }
     return true;
+}
+
+void TCPViewerWiresharkTestResetDisplayFilterCompilationCount(void)
+{
+    std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
+    gDisplayFilterCompilationCount = 0;
+}
+
+size_t TCPViewerWiresharkTestDisplayFilterCompilationCount(void)
+{
+    std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
+    return gDisplayFilterCompilationCount;
+}
+
+bool TCPViewerWiresharkSessionTestHasActiveDisplayFilter(TCPViewerWiresharkSession *session)
+{
+    if (session == nullptr) {
+        return false;
+    }
+    std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
+    std::lock_guard<std::mutex> sessionLock(session->mutex);
+    return session->activeDisplayFilter != nullptr;
 }
 #endif

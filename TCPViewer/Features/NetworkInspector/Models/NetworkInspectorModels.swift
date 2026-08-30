@@ -537,6 +537,8 @@ struct NetworkInspectorSnapshot: Equatable {
     var inspectorPlacement: NetworkInspectorPlacement
     var isInspectorVisible: Bool
     var isStructuredFilterVisible: Bool
+    var filterMode: PacketFilterMode
+    var wiresharkFilterState: PacketWiresharkFilterState
     var displayFilterText: String
     var displayFilter: PacketDisplayFilter
     var displayFilterChips: [PacketFilterChip]
@@ -565,6 +567,8 @@ struct NetworkInspectorSnapshot: Equatable {
         inspectorPlacement: NetworkInspectorPlacement = .trailing,
         isInspectorVisible: Bool,
         isStructuredFilterVisible: Bool = false,
+        filterMode: PacketFilterMode = .builder,
+        wiresharkFilterState: PacketWiresharkFilterState = PacketWiresharkFilterState(),
         displayFilterText: String,
         structuredFilterGroup: PacketStructuredFilterGroup = .default,
         isPacketTableFiltering: Bool = false,
@@ -584,6 +588,8 @@ struct NetworkInspectorSnapshot: Equatable {
             inspectorPlacement: inspectorPlacement,
             isInspectorVisible: isInspectorVisible,
             isStructuredFilterVisible: isStructuredFilterVisible,
+            filterMode: filterMode,
+            wiresharkFilterState: wiresharkFilterState,
             displayFilterText: displayFilterText,
             displayFilter: packetTableContent.displayFilter,
             displayFilterChips: packetTableContent.displayFilterChips,
@@ -617,6 +623,8 @@ struct NetworkInspectorSnapshot: Equatable {
             lhs.inspectorPlacement == rhs.inspectorPlacement &&
             lhs.isInspectorVisible == rhs.isInspectorVisible &&
             lhs.isStructuredFilterVisible == rhs.isStructuredFilterVisible &&
+            lhs.filterMode == rhs.filterMode &&
+            lhs.wiresharkFilterState == rhs.wiresharkFilterState &&
             lhs.displayFilterText == rhs.displayFilterText &&
             lhs.displayFilter == rhs.displayFilter &&
             lhs.displayFilterChips == rhs.displayFilterChips &&
@@ -682,7 +690,15 @@ struct NetworkInspectorSnapshot: Equatable {
             return false
         }
 
-        return !isStructuredFilterVisible || structuredFilterGroup.activeFilters.isEmpty
+        guard isStructuredFilterVisible else {
+            return true
+        }
+        switch filterMode {
+        case .builder:
+            return structuredFilterGroup.activeFilters.isEmpty
+        case .wireshark:
+            return wiresharkFilterState.appliedExpression.isEmpty
+        }
     }
 }
 

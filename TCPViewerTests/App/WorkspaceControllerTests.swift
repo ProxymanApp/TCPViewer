@@ -771,6 +771,56 @@ struct WindowControllerTests {
         await tearDown(controller)
     }
 
+    @Test func importedDisplayFilterResultsRemapEachBackingDocumentToWorkspacePacketIDs() async throws {
+        let firstURL = TCPViewerCaptureFileImportPolicy.standardizedFileURL(URL(fileURLWithPath: "/tmp/filter-import-one.pcap"))
+        let secondURL = TCPViewerCaptureFileImportPolicy.standardizedFileURL(URL(fileURLWithPath: "/tmp/filter-import-two.pcapng"))
+        let firstPackets = [
+            makePacket(packetNumber: 1, source: .offline, transportHint: .udp),
+            makePacket(packetNumber: 2, source: .offline, transportHint: .tcp),
+        ]
+        let secondPackets = [
+            makePacket(packetNumber: 1, source: .offline, transportHint: .dns),
+            makePacket(packetNumber: 2, source: .offline, transportHint: .tls),
+        ]
+        let expression = "frame.number in {1, 2}"
+        let firstDocument = FakeOfflineDocument(
+            url: firstURL,
+            metadata: CaptureDocumentMetadata(format: .pcap),
+            openPlan: .completed(firstPackets),
+            displayFilterMatchesByExpression: [expression: [2]]
+        )
+        let secondDocument = FakeOfflineDocument(
+            url: secondURL,
+            metadata: CaptureDocumentMetadata(format: .pcapng),
+            openPlan: .completed(secondPackets),
+            displayFilterMatchesByExpression: [expression: [1]]
+        )
+        let controller = TCPViewerWorkspaceController(services: TCPViewerServiceRegistry(core: FakeTCPViewerCore(
+            interfaceInventories: [[]],
+            documentFactory: { $0 == secondURL ? secondDocument : firstDocument }
+        )))
+
+        await controller.importDocuments(at: [firstURL, secondURL])
+        await waitUntil { controller.snapshot.packetIngestState.totalPacketCount == 4 }
+
+        let result: Result<DisplayFilterMatchBatch, Error> = await withCheckedContinuation { continuation in
+            controller.evaluateDisplayFilter(
+                expression,
+                generation: 9,
+                packetIDs: [1, 2, 3, 4],
+                cancellationToken: DisplayFilterEvaluationCancellationToken()
+            ) { continuation.resume(returning: $0) }
+        }
+        let batch = try result.get()
+
+        #expect(batch.evaluatedPacketIDs == [1, 2, 3, 4])
+        #expect(batch.matchingPacketIDs == [2, 3])
+        #expect(firstDocument.displayFilterEvaluationRequests == [[1, 2]])
+        #expect(secondDocument.displayFilterEvaluationRequests == [[1, 2]])
+
+        await tearDown(controller)
+    }
+
     @Test func importingEmptyCaptureFileKeepsImportedFileStateAndDedupes() async {
         let captureURL = TCPViewerCaptureFileImportPolicy.standardizedFileURL(URL(fileURLWithPath: "/tmp/empty-import.pcapng"))
         let document = FakeOfflineDocument(
@@ -2211,25 +2261,30 @@ private final class FakeOfflineDocument: OfflineCaptureDocumentProviding, @unche
     private let openPlan: LoadPlan
     private let reopenPlan: LoadPlan
     private let inspections: [PacketSummary.ID: PacketInspection]
+    private let displayFilterMatchesByExpression: [String: Set<PacketSummary.ID>]
+    private var displayFilterExpressionByGeneration: [UInt64: String] = [:]
 
     private(set) var saveCount = 0
     private(set) var saveAsRequests: [(URL, CaptureFileFormat)] = []
     private(set) var exportRequests: [([PacketSummary.ID], URL, CaptureFileFormat)] = []
     private(set) var cancelLoadingCount = 0
     private(set) var currentProgress: PacketLoadProgress = .idle
+    private(set) var displayFilterEvaluationRequests: [[PacketSummary.ID]] = []
 
     init(
         url: URL,
         metadata: CaptureDocumentMetadata,
         openPlan: LoadPlan,
         reopenPlan: LoadPlan? = nil,
-        inspections: [PacketSummary.ID: PacketInspection] = [:]
+        inspections: [PacketSummary.ID: PacketInspection] = [:],
+        displayFilterMatchesByExpression: [String: Set<PacketSummary.ID>] = [:]
     ) {
         self.url = url
         self.metadata = metadata
         self.openPlan = openPlan
         self.reopenPlan = reopenPlan ?? openPlan
         self.inspections = inspections
+        self.displayFilterMatchesByExpression = displayFilterMatchesByExpression
     }
 
     func open(completion: @escaping TCPViewerCompletion<[PacketSummary]>) {
@@ -2265,6 +2320,35 @@ private final class FakeOfflineDocument: OfflineCaptureDocumentProviding, @unche
             ],
             decodeStatus: packet.decodeStatus
         )))
+    }
+
+    func activateDisplayFilter(
+        _ expression: String,
+        generation: UInt64,
+        completion: @escaping (DisplayFilterValidation) -> Void
+    ) {
+        displayFilterExpressionByGeneration[generation] = expression
+        completion(DisplayFilterValidation(normalizedExpression: expression, status: .valid))
+    }
+
+    func evaluateDisplayFilter(
+        packetIDs: [PacketSummary.ID],
+        generation: UInt64,
+        completion: @escaping TCPViewerCompletion<DisplayFilterMatchBatch>
+    ) {
+        displayFilterEvaluationRequests.append(packetIDs)
+        let expression = displayFilterExpressionByGeneration[generation] ?? ""
+        let matchingIDs = displayFilterMatchesByExpression[expression] ?? []
+        completion(.success(DisplayFilterMatchBatch(
+            generation: generation,
+            evaluatedPacketIDs: packetIDs,
+            matchingPacketIDs: packetIDs.filter(matchingIDs.contains)
+        )))
+    }
+
+    func clearDisplayFilter(completion: @escaping TCPViewerVoidCompletion) {
+        displayFilterExpressionByGeneration.removeAll()
+        completion(.success(()))
     }
 
     func save(completion: @escaping TCPViewerVoidCompletion) {

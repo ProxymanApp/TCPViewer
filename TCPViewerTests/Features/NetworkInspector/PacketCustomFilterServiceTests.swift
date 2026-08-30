@@ -154,6 +154,87 @@ struct PacketCustomFilterServiceTests {
         #expect(reloadedFilters.map(\.name) == ["Traffic", "Traffic", "Methods"])
     }
 
+    @Test func wiresharkFilterRoundTripsAndDuplicatePreservesItsModeAndExpression() throws {
+        let storageURL = temporaryDirectory().appendingPathComponent("CustomFilters.json")
+        let service = PacketCustomFilterService(storageURL: storageURL)
+        let saved = try service.save(
+            name: "TLS SNI",
+            mode: .wireshark,
+            group: .default,
+            wiresharkExpression: "tls.handshake.extensions_server_name == \"example.com\"",
+            now: Date(timeIntervalSince1970: 10)
+        )
+
+        try service.rename(id: saved.id, name: "Renamed TLS SNI", now: Date(timeIntervalSince1970: 15))
+        let duplicate = try #require(try service.duplicate(id: saved.id, now: Date(timeIntervalSince1970: 20)))
+        let replacementExpression = "tls.handshake.extensions_server_name == \"api.example.com\""
+        try service.update(
+            id: saved.id,
+            mode: .wireshark,
+            group: .default,
+            wiresharkExpression: replacementExpression,
+            now: Date(timeIntervalSince1970: 30)
+        )
+
+        var reloaded = PacketCustomFilterService(storageURL: storageURL).filters()
+
+        #expect(reloaded.map(\.name) == ["Renamed TLS SNI", "Renamed TLS SNI"])
+        #expect(reloaded.map(\.mode) == [.wireshark, .wireshark])
+        #expect(reloaded.map(\.wiresharkExpression) == [replacementExpression, duplicate.wiresharkExpression])
+
+        try service.delete(id: duplicate.id)
+        reloaded = PacketCustomFilterService(storageURL: storageURL).filters()
+        #expect(reloaded.map(\.id) == [saved.id])
+        #expect(reloaded.first?.mode == .wireshark)
+        #expect(reloaded.first?.wiresharkExpression == replacementExpression)
+    }
+
+    @Test func builderUpdateCannotEraseAWiresharkFilterPayload() throws {
+        let storageURL = temporaryDirectory().appendingPathComponent("CustomFilters.json")
+        let service = PacketCustomFilterService(storageURL: storageURL)
+        let expression = "tls.handshake.extensions_server_name == \"example.com\""
+        let saved = try service.save(
+            name: "TLS SNI",
+            mode: .wireshark,
+            group: .default,
+            wiresharkExpression: expression
+        )
+
+        try service.updateGroup(
+            id: saved.id,
+            group: PacketStructuredFilterGroup(
+                filters: [PacketStructuredFilter(query: .protocol, condition: .contains, text: "TCP")],
+                operator: .and
+            )
+        )
+
+        let reloaded = try #require(PacketCustomFilterService(storageURL: storageURL).filter(id: saved.id))
+        #expect(reloaded.mode == .wireshark)
+        #expect(reloaded.wiresharkExpression == expression)
+        #expect(reloaded.group == .default)
+    }
+
+    @Test func legacyFilterWithoutModeDecodesAsBuilder() throws {
+        let filter = PacketCustomFilter(
+            id: "legacy",
+            name: "Legacy",
+            createdAt: Date(timeIntervalSince1970: 10),
+            updatedAt: Date(timeIntervalSince1970: 20),
+            group: .default
+        )
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(filter)) as? [String: Any])
+        object.removeValue(forKey: "mode")
+        object.removeValue(forKey: "wiresharkExpression")
+
+        let decoded = try JSONDecoder().decode(
+            PacketCustomFilter.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+
+        #expect(decoded.mode == .builder)
+        #expect(decoded.wiresharkExpression == nil)
+    }
+
     private func expectValidationError(
         _ expectedError: PacketCustomFilterValidationError,
         operation: () throws -> Void

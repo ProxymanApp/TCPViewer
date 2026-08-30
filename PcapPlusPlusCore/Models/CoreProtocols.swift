@@ -56,7 +56,67 @@ public protocol CaptureFilterValidating {
     func validateCaptureFilter(_ expression: String, completion: @escaping (CaptureFilterValidation) -> Void)
 }
 
-public protocol LiveCaptureSessionProviding: TCPStreamFollowing {
+public protocol DisplayFilterValidating {
+    func validateDisplayFilter(_ expression: String, completion: @escaping (DisplayFilterValidation) -> Void)
+}
+
+public protocol DisplayFilterEvaluating: DisplayFilterValidating {
+    func activateDisplayFilter(
+        _ expression: String,
+        generation: UInt64,
+        completion: @escaping (DisplayFilterValidation) -> Void
+    )
+    func evaluateDisplayFilter(
+        packetIDs: [PacketSummary.ID],
+        generation: UInt64,
+        completion: @escaping TCPViewerCompletion<DisplayFilterMatchBatch>
+    )
+    func clearDisplayFilter(completion: @escaping TCPViewerVoidCompletion)
+}
+
+public extension DisplayFilterValidating {
+    func validateDisplayFilter(_ expression: String, completion: @escaping (DisplayFilterValidation) -> Void) {
+        let normalized = expression.trimmingCharacters(in: .whitespacesAndNewlines)
+        completion(DisplayFilterValidation(
+            normalizedExpression: normalized,
+            status: normalized.isEmpty ? .valid : .unavailable,
+            diagnostics: normalized.isEmpty ? [] : [DisplayFilterDiagnostic(
+                severity: .error,
+                message: "Wireshark display-filter validation is unavailable."
+            )]
+        ))
+    }
+}
+
+public extension DisplayFilterEvaluating {
+    func activateDisplayFilter(
+        _ expression: String,
+        generation: UInt64,
+        completion: @escaping (DisplayFilterValidation) -> Void
+    ) {
+        _ = generation
+        validateDisplayFilter(expression, completion: completion)
+    }
+
+    func evaluateDisplayFilter(
+        packetIDs: [PacketSummary.ID],
+        generation: UInt64,
+        completion: @escaping TCPViewerCompletion<DisplayFilterMatchBatch>
+    ) {
+        _ = packetIDs
+        _ = generation
+        completion(.failure(TCPViewerCoreError(
+            code: .unavailableFeature,
+            message: "Wireshark display-filter evaluation is unavailable."
+        )))
+    }
+
+    func clearDisplayFilter(completion: @escaping TCPViewerVoidCompletion) {
+        completion(.success(()))
+    }
+}
+
+public protocol LiveCaptureSessionProviding: TCPStreamFollowing, DisplayFilterEvaluating {
     var eventHandler: PacketIngestEventHandler? { get set }
 
     func start(completion: @escaping TCPViewerVoidCompletion)
@@ -96,7 +156,7 @@ public extension LiveCaptureSessionProviding {
 }
 #endif
 
-public protocol OfflineCaptureDocumentProviding: TCPStreamFollowing {
+public protocol OfflineCaptureDocumentProviding: TCPStreamFollowing, DisplayFilterEvaluating {
     var eventHandler: PacketIngestEventHandler? { get set }
 
     func open(completion: @escaping TCPViewerCompletion<[PacketSummary]>)
@@ -192,6 +252,7 @@ public protocol OfflineCaptureProviding {
 public protocol TCPViewerCoreProviding:
     CaptureInterfaceProviding,
     CaptureFilterValidating,
+    DisplayFilterValidating,
     LiveCaptureProviding,
     OfflineCaptureProviding {}
 
@@ -221,6 +282,22 @@ public struct UnconfiguredTCPViewerCore: TCPViewerCoreProviding {
             disposition: .unavailable,
             normalizedExpression: trimmed,
             message: "Native capture-filter validation is not available in the unconfigured core."
+        ))
+    }
+
+    public func validateDisplayFilter(_ expression: String, completion: @escaping (DisplayFilterValidation) -> Void) {
+        let normalized = expression.trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalized.isEmpty {
+            completion(DisplayFilterValidation(normalizedExpression: "", status: .valid))
+            return
+        }
+        completion(DisplayFilterValidation(
+            normalizedExpression: normalized,
+            status: .unavailable,
+            diagnostics: [DisplayFilterDiagnostic(
+                severity: .error,
+                message: "Wireshark display-filter validation is unavailable in the unconfigured core."
+            )]
         ))
     }
 
@@ -293,6 +370,36 @@ public final class UnconfiguredLiveCaptureSession: LiveCaptureSessionProviding {
         completion(.failure(TCPViewerCoreError(code: .integrationMisconfigured, message: "Packet inspection is not wired into PcapPlusPlusCore yet.")))
     }
 
+    public func validateDisplayFilter(_ expression: String, completion: @escaping (DisplayFilterValidation) -> Void) {
+        UnconfiguredTCPViewerCore().validateDisplayFilter(expression, completion: completion)
+    }
+
+    public func activateDisplayFilter(
+        _ expression: String,
+        generation: UInt64,
+        completion: @escaping (DisplayFilterValidation) -> Void
+    ) {
+        _ = generation
+        validateDisplayFilter(expression, completion: completion)
+    }
+
+    public func evaluateDisplayFilter(
+        packetIDs: [PacketSummary.ID],
+        generation: UInt64,
+        completion: @escaping TCPViewerCompletion<DisplayFilterMatchBatch>
+    ) {
+        _ = packetIDs
+        _ = generation
+        completion(.failure(TCPViewerCoreError(
+            code: .integrationMisconfigured,
+            message: "Wireshark display-filter evaluation is unavailable in the unconfigured session."
+        )))
+    }
+
+    public func clearDisplayFilter(completion: @escaping TCPViewerVoidCompletion) {
+        completion(.success(()))
+    }
+
     public func exportPackets(
         withIDs identifiers: [PacketSummary.ID],
         to url: URL,
@@ -337,6 +444,36 @@ public final class UnconfiguredOfflineCaptureDocument: OfflineCaptureDocumentPro
     public func inspectPacket(id: PacketSummary.ID, completion: @escaping TCPViewerCompletion<PacketInspection>) {
         _ = id
         completion(.failure(TCPViewerCoreError(code: .integrationMisconfigured, message: "Packet inspection is not wired into PcapPlusPlusCore yet.")))
+    }
+
+    public func validateDisplayFilter(_ expression: String, completion: @escaping (DisplayFilterValidation) -> Void) {
+        UnconfiguredTCPViewerCore().validateDisplayFilter(expression, completion: completion)
+    }
+
+    public func activateDisplayFilter(
+        _ expression: String,
+        generation: UInt64,
+        completion: @escaping (DisplayFilterValidation) -> Void
+    ) {
+        _ = generation
+        validateDisplayFilter(expression, completion: completion)
+    }
+
+    public func evaluateDisplayFilter(
+        packetIDs: [PacketSummary.ID],
+        generation: UInt64,
+        completion: @escaping TCPViewerCompletion<DisplayFilterMatchBatch>
+    ) {
+        _ = packetIDs
+        _ = generation
+        completion(.failure(TCPViewerCoreError(
+            code: .integrationMisconfigured,
+            message: "Wireshark display-filter evaluation is unavailable in the unconfigured document."
+        )))
+    }
+
+    public func clearDisplayFilter(completion: @escaping TCPViewerVoidCompletion) {
+        completion(.success(()))
     }
 
     public func save(completion: @escaping TCPViewerVoidCompletion) {

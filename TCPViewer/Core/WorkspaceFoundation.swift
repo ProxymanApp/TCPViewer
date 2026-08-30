@@ -1075,7 +1075,34 @@ struct TCPViewerWorkspaceMemoryDebugSnapshot: Equatable {
 }
 #endif
 
+final class DisplayFilterEvaluationCancellationToken: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
+    }
+
+    func isCancelled() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+}
+
 final class TCPViewerWorkspaceController {
+    private struct DisplayFilterRoute {
+        let evaluator: any DisplayFilterEvaluating
+        let packetIDPairs: [(workspace: PacketSummary.ID, backing: PacketSummary.ID)]
+    }
+
+    private final class DisplayFilterAccumulator {
+        var evaluatedPacketIDs: [PacketSummary.ID] = []
+        var matchingPacketIDs: [PacketSummary.ID] = []
+    }
+
     private struct ImportedSessionCaptureExportGroup {
         let fileID: ImportedCaptureFileID
         var originalPacketIDs: [PacketSummary.ID]
@@ -1371,6 +1398,66 @@ final class TCPViewerWorkspaceController {
                 }
                 completion?()
             }
+        }
+    }
+
+    func validateDisplayFilter(
+        _ expression: String,
+        completion: @escaping (DisplayFilterValidation) -> Void
+    ) {
+        services.core.validateDisplayFilter(expression, completion: completion)
+    }
+
+    // Evaluate one backing capture at a time because Wireshark owns process-global dissection state.
+    func evaluateDisplayFilter(
+        _ expression: String,
+        generation: UInt64,
+        packetIDs: [PacketSummary.ID],
+        cancellationToken: DisplayFilterEvaluationCancellationToken,
+        progress: ((DisplayFilterMatchBatch) -> Void)? = nil,
+        completion: @escaping TCPViewerCompletion<DisplayFilterMatchBatch>
+    ) {
+        guard !cancellationToken.isCancelled() else {
+            completion(.failure(TCPViewerCoreError(
+                code: .operationCancelled,
+                message: "Display-filter evaluation was cancelled."
+            )))
+            return
+        }
+        do {
+            let routes = try displayFilterRoutes(for: packetIDs)
+            let accumulator = DisplayFilterAccumulator()
+            accumulator.evaluatedPacketIDs.reserveCapacity(packetIDs.count)
+            accumulator.matchingPacketIDs.reserveCapacity(packetIDs.count)
+
+            evaluateDisplayFilterRoutes(
+                routes,
+                routeIndex: 0,
+                expression: expression,
+                generation: generation,
+                accumulator: accumulator,
+                cancellationToken: cancellationToken,
+                progress: progress,
+                completion: completion
+            )
+        } catch {
+            completion(.failure(error))
+        }
+    }
+
+    func clearDisplayFilters() {
+        var evaluators: [any DisplayFilterEvaluating] = []
+        if let liveSession {
+            evaluators.append(liveSession)
+        }
+        if let document {
+            evaluators.append(document)
+        }
+        for importedDocument in importedDocumentsByFileID.values {
+            evaluators.append(importedDocument)
+        }
+        for evaluator in evaluators {
+            evaluator.clearDisplayFilter { _ in }
         }
     }
 
@@ -3023,6 +3110,206 @@ final class TCPViewerWorkspaceController {
     // Check both lineage and membership before navigating from a detached follow window.
     func canRevealTCPFollowPacket(_ identifier: PacketSummary.ID, from identity: TCPFollowCaptureIdentity) -> Bool {
         identity.canReveal(packetID: identifier, in: snapshot.packetIngestState)
+    }
+
+    private func displayFilterRoutes(for packetIDs: [PacketSummary.ID]) throws -> [DisplayFilterRoute] {
+        var livePairs: [(workspace: PacketSummary.ID, backing: PacketSummary.ID)] = []
+        var documentPairs: [(workspace: PacketSummary.ID, backing: PacketSummary.ID)] = []
+        var importedPairsByFileID: [ImportedCaptureFileID: [(workspace: PacketSummary.ID, backing: PacketSummary.ID)]] = [:]
+        var importedFileOrder: [ImportedCaptureFileID] = []
+
+        for packetID in packetIDs {
+            guard let packet = snapshot.packetIngestState.packet(withID: packetID) else {
+                throw TCPViewerCoreError(
+                    code: .unavailableFeature,
+                    message: "Packet \(packetID) is no longer available for display-filter evaluation."
+                )
+            }
+
+            switch packet.source {
+            case .live:
+                livePairs.append((workspace: packetID, backing: packetID))
+            case .offline:
+                if let reference = snapshot.packetIngestState.importedPacketReference(for: packetID) {
+                    if importedPairsByFileID[reference.fileID] == nil {
+                        importedFileOrder.append(reference.fileID)
+                    }
+                    importedPairsByFileID[reference.fileID, default: []].append((
+                        workspace: packetID,
+                        backing: reference.originalPacketID
+                    ))
+                } else {
+                    documentPairs.append((workspace: packetID, backing: packetID))
+                }
+            @unknown default:
+                throw TCPViewerCoreError(
+                    code: .unavailableFeature,
+                    message: "Packet \(packetID) cannot be evaluated by Wireshark."
+                )
+            }
+        }
+
+        var routes: [DisplayFilterRoute] = []
+        if !livePairs.isEmpty {
+            guard let liveSession else {
+                throw TCPViewerCoreError(
+                    code: .unavailableFeature,
+                    message: "The live capture is no longer available for display-filter evaluation."
+                )
+            }
+            routes.append(DisplayFilterRoute(evaluator: liveSession, packetIDPairs: livePairs))
+        }
+        if !documentPairs.isEmpty {
+            guard let document else {
+                throw TCPViewerCoreError(
+                    code: .unavailableFeature,
+                    message: "The capture document is no longer available for display-filter evaluation."
+                )
+            }
+            routes.append(DisplayFilterRoute(evaluator: document, packetIDPairs: documentPairs))
+        }
+        for fileID in importedFileOrder {
+            guard let importedDocument = importedDocumentsByFileID[fileID],
+                  let pairs = importedPairsByFileID[fileID] else {
+                throw TCPViewerCoreError(
+                    code: .unavailableFeature,
+                    message: "An imported capture is no longer available for display-filter evaluation."
+                )
+            }
+            routes.append(DisplayFilterRoute(evaluator: importedDocument, packetIDPairs: pairs))
+        }
+        return routes
+    }
+
+    private func evaluateDisplayFilterRoutes(
+        _ routes: [DisplayFilterRoute],
+        routeIndex: Int,
+        expression: String,
+        generation: UInt64,
+        accumulator: DisplayFilterAccumulator,
+        cancellationToken: DisplayFilterEvaluationCancellationToken,
+        progress: ((DisplayFilterMatchBatch) -> Void)?,
+        completion: @escaping TCPViewerCompletion<DisplayFilterMatchBatch>
+    ) {
+        guard !cancellationToken.isCancelled() else {
+            completion(.failure(TCPViewerCoreError(
+                code: .operationCancelled,
+                message: "Display-filter evaluation was cancelled."
+            )))
+            return
+        }
+        guard routes.indices.contains(routeIndex) else {
+            completion(.success(DisplayFilterMatchBatch(
+                generation: generation,
+                evaluatedPacketIDs: accumulator.evaluatedPacketIDs,
+                matchingPacketIDs: accumulator.matchingPacketIDs
+            )))
+            return
+        }
+
+        let route = routes[routeIndex]
+        route.evaluator.activateDisplayFilter(expression, generation: generation) { [weak self] validation in
+            guard let self, !cancellationToken.isCancelled() else {
+                completion(.failure(TCPViewerCoreError(
+                    code: .operationCancelled,
+                    message: "Display-filter evaluation was cancelled."
+                )))
+                return
+            }
+            guard validation.isApplicable else {
+                completion(.failure(TCPViewerCoreError(
+                    code: .invalidCaptureFilter,
+                    message: validation.diagnostics.first?.message ?? "Wireshark could not compile this display filter."
+                )))
+                return
+            }
+
+            self.evaluateDisplayFilterBatches(
+                route,
+                nextIndex: 0,
+                generation: generation,
+                accumulator: accumulator,
+                cancellationToken: cancellationToken,
+                progress: progress
+            ) { result in
+                switch result {
+                case .success:
+                    self.evaluateDisplayFilterRoutes(
+                        routes,
+                        routeIndex: routeIndex + 1,
+                        expression: expression,
+                        generation: generation,
+                        accumulator: accumulator,
+                        cancellationToken: cancellationToken,
+                        progress: progress,
+                        completion: completion
+                    )
+                case .failure(let error):
+                    completion(.failure(error))
+                }
+            }
+        }
+    }
+
+    private func evaluateDisplayFilterBatches(
+        _ route: DisplayFilterRoute,
+        nextIndex: Int,
+        generation: UInt64,
+        accumulator: DisplayFilterAccumulator,
+        cancellationToken: DisplayFilterEvaluationCancellationToken,
+        progress: ((DisplayFilterMatchBatch) -> Void)?,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        guard !cancellationToken.isCancelled() else {
+            completion(.failure(TCPViewerCoreError(
+                code: .operationCancelled,
+                message: "Display-filter evaluation was cancelled."
+            )))
+            return
+        }
+        guard nextIndex < route.packetIDPairs.count else {
+            completion(.success(()))
+            return
+        }
+
+        let endIndex = min(nextIndex + 128, route.packetIDPairs.count)
+        let pairs = Array(route.packetIDPairs[nextIndex..<endIndex])
+        route.evaluator.evaluateDisplayFilter(
+            packetIDs: pairs.map(\.backing),
+            generation: generation
+        ) { [weak self] result in
+            guard let self, !cancellationToken.isCancelled() else {
+                completion(.failure(TCPViewerCoreError(
+                    code: .operationCancelled,
+                    message: "Display-filter evaluation was cancelled."
+                )))
+                return
+            }
+
+            switch result {
+            case .failure(let error):
+                completion(.failure(error))
+            case .success(let backingBatch):
+                let workspaceIDByBackingID = Dictionary(uniqueKeysWithValues: pairs.map { ($0.backing, $0.workspace) })
+                let mappedBatch = DisplayFilterMatchBatch(
+                    generation: generation,
+                    evaluatedPacketIDs: backingBatch.evaluatedPacketIDs.compactMap { workspaceIDByBackingID[$0] },
+                    matchingPacketIDs: backingBatch.matchingPacketIDs.compactMap { workspaceIDByBackingID[$0] }
+                )
+                accumulator.evaluatedPacketIDs.append(contentsOf: mappedBatch.evaluatedPacketIDs)
+                accumulator.matchingPacketIDs.append(contentsOf: mappedBatch.matchingPacketIDs)
+                progress?(mappedBatch)
+                self.evaluateDisplayFilterBatches(
+                    route,
+                    nextIndex: endIndex,
+                    generation: generation,
+                    accumulator: accumulator,
+                    cancellationToken: cancellationToken,
+                    progress: progress,
+                    completion: completion
+                )
+            }
+        }
     }
 
     func inspectPacket(id identifier: PacketSummary.ID, completion: @escaping TCPViewerCompletion<PacketInspection>) {

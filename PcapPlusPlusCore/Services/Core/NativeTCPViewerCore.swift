@@ -55,6 +55,12 @@ public final class NativeTCPViewerCore: TCPViewerCoreProviding, @unchecked Senda
         }
     }
 
+    public func validateDisplayFilter(_ expression: String, completion: @escaping (DisplayFilterValidation) -> Void) {
+        workerQueue.async {
+            completion(WiresharkEpanSession.validateDisplayFilter(expression))
+        }
+    }
+
     public func validateCaptureOptions(_ options: CaptureOptions, for interface: CaptureInterfaceSummary?) throws -> CaptureOptions {
         let normalized = options.normalizedForLiveCapture()
         return try normalized.validated(for: interface)

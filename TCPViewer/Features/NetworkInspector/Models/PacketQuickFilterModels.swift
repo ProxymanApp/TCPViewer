@@ -82,7 +82,20 @@ struct PacketQuickFilterItem: Identifiable, Equatable, Sendable {
 struct PacketCustomFilterItem: Identifiable, Equatable, Sendable {
     let id: PacketCustomFilter.ID
     let title: String
+    let mode: PacketFilterMode
     let isSelected: Bool
+
+    init(
+        id: PacketCustomFilter.ID,
+        title: String,
+        mode: PacketFilterMode = .builder,
+        isSelected: Bool
+    ) {
+        self.id = id
+        self.title = title
+        self.mode = mode
+        self.isSelected = isSelected
+    }
 }
 
 struct PacketQuickFilterSelection: Codable, Equatable, Sendable, Hashable {

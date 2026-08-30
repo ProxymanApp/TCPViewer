@@ -27,6 +27,8 @@ private struct NetworkInspectorPreferences {
         static let sidebarLeadingThickness = "TCPViewer.sidebarLeadingThickness"
         static let sidebarVisible = "TCPViewer.sidebarVisible"
         static let structuredFilterVisible = "TCPViewer.structuredFilterVisible"
+        static let filterMode = "TCPViewer.filterMode"
+        static let wiresharkFilterDraft = "TCPViewer.wiresharkFilterDraft"
     }
 
     let defaults: UserDefaults
@@ -69,6 +71,17 @@ private struct NetworkInspectorPreferences {
         }
 
         return defaults.bool(forKey: Key.structuredFilterVisible)
+    }
+
+    var filterMode: PacketFilterMode {
+        guard let value = defaults.string(forKey: Key.filterMode) else {
+            return .builder
+        }
+        return PacketFilterMode(rawValue: value) ?? .builder
+    }
+
+    var wiresharkFilterDraft: String {
+        defaults.string(forKey: Key.wiresharkFilterDraft) ?? ""
     }
 
     func inspectorThickness(for placement: NetworkInspectorPlacement) -> CGFloat? {
@@ -114,6 +127,14 @@ private struct NetworkInspectorPreferences {
 
     func persistStructuredFilterVisible(_ isVisible: Bool) {
         defaults.set(isVisible, forKey: Key.structuredFilterVisible)
+    }
+
+    func persistFilterMode(_ mode: PacketFilterMode) {
+        defaults.set(mode.rawValue, forKey: Key.filterMode)
+    }
+
+    func persistWiresharkFilterDraft(_ expression: String) {
+        defaults.set(expression, forKey: Key.wiresharkFilterDraft)
     }
 
     private func inspectorThicknessKey(for placement: NetworkInspectorPlacement) -> String {
@@ -168,6 +189,7 @@ private struct PacketTableFilterSignature: Equatable, Sendable {
     let sourceListSelection: PacketSourceListSelection
     let pinnedItems: [PacketPin]
     let savedRecords: [SavedPacketRecord]
+    let wiresharkFilterMembership: PacketWiresharkFilterMembership?
 }
 
 private struct PacketTableBuildInput: Sendable {
@@ -227,7 +249,8 @@ private enum PacketTableContentBuilder {
             guard matches(packet, selection: input.signature.sourceListSelection, pinnedItems: input.signature.pinnedItems, ingestState: input.ingestState),
                   displayFilter.isEmpty || displayFilter.matches(packet),
                   quickFilterService.matches(packet, selection: input.signature.quickFilterSelection),
-                  structuredFilterService.matches(packet, context: structuredFilterContext) else {
+                  structuredFilterService.matches(packet, context: structuredFilterContext),
+                  input.signature.wiresharkFilterMembership?.matches(packet, in: input.ingestState) != false else {
                 continue
             }
 
@@ -304,6 +327,7 @@ private struct PacketTableContentCache {
     private var sourceListSelection: PacketSourceListSelection?
     private var pinnedItems: [PacketPin] = []
     private var savedRecords: [SavedPacketRecord] = []
+    private var wiresharkFilterMembership: PacketWiresharkFilterMembership?
     private var generation: UInt64 = 0
     private var cachedContent = PacketTableContent.empty
     private var cachedRowTimingState = PacketTableRowTimingState()
@@ -319,6 +343,7 @@ private struct PacketTableContentCache {
         sourceListSelection = nil
         pinnedItems = []
         savedRecords = []
+        wiresharkFilterMembership = nil
         generation &+= 1
         cachedContent = .empty
         cachedRowTimingState = PacketTableRowTimingState()
@@ -344,6 +369,7 @@ private struct PacketTableContentCache {
         sourceListSelection: PacketSourceListSelection,
         pinnedItems: [PacketPin],
         savedRecords: [SavedPacketRecord],
+        wiresharkFilterMembership: PacketWiresharkFilterMembership?,
         allowsAsyncRebuild: Bool,
         asyncRebuildThreshold: Int
     ) -> PacketTableContentResolution {
@@ -354,7 +380,8 @@ private struct PacketTableContentCache {
             structuredFilterGroup: structuredFilterGroup,
             sourceListSelection: sourceListSelection,
             pinnedItems: pinnedItems,
-            savedRecords: savedRecords
+            savedRecords: savedRecords,
+            wiresharkFilterMembership: wiresharkFilterMembership
         ) else {
             requiresReloadForAsyncBaseline = false
             return .ready(cachedContent)
@@ -368,12 +395,34 @@ private struct PacketTableContentCache {
             self.sourceListSelection == sourceListSelection &&
             self.pinnedItems == pinnedItems &&
             self.savedRecords == savedRecords &&
+            hasSameWiresharkFilterIdentity(as: wiresharkFilterMembership) &&
             packetLineageRevision == ingestState.packetLineageRevision &&
             sourcePacketCount <= ingestState.packets.count
 
         if isStateStable {
             let forceReload = requiresReloadForAsyncBaseline
             requiresReloadForAsyncBaseline = false
+            if let previousMembership = self.wiresharkFilterMembership,
+               let wiresharkFilterMembership,
+               wiresharkFilterMembership.evaluatedPacketCount > previousMembership.evaluatedPacketCount {
+                let upperBound = min(wiresharkFilterMembership.evaluatedPacketCount, ingestState.packets.count)
+                let lowerBound = min(previousMembership.evaluatedPacketCount, upperBound)
+                return .ready(appendContent(
+                    from: ingestState.packets[lowerBound..<upperBound],
+                    ingestState: ingestState,
+                    displayFilter: displayFilter,
+                    displayFilterText: displayFilterText,
+                    quickFilterSelection: quickFilterSelection,
+                    quickFilterService: quickFilterService,
+                    structuredFilterGroup: structuredFilterGroup,
+                    structuredFilterService: structuredFilterService,
+                    sourceListSelection: sourceListSelection,
+                    pinnedItems: pinnedItems,
+                    savedRecords: savedRecords,
+                    wiresharkFilterMembership: wiresharkFilterMembership,
+                    forceReload: forceReload
+                ))
+            }
             switch ingestState.lastMutation {
             case .append:
                 return .ready(appendContent(
@@ -388,6 +437,7 @@ private struct PacketTableContentCache {
                     sourceListSelection: sourceListSelection,
                     pinnedItems: pinnedItems,
                     savedRecords: savedRecords,
+                    wiresharkFilterMembership: wiresharkFilterMembership,
                     forceReload: forceReload
                 ))
             case .appendWithMetadataUpdates(_, let updatedIDs):
@@ -404,6 +454,7 @@ private struct PacketTableContentCache {
                     sourceListSelection: sourceListSelection,
                     pinnedItems: pinnedItems,
                     savedRecords: savedRecords,
+                    wiresharkFilterMembership: wiresharkFilterMembership,
                     forceReload: forceReload
                 ) {
                     return .ready(content)
@@ -420,7 +471,8 @@ private struct PacketTableContentCache {
                     structuredFilterService: structuredFilterService,
                     sourceListSelection: sourceListSelection,
                     pinnedItems: pinnedItems,
-                    savedRecords: savedRecords
+                    savedRecords: savedRecords,
+                    wiresharkFilterMembership: wiresharkFilterMembership
                 ) {
                     return .ready(content)
                 }
@@ -435,7 +487,8 @@ private struct PacketTableContentCache {
             structuredFilterGroup: structuredFilterGroup,
             sourceListSelection: sourceListSelection,
             pinnedItems: pinnedItems,
-            savedRecords: savedRecords
+            savedRecords: savedRecords,
+            wiresharkFilterMembership: wiresharkFilterMembership
         )
         let input = PacketTableBuildInput(ingestState: ingestState, signature: signature)
         if allowsAsyncRebuild, input.sourcePacketCount >= asyncRebuildThreshold {
@@ -456,7 +509,8 @@ private struct PacketTableContentCache {
         structuredFilterGroup: PacketStructuredFilterGroup,
         sourceListSelection: PacketSourceListSelection,
         pinnedItems: [PacketPin],
-        savedRecords: [SavedPacketRecord]
+        savedRecords: [SavedPacketRecord],
+        wiresharkFilterMembership: PacketWiresharkFilterMembership?
     ) -> Bool {
         let dependsOnIngestPackets = sourceListSelection != .saved
         return (dependsOnIngestPackets && packetRevision != ingestState.packetRevision) ||
@@ -465,7 +519,8 @@ private struct PacketTableContentCache {
             self.structuredFilterGroup != structuredFilterGroup ||
             self.sourceListSelection != sourceListSelection ||
             self.pinnedItems != pinnedItems ||
-            self.savedRecords != savedRecords
+            self.savedRecords != savedRecords ||
+            self.wiresharkFilterMembership != wiresharkFilterMembership
     }
 
     mutating func storeAsyncRebuild(_ output: PacketTableBuildOutput, input: PacketTableBuildInput) -> PacketTableContent {
@@ -523,6 +578,7 @@ private struct PacketTableContentCache {
         sourceListSelection: PacketSourceListSelection,
         pinnedItems: [PacketPin],
         savedRecords: [SavedPacketRecord],
+        wiresharkFilterMembership: PacketWiresharkFilterMembership?,
         forceReload: Bool = false
     ) -> PacketTableContent {
         guard !newPackets.isEmpty else {
@@ -534,7 +590,8 @@ private struct PacketTableContentCache {
                 structuredFilterGroup: structuredFilterGroup,
                 sourceListSelection: sourceListSelection,
                 pinnedItems: pinnedItems,
-                savedRecords: savedRecords
+                savedRecords: savedRecords,
+                wiresharkFilterMembership: wiresharkFilterMembership
             )
         }
 
@@ -559,7 +616,8 @@ private struct PacketTableContentCache {
             guard matches(packet, selection: sourceListSelection, pinnedItems: pinnedItems, ingestState: ingestState),
                   displayFilter.isEmpty || displayFilter.matches(packet),
                   quickFilterService.matches(packet, selection: quickFilterSelection),
-                  structuredFilterService.matches(packet, context: structuredFilterContext) else {
+                  structuredFilterService.matches(packet, context: structuredFilterContext),
+                  wiresharkFilterMembership?.matches(packet, in: ingestState) != false else {
                 continue
             }
 
@@ -597,6 +655,7 @@ private struct PacketTableContentCache {
             sourceListSelection: sourceListSelection,
             pinnedItems: pinnedItems,
             savedRecords: savedRecords,
+            wiresharkFilterMembership: wiresharkFilterMembership,
             rowTimingState: rowTimingState
         )
     }
@@ -614,7 +673,8 @@ private struct PacketTableContentCache {
         structuredFilterService: PacketStructuredFilterService,
         sourceListSelection: PacketSourceListSelection,
         pinnedItems: [PacketPin],
-        savedRecords: [SavedPacketRecord]
+        savedRecords: [SavedPacketRecord],
+        wiresharkFilterMembership: PacketWiresharkFilterMembership?
     ) -> PacketTableContent? {
         guard let result = computeRowUpdates(
             updatedPacketIDs: updatedPacketIDs,
@@ -626,6 +686,7 @@ private struct PacketTableContentCache {
             structuredFilterService: structuredFilterService,
             sourceListSelection: sourceListSelection,
             pinnedItems: pinnedItems,
+            wiresharkFilterMembership: wiresharkFilterMembership,
             store: cachedContent.store,
             existingTimingState: cachedRowTimingState
         ) else {
@@ -654,6 +715,7 @@ private struct PacketTableContentCache {
             sourceListSelection: sourceListSelection,
             pinnedItems: pinnedItems,
             savedRecords: savedRecords,
+            wiresharkFilterMembership: wiresharkFilterMembership,
             rowTimingState: result.rowTimingState
         )
     }
@@ -671,6 +733,7 @@ private struct PacketTableContentCache {
         sourceListSelection: PacketSourceListSelection,
         pinnedItems: [PacketPin],
         savedRecords: [SavedPacketRecord],
+        wiresharkFilterMembership: PacketWiresharkFilterMembership?,
         forceReload: Bool = false
     ) -> PacketTableContent? {
         // Run the existing append path first so older-row updates apply on top of the new rows.
@@ -686,6 +749,7 @@ private struct PacketTableContentCache {
             sourceListSelection: sourceListSelection,
             pinnedItems: pinnedItems,
             savedRecords: savedRecords,
+            wiresharkFilterMembership: wiresharkFilterMembership,
             forceReload: forceReload
         )
 
@@ -703,6 +767,7 @@ private struct PacketTableContentCache {
             structuredFilterService: structuredFilterService,
             sourceListSelection: sourceListSelection,
             pinnedItems: pinnedItems,
+            wiresharkFilterMembership: wiresharkFilterMembership,
             store: appendedContent.store,
             existingTimingState: cachedRowTimingState
         ) else {
@@ -750,6 +815,7 @@ private struct PacketTableContentCache {
             sourceListSelection: sourceListSelection,
             pinnedItems: pinnedItems,
             savedRecords: savedRecords,
+            wiresharkFilterMembership: wiresharkFilterMembership,
             rowTimingState: result.rowTimingState
         )
     }
@@ -773,6 +839,7 @@ private struct PacketTableContentCache {
         structuredFilterService: PacketStructuredFilterService,
         sourceListSelection: PacketSourceListSelection,
         pinnedItems: [PacketPin],
+        wiresharkFilterMembership: PacketWiresharkFilterMembership?,
         store: PacketTableRowStore,
         existingTimingState: PacketTableRowTimingState
     ) -> RowUpdateResult? {
@@ -787,7 +854,8 @@ private struct PacketTableContentCache {
             let isVisibleNow = matches(packet, selection: sourceListSelection, pinnedItems: pinnedItems, ingestState: ingestState) &&
                 (displayFilter.isEmpty || displayFilter.matches(packet)) &&
                 quickFilterService.matches(packet, selection: quickFilterSelection) &&
-                structuredFilterService.matches(packet, context: structuredFilterContext)
+                structuredFilterService.matches(packet, context: structuredFilterContext) &&
+                wiresharkFilterMembership?.matches(packet, in: ingestState) != false
             let wasVisible = store.visiblePacketRowIndexByID[packetID] != nil
             guard wasVisible == isVisibleNow else {
                 return nil  // visibility flipped — caller falls back to rebuild
@@ -822,6 +890,7 @@ private struct PacketTableContentCache {
         sourceListSelection = input.signature.sourceListSelection
         pinnedItems = input.signature.pinnedItems
         savedRecords = input.signature.savedRecords
+        wiresharkFilterMembership = input.signature.wiresharkFilterMembership
         cachedContent = content
         cachedRowTimingState = rowTimingState
         return content
@@ -836,6 +905,7 @@ private struct PacketTableContentCache {
         sourceListSelection: PacketSourceListSelection,
         pinnedItems: [PacketPin],
         savedRecords: [SavedPacketRecord],
+        wiresharkFilterMembership: PacketWiresharkFilterMembership?,
         rowTimingState: PacketTableRowTimingState? = nil
     ) -> PacketTableContent {
         packetRevision = ingestState.packetRevision
@@ -847,11 +917,25 @@ private struct PacketTableContentCache {
         self.sourceListSelection = sourceListSelection
         self.pinnedItems = pinnedItems
         self.savedRecords = savedRecords
+        self.wiresharkFilterMembership = wiresharkFilterMembership
         cachedContent = content
         if let rowTimingState {
             cachedRowTimingState = rowTimingState
         }
         return content
+    }
+
+    private func hasSameWiresharkFilterIdentity(
+        as membership: PacketWiresharkFilterMembership?
+    ) -> Bool {
+        switch (wiresharkFilterMembership, membership) {
+        case (nil, nil):
+            return true
+        case (let current?, let next?):
+            return current.expression == next.expression
+        default:
+            return false
+        }
     }
 
     private func packets(
@@ -966,6 +1050,11 @@ final class NetworkInspectorViewModel {
     private var isPacketTableFiltering = false
     private var selectsFirstVisiblePacketAfterFiltering = false
     private var pendingSessionImportReport: TCPViewSessionImportReport?
+    private var pendingDisplayFilterValidationWorkItem: DispatchWorkItem?
+    private var displayFilterValidationGeneration: UInt64 = 0
+    private var displayFilterEvaluationGeneration: UInt64 = 0
+    private var displayFilterEvaluationCancellationToken: DisplayFilterEvaluationCancellationToken?
+    private var displayFilterResultCache = PacketDisplayFilterResultCache()
 
     // Trailing-edge debounce for delegate-driven rebuilds. Live ingest fires the controller delegate
     // up to ~10 Hz; coalescing to ~12 Hz keeps the UI feeling live without burning CPU on redundant
@@ -980,6 +1069,10 @@ final class NetworkInspectorViewModel {
     private var inspectorPlacement: NetworkInspectorPlacement
     private var isInspectorVisible: Bool
     private var isStructuredFilterVisible: Bool
+    private var filterMode: PacketFilterMode
+    private var wiresharkFilterState: PacketWiresharkFilterState
+    private var wiresharkFilterMembership: PacketWiresharkFilterMembership?
+    private var wiresharkFilterMembershipLineageRevision: UInt64?
     private var displayFilterText: String
     private var structuredFilterGroup: PacketStructuredFilterGroup
     private var selectedCustomFilterID: PacketCustomFilter.ID?
@@ -1026,6 +1119,10 @@ final class NetworkInspectorViewModel {
         self.inspectorPlacement = preferences.inspectorPlacement
         self.isInspectorVisible = preferences.isInspectorVisible
         self.isStructuredFilterVisible = preferences.isStructuredFilterVisible
+        self.filterMode = preferences.filterMode
+        self.wiresharkFilterState = PacketWiresharkFilterState(draftExpression: preferences.wiresharkFilterDraft)
+        self.wiresharkFilterMembership = nil
+        self.wiresharkFilterMembershipLineageRevision = nil
         self.displayFilterText = preferences.displayFilterText
         self.structuredFilterGroup = structuredFilterStore.load()
         let sourceListSnapshot = sourceListService.snapshot(
@@ -1033,7 +1130,7 @@ final class NetworkInspectorViewModel {
             pinnedItems: pinService.pins(),
             savedPacketCount: savedPacketService.records().count
         )
-        let activeStructuredFilterGroup = isStructuredFilterVisible ? structuredFilterGroup : .default
+        let activeStructuredFilterGroup = isStructuredFilterVisible && filterMode == .builder ? structuredFilterGroup : .default
         let packetTableResolution = packetTableContentCache.content(
             for: controller.snapshot.packetIngestState,
             displayFilterText: displayFilterText,
@@ -1044,6 +1141,7 @@ final class NetworkInspectorViewModel {
             sourceListSelection: selectedSourceListSelection,
             pinnedItems: pinService.pins(),
             savedRecords: savedPacketService.records(),
+            wiresharkFilterMembership: nil,
             allowsAsyncRebuild: false,
             asyncRebuildThreshold: self.packetTableAsyncRebuildThreshold
         )
@@ -1053,7 +1151,7 @@ final class NetworkInspectorViewModel {
             packetTableContent = content
         }
         let initialCustomFilterItems = customFilterService.filters().map { filter in
-            PacketCustomFilterItem(id: filter.id, title: filter.name, isSelected: false)
+            PacketCustomFilterItem(id: filter.id, title: filter.name, mode: filter.mode, isSelected: false)
         }
         self.snapshot = NetworkInspectorSnapshot.make(
             base: controller.snapshot,
@@ -1069,6 +1167,8 @@ final class NetworkInspectorViewModel {
             inspectorPlacement: inspectorPlacement,
             isInspectorVisible: isInspectorVisible,
             isStructuredFilterVisible: isStructuredFilterVisible,
+            filterMode: filterMode,
+            wiresharkFilterState: wiresharkFilterState,
             displayFilterText: displayFilterText,
             structuredFilterGroup: structuredFilterGroup,
             isPacketTableFiltering: isPacketTableFiltering,
@@ -1249,10 +1349,82 @@ final class NetworkInspectorViewModel {
         }
 
         isStructuredFilterVisible = isVisible
+        if !isVisible {
+            cancelWiresharkFilterEvaluation(clearMembership: true)
+        }
         if !isUsingSessionDocumentState {
             preferences.persistStructuredFilterVisible(isVisible)
         }
         rebuildSnapshot()
+        if isVisible, filterMode == .wireshark {
+            reapplyWiresharkFilterIfNeeded()
+        }
+    }
+
+    func setFilterMode(_ mode: PacketFilterMode) {
+        guard filterMode != mode else {
+            if !isStructuredFilterVisible {
+                setStructuredFilterVisible(true)
+            }
+            return
+        }
+
+        cancelWiresharkFilterEvaluation(clearMembership: true)
+        filterMode = mode
+        isStructuredFilterVisible = true
+        if !isUsingSessionDocumentState {
+            preferences.persistFilterMode(mode)
+            preferences.persistStructuredFilterVisible(true)
+        }
+        rebuildSnapshot()
+        if mode == .wireshark {
+            reapplyWiresharkFilterIfNeeded()
+        }
+    }
+
+    func updateWiresharkFilterDraft(_ expression: String) {
+        wiresharkFilterState.draftExpression = expression
+        wiresharkFilterState.isValidating = true
+        if !isUsingSessionDocumentState {
+            preferences.persistWiresharkFilterDraft(expression)
+        }
+        pendingDisplayFilterValidationWorkItem?.cancel()
+        displayFilterValidationGeneration &+= 1
+        let generation = displayFilterValidationGeneration
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.validateWiresharkFilterDraft(expression, generation: generation)
+        }
+        pendingDisplayFilterValidationWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: workItem)
+        rebuildSnapshot()
+    }
+
+    func applyWiresharkFilter(completion: ((Bool) -> Void)? = nil) {
+        cancelWiresharkFilterEvaluation(clearMembership: false)
+        let generation = displayFilterValidationGeneration
+        let expression = wiresharkFilterState.draftExpression
+        wiresharkFilterState.isValidating = true
+        rebuildSnapshot()
+        controller.validateDisplayFilter(expression) { [weak self] validation in
+            DispatchQueue.main.async {
+                guard let self, self.displayFilterValidationGeneration == generation else {
+                    completion?(false)
+                    return
+                }
+                self.wiresharkFilterState.isValidating = false
+                self.wiresharkFilterState.validation = validation
+                guard validation.isApplicable else {
+                    self.rebuildSnapshot()
+                    completion?(false)
+                    return
+                }
+                self.evaluateWiresharkFilter(
+                    validation.normalizedExpression,
+                    validation: validation,
+                    completion: completion
+                )
+            }
+        }
     }
 
     func toggleQuickFilter(_ id: PacketQuickFilterID) {
@@ -1274,6 +1446,20 @@ final class NetworkInspectorViewModel {
         return savedFilter
     }
 
+    @discardableResult
+    func saveWiresharkCustomFilter(name: String) throws -> PacketCustomFilter {
+        let expression = wiresharkFilterState.appliedExpression
+        let savedFilter = try customFilterService.save(
+            name: name,
+            mode: .wireshark,
+            group: .default,
+            wiresharkExpression: expression
+        )
+        selectedCustomFilterID = savedFilter.id
+        rebuildSnapshot()
+        return savedFilter
+    }
+
     // Toggle or replace the structured filter editor with a saved custom filter.
     func applyCustomFilter(id: PacketCustomFilter.ID) {
         guard let filter = customFilterService.filter(id: id) else {
@@ -1282,6 +1468,7 @@ final class NetworkInspectorViewModel {
 
         if isStructuredFilterVisible, selectedCustomFilterID == filter.id {
             isStructuredFilterVisible = false
+            cancelWiresharkFilterEvaluation(clearMembership: true)
             if !isUsingSessionDocumentState {
                 preferences.persistStructuredFilterVisible(false)
             }
@@ -1289,18 +1476,33 @@ final class NetworkInspectorViewModel {
             return
         }
 
-        structuredFilterGroup = PacketStructuredFilterGroup(filters: filter.group.filters, operator: filter.group.operator)
-        if !isUsingSessionDocumentState {
-            structuredFilterStore.save(structuredFilterGroup)
-        }
+        cancelWiresharkFilterEvaluation(clearMembership: filter.mode == .builder)
+        filterMode = filter.mode
         selectedCustomFilterID = filter.id
         if !isStructuredFilterVisible {
             isStructuredFilterVisible = true
+        }
+        switch filter.mode {
+        case .builder:
+            structuredFilterGroup = PacketStructuredFilterGroup(filters: filter.group.filters, operator: filter.group.operator)
             if !isUsingSessionDocumentState {
-                preferences.persistStructuredFilterVisible(true)
+                structuredFilterStore.save(structuredFilterGroup)
+            }
+        case .wireshark:
+            let expression = filter.wiresharkExpression ?? ""
+            wiresharkFilterState.draftExpression = expression
+            if !isUsingSessionDocumentState {
+                preferences.persistWiresharkFilterDraft(expression)
             }
         }
+        if !isUsingSessionDocumentState {
+            preferences.persistStructuredFilterVisible(true)
+            preferences.persistFilterMode(filter.mode)
+        }
         rebuildSnapshot()
+        if filter.mode == .wireshark {
+            applyWiresharkFilter()
+        }
     }
 
     // Rename a saved custom filter and refresh titlebar render models.
@@ -1311,12 +1513,30 @@ final class NetworkInspectorViewModel {
 
     // Replace one saved custom filter with the current structured filter group.
     func overrideCustomFilter(id: PacketCustomFilter.ID, group: PacketStructuredFilterGroup) throws {
+        guard customFilterService.filter(id: id)?.mode == .builder else {
+            return
+        }
         let replacementGroup = PacketStructuredFilterGroup(filters: group.filters, operator: group.operator)
         try customFilterService.updateGroup(id: id, group: replacementGroup)
         structuredFilterGroup = replacementGroup
         if !isUsingSessionDocumentState {
             structuredFilterStore.save(replacementGroup)
         }
+        selectedCustomFilterID = id
+        rebuildSnapshot()
+    }
+
+    // Replace only a Wireshark saved filter so builder payloads cannot be erased across modes.
+    func overrideWiresharkCustomFilter(id: PacketCustomFilter.ID) throws {
+        guard customFilterService.filter(id: id)?.mode == .wireshark else {
+            return
+        }
+        try customFilterService.update(
+            id: id,
+            mode: .wireshark,
+            group: .default,
+            wiresharkExpression: wiresharkFilterState.appliedExpression
+        )
         selectedCustomFilterID = id
         rebuildSnapshot()
     }
@@ -1336,10 +1556,205 @@ final class NetworkInspectorViewModel {
         rebuildSnapshot()
     }
 
+    private func validateWiresharkFilterDraft(_ expression: String, generation: UInt64) {
+        controller.validateDisplayFilter(expression) { [weak self] validation in
+            DispatchQueue.main.async {
+                guard let self,
+                      self.displayFilterValidationGeneration == generation,
+                      self.wiresharkFilterState.draftExpression == expression else {
+                    return
+                }
+                self.pendingDisplayFilterValidationWorkItem = nil
+                self.wiresharkFilterState.isValidating = false
+                self.wiresharkFilterState.validation = validation
+                self.rebuildSnapshot()
+            }
+        }
+    }
+
+    private func reapplyWiresharkFilterIfNeeded() {
+        let expression = wiresharkFilterState.appliedExpression
+        guard !expression.isEmpty,
+              isStructuredFilterVisible,
+              filterMode == .wireshark else {
+            return
+        }
+        evaluateWiresharkFilter(
+            expression,
+            validation: DisplayFilterValidation(normalizedExpression: expression, status: .valid)
+        )
+    }
+
+    // Keep the old membership visible until the complete replacement result is ready.
+    private func evaluateWiresharkFilter(
+        _ expression: String,
+        validation: DisplayFilterValidation,
+        completion: ((Bool) -> Void)? = nil
+    ) {
+        guard isStructuredFilterVisible, filterMode == .wireshark else {
+            completion?(false)
+            return
+        }
+
+        if expression.isEmpty {
+            cancelWiresharkFilterEvaluation(clearMembership: true)
+            wiresharkFilterState.validation = validation
+            wiresharkFilterState.appliedExpression = ""
+            rebuildSnapshot()
+            completion?(true)
+            return
+        }
+
+        let ingestState = controller.snapshot.packetIngestState
+        let key = displayFilterCacheKey(expression: expression, ingestState: ingestState)
+        var entry = displayFilterResultCache.entry(for: key) ?? PacketDisplayFilterCacheEntry()
+        let unknownPacketIDs = entry.unknownPacketIDs(in: ingestState)
+        if unknownPacketIDs.isEmpty {
+            displayFilterEvaluationGeneration &+= 1
+            wiresharkFilterMembership = entry.membership(
+                generation: displayFilterEvaluationGeneration,
+                expression: expression
+            )
+            wiresharkFilterMembershipLineageRevision = ingestState.packetLineageRevision
+            wiresharkFilterState.validation = validation
+            wiresharkFilterState.appliedExpression = expression
+            wiresharkFilterState.isApplying = false
+            wiresharkFilterState.evaluatedPacketCount = ingestState.packets.count
+            wiresharkFilterState.totalPacketCount = ingestState.packets.count
+            rebuildSnapshot()
+            completion?(true)
+            return
+        }
+
+        displayFilterEvaluationCancellationToken?.cancel()
+        displayFilterEvaluationGeneration &+= 1
+        let generation = displayFilterEvaluationGeneration
+        let cancellationToken = DisplayFilterEvaluationCancellationToken()
+        displayFilterEvaluationCancellationToken = cancellationToken
+        wiresharkFilterState.validation = validation
+        wiresharkFilterState.isApplying = true
+        wiresharkFilterState.evaluatedPacketCount = 0
+        wiresharkFilterState.totalPacketCount = unknownPacketIDs.count
+        rebuildSnapshot()
+
+        controller.evaluateDisplayFilter(
+            expression,
+            generation: generation,
+            packetIDs: unknownPacketIDs,
+            cancellationToken: cancellationToken,
+            progress: { [weak self] batch in
+                DispatchQueue.main.async {
+                    guard let self,
+                          self.displayFilterEvaluationGeneration == generation,
+                          batch.generation == generation else {
+                        return
+                    }
+                    self.wiresharkFilterState.evaluatedPacketCount = min(
+                        self.wiresharkFilterState.evaluatedPacketCount + batch.evaluatedPacketIDs.count,
+                        self.wiresharkFilterState.totalPacketCount
+                    )
+                    let evaluatedCount = self.wiresharkFilterState.evaluatedPacketCount
+                    if evaluatedCount == self.wiresharkFilterState.totalPacketCount
+                        || evaluatedCount % 1_024 < batch.evaluatedPacketIDs.count {
+                        self.rebuildSnapshot()
+                    }
+                }
+            },
+            completion: { [weak self] result in
+                DispatchQueue.main.async {
+                    guard let self, self.displayFilterEvaluationGeneration == generation else {
+                        completion?(false)
+                        return
+                    }
+                    self.displayFilterEvaluationCancellationToken = nil
+                    self.wiresharkFilterState.isApplying = false
+                    switch result {
+                    case .failure(let error):
+                        let message = (error as? TCPViewerCoreError)?.message ?? error.localizedDescription
+                        self.wiresharkFilterState.validation = DisplayFilterValidation(
+                            normalizedExpression: expression,
+                            status: .unavailable,
+                            diagnostics: [DisplayFilterDiagnostic(
+                                severity: .error,
+                                message: message
+                            )]
+                        )
+                        self.rebuildSnapshot()
+                        completion?(false)
+                    case .success(let batch):
+                        entry.record(batch: batch, packetIndexByID: ingestState.packetIndexByID)
+                        self.displayFilterResultCache.store(entry, for: key)
+                        self.wiresharkFilterMembership = entry.membership(
+                            generation: generation,
+                            expression: expression
+                        )
+                        self.wiresharkFilterMembershipLineageRevision = ingestState.packetLineageRevision
+                        self.wiresharkFilterState.appliedExpression = expression
+                        self.wiresharkFilterState.evaluatedPacketCount = unknownPacketIDs.count
+                        self.wiresharkFilterState.totalPacketCount = unknownPacketIDs.count
+                        self.rebuildSnapshot()
+                        completion?(true)
+                        self.evaluateNewPacketsForActiveWiresharkFilterIfNeeded()
+                    }
+                }
+            }
+        )
+    }
+
+    private func evaluateNewPacketsForActiveWiresharkFilterIfNeeded() {
+        guard isStructuredFilterVisible,
+              filterMode == .wireshark,
+              !wiresharkFilterState.isApplying,
+              !wiresharkFilterState.appliedExpression.isEmpty else {
+            return
+        }
+        let ingestState = controller.snapshot.packetIngestState
+        let key = displayFilterCacheKey(expression: wiresharkFilterState.appliedExpression, ingestState: ingestState)
+        let entry = displayFilterResultCache.entry(for: key) ?? PacketDisplayFilterCacheEntry()
+        guard !entry.unknownPacketIDs(in: ingestState, limit: 1).isEmpty else {
+            return
+        }
+        evaluateWiresharkFilter(
+            wiresharkFilterState.appliedExpression,
+            validation: wiresharkFilterState.validation
+        )
+    }
+
+    private func displayFilterCacheKey(
+        expression: String,
+        ingestState: PacketIngestState
+    ) -> PacketDisplayFilterCacheKey {
+        PacketDisplayFilterCacheKey(
+            backingIdentity: ingestState.backingIdentity ?? ingestState.source?.rawValue ?? "empty",
+            packetLineageRevision: ingestState.packetLineageRevision,
+            expression: expression,
+            dissectionRevision: PacketDisplayFilterCacheKey.dissectionRevision
+        )
+    }
+
+    private func cancelWiresharkFilterEvaluation(clearMembership: Bool) {
+        pendingDisplayFilterValidationWorkItem?.cancel()
+        pendingDisplayFilterValidationWorkItem = nil
+        displayFilterValidationGeneration &+= 1
+        displayFilterEvaluationGeneration &+= 1
+        displayFilterEvaluationCancellationToken?.cancel()
+        displayFilterEvaluationCancellationToken = nil
+        wiresharkFilterState.isValidating = false
+        wiresharkFilterState.isApplying = false
+        wiresharkFilterState.evaluatedPacketCount = 0
+        wiresharkFilterState.totalPacketCount = 0
+        if clearMembership {
+            wiresharkFilterMembership = nil
+            wiresharkFilterMembershipLineageRevision = nil
+            controller.clearDisplayFilters()
+        }
+    }
+
     func clearPackets() {
         #if DEBUG
         logClearMemorySnapshot("before")
         #endif
+        cancelWiresharkFilterEvaluation(clearMembership: true)
         cancelActivePacketTableFilterJob()
         controller.clearPackets()
         packetTableContentCache.reset()
@@ -1549,6 +1964,10 @@ final class NetworkInspectorViewModel {
             inspectorPlacement: inspectorPlacement,
             isInspectorVisible: isInspectorVisible,
             isStructuredFilterVisible: isStructuredFilterVisible,
+            filterMode: filterMode,
+            wiresharkExpression: wiresharkFilterState.appliedExpression.isEmpty
+                ? nil
+                : wiresharkFilterState.appliedExpression,
             tableColumnLayout: packetTableColumnLayoutStore.load(),
             sourceMetadata: sourceMetadata
         )
@@ -1779,6 +2198,7 @@ final class NetworkInspectorViewModel {
                 completion?()
             }
         } else {
+            cancelWiresharkFilterEvaluation(clearMembership: true)
             restorePersistentDocumentState()
             controller.startLiveCapture { [weak self] in
                 self?.rebuildSnapshot()
@@ -1809,6 +2229,7 @@ final class NetworkInspectorViewModel {
     }
 
     func openDocument(at fileURL: URL, completion: (() -> Void)? = nil) {
+        cancelWiresharkFilterEvaluation(clearMembership: true)
         let standardizedURL = TCPViewerCaptureFileImportPolicy.standardizedFileURL(fileURL)
         let isSessionFile = TCPViewerCaptureFileImportPolicy.isSessionFileURL(standardizedURL)
         controller.openDocument(at: fileURL) { [weak self] in
@@ -1845,6 +2266,7 @@ final class NetworkInspectorViewModel {
         at fileURLs: [URL],
         completion: @escaping (TCPViewerCaptureImportResult) -> Void
     ) {
+        cancelWiresharkFilterEvaluation(clearMembership: true)
         let hasSessionFile = fileURLs
             .map(TCPViewerCaptureFileImportPolicy.standardizedFileURL)
             .contains(where: TCPViewerCaptureFileImportPolicy.isSessionFileURL)
@@ -1904,11 +2326,28 @@ final class NetworkInspectorViewModel {
         inspectorPlacement = NetworkInspectorPlacement(rawValue: state.inspectorPlacement) ?? .trailing
         isInspectorVisible = state.isInspectorVisible
         isStructuredFilterVisible = state.isStructuredFilterVisible
+        filterMode = state.filterMode ?? .builder
+        let wiresharkExpression = state.wiresharkExpression ?? ""
+        wiresharkFilterState = PacketWiresharkFilterState(
+            draftExpression: wiresharkExpression,
+            validation: DisplayFilterValidation(
+                normalizedExpression: wiresharkExpression,
+                status: .valid
+            )
+        )
+        wiresharkFilterMembership = nil
+        wiresharkFilterMembershipLineageRevision = nil
+        displayFilterResultCache.removeAll()
         packetTableContentCache.reset()
 
         if let selectedPacketID = state.selectedPacketID,
            controller.snapshot.packetIngestState.packet(withID: selectedPacketID) != nil {
             controller.selectPacket(selectedPacketID)
+        }
+        if isStructuredFilterVisible, filterMode == .wireshark {
+            DispatchQueue.main.async { [weak self] in
+                self?.applyWiresharkFilter()
+            }
         }
     }
 
@@ -1927,6 +2366,11 @@ final class NetworkInspectorViewModel {
         displayFilterText = preferences.displayFilterText
         structuredFilterGroup = structuredFilterStore.load()
         isStructuredFilterVisible = preferences.isStructuredFilterVisible
+        filterMode = preferences.filterMode
+        wiresharkFilterState = PacketWiresharkFilterState(draftExpression: preferences.wiresharkFilterDraft)
+        wiresharkFilterMembership = nil
+        wiresharkFilterMembershipLineageRevision = nil
+        displayFilterResultCache.removeAll()
         inspectorPlacement = preferences.inspectorPlacement
         isInspectorVisible = preferences.isInspectorVisible
         packetTableContentCache.reset()
@@ -2349,8 +2793,11 @@ final class NetworkInspectorViewModel {
             selectedSourceListSelection = .allPackets
         }
 
-        // A hidden structured filter panel behaves like no structured filter, but keeps row state for restore.
-        let activeStructuredFilterGroup = isStructuredFilterVisible ? structuredFilterGroup : .default
+        // Only the visible editor mode contributes rows; both editors retain their drafts.
+        let activeStructuredFilterGroup = isStructuredFilterVisible && filterMode == .builder ? structuredFilterGroup : .default
+        let activeWiresharkFilterMembership = isStructuredFilterVisible && filterMode == .wireshark
+            ? wiresharkFilterMembership
+            : nil
         let packetTableInput = makePacketTableBuildInput(
             pinnedItems: pinnedItems,
             savedRecords: savedRecords,
@@ -2372,6 +2819,7 @@ final class NetworkInspectorViewModel {
                 sourceListSelection: selectedSourceListSelection,
                 pinnedItems: pinnedItems,
                 savedRecords: savedRecords,
+                wiresharkFilterMembership: activeWiresharkFilterMembership,
                 allowsAsyncRebuild: true,
                 asyncRebuildThreshold: packetTableAsyncRebuildThreshold
             ) {
@@ -2410,6 +2858,8 @@ final class NetworkInspectorViewModel {
             inspectorPlacement: inspectorPlacement,
             isInspectorVisible: isInspectorVisible,
             isStructuredFilterVisible: isStructuredFilterVisible,
+            filterMode: filterMode,
+            wiresharkFilterState: wiresharkFilterState,
             displayFilterText: displayFilterText,
             structuredFilterGroup: structuredFilterGroup,
             isPacketTableFiltering: isPacketTableFiltering,
@@ -2428,6 +2878,7 @@ final class NetworkInspectorViewModel {
             PacketCustomFilterItem(
                 id: filter.id,
                 title: filter.name,
+                mode: filter.mode,
                 isSelected: isStructuredFilterVisible && selectedCustomFilterID == filter.id
             )
         }
@@ -2444,7 +2895,10 @@ final class NetworkInspectorViewModel {
             structuredFilterGroup: activeStructuredFilterGroup,
             sourceListSelection: selectedSourceListSelection,
             pinnedItems: pinnedItems,
-            savedRecords: savedRecords
+            savedRecords: savedRecords,
+            wiresharkFilterMembership: isStructuredFilterVisible && filterMode == .wireshark
+                ? wiresharkFilterMembership
+                : nil
         )
         return PacketTableBuildInput(
             ingestState: controller.snapshot.packetIngestState,
@@ -2530,7 +2984,7 @@ final class NetworkInspectorViewModel {
 
         let pinnedItems = pinService.pins()
         let savedRecords = savedPacketService.records()
-        let activeStructuredFilterGroup = isStructuredFilterVisible ? structuredFilterGroup : .default
+        let activeStructuredFilterGroup = isStructuredFilterVisible && filterMode == .builder ? structuredFilterGroup : .default
         let currentInput = makePacketTableBuildInput(
             pinnedItems: pinnedItems,
             savedRecords: savedRecords,
@@ -2721,6 +3175,13 @@ final class NetworkInspectorViewModel {
 extension NetworkInspectorViewModel: TCPViewerWorkspaceControllerDelegate {
     func tcpViewerWorkspaceControllerDidChange(_ controller: TCPViewerWorkspaceController) {
         recordStatusMetrics(from: controller.snapshot)
+        if let lineageRevision = wiresharkFilterMembershipLineageRevision,
+           lineageRevision != controller.snapshot.packetIngestState.packetLineageRevision {
+            cancelWiresharkFilterEvaluation(clearMembership: true)
+            reapplyWiresharkFilterIfNeeded()
+        } else {
+            evaluateNewPacketsForActiveWiresharkFilterIfNeeded()
+        }
         scheduleCoalescedRebuild()
     }
 }

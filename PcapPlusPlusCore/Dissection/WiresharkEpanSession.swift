@@ -116,6 +116,68 @@ final class WiresharkEpanSession {
         TCPViewerWiresharkSessionDestroy(handle)
     }
 
+    static func validateDisplayFilter(
+        _ expression: String,
+        runtimeConfiguration: WiresharkRuntimeConfiguration = WiresharkRuntimeConfiguration()
+    ) -> DisplayFilterValidation {
+        do {
+            let directory = try runtimeConfiguration.createPersonalConfigurationDirectoryIfNeeded()
+            return expression.withCString { expressionPointer in
+                directory.path.withCString { directoryPointer in
+                    guard let resultPointer = TCPViewerWiresharkValidateDisplayFilter(
+                        expressionPointer,
+                        directoryPointer
+                    ) else {
+                        return unavailableDisplayFilterValidation(expression)
+                    }
+                    defer { TCPViewerDisplayFilterValidationResultDestroy(resultPointer) }
+                    return displayFilterValidation(resultPointer.pointee)
+                }
+            }
+        } catch {
+            return unavailableDisplayFilterValidation(expression, message: error.localizedDescription)
+        }
+    }
+
+    func activateDisplayFilter(_ expression: String, generation: UInt64) -> DisplayFilterValidation {
+        expression.withCString { expressionPointer in
+            guard let resultPointer = TCPViewerWiresharkSessionActivateDisplayFilter(
+                handle,
+                expressionPointer,
+                generation
+            ) else {
+                return Self.unavailableDisplayFilterValidation(expression)
+            }
+            defer { TCPViewerDisplayFilterValidationResultDestroy(resultPointer) }
+            return Self.displayFilterValidation(resultPointer.pointee)
+        }
+    }
+
+    func evaluateDisplayFilter(_ record: NativePacketRecord, generation: UInt64) throws -> Bool {
+        try withContext(for: record) { context in
+            guard let resultPointer = TCPViewerWiresharkSessionEvaluateDisplayFilter(
+                handle,
+                context,
+                generation
+            ) else {
+                throw unavailableError("Wireshark returned no display-filter result.")
+            }
+            defer { TCPViewerDisplayFilterMatchResultDestroy(resultPointer) }
+            let result = resultPointer.pointee
+            guard result.succeeded else {
+                if let criticalError = criticalExceptionErrorIfNeeded() {
+                    throw criticalError
+                }
+                throw unavailableError(Self.string(result.errorMessage))
+            }
+            return result.matched
+        }
+    }
+
+    func clearDisplayFilter() {
+        TCPViewerWiresharkSessionClearDisplayFilter(handle)
+    }
+
     @discardableResult
     func observe(_ record: NativePacketRecord) throws -> [WiresharkTCPStreamIndexEntry] {
         try withContext(for: record) { context in
@@ -615,10 +677,73 @@ final class WiresharkEpanSession {
         let value = String(cString: pointer)
         return value.isEmpty ? nil : value
     }
+
+    private static func displayFilterValidation(
+        _ result: TCPViewerDisplayFilterValidationResult
+    ) -> DisplayFilterValidation {
+        let status: DisplayFilterValidationStatus
+        switch result.status {
+        case TCPViewerDisplayFilterValidationValid:
+            status = .valid
+        case TCPViewerDisplayFilterValidationInvalid:
+            status = .invalid
+        default:
+            status = .unavailable
+        }
+        let normalizedExpression = result.normalizedExpression.map(String.init(cString:)) ?? ""
+        let diagnostics: [DisplayFilterDiagnostic]
+        if let diagnosticPointer = result.diagnostics, result.diagnosticCount > 0 {
+            diagnostics = UnsafeBufferPointer(
+                start: diagnosticPointer,
+                count: result.diagnosticCount
+            ).map { diagnostic in
+                DisplayFilterDiagnostic(
+                    severity: diagnostic.severity == TCPViewerDisplayFilterDiagnosticWarning ? .warning : .error,
+                    message: diagnostic.message.map(String.init(cString:)) ?? "Wireshark display-filter error.",
+                    range: diagnostic.hasRange
+                        ? DisplayFilterSourceRange(
+                            utf8StartOffset: Int(clamping: diagnostic.utf8StartOffset),
+                            utf8Length: Int(clamping: diagnostic.utf8Length)
+                        )
+                        : nil
+                )
+            }
+        } else {
+            diagnostics = []
+        }
+        return DisplayFilterValidation(
+            normalizedExpression: normalizedExpression,
+            status: status,
+            diagnostics: diagnostics
+        )
+    }
+
+    private static func unavailableDisplayFilterValidation(
+        _ expression: String,
+        message: String = "Wireshark display-filter validation is unavailable."
+    ) -> DisplayFilterValidation {
+        DisplayFilterValidation(
+            normalizedExpression: expression.trimmingCharacters(in: .whitespacesAndNewlines),
+            status: .unavailable,
+            diagnostics: [DisplayFilterDiagnostic(severity: .error, message: message)]
+        )
+    }
 }
 
 #if DEBUG
 extension WiresharkEpanSession {
+    static func testResetDisplayFilterCompilationCount() {
+        TCPViewerWiresharkTestResetDisplayFilterCompilationCount()
+    }
+
+    static var testDisplayFilterCompilationCount: Int {
+        Int(TCPViewerWiresharkTestDisplayFilterCompilationCount())
+    }
+
+    var testHasActiveDisplayFilter: Bool {
+        TCPViewerWiresharkSessionTestHasActiveDisplayFilter(handle)
+    }
+
     func testInjectCriticalException() throws {
         guard TCPViewerWiresharkSessionTestInjectCriticalException(handle) else {
             if let criticalError = criticalExceptionErrorIfNeeded() {

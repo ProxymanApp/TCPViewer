@@ -433,7 +433,7 @@ final class PacketStructuredFilterViewController: NSViewController {
         let normalizedGroup = PacketStructuredFilterGroup(filters: group.filters, operator: group.operator)
         let rebuildsRows = normalizedGroup != self.group
         let rebuildsFooter = isFiltering != self.isFiltering
-        self.customFilterItems = customFilterItems
+        self.customFilterItems = customFilterItems.filter { $0.mode == .builder }
         self.isFiltering = isFiltering
 
         guard rebuildsRows || rebuildsFooter else {
