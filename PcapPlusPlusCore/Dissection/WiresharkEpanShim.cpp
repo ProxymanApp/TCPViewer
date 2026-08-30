@@ -1409,6 +1409,7 @@ private:
 struct TCPViewerWiresharkSession {
     struct TCPFollowTapContext {
         TCPViewerWiresharkSession *session = nullptr;
+        TCPViewerWiresharkFollowDirection direction = TCPViewerWiresharkFollowBothDirections;
     };
 
     mutable std::mutex mutex;
@@ -1501,13 +1502,15 @@ struct TCPViewerWiresharkSession {
             || session->followInfo == nullptr || session->tcpFollower == nullptr) {
             return TAP_PACKET_DONT_REDRAW;
         }
-        return get_follow_tap_handler(session->tcpFollower)(
+        const auto status = get_follow_tap_handler(session->tcpFollower)(
             session->followInfo,
             packetInfo,
             dissect,
             data,
             flags
         );
+        session->discardExcludedNewestFollowPayloadLocked(context->direction);
+        return status;
     }
 
     void recordTCPStreamFrameLocked(uint32_t frameNumber, uint32_t streamNumber)
@@ -1967,7 +1970,10 @@ struct TCPViewerWiresharkSession {
         followNewestPayloadItem = nullptr;
     }
 
-    bool beginTCPFollowLocked(const PacketContextView &selectedContext)
+    bool beginTCPFollowLocked(
+        const PacketContextView &selectedContext,
+        TCPViewerWiresharkFollowDirection direction
+    )
     {
         cancelFollowLocked();
         if (!hasSession() || activeSession() != this) {
@@ -2081,6 +2087,7 @@ struct TCPViewerWiresharkSession {
             return false;
         }
         followTapContext->session = this;
+        followTapContext->direction = direction;
         GString *registrationError = register_tap_listener(
             get_follow_tap_string(tcpFollower),
             followTapContext,
@@ -2118,7 +2125,8 @@ struct TCPViewerWiresharkSession {
 
     TCPViewerWiresharkFollowPacketStatus processFollowPacketLocked(
         const PacketContextView &context,
-        size_t maximumPayloadBytes
+        size_t maximumPayloadBytes,
+        TCPViewerWiresharkFollowDirection direction
     ) {
         if (!followTapRegistered || followInfo == nullptr || activeFollowSession() != this) {
             unavailableReason = "The TCP stream reassembly is not active.";
@@ -2190,7 +2198,7 @@ struct TCPViewerWiresharkSession {
         // Wireshark does not add released out-of-order fragments to bytes_written, so count new payload records directly.
         for (GList *item = followInfo->payload; item != followNewestPayloadItem; item = g_list_next(item)) {
             auto *record = static_cast<follow_record_t *>(item->data);
-            if (record != nullptr && record->data != nullptr) {
+            if (record != nullptr && record->data != nullptr && includesFollowRecord(record, direction)) {
                 followPayloadByteCount += record->data->len;
             }
         }
@@ -2204,7 +2212,8 @@ struct TCPViewerWiresharkSession {
 
     TCPViewerWiresharkFollowResult *finishTCPFollowLocked(
         size_t maximumPayloadBytes,
-        size_t maximumRecordCount
+        size_t maximumRecordCount,
+        TCPViewerWiresharkFollowDirection direction
     )
     {
         auto *result = static_cast<TCPViewerWiresharkFollowResult *>(std::calloc(1, sizeof(TCPViewerWiresharkFollowResult)));
@@ -2259,7 +2268,14 @@ struct TCPViewerWiresharkSession {
             }
         }
 
-        const size_t availableRecordCount = static_cast<size_t>(g_list_length(followInfo->payload));
+        size_t availableRecordCount = 0;
+        for (GList *item = followInfo->payload; item != nullptr; item = g_list_next(item)) {
+            auto *record = static_cast<follow_record_t *>(item->data);
+            if (record != nullptr && record->data != nullptr && record->data->len > 0
+                && includesFollowRecord(record, direction)) {
+                availableRecordCount += 1;
+            }
+        }
         const size_t allocatedRecordCount = std::min(availableRecordCount, maximumRecordCount);
         result->recordCount = allocatedRecordCount;
         result->isTruncated = followTruncated
@@ -2283,7 +2299,8 @@ struct TCPViewerWiresharkSession {
              item != nullptr && outputIndex < allocatedRecordCount && remainingPayloadBytes > 0;
              item = g_list_previous(item)) {
             auto *source = static_cast<follow_record_t *>(item->data);
-            if (source == nullptr || source->data == nullptr || source->data->len == 0) {
+            if (source == nullptr || source->data == nullptr || source->data->len == 0
+                || !includesFollowRecord(source, direction)) {
                 continue;
             }
             auto &destination = result->records[outputIndex];
@@ -2324,6 +2341,42 @@ struct TCPViewerWiresharkSession {
         followPayloadByteCount = 0;
         followNewestPayloadItem = nullptr;
         return result;
+    }
+
+    static bool includesFollowRecord(
+        const follow_record_t *record,
+        TCPViewerWiresharkFollowDirection direction
+    ) {
+        switch (direction) {
+            case TCPViewerWiresharkFollowClientToServer:
+                return !record->is_server;
+            case TCPViewerWiresharkFollowServerToClient:
+                return record->is_server;
+            case TCPViewerWiresharkFollowBothDirections:
+            default:
+                return true;
+        }
+    }
+
+    // Remove completed payload from the unrequested side before it can consume the follow budget.
+    void discardExcludedNewestFollowPayloadLocked(TCPViewerWiresharkFollowDirection direction)
+    {
+        if (direction == TCPViewerWiresharkFollowBothDirections || followInfo == nullptr) {
+            return;
+        }
+
+        for (GList *item = followInfo->payload; item != followNewestPayloadItem;) {
+            GList *next = g_list_next(item);
+            auto *record = static_cast<follow_record_t *>(item->data);
+            if (record != nullptr && !includesFollowRecord(record, direction)) {
+                if (record->data != nullptr) {
+                    g_byte_array_free(record->data, true);
+                }
+                g_free(record);
+                followInfo->payload = g_list_delete_link(followInfo->payload, item);
+            }
+            item = next;
+        }
     }
 
     WiresharkDissectionResult runSecondPassLocked(
@@ -2880,7 +2933,11 @@ TCPViewerWiresharkInspectionResult *TCPViewerWiresharkSessionInspectPacket(TCPVi
     return result;
 }
 
-bool TCPViewerWiresharkSessionBeginFollowTCPStream(TCPViewerWiresharkSession *session, const TCPViewerWiresharkPacketContext *selectedContext)
+bool TCPViewerWiresharkSessionBeginFollowTCPStream(
+    TCPViewerWiresharkSession *session,
+    const TCPViewerWiresharkPacketContext *selectedContext,
+    TCPViewerWiresharkFollowDirection direction
+)
 {
     if (session == nullptr || selectedContext == nullptr) {
         return false;
@@ -2888,26 +2945,28 @@ bool TCPViewerWiresharkSessionBeginFollowTCPStream(TCPViewerWiresharkSession *se
     std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
     std::lock_guard<std::mutex> sessionLock(session->mutex);
     session->clearCriticalExceptionsLocked();
-    return session->beginTCPFollowLocked(ContextViewFromC(selectedContext));
+    return session->beginTCPFollowLocked(ContextViewFromC(selectedContext), direction);
 }
 
 TCPViewerWiresharkFollowPacketStatus TCPViewerWiresharkSessionProcessFollowPacket(
     TCPViewerWiresharkSession *session,
     const TCPViewerWiresharkPacketContext *context,
-    size_t maximumPayloadBytes
+    size_t maximumPayloadBytes,
+    TCPViewerWiresharkFollowDirection direction
 ) {
     if (session == nullptr || context == nullptr || maximumPayloadBytes == 0) {
         return TCPViewerWiresharkFollowPacketFailed;
     }
     std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
     std::lock_guard<std::mutex> sessionLock(session->mutex);
-    return session->processFollowPacketLocked(ContextViewFromC(context), maximumPayloadBytes);
+    return session->processFollowPacketLocked(ContextViewFromC(context), maximumPayloadBytes, direction);
 }
 
 TCPViewerWiresharkFollowResult *TCPViewerWiresharkSessionFinishFollowTCPStream(
     TCPViewerWiresharkSession *session,
     size_t maximumPayloadBytes,
-    size_t maximumRecordCount
+    size_t maximumRecordCount,
+    TCPViewerWiresharkFollowDirection direction
 ) {
     if (session == nullptr || maximumPayloadBytes == 0 || maximumRecordCount == 0) {
         auto *result = static_cast<TCPViewerWiresharkFollowResult *>(std::calloc(1, sizeof(TCPViewerWiresharkFollowResult)));
@@ -2918,7 +2977,7 @@ TCPViewerWiresharkFollowResult *TCPViewerWiresharkSessionFinishFollowTCPStream(
     }
     std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
     std::lock_guard<std::mutex> sessionLock(session->mutex);
-    return session->finishTCPFollowLocked(maximumPayloadBytes, maximumRecordCount);
+    return session->finishTCPFollowLocked(maximumPayloadBytes, maximumRecordCount, direction);
 }
 
 void TCPViewerWiresharkSessionCancelFollowTCPStream(TCPViewerWiresharkSession *session)

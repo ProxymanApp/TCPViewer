@@ -926,6 +926,11 @@ enum TCPViewerCaptureFileImportPolicy {
     }
 }
 
+struct TCPViewerCaptureImportResult {
+    let importedURLs: [URL]
+    let error: Error?
+}
+
 private extension PacketInspection {
     func tcpviewerRemapping(packetID: PacketSummary.ID) -> PacketInspection {
         PacketInspection(
@@ -1739,10 +1744,25 @@ final class TCPViewerWorkspaceController {
     }
 
     private func openSessionDocument(at fileURL: URL, completion: (() -> Void)? = nil) {
+        openSessionDocumentWithResult(at: fileURL) { _ in
+            completion?()
+        }
+    }
+
+    private func openSessionDocumentWithResult(
+        at fileURL: URL,
+        completion: @escaping (TCPViewerCaptureImportResult) -> Void
+    ) {
         stopLiveCaptureIfNeeded { [weak self] stopResult in
             DispatchQueue.main.async {
                 guard let self else {
-                    completion?()
+                    completion(TCPViewerCaptureImportResult(
+                        importedURLs: [],
+                        error: TCPViewerCoreError(
+                            code: .offlineFileOpenFailed,
+                            message: "TCP Viewer closed before the session import completed."
+                        )
+                    ))
                     return
                 }
 
@@ -1751,11 +1771,33 @@ final class TCPViewerWorkspaceController {
                     self.snapshot.sessionState.phase = .failed
                     self.snapshot.sessionState.lastError = tcpviewerError
                     self.snapshot.sessionState.statusMessage = tcpviewerError.message
-                    completion?()
+                    completion(TCPViewerCaptureImportResult(importedURLs: [], error: tcpviewerError))
                     return
                 }
 
-                self.beginSessionImport(at: fileURL, completion: completion)
+                self.beginSessionImport(at: fileURL) { [weak self] in
+                    guard let self else {
+                        completion(TCPViewerCaptureImportResult(
+                            importedURLs: [],
+                            error: TCPViewerCoreError(
+                                code: .offlineFileOpenFailed,
+                                message: "TCP Viewer closed before the session import completed."
+                            )
+                        ))
+                        return
+                    }
+                    let error = self.lastSessionImportSucceeded
+                        ? nil
+                        : self.snapshot.sessionImportState.lastError
+                            ?? TCPViewerCoreError(
+                                code: .offlineFileOpenFailed,
+                                message: "TCP Viewer could not import \(fileURL.lastPathComponent)."
+                            )
+                    completion(TCPViewerCaptureImportResult(
+                        importedURLs: self.lastSessionImportSucceeded ? [fileURL] : [],
+                        error: error
+                    ))
+                }
             }
         }
     }
@@ -1924,9 +1966,27 @@ final class TCPViewerWorkspaceController {
     }
 
     func openDocuments(at fileURLs: [URL], replacingCurrent: Bool, completion: (() -> Void)? = nil) {
+        openDocumentsWithResult(at: fileURLs, replacingCurrent: replacingCurrent) { _ in
+            completion?()
+        }
+    }
+
+    func importDocumentsWithResult(
+        at fileURLs: [URL],
+        completion: @escaping (TCPViewerCaptureImportResult) -> Void
+    ) {
+        openDocumentsWithResult(at: fileURLs, replacingCurrent: false, completion: completion)
+    }
+
+    // Report the files that actually opened because batch imports may partially fail or skip duplicates.
+    private func openDocumentsWithResult(
+        at fileURLs: [URL],
+        replacingCurrent: Bool,
+        completion: @escaping (TCPViewerCaptureImportResult) -> Void
+    ) {
         let requestedURLs = uniqueSupportedCaptureURLs(fileURLs)
         guard !requestedURLs.isEmpty else {
-            completion?()
+            completion(TCPViewerCaptureImportResult(importedURLs: [], error: nil))
             return
         }
 
@@ -1939,11 +1999,11 @@ final class TCPViewerWorkspaceController {
                 )
                 snapshot.documentState.lastError = error
                 snapshot.documentState.statusMessage = error.message
-                completion?()
+                completion(TCPViewerCaptureImportResult(importedURLs: [], error: error))
                 return
             }
 
-            openSessionDocument(at: sessionURL, completion: completion)
+            openSessionDocumentWithResult(at: sessionURL, completion: completion)
             return
         }
 
@@ -1951,7 +2011,13 @@ final class TCPViewerWorkspaceController {
         stopLiveCaptureIfNeeded { [weak self] stopResult in
             DispatchQueue.main.async {
                 guard let self else {
-                    completion?()
+                    completion(TCPViewerCaptureImportResult(
+                        importedURLs: [],
+                        error: TCPViewerCoreError(
+                            code: .offlineFileOpenFailed,
+                            message: "TCP Viewer closed before the capture import completed."
+                        )
+                    ))
                     return
                 }
 
@@ -1960,7 +2026,7 @@ final class TCPViewerWorkspaceController {
                     self.snapshot.sessionState.phase = .failed
                     self.snapshot.sessionState.lastError = tcpviewerError
                     self.snapshot.sessionState.statusMessage = tcpviewerError.message
-                    completion?()
+                    completion(TCPViewerCaptureImportResult(importedURLs: [], error: tcpviewerError))
                     return
                 }
 
@@ -1997,14 +2063,14 @@ final class TCPViewerWorkspaceController {
                 let urlsToImport = self.urlsToImport(requestedURLs, replacingCurrent: replacingCurrent)
                 guard !urlsToImport.isEmpty else {
                     self.finishDocumentImports(importedCount: 0, skippedDuplicateCount: requestedURLs.count)
-                    completion?()
+                    completion(TCPViewerCaptureImportResult(importedURLs: [], error: nil))
                     return
                 }
 
                 self.importDocumentsSequentially(
                     urlsToImport,
                     index: 0,
-                    importedCount: 0,
+                    importedURLs: [],
                     skippedDuplicateCount: requestedURLs.count - urlsToImport.count,
                     completion: completion
                 )
@@ -3791,20 +3857,20 @@ final class TCPViewerWorkspaceController {
     private func importDocumentsSequentially(
         _ urls: [URL],
         index: Int,
-        importedCount: Int,
+        importedURLs: [URL],
         skippedDuplicateCount: Int,
         failureCount: Int = 0,
         firstError: TCPViewerCoreError? = nil,
-        completion: (() -> Void)?
+        completion: @escaping (TCPViewerCaptureImportResult) -> Void
     ) {
         guard index < urls.count else {
             finishDocumentImports(
-                importedCount: importedCount,
+                importedCount: importedURLs.count,
                 skippedDuplicateCount: skippedDuplicateCount,
                 failureCount: failureCount,
                 firstError: firstError
             )
-            completion?()
+            completion(TCPViewerCaptureImportResult(importedURLs: importedURLs, error: firstError))
             return
         }
 
@@ -3820,7 +3886,13 @@ final class TCPViewerWorkspaceController {
         services.core.openOfflineCaptureDocument(at: url) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self else {
-                    completion?()
+                    completion(TCPViewerCaptureImportResult(
+                        importedURLs: importedURLs,
+                        error: firstError ?? TCPViewerCoreError(
+                            code: .offlineFileOpenFailed,
+                            message: "TCP Viewer closed before the capture import completed."
+                        )
+                    ))
                     return
                 }
 
@@ -3829,7 +3901,13 @@ final class TCPViewerWorkspaceController {
                     document.open { [weak self] openResult in
                         DispatchQueue.main.async {
                             guard let self else {
-                                completion?()
+                                completion(TCPViewerCaptureImportResult(
+                                    importedURLs: importedURLs,
+                                    error: firstError ?? TCPViewerCoreError(
+                                        code: .offlineFileOpenFailed,
+                                        message: "TCP Viewer closed before the capture import completed."
+                                    )
+                                ))
                                 return
                             }
 
@@ -3839,7 +3917,7 @@ final class TCPViewerWorkspaceController {
                                 self.importDocumentsSequentially(
                                     urls,
                                     index: index + 1,
-                                    importedCount: importedCount + 1,
+                                    importedURLs: importedURLs + [url],
                                     skippedDuplicateCount: skippedDuplicateCount,
                                     failureCount: failureCount,
                                     firstError: firstError,
@@ -3850,7 +3928,7 @@ final class TCPViewerWorkspaceController {
                                 self.importDocumentsSequentially(
                                     urls,
                                     index: index + 1,
-                                    importedCount: importedCount,
+                                    importedURLs: importedURLs,
                                     skippedDuplicateCount: skippedDuplicateCount,
                                     failureCount: failureCount + 1,
                                     firstError: firstError ?? tcpviewerError,
@@ -3864,7 +3942,7 @@ final class TCPViewerWorkspaceController {
                     self.importDocumentsSequentially(
                         urls,
                         index: index + 1,
-                        importedCount: importedCount,
+                        importedURLs: importedURLs,
                         skippedDuplicateCount: skippedDuplicateCount,
                         failureCount: failureCount + 1,
                         firstError: firstError ?? tcpviewerError,

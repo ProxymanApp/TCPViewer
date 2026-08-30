@@ -69,15 +69,18 @@ public struct TCPFollowLimits: Sendable, Equatable, Hashable {
     public let maximumCandidatePacketCount: Int
     public let maximumPayloadBytes: Int
     public let maximumRecordCount: Int
+    public let includedDirection: TCPFollowDirection?
 
     public init(
         maximumCandidatePacketCount: Int = 250_000,
         maximumPayloadBytes: Int = 64 * 1_024 * 1_024,
-        maximumRecordCount: Int = 100_000
+        maximumRecordCount: Int = 100_000,
+        includedDirection: TCPFollowDirection? = nil
     ) {
         self.maximumCandidatePacketCount = max(maximumCandidatePacketCount, 1)
         self.maximumPayloadBytes = max(maximumPayloadBytes, 1)
         self.maximumRecordCount = max(maximumRecordCount, 1)
+        self.includedDirection = includedDirection
     }
 
     public static let `default` = TCPFollowLimits()

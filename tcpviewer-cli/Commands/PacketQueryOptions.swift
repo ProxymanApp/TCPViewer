@@ -152,7 +152,7 @@ struct TCPViewerCLIPacketQueryOptions: ParsableArguments {
             guard value.utf8.count <= 4_096 else {
                 throw ValidationError("A filter value cannot exceed 4096 UTF-8 bytes.")
             }
-            return filter(field: field, operation: operation, value: scalar(value))
+            return filter(field: field, operation: operation, value: .lexicalFilterValue(value))
         }
     }
 
@@ -163,14 +163,6 @@ struct TCPViewerCLIPacketQueryOptions: ParsableArguments {
             "value": value,
             "case_sensitive": .bool(caseSensitive),
         ])
-    }
-
-    private func scalar(_ value: String) -> TCPViewerCLIValue {
-        if value == "true" { return .bool(true) }
-        if value == "false" { return .bool(false) }
-        if let integer = Int(value) { return .int(integer) }
-        if let double = Double(value), double.isFinite { return .double(double) }
-        return .string(value)
     }
 
     private static let fields: Set<String> = [

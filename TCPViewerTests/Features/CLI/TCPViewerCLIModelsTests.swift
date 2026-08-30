@@ -67,4 +67,27 @@ struct TCPViewerCLIModelsTests {
         #expect(decoded.params == request.params)
         #expect(decoded.array("filters")?.first?.objectValue?["value"] == .string("2001:db8::1"))
     }
+
+    @Test func advancedFilterValuesRemainLexical() {
+        #expect(TCPViewerCLIValue.lexicalFilterValue("001") == .string("001"))
+        #expect(TCPViewerCLIValue.lexicalFilterValue("1e3") == .string("1e3"))
+        #expect(TCPViewerCLIValue.lexicalFilterValue("true") == .string("true"))
+    }
+
+    @Test func failedImportCanReportFilesThatOpenedBeforeTheFailure() {
+        let response = TCPViewerCLIResponse.failure(
+            requestID: UUID().uuidString.lowercased(),
+            command: .fileImport,
+            code: "import_failed",
+            message: "One capture could not be imported.",
+            data: [
+                "imported_files": .array([.string("/tmp/opened.pcap")]),
+                "imported_file_count": .int(1),
+            ]
+        )
+
+        #expect(!response.ok)
+        #expect(response.data?["imported_files"] == .array([.string("/tmp/opened.pcap")]))
+        #expect(response.data?["imported_file_count"] == .int(1))
+    }
 }
