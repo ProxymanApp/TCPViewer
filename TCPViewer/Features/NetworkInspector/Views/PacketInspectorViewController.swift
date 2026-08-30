@@ -881,7 +881,7 @@ final class PacketInspectorViewController: NSViewController {
     private func setupFilterBar() {
         filterBarView.translatesAutoresizingMaskIntoConstraints = false
 
-        filterSearchField.placeholderString = "Filter key or value"
+        filterSearchField.placeholderString = "Filter Key and Value (⌘⌥F)"
         filterSearchField.sendsSearchStringImmediately = true
         filterSearchField.sendsWholeSearchString = false
         filterSearchField.delegate = self
@@ -896,6 +896,12 @@ final class PacketInspectorViewController: NSViewController {
             filterSearchField.trailingAnchor.constraint(equalTo: filterBarView.trailingAnchor, constant: -8),
             filterSearchField.centerYAnchor.constraint(equalTo: filterBarView.centerYAnchor),
         ])
+    }
+
+    // Focus the packet-detail filter when its global View menu shortcut is used.
+    func focusFilterField() {
+        view.window?.makeFirstResponder(filterSearchField)
+        filterSearchField.currentEditor()?.selectAll(nil)
     }
 
     private func setupOutlineView() {

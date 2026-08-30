@@ -413,6 +413,19 @@ final class TCPViewerRootViewController: NSViewController {
         }
     }
 
+    func focusPacketDetailFilter() {
+        guard inspectorItem?.isCollapsed == true else {
+            inspectorViewController.focusFilterField()
+            return
+        }
+
+        // Reopen the inspector before focusing because collapsed split items cannot accept focus.
+        viewModel.setInspectorVisible(true)
+        DispatchQueue.main.async { [weak self] in
+            self?.inspectorViewController.focusFilterField()
+        }
+    }
+
     func showOpenPanel() {
         viewModel.presentOpenCapturePanel { [weak self] in
             self?.sidebarViewController.revealSelectedImportedFileIfNeeded()

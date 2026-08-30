@@ -1482,6 +1482,8 @@ struct NetworkInspectorViewModelTests {
 
     @Test func defaultFilterEditorUsesOneExpressionRowForWiresharkMode() throws {
         let controller = PacketStructuredFilterViewController()
+        var openedURL: URL?
+        controller.externalURLOpener = { openedURL = $0 }
         controller.loadViewIfNeeded()
         controller.render(
             group: .wireshark(expression: "tls.handshake.extensions_server_name == \"example.com\""),
@@ -1492,14 +1494,27 @@ struct NetworkInspectorViewModelTests {
         let conditionPopup = try #require(allSubviews(ofType: NSPopUpButton.self, in: controller.view).first { popup in
             popup.itemTitles.contains(PacketStructuredFilterCondition.contains.title)
         })
+        let queryPopup = try #require(allSubviews(ofType: NSPopUpButton.self, in: controller.view).first { popup in
+            popup.itemTitles.contains(PacketStructuredFilterQuery.anyText.title)
+        })
         let expressionField = try #require(allSubviews(ofType: NSSearchField.self, in: controller.view).first)
         let addButton = try #require(allSubviews(ofType: NSButton.self, in: controller.view).first { button in
             button.toolTip == "Add filter"
         })
+        let syntaxHelpButton = try #require(allSubviews(ofType: NSButton.self, in: controller.view).first { button in
+            button.title == "Syntax Help"
+        })
 
         #expect(conditionPopup.isHidden)
+        let wiresharkFilterIndex = queryPopup.indexOfItem(withTitle: PacketStructuredFilterQuery.anyText.title)
+        #expect(queryPopup.item(at: wiresharkFilterIndex + 1)?.isSeparatorItem == true)
         #expect(expressionField.placeholderString == "Wireshark display filter…")
         #expect(!addButton.isEnabled)
+        syntaxHelpButton.performClick(nil)
+        #expect(openedURL == PacketStructuredFilterViewController.wiresharkSyntaxHelpURL)
+
+        controller.render(group: .default, isFiltering: false, customFilterItems: [])
+        #expect(!allSubviews(ofType: NSButton.self, in: controller.view).contains { $0.title == "Syntax Help" })
     }
 
     @Test func toolbarStatusShowsYellowBPFFilterIndicatorOnlyForNondefaultFilter() throws {
@@ -1628,6 +1643,34 @@ struct NetworkInspectorViewModelTests {
         hiddenReloadedViewModel.toggleInspector()
         #expect(hiddenReloadedViewModel.snapshot.inspectorPlacement == .trailing)
         #expect(hiddenReloadedViewModel.snapshot.isInspectorVisible)
+    }
+
+    @Test func packetDetailFilterShortcutReopensInspectorAndFocusesFilter() async throws {
+        let defaults = isolatedDefaults()
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")]
+            )),
+            userDefaults: defaults
+        )
+        viewModel.setInspectorVisible(false)
+        let controller = TCPViewerRootViewController(
+            viewModel: viewModel,
+            configuration: AppConfiguration(defaults: defaults)
+        )
+        let window = NSWindow(contentViewController: controller)
+        defer { window.close() }
+        controller.loadViewIfNeeded()
+        let inspectorView = try #require(controller.inspectorViewForTesting)
+        let searchField = try #require(allSubviews(ofType: NSSearchField.self, in: inspectorView).first)
+
+        controller.focusPacketDetailFilter()
+        await waitUntil {
+            viewModel.snapshot.isInspectorVisible && searchField.currentEditor() === window.firstResponder
+        }
+
+        #expect(viewModel.snapshot.isInspectorVisible)
+        #expect(searchField.currentEditor() === window.firstResponder)
     }
 
     @Test func inspectorPlacementTogglesCloseActivePlacementAndSwitchVisiblePlacement() {

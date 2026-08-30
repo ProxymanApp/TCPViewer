@@ -98,6 +98,10 @@ final class TCPViewerWindowController: NSWindowController {
         rootViewController.focusSidebarFilter()
     }
 
+    @IBAction func focusPacketDetailFilter(_ sender: Any?) {
+        rootViewController.focusPacketDetailFilter()
+    }
+
     @IBAction func clearAllPackets(_ sender: Any?) {
         rootViewController.clearAllPackets()
     }

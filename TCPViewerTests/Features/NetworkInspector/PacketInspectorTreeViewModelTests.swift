@@ -72,7 +72,7 @@ struct PacketInspectorTreeViewModelTests {
     }
 
     @MainActor
-    @Test func inspectorFilterIsAlwaysVisibleAndCommandShiftFIsReservedForSidebarMenu() throws {
+    @Test func inspectorFilterIsAlwaysVisibleAndShowsGlobalShortcutHint() throws {
         let packet = makePacket()
         let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
         controller.loadViewIfNeeded()
@@ -86,6 +86,7 @@ struct PacketInspectorTreeViewModelTests {
         outlineView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
 
         #expect(!isEffectivelyHidden(searchField))
+        #expect(searchField.placeholderString == "Filter Key and Value (⌘⌥F)")
         #expect(!outlineView.performKeyEquivalent(with: commandFEvent()))
         #expect(!outlineView.performKeyEquivalent(with: commandShiftFEvent()))
         #expect(!isEffectivelyHidden(searchField))
@@ -95,6 +96,21 @@ struct PacketInspectorTreeViewModelTests {
 
         #expect(!isEffectivelyHidden(searchField))
         #expect(searchField.stringValue == "source")
+    }
+
+    @MainActor
+    @Test func globalShortcutActionFocusesAndSelectsPacketDetailFilter() throws {
+        let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        controller.loadViewIfNeeded()
+        let window = NSWindow(contentViewController: controller)
+        defer { window.close() }
+        let searchField = try #require(firstSubview(ofType: NSSearchField.self, in: controller.view))
+        searchField.stringValue = "source"
+
+        controller.focusFilterField()
+
+        #expect(searchField.currentEditor() === window.firstResponder)
+        #expect(searchField.currentEditor()?.selectedRange == NSRange(location: 0, length: 6))
     }
 
     @MainActor

@@ -231,7 +231,8 @@ private final class PacketStructuredFilterRowView: NSView {
     static let textFieldLeadingOffset = conditionPopupTrailingOffset + controlSpacing
 
     private static let queryMenuGroups: [[PacketStructuredFilterQuery]] = [
-        [.anyText, .urlDomain, .summary, .tags],
+        [.anyText],
+        [.urlDomain, .summary, .tags],
         [.protocol, .direction, .tcpFlags, .tcpPayload, .decodeStatus],
         [.source, .destination, .sourcePort, .destinationPort],
         [.client, .pid, .bundleIdentifier],
@@ -394,6 +395,10 @@ private struct PacketStructuredFilterActionProvider {
 }
 
 final class PacketStructuredFilterViewController: NSViewController {
+    static let wiresharkSyntaxHelpURL = URL(
+        string: "https://tcpviewer.proxyman.com/docs/features/wireshark-display-filters#3-common-wireshark-filter-examples"
+    )!
+
     private enum Metrics {
         static let horizontalInset: CGFloat = 10
         static let verticalInset: CGFloat = 6
@@ -412,6 +417,7 @@ final class PacketStructuredFilterViewController: NSViewController {
     private let footerStack = NSStackView()
     private let filteringIndicator = NSProgressIndicator()
     private let operatorPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let syntaxHelpButton = NSButton(title: "Syntax Help", target: nil, action: nil)
     private let saveButton = NSButton(title: "Save", target: nil, action: nil)
     private let bottomSeparator = TCPViewerUI.separator()
     private var rowViews: [PacketStructuredFilterRowView] = []
@@ -421,6 +427,9 @@ final class PacketStructuredFilterViewController: NSViewController {
     private var pendingTextChangeWorkItem: DispatchWorkItem?
     private var customFilterItems: [PacketCustomFilterItem] = []
     private var saveMenuGroup: PacketStructuredFilterGroup?
+    var externalURLOpener: (URL) -> Void = { url in
+        _ = NSWorkspace.shared.open(url)
+    }
 
     deinit {
         pendingTextChangeWorkItem?.cancel()
@@ -485,6 +494,7 @@ final class PacketStructuredFilterViewController: NSViewController {
         footerStack.translatesAutoresizingMaskIntoConstraints = false
 
         configureOperatorPopup()
+        configureSyntaxHelpButton()
         configureSaveButton()
         configureFilteringIndicator()
         rebuildFooter()
@@ -526,6 +536,16 @@ final class PacketStructuredFilterViewController: NSViewController {
             item?.toolTip = filterOperator.menuToolTip
         }
         operatorPopup.widthAnchor.constraint(equalToConstant: Metrics.operatorWidth).isActive = true
+    }
+
+    private func configureSyntaxHelpButton() {
+        syntaxHelpButton.target = self
+        syntaxHelpButton.action = #selector(openWiresharkSyntaxHelp(_:))
+        syntaxHelpButton.bezelStyle = .rounded
+        syntaxHelpButton.controlSize = .small
+        syntaxHelpButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
+        syntaxHelpButton.toolTip = "Open common Wireshark display-filter examples."
+        syntaxHelpButton.heightAnchor.constraint(equalToConstant: 24).isActive = true
     }
 
     // Configure the custom-filter save command independently from row add/remove buttons.
@@ -577,6 +597,10 @@ final class PacketStructuredFilterViewController: NSViewController {
         trailingSpacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         trailingSpacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         footerStack.addArrangedSubview(trailingSpacer)
+        if group.usesWiresharkFilter {
+            footerStack.addArrangedSubview(syntaxHelpButton)
+            footerStack.setCustomSpacing(8, after: syntaxHelpButton)
+        }
         footerStack.addArrangedSubview(saveButton)
     }
 
@@ -868,6 +892,10 @@ final class PacketStructuredFilterViewController: NSViewController {
 
         let currentGroup = consumePendingTextChange()
         apply(currentGroup.updatingOperator(nextOperator))
+    }
+
+    @objc private func openWiresharkSyntaxHelp(_ sender: Any?) {
+        externalURLOpener(Self.wiresharkSyntaxHelpURL)
     }
 
     @objc private func showSaveCustomFilterMenu(_ sender: Any?) {
