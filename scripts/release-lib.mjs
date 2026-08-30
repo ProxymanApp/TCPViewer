@@ -524,6 +524,9 @@ export function validateHomebrewCaskContent(content) {
   if (!/^  app "TCP Viewer\.app"$/m.test(current)) {
     throw new Error("TCP Viewer Homebrew Cask must install TCP Viewer.app.");
   }
+  if (!/^  binary "#\{appdir\}\/TCP Viewer\.app\/Contents\/MacOS\/tcpviewer-cli"$/m.test(current)) {
+    throw new Error("TCP Viewer Homebrew Cask must expose the bundled tcpviewer-cli executable.");
+  }
 
   return parsedVersion;
 }

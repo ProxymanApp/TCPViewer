@@ -113,6 +113,7 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
 
     private let dataSourceProvider: () -> (any TCPViewerMCPDataSource)?
     private let isLicenseAuthorized: () -> Bool
+    private let requiresAuthorizedLicense: Bool
     private let redactionEnabled: () -> Bool
     private let versionProvider: () -> TCPViewerLicenseAppVersion
     private let exportPathPolicy: TCPViewerMCPExportPathPolicy
@@ -126,6 +127,7 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
         isLicenseAuthorized: @escaping () -> Bool = {
             TCPViewerLicenseService.shared.isLicenseAuthorized
         },
+        requiresAuthorizedLicense: Bool = true,
         redactionEnabled: @escaping () -> Bool = {
             (NSApp.delegate as? AppDelegate)?.appConfiguration.mcpRedactsSensitiveData ?? true
         },
@@ -138,6 +140,7 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
     ) {
         self.dataSourceProvider = dataSourceProvider
         self.isLicenseAuthorized = isLicenseAuthorized
+        self.requiresAuthorizedLicense = requiresAuthorizedLicense
         self.redactionEnabled = redactionEnabled
         self.versionProvider = versionProvider
         self.exportPathPolicy = exportPathPolicy
@@ -153,7 +156,7 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
             }
             return
         }
-        guard isLicenseAuthorized() else {
+        guard !requiresAuthorizedLicense || isLicenseAuthorized() else {
             completion(failure(TCPViewerMCPCommandRouterError.proRequired))
             return
         }
@@ -208,7 +211,7 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
                 "app": .string("TCP Viewer"),
                 "version": .string(version.appVersion),
                 "build": .string(version.buildNumber),
-                "pro_authorized": .bool(true),
+                "pro_authorized": .bool(self.isLicenseAuthorized()),
                 "redaction_enabled": .bool(self.redactionEnabled()),
                 "has_active_window": .bool(snapshot != nil),
                 "capture_phase": .string(snapshot?.capturePhase ?? "unavailable"),
@@ -390,7 +393,8 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
                 let selection = self.exportSelection(
                     query: query,
                     packets: snapshot.packets,
-                    totalPacketCount: snapshot.totalPacketCount
+                    totalPacketCount: snapshot.totalPacketCount,
+                    appliesResultPagination: request.bool("apply_result_pagination") == true && !exportsAll
                 )
                 guard !selection.ids.isEmpty else {
                     completion(self.failure(TCPViewerMCPCommandRouterError.invalidParameter("No packets matched the export selection.")))
@@ -408,6 +412,8 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
                                 "format": .string(format.rawValue),
                                 "exported_packet_count": .int(selection.ids.count),
                                 "selection_truncated": .bool(selection.isTruncated),
+                                "next_offset": selection.nextOffset.map(TCPViewerMCPValue.int) ?? .null,
+                                "next_scan_offset": selection.nextScanOffset.map(TCPViewerMCPValue.int) ?? .null,
                             ]))
                         }
                     case .failure(let error):
@@ -754,30 +760,43 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
     private func exportSelection(
         query: TCPViewerMCPPacketQuery,
         packets: [PacketSummary],
-        totalPacketCount: Int
-    ) -> (ids: [PacketSummary.ID], isTruncated: Bool) {
+        totalPacketCount: Int,
+        appliesResultPagination: Bool
+    ) -> (ids: [PacketSummary.ID], isTruncated: Bool, nextOffset: Int?, nextScanOffset: Int?) {
         let scannedCount = min(packets.count, query.scanLimit)
         let candidates: ArraySlice<PacketSummary> = query.order == .recent
             ? packets.suffix(scannedCount)
             : packets.prefix(scannedCount)
         var ids: [PacketSummary.ID] = []
         ids.reserveCapacity(min(scannedCount, Limit.maximumExportPacketCount))
+        let maximumSelectedCount = appliesResultPagination
+            ? min(query.limit, Limit.maximumExportPacketCount)
+            : Limit.maximumExportPacketCount
+        var matchedCount = 0
         var matchedBeyondLimit = false
         for packet in candidates where TCPViewerMCPPacketQueryService.matches(packet, query: query) {
-            if ids.count < Limit.maximumExportPacketCount {
+            let matchIndex = matchedCount
+            matchedCount += 1
+            if appliesResultPagination && matchIndex < query.offset {
+                continue
+            }
+            if ids.count < maximumSelectedCount {
                 ids.append(packet.id)
             } else {
                 matchedBeyondLimit = true
                 break
             }
         }
+        let hasMoreUnscannedPackets = hasMorePackets(
+            totalPacketCount: totalPacketCount,
+            scanOffset: query.scanOffset,
+            scannedCount: scannedCount
+        )
         return (
             ids,
-            matchedBeyondLimit || hasMorePackets(
-                totalPacketCount: totalPacketCount,
-                scanOffset: query.scanOffset,
-                scannedCount: scannedCount
-            )
+            matchedBeyondLimit || hasMoreUnscannedPackets,
+            matchedBeyondLimit && appliesResultPagination ? query.offset + ids.count : nil,
+            !matchedBeyondLimit && hasMoreUnscannedPackets ? query.scanOffset + scannedCount : nil
         )
     }
 

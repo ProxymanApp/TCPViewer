@@ -200,6 +200,7 @@ test("updates only Homebrew Cask release metadata", () => {
     "  depends_on arch: :arm64",
     "",
     '  app "TCP Viewer.app"',
+    '  binary "#{appdir}/TCP Viewer.app/Contents/MacOS/tcpviewer-cli"',
     "end",
     ""
   ].join("\n");
@@ -212,6 +213,7 @@ test("updates only Homebrew Cask release metadata", () => {
   assert.deepEqual(parseHomebrewCaskVersion(updated), { version: "1.10.0", buildNumber: "31" });
   assert.match(updated, new RegExp(`sha256 "${"b".repeat(64)}"`));
   assert.match(updated, /app "TCP Viewer\.app"/);
+  assert.match(updated, /binary "#\{appdir\}\/TCP Viewer\.app\/Contents\/MacOS\/tcpviewer-cli"/);
   assert.match(updated, /depends_on arch: :arm64/);
   assert.equal(homebrewCaskToken, "tcp-viewer");
   assert.equal(makeHomebrewCaskBranchName({ version: "1.10.0", buildNumber: "31" }), "tcpviewer-1.10.0-31");
@@ -231,6 +233,10 @@ test("updates only Homebrew Cask release metadata", () => {
     () => validateHomebrewCaskContent(cask.replace('cask "tcp-viewer"', 'cask "tcpviewer"')),
     /tcp-viewer token/
   );
+  assert.throws(
+    () => validateHomebrewCaskContent(cask.replace(/  binary .*\n/, "")),
+    /bundled tcpviewer-cli/
+  );
 });
 
 test("ships an initial Homebrew Cask template for the ARM64 release", () => {
@@ -242,6 +248,7 @@ test("ships an initial Homebrew Cask template for the ARM64 release", () => {
   assert.match(content, /homepage "https:\/\/tcpviewer\.proxyman\.com\/"/);
   assert.match(content, /strategy :sparkle/);
   assert.match(content, /uninstall launchctl: "com\.proxyman\.tcpviewer\.helpertool"/);
+  assert.match(content, /binary "#\{appdir\}\/TCP Viewer\.app\/Contents\/MacOS\/tcpviewer-cli"/);
   assert.doesNotMatch(content, /verified:/);
   assert.match(documentation, /brew tap --force homebrew\/cask/);
   assert.match(documentation, /--homebrew-install-tested/);

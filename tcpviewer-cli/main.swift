@@ -1,12 +1,10 @@
 //
 //  main.swift
-//  tcpviewer-cli
+//  TCPViewer
 //
-//  Created by Nghia Tran on 30/8/26.
+//  Created by Proxyman LLC on 30/8/26.
 //
 
-import Foundation
 import ArgumentParser
 
-print("Hello, World!")
-
+TCPViewerCLI.main()
