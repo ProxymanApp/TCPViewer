@@ -248,8 +248,8 @@
       ]
     },
     {
-      "version": "1.13.0",
-      "title": "TCP Viewer 1.13.0: Command Line Tools and Wireshark Filters 🚀",
+      "version": "1.14.0",
+      "title": "TCP Viewer 1.14.0: Command Line Tools and Wireshark Filters 🚀",
       "features": [
         "Introduce: Use tcpviewer-cli to control captures, query packets and streams, import and export files, and manage app settings.",
         "Introduce the Filter packets with Wireshark display filters.",
