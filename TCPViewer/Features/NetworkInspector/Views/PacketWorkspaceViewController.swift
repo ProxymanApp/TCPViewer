@@ -58,6 +58,10 @@ protocol PacketWorkspaceViewControllerDelegate: AnyObject {
         _ controller: PacketWorkspaceViewController,
         didRequestSaveWiresharkFilterNamed name: String
     )
+    func packetWorkspaceViewController(
+        _ controller: PacketWorkspaceViewController,
+        didRequestOverrideWiresharkFilter filterID: PacketCustomFilter.ID
+    )
 }
 
 private final class VerticallyCenteredTextFieldCell: NSTextFieldCell {
@@ -171,7 +175,10 @@ final class PacketWorkspaceViewController: NSViewController {
             isFiltering: snapshot.isPacketTableFiltering,
             customFilterItems: snapshot.customFilterItems
         )
-        wiresharkFilterController.render(state: snapshot.wiresharkFilterState)
+        wiresharkFilterController.render(
+            state: snapshot.wiresharkFilterState,
+            customFilterItems: snapshot.customFilterItems
+        )
         applyFilterVisibility(snapshot.isStructuredFilterVisible, mode: snapshot.filterMode)
 
         if viewModel.isEmpty {
@@ -555,6 +562,13 @@ extension PacketWorkspaceViewController: PacketWiresharkFilterViewControllerDele
         didRequestSaveNamed name: String
     ) {
         delegate?.packetWorkspaceViewController(self, didRequestSaveWiresharkFilterNamed: name)
+    }
+
+    func packetWiresharkFilterViewController(
+        _ controller: PacketWiresharkFilterViewController,
+        didRequestOverrideCustomFilter filterID: PacketCustomFilter.ID
+    ) {
+        delegate?.packetWorkspaceViewController(self, didRequestOverrideWiresharkFilter: filterID)
     }
 
     func packetWiresharkFilterViewControllerCanSave(_ controller: PacketWiresharkFilterViewController) -> Bool {

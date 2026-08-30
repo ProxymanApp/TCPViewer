@@ -509,6 +509,77 @@ struct InspectorPipelineTests {
         #expect(preservedBatch.matchingPacketIDs == [clientHello.id])
     }
 
+    @Test func wiresharkDisplayFilterSemanticsMatchAcrossPcapAndPcapNg() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let httpConversation = makeIPv4HTTPConversationPackets()
+        let rawPackets = [
+            makeIPv4TCPPayloadPacket(),
+            makeIPv4UDPPayloadPacket(),
+            makeIPv4DNSResponsePacket(),
+            httpConversation[0],
+            httpConversation[1],
+            httpConversation[2],
+            makeIPv4TLSClientHelloPacket(hostName: "api.example.com"),
+            makeIPv6UDPPayloadPacket(),
+            makeUnknownEtherTypePacket(etherType: 0xb681, byteCount: 66),
+        ]
+        let pcapURL = directory.appendingPathComponent("display-filter-semantics.pcap")
+        let pcapNGURL = directory.appendingPathComponent("display-filter-semantics.pcapng")
+        try writePCAP(to: pcapURL, packets: rawPackets)
+        try writePCAPNG(
+            to: pcapNGURL,
+            interfaces: ["test0"],
+            packets: rawPackets.map { (packet: $0, interfaceID: 0) }
+        )
+
+        let expectedPacketNumbersByExpression: [(String, [UInt64])] = [
+            ("tcp", [1, 4, 5, 6, 7]),
+            ("udp", [2, 3, 8]),
+            ("dns", [3]),
+            ("http.request.method == \"GET\"", [6]),
+            ("tls.handshake.extensions_server_name == \"api.example.com\"", [7]),
+            ("ip.version == 4", [1, 2, 3, 4, 5, 6, 7]),
+            ("ipv6 && udp", [8]),
+            ("tcp.port any_eq 443", [7]),
+            ("tcp.payload[0:3] == 47:45:54", [6]),
+            ("http.host matches r\"(?i)^example\\.com$\"", [6]),
+            ("upper(http.host) == \"EXAMPLE.COM\"", [6]),
+            ("_ws.col.protocol == \"HTTP\"", [6]),
+            ("udp.dstport == udp.srcport + 1000", [2]),
+            ("frame[0:2] == 66:77", [1, 2, 3, 4, 5, 6, 7, 8, 9]),
+            ("eth.type#1 == 0x0800", [1, 2, 3, 4, 5, 6, 7]),
+            ("@tcp.srcport == d4:31", [4, 6, 7]),
+            ("count(ip.addr) == 2", [1, 2, 3, 4, 5, 6, 7]),
+            ("any ip.addr == 192.168.0.1", [1, 2, 3, 4, 5, 6, 7]),
+        ]
+
+        for captureURL in [pcapURL, pcapNGURL] {
+            let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
+            let packets = try await document.open()
+
+            for (offset, expectation) in expectedPacketNumbersByExpression.enumerated() {
+                let generation = UInt64(offset + 1)
+                let validation = await document.activateDisplayFilter(expectation.0, generation: generation)
+                #expect(validation.status == .valid, "Rejected `\(expectation.0)` in \(captureURL.lastPathComponent)")
+                guard validation.isApplicable else {
+                    continue
+                }
+                let batch = try await document.evaluateDisplayFilter(
+                    packetIDs: packets.map(\.id),
+                    generation: generation
+                )
+                let matches = Set(batch.matchingPacketIDs)
+                let matchingPacketNumbers = packets.filter { matches.contains($0.id) }.map(\.packetNumber)
+                #expect(
+                    matchingPacketNumbers == expectation.1,
+                    "`\(expectation.0)` drifted in \(captureURL.lastPathComponent)"
+                )
+            }
+        }
+    }
+
     @Test func splitTCPTLSClientHelloProducesSNIFromWiresharkState() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -1577,6 +1648,41 @@ Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r
     )
 }
 
+private func makeIPv4HTTPConversationPackets() -> [Data] {
+    let request = Array("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n".utf8)
+    return [
+        makeIPv4TCPPacket(
+            sourcePort: 54_321,
+            destinationPort: 80,
+            identification: 0x2240,
+            sequenceNumber: 100,
+            acknowledgementNumber: 0,
+            flags: 0x02,
+            payload: []
+        ),
+        makeIPv4TCPPacket(
+            sourcePort: 80,
+            destinationPort: 54_321,
+            identification: 0x2241,
+            sequenceNumber: 200,
+            acknowledgementNumber: 101,
+            sourceIPv4: [0xc0, 0xa8, 0x00, 0x02],
+            destinationIPv4: [0xc0, 0xa8, 0x00, 0x01],
+            flags: 0x12,
+            payload: []
+        ),
+        makeIPv4TCPPacket(
+            sourcePort: 54_321,
+            destinationPort: 80,
+            identification: 0x2242,
+            sequenceNumber: 101,
+            acknowledgementNumber: 201,
+            flags: 0x18,
+            payload: request
+        ),
+    ]
+}
+
 private func makeIPv4WebSocketTextFramePacket() -> Data {
     makeIPv4TCPPacket(
         sourcePort: 54_321,
@@ -1598,6 +1704,7 @@ private func makeIPv4TCPPacket(
     acknowledgementNumber: UInt32 = 1,
     sourceIPv4: [UInt8] = [0xc0, 0xa8, 0x00, 0x01],
     destinationIPv4: [UInt8] = [0xc0, 0xa8, 0x00, 0x02],
+    flags: UInt8 = 0x18,
     payload: [UInt8]
 ) -> Data {
     let ipv4TotalLength = UInt16(20 + 20 + payload.count)
@@ -1619,7 +1726,7 @@ private func makeIPv4TCPPacket(
     packet.appendBigEndian(sequenceNumber)
     packet.appendBigEndian(acknowledgementNumber)
     packet.append(contentsOf: [
-        0x50, 0x18, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x50, flags, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
     ])
     packet.append(contentsOf: payload)
     return packet

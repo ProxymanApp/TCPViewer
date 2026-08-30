@@ -1199,20 +1199,12 @@ final class PCPPNativeLiveSession {
     private func prepareDisplayFilterSession(
         in state: inout PCPPNativeLiveSessionState
     ) throws -> WiresharkEpanSession {
-        if let session = state.dissectionSession,
-           state.phase == .running || state.phase == .paused {
-            return session
-        }
-
-        let records = try state.packetStore.records(withIdentifiers: nil)
-        let identifiers = records.map(\.identifier)
-        if let session = state.dissectionSession,
-           identifiers.isEmpty || session.canFollowObservedPackets(withIdentifiers: identifiers) {
+        if let session = state.dissectionSession {
             return session
         }
 
         let session = try WiresharkEpanSession()
-        for record in records {
+        try state.packetStore.forEachRecord { record in
             try session.observe(record)
         }
         try session.finishFirstPass()

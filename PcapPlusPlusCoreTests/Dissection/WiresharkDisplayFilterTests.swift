@@ -32,24 +32,25 @@ struct WiresharkDisplayFilterTests {
     }
 
     @Test func invalidSyntaxReturnsNativeRangesAndMessages() {
-        var rangedDiagnosticCount = 0
-        for expression in [
-            "unknown.tcpviewer.field == 1",
-            "tcp.port ==",
-            "(tcp.port == 443",
-            "tcp.port in {80,",
-            "tcp.port == \"https\"",
-            "http.host matches \"[\"",
-        ] {
+        let cases: [(name: String, expression: String, expectedRange: DisplayFilterSourceRange?)] = [
+            ("unknown field", "unknown.tcpviewer.field == 1", DisplayFilterSourceRange(utf8StartOffset: 0, utf8Length: 23)),
+            ("missing operand", "tcp.port ==", nil),
+            ("unclosed parenthesis", "(tcp.port == 443", nil),
+            ("unclosed set", "tcp.port in {80,", nil),
+            ("missing quote", "http.host == \"unterminated", DisplayFilterSourceRange(utf8StartOffset: 26, utf8Length: 0)),
+            ("incompatible literal", "tcp.port == \"https\"", DisplayFilterSourceRange(utf8StartOffset: 12, utf8Length: 7)),
+            ("invalid regular expression", "http.host matches \"[\"", DisplayFilterSourceRange(utf8StartOffset: 18, utf8Length: 3)),
+            ("UTF-8 byte offset", "http.host == \"é\" and unknown.tcpviewer.field == 1", DisplayFilterSourceRange(utf8StartOffset: 22, utf8Length: 23)),
+        ]
+
+        for testCase in cases {
+            let expression = testCase.expression
             let validation = WiresharkEpanSession.validateDisplayFilter(expression)
-            #expect(validation.status == .invalid)
-            #expect(validation.diagnostics.first?.severity == .error)
-            #expect(validation.diagnostics.first?.message.isEmpty == false)
-            if validation.diagnostics.first?.range != nil {
-                rangedDiagnosticCount += 1
-            }
+            #expect(validation.status == .invalid, "\(testCase.name) unexpectedly compiled")
+            #expect(validation.diagnostics.first?.severity == .error, "\(testCase.name) lacked an error")
+            #expect(validation.diagnostics.first?.message.isEmpty == false, "\(testCase.name) lacked a message")
+            #expect(validation.diagnostics.first?.range == testCase.expectedRange, "\(testCase.name) range drifted")
         }
-        #expect(rangedDiagnosticCount >= 3)
     }
 
     @Test func dollarTokensAreRejectedOnlyOutsideStringLiterals() {
@@ -79,6 +80,23 @@ struct WiresharkDisplayFilterTests {
         #expect(validation.diagnostics.contains { diagnostic in
             diagnostic.severity == .warning && diagnostic.message.localizedCaseInsensitiveContains("deprecated")
         })
+    }
+
+    @Test func activationCompilesOncePerGenerationAndClearReleasesTheFilter() throws {
+        let session = try WiresharkEpanSession()
+        WiresharkEpanSession.testResetDisplayFilterCompilationCount()
+
+        #expect(session.activateDisplayFilter("tcp", generation: 7).status == .valid)
+        #expect(session.activateDisplayFilter("tcp", generation: 7).status == .valid)
+        #expect(WiresharkEpanSession.testDisplayFilterCompilationCount == 1)
+        #expect(session.testHasActiveDisplayFilter)
+
+        #expect(session.activateDisplayFilter("tcp.port ==", generation: 8).status == .invalid)
+        #expect(WiresharkEpanSession.testDisplayFilterCompilationCount == 2)
+        #expect(session.testHasActiveDisplayFilter)
+
+        session.clearDisplayFilter()
+        #expect(!session.testHasActiveDisplayFilter)
     }
 
     private static let syntaxCategories: [SyntaxCategory] = [

@@ -1438,6 +1438,17 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
         }
     }
 
+    func packetWorkspaceViewController(
+        _ controller: PacketWorkspaceViewController,
+        didRequestOverrideWiresharkFilter filterID: PacketCustomFilter.ID
+    ) {
+        do {
+            try viewModel.overrideWiresharkCustomFilter(id: filterID)
+        } catch {
+            presentCustomFilterError(error, title: "Could Not Override Filter")
+        }
+    }
+
     fileprivate func canUsePinFeature() -> Bool {
         TCPViewerLicenseService.shared.isLicenseAuthorized
     }

@@ -1070,6 +1070,23 @@ struct TCPViewerWorkspaceMemoryDebugSnapshot: Equatable {
 }
 #endif
 
+final class DisplayFilterEvaluationCancellationToken: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
+    }
+
+    func isCancelled() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+}
+
 final class TCPViewerWorkspaceController {
     private struct DisplayFilterRoute {
         let evaluator: any DisplayFilterEvaluating
@@ -1391,9 +1408,17 @@ final class TCPViewerWorkspaceController {
         _ expression: String,
         generation: UInt64,
         packetIDs: [PacketSummary.ID],
+        cancellationToken: DisplayFilterEvaluationCancellationToken,
         progress: ((DisplayFilterMatchBatch) -> Void)? = nil,
         completion: @escaping TCPViewerCompletion<DisplayFilterMatchBatch>
     ) {
+        guard !cancellationToken.isCancelled() else {
+            completion(.failure(TCPViewerCoreError(
+                code: .operationCancelled,
+                message: "Display-filter evaluation was cancelled."
+            )))
+            return
+        }
         do {
             let routes = try displayFilterRoutes(for: packetIDs)
             let accumulator = DisplayFilterAccumulator()
@@ -1406,6 +1431,7 @@ final class TCPViewerWorkspaceController {
                 expression: expression,
                 generation: generation,
                 accumulator: accumulator,
+                cancellationToken: cancellationToken,
                 progress: progress,
                 completion: completion
             )
@@ -3095,9 +3121,17 @@ final class TCPViewerWorkspaceController {
         expression: String,
         generation: UInt64,
         accumulator: DisplayFilterAccumulator,
+        cancellationToken: DisplayFilterEvaluationCancellationToken,
         progress: ((DisplayFilterMatchBatch) -> Void)?,
         completion: @escaping TCPViewerCompletion<DisplayFilterMatchBatch>
     ) {
+        guard !cancellationToken.isCancelled() else {
+            completion(.failure(TCPViewerCoreError(
+                code: .operationCancelled,
+                message: "Display-filter evaluation was cancelled."
+            )))
+            return
+        }
         guard routes.indices.contains(routeIndex) else {
             completion(.success(DisplayFilterMatchBatch(
                 generation: generation,
@@ -3109,7 +3143,7 @@ final class TCPViewerWorkspaceController {
 
         let route = routes[routeIndex]
         route.evaluator.activateDisplayFilter(expression, generation: generation) { [weak self] validation in
-            guard let self else {
+            guard let self, !cancellationToken.isCancelled() else {
                 completion(.failure(TCPViewerCoreError(
                     code: .operationCancelled,
                     message: "Display-filter evaluation was cancelled."
@@ -3129,6 +3163,7 @@ final class TCPViewerWorkspaceController {
                 nextIndex: 0,
                 generation: generation,
                 accumulator: accumulator,
+                cancellationToken: cancellationToken,
                 progress: progress
             ) { result in
                 switch result {
@@ -3139,6 +3174,7 @@ final class TCPViewerWorkspaceController {
                         expression: expression,
                         generation: generation,
                         accumulator: accumulator,
+                        cancellationToken: cancellationToken,
                         progress: progress,
                         completion: completion
                     )
@@ -3154,9 +3190,17 @@ final class TCPViewerWorkspaceController {
         nextIndex: Int,
         generation: UInt64,
         accumulator: DisplayFilterAccumulator,
+        cancellationToken: DisplayFilterEvaluationCancellationToken,
         progress: ((DisplayFilterMatchBatch) -> Void)?,
         completion: @escaping TCPViewerVoidCompletion
     ) {
+        guard !cancellationToken.isCancelled() else {
+            completion(.failure(TCPViewerCoreError(
+                code: .operationCancelled,
+                message: "Display-filter evaluation was cancelled."
+            )))
+            return
+        }
         guard nextIndex < route.packetIDPairs.count else {
             completion(.success(()))
             return
@@ -3168,7 +3212,7 @@ final class TCPViewerWorkspaceController {
             packetIDs: pairs.map(\.backing),
             generation: generation
         ) { [weak self] result in
-            guard let self else {
+            guard let self, !cancellationToken.isCancelled() else {
                 completion(.failure(TCPViewerCoreError(
                     code: .operationCancelled,
                     message: "Display-filter evaluation was cancelled."
@@ -3194,6 +3238,7 @@ final class TCPViewerWorkspaceController {
                     nextIndex: endIndex,
                     generation: generation,
                     accumulator: accumulator,
+                    cancellationToken: cancellationToken,
                     progress: progress,
                     completion: completion
                 )

@@ -78,6 +78,21 @@ struct NativeLivePacketDiskSnapshotTests {
         #expect(try snapshot.records(maximumBytes: 3).map(\.identifier) == [1, 2, 3])
     }
 
+    @Test func recordReplayVisitsDiskPayloadsOneAtATimeInCaptureOrder() throws {
+        let store = NativeLivePacketDiskStore()
+        try store.append(makeRecord(identifier: 1, byte: 0x11))
+        try store.append(makeRecord(identifier: 2, byte: 0x22))
+        try store.append(makeRecord(identifier: 3, byte: 0x33))
+        var visited: [(UInt64, Data)] = []
+
+        try store.forEachRecord { record in
+            visited.append((record.identifier, record.rawBytes))
+        }
+
+        #expect(visited.map(\.0) == [1, 2, 3])
+        #expect(visited.map(\.1) == [Data([0x11]), Data([0x22]), Data([0x33])])
+    }
+
     private func makeRecord(identifier: UInt64, byte: UInt8) -> NativePacketRecord {
         NativePacketRecord(
             identifier: identifier,

@@ -230,6 +230,9 @@ void TCPViewerDisplayFilterMatchResultDestroy(TCPViewerDisplayFilterMatchResult 
 #if DEBUG
 TCPViewerWiresharkExceptionReport *TCPViewerWiresharkTestCopyCaughtExceptionReport(const char *personalConfigurationDirectory);
 bool TCPViewerWiresharkSessionTestInjectCriticalException(TCPViewerWiresharkSession *session);
+void TCPViewerWiresharkTestResetDisplayFilterCompilationCount(void);
+size_t TCPViewerWiresharkTestDisplayFilterCompilationCount(void);
+bool TCPViewerWiresharkSessionTestHasActiveDisplayFilter(TCPViewerWiresharkSession *session);
 #endif
 
 #ifdef __cplusplus

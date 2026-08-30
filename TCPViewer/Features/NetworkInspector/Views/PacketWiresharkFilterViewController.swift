@@ -22,6 +22,10 @@ protocol PacketWiresharkFilterViewControllerDelegate: AnyObject {
         _ controller: PacketWiresharkFilterViewController,
         didRequestSaveNamed name: String
     )
+    func packetWiresharkFilterViewController(
+        _ controller: PacketWiresharkFilterViewController,
+        didRequestOverrideCustomFilter filterID: PacketCustomFilter.ID
+    )
     func packetWiresharkFilterViewControllerCanSave(_ controller: PacketWiresharkFilterViewController) -> Bool
     func packetWiresharkFilterViewControllerDidRequestPaywall(_ controller: PacketWiresharkFilterViewController)
     func packetWiresharkFilterViewControllerDidRequestHide(_ controller: PacketWiresharkFilterViewController)
@@ -69,6 +73,7 @@ final class PacketWiresharkFilterViewController: NSViewController, NSTextFieldDe
         color: .secondaryLabelColor
     )
     private var renderedState = PacketWiresharkFilterState()
+    private var customFilterItems: [PacketCustomFilterItem] = []
 
     override func loadView() {
         view = TCPViewerDynamicBackgroundView(backgroundColor: .windowBackgroundColor)
@@ -88,8 +93,9 @@ final class PacketWiresharkFilterViewController: NSViewController, NSTextFieldDe
         closeButton.action = #selector(hideFilter(_:))
     }
 
-    func render(state: PacketWiresharkFilterState) {
+    func render(state: PacketWiresharkFilterState, customFilterItems: [PacketCustomFilterItem]) {
         renderedState = state
+        self.customFilterItems = customFilterItems.filter { $0.mode == .wireshark }
         if expressionField.stringValue != state.draftExpression {
             expressionField.stringValue = state.draftExpression
         }
@@ -220,8 +226,55 @@ final class PacketWiresharkFilterViewController: NSViewController, NSTextFieldDe
             guard succeeded else {
                 return
             }
-            self?.presentSaveNameAlert()
+            self?.showSaveCustomFilterMenu()
         })
+    }
+
+    private func showSaveCustomFilterMenu() {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+
+        let newFilterItem = NSMenuItem(
+            title: "New Filter...",
+            action: #selector(saveNewCustomFilter(_:)),
+            keyEquivalent: ""
+        )
+        newFilterItem.target = self
+        menu.addItem(newFilterItem)
+        menu.addItem(.separator())
+
+        let overrideItem = NSMenuItem(title: "Override", action: nil, keyEquivalent: "")
+        let overrideMenu = NSMenu()
+        if customFilterItems.isEmpty {
+            let emptyItem = NSMenuItem(title: "No Wireshark filters", action: nil, keyEquivalent: "")
+            emptyItem.isEnabled = false
+            overrideMenu.addItem(emptyItem)
+        } else {
+            for customItem in customFilterItems {
+                let menuItem = NSMenuItem(
+                    title: customItem.title,
+                    action: #selector(overrideCustomFilter(_:)),
+                    keyEquivalent: ""
+                )
+                menuItem.target = self
+                menuItem.representedObject = customItem.id
+                overrideMenu.addItem(menuItem)
+            }
+        }
+        menu.addItem(overrideItem)
+        menu.setSubmenu(overrideMenu, for: overrideItem)
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: saveButton.bounds.height + 4), in: saveButton)
+    }
+
+    @objc private func saveNewCustomFilter(_ sender: Any?) {
+        presentSaveNameAlert()
+    }
+
+    @objc private func overrideCustomFilter(_ sender: NSMenuItem) {
+        guard let filterID = sender.representedObject as? PacketCustomFilter.ID else {
+            return
+        }
+        delegate?.packetWiresharkFilterViewController(self, didRequestOverrideCustomFilter: filterID)
     }
 
     private func presentSaveNameAlert() {

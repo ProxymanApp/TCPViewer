@@ -716,6 +716,18 @@ final class WiresharkEpanSession {
 
 #if DEBUG
 extension WiresharkEpanSession {
+    static func testResetDisplayFilterCompilationCount() {
+        TCPViewerWiresharkTestResetDisplayFilterCompilationCount()
+    }
+
+    static var testDisplayFilterCompilationCount: Int {
+        Int(TCPViewerWiresharkTestDisplayFilterCompilationCount())
+    }
+
+    var testHasActiveDisplayFilter: Bool {
+        TCPViewerWiresharkSessionTestHasActiveDisplayFilter(handle)
+    }
+
     func testInjectCriticalException() throws {
         guard TCPViewerWiresharkSessionTestInjectCriticalException(handle) else {
             if let criticalError = criticalExceptionErrorIfNeeded() {

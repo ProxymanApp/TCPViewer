@@ -33,6 +33,7 @@
 #include <epan/prefs.h>
 #include <epan/proto.h>
 #include <epan/tap.h>
+#include <epan/timestamp.h>
 #include <epan/to_str.h>
 #include <epan/tvbuff.h>
 #include <wiretap/pcap-encap.h>
@@ -175,6 +176,10 @@ std::mutex &WiresharkAPIMutex()
     static auto *mutex = new std::mutex();
     return *mutex;
 }
+
+#if DEBUG
+size_t gDisplayFilterCompilationCount = 0;
+#endif
 
 std::string CurrentExecutablePath()
 {
@@ -333,6 +338,9 @@ DisplayFilterValidationCopy CompileDisplayFilter(const char *expression)
         return validation;
     }
 
+#if DEBUG
+    gDisplayFilterCompilationCount += 1;
+#endif
     dfilter_t *compiled = nullptr;
     df_error_t *error = nullptr;
     const bool succeeded = dfilter_compile_full(
@@ -737,10 +745,18 @@ public:
         if (!isNeeded) {
             return;
         }
-        const int columnCount = includesAllRegisteredColumns ? NUM_COL_FMTS : 2;
+        if (includesAllRegisteredColumns) {
+            // Mirror Wireshark's registered preference columns so _ws.col.* fields use valid column metadata.
+            build_column_format_array(&info_, prefs.num_cols, true);
+            initialized_ = true;
+            return;
+        }
+
+        const int formats[] = {COL_PROTOCOL, COL_INFO};
+        const int columnCount = 2;
         col_setup(&info_, columnCount);
         for (int index = 0; index < columnCount; index += 1) {
-            info_.columns[index].col_fmt = includesAllRegisteredColumns ? index : (index == 0 ? COL_PROTOCOL : COL_INFO);
+            info_.columns[index].col_fmt = formats[index];
             info_.columns[index].col_title = nullptr;
             info_.columns[index].col_fence = 0;
         }
@@ -1300,6 +1316,10 @@ private:
             return;
         }
         initializedExceptions_ = true;
+        // Column-backed filters need the same timestamp defaults as Wireshark's command-line tools.
+        timestamp_set_type(TS_RELATIVE);
+        timestamp_set_precision(TS_PREC_AUTO);
+        timestamp_set_seconds_type(TS_SECONDS_DEFAULT);
         if (auto report = CatchWiresharkException("initializing Wireshark Wiretap", std::nullopt, [] {
                 wtap_init(false);
             })) {
@@ -3076,5 +3096,27 @@ bool TCPViewerWiresharkSessionTestInjectCriticalException(TCPViewerWiresharkSess
         return session->failWithCriticalExceptionLocked(std::move(*report));
     }
     return true;
+}
+
+void TCPViewerWiresharkTestResetDisplayFilterCompilationCount(void)
+{
+    std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
+    gDisplayFilterCompilationCount = 0;
+}
+
+size_t TCPViewerWiresharkTestDisplayFilterCompilationCount(void)
+{
+    std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
+    return gDisplayFilterCompilationCount;
+}
+
+bool TCPViewerWiresharkSessionTestHasActiveDisplayFilter(TCPViewerWiresharkSession *session)
+{
+    if (session == nullptr) {
+        return false;
+    }
+    std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
+    std::lock_guard<std::mutex> sessionLock(session->mutex);
+    return session->activeDisplayFilter != nullptr;
 }
 #endif

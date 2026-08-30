@@ -273,6 +273,15 @@ final class NativeLivePacketDiskStore {
         }
     }
 
+    // Read and release one packet payload at a time while rebuilding stateful dissector sessions.
+    func forEachRecord(_ body: (NativePacketRecord) throws -> Void) throws {
+        for entry in entries {
+            try autoreleasepool {
+                try body(record(for: entry))
+            }
+        }
+    }
+
     func records(matching identifiers: Set<UInt64>) throws -> [NativePacketRecord] {
         try entries.compactMap { entry in
             guard identifiers.contains(entry.identifier) else {

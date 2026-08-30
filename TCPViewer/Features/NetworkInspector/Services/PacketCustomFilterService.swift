@@ -189,6 +189,9 @@ final class PacketCustomFilterService {
 
     // Replace a saved filter payload while keeping its user-facing name and identity.
     func updateGroup(id: PacketCustomFilter.ID, group: PacketStructuredFilterGroup, now: Date = Date()) throws {
+        guard filter(id: id)?.mode == .builder else {
+            return
+        }
         try update(
             id: id,
             mode: .builder,

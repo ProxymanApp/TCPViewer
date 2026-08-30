@@ -1053,6 +1053,7 @@ final class NetworkInspectorViewModel {
     private var pendingDisplayFilterValidationWorkItem: DispatchWorkItem?
     private var displayFilterValidationGeneration: UInt64 = 0
     private var displayFilterEvaluationGeneration: UInt64 = 0
+    private var displayFilterEvaluationCancellationToken: DisplayFilterEvaluationCancellationToken?
     private var displayFilterResultCache = PacketDisplayFilterResultCache()
 
     // Trailing-edge debounce for delegate-driven rebuilds. Live ingest fires the controller delegate
@@ -1150,7 +1151,7 @@ final class NetworkInspectorViewModel {
             packetTableContent = content
         }
         let initialCustomFilterItems = customFilterService.filters().map { filter in
-            PacketCustomFilterItem(id: filter.id, title: filter.name, isSelected: false)
+            PacketCustomFilterItem(id: filter.id, title: filter.name, mode: filter.mode, isSelected: false)
         }
         self.snapshot = NetworkInspectorSnapshot.make(
             base: controller.snapshot,
@@ -1399,9 +1400,7 @@ final class NetworkInspectorViewModel {
     }
 
     func applyWiresharkFilter(completion: ((Bool) -> Void)? = nil) {
-        pendingDisplayFilterValidationWorkItem?.cancel()
-        pendingDisplayFilterValidationWorkItem = nil
-        displayFilterValidationGeneration &+= 1
+        cancelWiresharkFilterEvaluation(clearMembership: false)
         let generation = displayFilterValidationGeneration
         let expression = wiresharkFilterState.draftExpression
         wiresharkFilterState.isValidating = true
@@ -1514,12 +1513,30 @@ final class NetworkInspectorViewModel {
 
     // Replace one saved custom filter with the current structured filter group.
     func overrideCustomFilter(id: PacketCustomFilter.ID, group: PacketStructuredFilterGroup) throws {
+        guard customFilterService.filter(id: id)?.mode == .builder else {
+            return
+        }
         let replacementGroup = PacketStructuredFilterGroup(filters: group.filters, operator: group.operator)
         try customFilterService.updateGroup(id: id, group: replacementGroup)
         structuredFilterGroup = replacementGroup
         if !isUsingSessionDocumentState {
             structuredFilterStore.save(replacementGroup)
         }
+        selectedCustomFilterID = id
+        rebuildSnapshot()
+    }
+
+    // Replace only a Wireshark saved filter so builder payloads cannot be erased across modes.
+    func overrideWiresharkCustomFilter(id: PacketCustomFilter.ID) throws {
+        guard customFilterService.filter(id: id)?.mode == .wireshark else {
+            return
+        }
+        try customFilterService.update(
+            id: id,
+            mode: .wireshark,
+            group: .default,
+            wiresharkExpression: wiresharkFilterState.appliedExpression
+        )
         selectedCustomFilterID = id
         rebuildSnapshot()
     }
@@ -1611,6 +1628,8 @@ final class NetworkInspectorViewModel {
 
         displayFilterEvaluationGeneration &+= 1
         let generation = displayFilterEvaluationGeneration
+        let cancellationToken = DisplayFilterEvaluationCancellationToken()
+        displayFilterEvaluationCancellationToken = cancellationToken
         wiresharkFilterState.validation = validation
         wiresharkFilterState.isApplying = true
         wiresharkFilterState.evaluatedPacketCount = 0
@@ -1621,6 +1640,7 @@ final class NetworkInspectorViewModel {
             expression,
             generation: generation,
             packetIDs: unknownPacketIDs,
+            cancellationToken: cancellationToken,
             progress: { [weak self] batch in
                 DispatchQueue.main.async {
                     guard let self,
@@ -1645,6 +1665,7 @@ final class NetworkInspectorViewModel {
                         completion?(false)
                         return
                     }
+                    self.displayFilterEvaluationCancellationToken = nil
                     self.wiresharkFilterState.isApplying = false
                     switch result {
                     case .failure(let error):
@@ -1715,6 +1736,8 @@ final class NetworkInspectorViewModel {
         pendingDisplayFilterValidationWorkItem = nil
         displayFilterValidationGeneration &+= 1
         displayFilterEvaluationGeneration &+= 1
+        displayFilterEvaluationCancellationToken?.cancel()
+        displayFilterEvaluationCancellationToken = nil
         wiresharkFilterState.isValidating = false
         wiresharkFilterState.isApplying = false
         wiresharkFilterState.evaluatedPacketCount = 0
@@ -1730,6 +1753,7 @@ final class NetworkInspectorViewModel {
         #if DEBUG
         logClearMemorySnapshot("before")
         #endif
+        cancelWiresharkFilterEvaluation(clearMembership: true)
         cancelActivePacketTableFilterJob()
         controller.clearPackets()
         packetTableContentCache.reset()
@@ -2173,6 +2197,7 @@ final class NetworkInspectorViewModel {
                 completion?()
             }
         } else {
+            cancelWiresharkFilterEvaluation(clearMembership: true)
             restorePersistentDocumentState()
             controller.startLiveCapture { [weak self] in
                 self?.rebuildSnapshot()
@@ -2203,6 +2228,7 @@ final class NetworkInspectorViewModel {
     }
 
     func openDocument(at fileURL: URL, completion: (() -> Void)? = nil) {
+        cancelWiresharkFilterEvaluation(clearMembership: true)
         let standardizedURL = TCPViewerCaptureFileImportPolicy.standardizedFileURL(fileURL)
         let isSessionFile = TCPViewerCaptureFileImportPolicy.isSessionFileURL(standardizedURL)
         controller.openDocument(at: fileURL) { [weak self] in
@@ -2230,6 +2256,7 @@ final class NetworkInspectorViewModel {
     }
 
     func importDocuments(at fileURLs: [URL], completion: (() -> Void)? = nil) {
+        cancelWiresharkFilterEvaluation(clearMembership: true)
         let hasSessionFile = fileURLs
             .map(TCPViewerCaptureFileImportPolicy.standardizedFileURL)
             .contains(where: TCPViewerCaptureFileImportPolicy.isSessionFileURL)
@@ -2838,6 +2865,7 @@ final class NetworkInspectorViewModel {
             PacketCustomFilterItem(
                 id: filter.id,
                 title: filter.name,
+                mode: filter.mode,
                 isSelected: isStructuredFilterVisible && selectedCustomFilterID == filter.id
             )
         }
