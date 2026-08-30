@@ -166,6 +166,29 @@ struct TCPViewerMCPCommandRouterTests {
         #expect(source.exportedURL?.pathExtension == "pcapng")
         #expect(source.exportedFormat == .pcapng)
 
+        let paginatedExport = await routeMCP(router, command: .exportPackets, params: [
+            "path": .string(directory.appendingPathComponent("paginated.pcapng").path),
+            "all": .bool(true),
+            "apply_result_pagination": .bool(true),
+            "offset": .int(1),
+            "limit": .int(1),
+        ])
+        #expect(paginatedExport.success)
+        #expect(source.exportedIDs == [1, 2])
+
+        let selectedPage = await routeMCP(router, command: .exportPackets, params: [
+            "path": .string(directory.appendingPathComponent("selected-page.pcapng").path),
+            "filters": .array([.object([
+                "field": .string("packet_id"),
+                "operator": .string("exists"),
+            ])]),
+            "apply_result_pagination": .bool(true),
+            "offset": .int(1),
+            "limit": .int(1),
+        ])
+        #expect(selectedPage.success)
+        #expect(source.exportedIDs == [2])
+
         let start = await routeMCP(router, command: .startCapture, params: [
             "interface_id": .string("en0"),
             "capture_filter": .string("tcp port 443"),
@@ -222,6 +245,16 @@ struct TCPViewerMCPCommandRouterTests {
             redactionEnabled: { true }
         )
         #expect(!(await routeMCP(unauthorized, command: .getAppStatus)).success)
+
+        let cliAuthorizedRouter = TCPViewerMCPCommandRouter(
+            dataSourceProvider: { source },
+            isLicenseAuthorized: { false },
+            requiresAuthorizedLicense: false,
+            redactionEnabled: { false }
+        )
+        let cliStatus = await routeMCP(cliAuthorizedRouter, command: .getAppStatus)
+        #expect(cliStatus.success)
+        #expect(cliStatus.value("pro_authorized") == .bool(false))
 
         let unavailable = TCPViewerMCPCommandRouter(
             dataSourceProvider: { nil },
