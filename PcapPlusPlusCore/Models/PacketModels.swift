@@ -17,7 +17,11 @@ public enum TransportProtocolHint: String, Sendable, Codable {
     case udp
     case dns
     case http1
+    case http2
+    case http3
     case tls
+    case dtls
+    case quic
     case websocket
     case payload
     case unknown

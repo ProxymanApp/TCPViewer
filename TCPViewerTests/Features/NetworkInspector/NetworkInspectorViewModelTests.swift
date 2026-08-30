@@ -65,6 +65,32 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.visiblePacketCount == 0)
     }
 
+    @Test func tlsKeyLogInvalidationReturnsSelectedPacketForRestoration() async {
+        let packet = makePacket(packetNumber: 1, source: .live, transportHint: .tcp)
+        let liveSession = InspectorFakeLiveSession()
+        liveSession.inspections[packet.id] = makeInspection(for: packet)
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                liveSession: liveSession
+            )),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.performInitialLoadIfNeeded()
+        await viewModel.toggleLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        liveSession.send(.packetBatch([packet], disposition: .append))
+        await waitUntil { viewModel.snapshot.packetRows.count == 1 }
+        viewModel.selectPacket(packet.id)
+        await waitUntil { viewModel.snapshot.selectedPacket?.id == packet.id }
+
+        let selectedPacketID = viewModel.invalidateInspectionAfterTLSKeyLogChange()
+
+        #expect(selectedPacketID == packet.id)
+        #expect(viewModel.snapshot.selectedPacket == nil)
+    }
+
     @Test func mcpCaptureControlsCompleteAfterAppliedPhaseEvents() async {
         let liveSession = InspectorFakeLiveSession()
         let viewModel = NetworkInspectorViewModel(

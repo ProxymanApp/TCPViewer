@@ -43,6 +43,32 @@ final class NativeLivePacketDiskSnapshot: @unchecked Sendable {
         Darwin.close(fileDescriptor)
     }
 
+    var packetCount: Int {
+        entries.count
+    }
+
+    func record(withIdentifier identifier: UInt64) throws -> NativePacketRecord {
+        guard let entry = entries.first(where: { $0.identifier == identifier }) else {
+            throw NativeNSError(.fileReadFailed, "Packet \(identifier) is not available in the live snapshot.")
+        }
+        return try record(for: entry)
+    }
+
+    // Rehydrate one packet at a time so a full stopped capture stays disk-backed during replay.
+    func replayRecords(
+        shouldCancel: TCPFollowCancellationCheck? = nil,
+        _ consume: (NativePacketRecord) throws -> Bool
+    ) throws {
+        for entry in entries {
+            if shouldCancel?() == true {
+                throw NativeNSError(.operationCancelled, "TLS stream decryption was cancelled.")
+            }
+            if try !consume(record(for: entry)) {
+                break
+            }
+        }
+    }
+
     // Rehydrate a bounded immutable snapshot without holding the live capture lock.
     func records(
         maximumBytes: Int,
@@ -59,25 +85,28 @@ final class NativeLivePacketDiskSnapshot: @unchecked Sendable {
                 throw NativeNSError(.unavailableFeature, "The TCP stream snapshot exceeds the \(maximumBytes)-byte input limit.")
             }
             remainingBytes -= entry.capturedLength
-            let bytes = try readBytes(for: entry)
-            records.append(NativePacketRecord(
-                identifier: entry.identifier,
-                packetNumber: entry.packetNumber,
-                timestamp: entry.timestamp,
-                rawBytes: bytes,
-                originalLength: entry.originalLength,
-                linkLayerType: entry.linkLayerType,
-                interfaceIdentifier: entry.interfaceIdentifier,
-                interfaceName: entry.interfaceName,
-                packetComment: entry.packetComment,
-                interfaceID: entry.interfaceID,
-                sectionNumber: entry.sectionNumber,
-                pcapNGTimestampResolution: entry.pcapNGTimestampResolution,
-                pcapNGTimestampOffsetSeconds: entry.pcapNGTimestampOffsetSeconds,
-                pcapNGTimestampRawValue: entry.pcapNGTimestampRawValue
-            ))
+            records.append(try record(for: entry))
         }
         return records
+    }
+
+    private func record(for entry: NativeLivePacketDiskEntry) throws -> NativePacketRecord {
+        NativePacketRecord(
+            identifier: entry.identifier,
+            packetNumber: entry.packetNumber,
+            timestamp: entry.timestamp,
+            rawBytes: try readBytes(for: entry),
+            originalLength: entry.originalLength,
+            linkLayerType: entry.linkLayerType,
+            interfaceIdentifier: entry.interfaceIdentifier,
+            interfaceName: entry.interfaceName,
+            packetComment: entry.packetComment,
+            interfaceID: entry.interfaceID,
+            sectionNumber: entry.sectionNumber,
+            pcapNGTimestampResolution: entry.pcapNGTimestampResolution,
+            pcapNGTimestampOffsetSeconds: entry.pcapNGTimestampOffsetSeconds,
+            pcapNGTimestampRawValue: entry.pcapNGTimestampRawValue
+        )
     }
 
     private func readBytes(for entry: NativeLivePacketDiskEntry) throws -> Data {
@@ -250,6 +279,28 @@ final class NativeLivePacketDiskStore {
             fileDescriptor: descriptor,
             entries: selectedEntries,
             capturedThroughPacketID: entries.last?.identifier ?? identifier
+        )
+    }
+
+    // Duplicate the anonymous store so stopped-capture TLS replay never holds the writer lock.
+    func snapshotAll(
+        shouldCancel: TCPFollowCancellationCheck? = nil
+    ) throws -> NativeLivePacketDiskSnapshot {
+        if shouldCancel?() == true {
+            throw NativeNSError(.operationCancelled, "TLS stream decryption was cancelled.")
+        }
+        try openHandlesIfNeeded()
+        guard let reader else {
+            throw NativeNSError(.fileReadFailed, "The live packet backing store could not be opened for reading.")
+        }
+        let descriptor = Darwin.dup(reader.fileDescriptor)
+        guard descriptor >= 0 else {
+            throw NativeNSError(.fileReadFailed, "The live packet backing store could not create a stable snapshot.")
+        }
+        return NativeLivePacketDiskSnapshot(
+            fileDescriptor: descriptor,
+            entries: entries,
+            capturedThroughPacketID: entries.last?.identifier ?? 0
         )
     }
 

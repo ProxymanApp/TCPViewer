@@ -11,6 +11,50 @@ import PcapPlusPlusCore
 protocol PacketInspectorViewControllerDelegate: AnyObject {
     func packetInspectorViewController(_ controller: PacketInspectorViewController, didSelectDetailNode identifier: String?)
     func packetInspectorViewController(_ controller: PacketInspectorViewController, didRequestCreateCustomColumn request: PacketCustomColumnRequest)
+    func packetInspectorViewController(
+        _ controller: PacketInspectorViewController,
+        didRequestChooseTLSKeyLog completion: @escaping (TLSKeyLogSelectionOutcome) -> Void
+    )
+    func packetInspectorViewControllerDidRequestStopAndDecrypt(
+        _ controller: PacketInspectorViewController,
+        completion: @escaping () -> Void
+    )
+    func packetInspectorViewController(
+        _ controller: PacketInspectorViewController,
+        loadDecryptedStreamFor packetID: PacketSummary.ID,
+        progress: @escaping TCPFollowProgressHandler,
+        shouldCancel: @escaping TCPFollowCancellationCheck,
+        completion: @escaping TCPViewerCompletion<DecryptedStreamResult>
+    )
+}
+
+extension PacketInspectorViewControllerDelegate {
+    func packetInspectorViewController(
+        _ controller: PacketInspectorViewController,
+        didRequestChooseTLSKeyLog completion: @escaping (TLSKeyLogSelectionOutcome) -> Void
+    ) {
+        completion(.failed(TCPViewerCoreError(
+            code: .unavailableFeature,
+            message: "TLS key-log selection is unavailable."
+        )))
+    }
+
+    func packetInspectorViewControllerDidRequestStopAndDecrypt(
+        _ controller: PacketInspectorViewController,
+        completion: @escaping () -> Void
+    ) {
+        completion()
+    }
+
+    func packetInspectorViewController(
+        _ controller: PacketInspectorViewController,
+        loadDecryptedStreamFor packetID: PacketSummary.ID,
+        progress: @escaping TCPFollowProgressHandler,
+        shouldCancel: @escaping TCPFollowCancellationCheck,
+        completion: @escaping TCPViewerCompletion<DecryptedStreamResult>
+    ) {
+        completion(.failure(TCPViewerCoreError(code: .unavailableFeature, message: "TLS stream decryption is unavailable.")))
+    }
 }
 
 enum PacketInspectorTreeItemKind: Equatable {
@@ -667,11 +711,27 @@ private final class PacketInspectorSectionRowView: NSTableRowView {
 }
 
 final class PacketInspectorViewController: NSViewController {
+    private enum InspectorPage: Int {
+        case packet
+        case decrypted
+    }
+
+    private enum DecryptedDirection: Int {
+        case clientToServer
+        case serverToClient
+    }
+
+    private enum DecryptedAction {
+        case chooseTLSKeyLog
+        case stopAndDecrypt
+    }
+
     private enum Metrics {
         static let rowHeight: CGFloat = 20
         static let cellIdentifier = NSUserInterfaceItemIdentifier("PacketInspectorCell")
         static let minimumHexPanelHeight: CGFloat = 120
         static let filterBarHeight: CGFloat = 34
+        static let tabBarHeight: CGFloat = 34
         static let summaryPaneFraction: CGFloat = 0.70
         static let hexPaneFraction: CGFloat = 0.30
     }
@@ -686,12 +746,28 @@ final class PacketInspectorViewController: NSViewController {
     private let detailSplitViewController = NSSplitViewController()
     private let outlineViewController = NSViewController()
     private let stackView = NSStackView()
+    private let pageContainerView = NSView()
     private let detailContainerView = NSView()
+    private let tabBarView = TCPViewerDynamicBackgroundView(backgroundColor: .controlBackgroundColor)
+    private let tabControl = NSSegmentedControl(labels: ["Packet", "Decrypted"], trackingMode: .selectOne, target: nil, action: nil)
     private let filterBarView = TCPViewerDynamicBackgroundView(backgroundColor: .controlBackgroundColor)
     private let filterSearchField = NSSearchField()
     private let scrollView = NSScrollView()
     private let outlineView = PacketInspectorOutlineView()
     private let detailColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("detail"))
+    private let decryptedContainerView = NSView()
+    private let decryptedHeaderStack = NSStackView()
+    private let decryptedTitleLabel = NSTextField(wrappingLabelWithString: "")
+    private let decryptedStatusLabel = NSTextField(wrappingLabelWithString: "")
+    private let decryptedDirectionControl = NSSegmentedControl(
+        labels: ["Client → Server", "Server → Client"],
+        trackingMode: .selectOne,
+        target: nil,
+        action: nil
+    )
+    private let decryptedActionButton = NSButton(title: "", target: nil, action: nil)
+    private let decryptedScrollView = NSScrollView()
+    private let decryptedTextView = NSTextView()
     private var outlineItem: NSSplitViewItem?
     private var hexItem: NSSplitViewItem?
     private var emptyStateView: NSView?
@@ -702,6 +778,15 @@ final class PacketInspectorViewController: NSViewController {
     private var isShowingPacketDetail = false
     private var isApplyingSelection = false
     private var isApplyingExpansionState = false
+    private var selectedPage: InspectorPage = .packet
+    private var selectedDecryptedDirection: DecryptedDirection = .clientToServer
+    private var decryptedAction: DecryptedAction?
+    private var selectedDomainName: String?
+    private var decryptedStream: DecryptedStreamResult?
+    private var decryptedPacketID: PacketSummary.ID?
+    private var decryptedLoadGeneration = 0
+    private var isLoadingDecryptedStream = false
+    private var decryptedCancellationFlag: TCPFollowCancellationFlag?
 
     init(configuration: AppConfiguration) {
         self.configuration = configuration
@@ -714,10 +799,15 @@ final class PacketInspectorViewController: NSViewController {
         fatalError("init(coder:) has not been implemented")
     }
 
+    deinit {
+        decryptedCancellationFlag?.cancel()
+    }
+
     override func loadView() {
         view = TCPViewerDynamicBackgroundView(backgroundColor: .controlBackgroundColor)
         setupFilterBar()
         setupOutlineView()
+        setupDecryptedView()
         setupLayout()
     }
 
@@ -729,6 +819,8 @@ final class PacketInspectorViewController: NSViewController {
     // Render the current packet inspection tree as a single Wireshark-style outline.
     func render(snapshot: NetworkInspectorSnapshot) {
         let inspectionState = snapshot.base.inspectionState
+        selectedDomainName = snapshot.selectedPacket?.domainName
+        updateDecryptedSelection(for: inspectionState)
         latestInspectionState = inspectionState
         let didRevealPacketDetail = updateContentVisibility(for: inspectionState)
         applyPlacement(
@@ -740,6 +832,7 @@ final class PacketInspectorViewController: NSViewController {
         hexViewController.render(inspectionState: inspectionState)
 
         applyTreeRenderChange(renderChange, inspectionState: inspectionState)
+        renderSelectedPage()
     }
 
     // Forward a Follow TCP record to the Hex pane after its packet inspection finishes loading.
@@ -838,7 +931,7 @@ final class PacketInspectorViewController: NSViewController {
 
     private func hasSettledDetailSplitLayout() -> Bool {
         let detailFrame = detailSplitViewController.view.convert(detailSplitViewController.view.bounds, to: stackView)
-        let expectedDetailHeight = stackView.bounds.height - filterBarView.bounds.height
+        let expectedDetailHeight = stackView.bounds.height - tabBarView.bounds.height - filterBarView.bounds.height
         guard stackView.bounds.width > 0,
               expectedDetailHeight > 0 else {
             return false
@@ -892,6 +985,73 @@ final class PacketInspectorViewController: NSViewController {
         ])
     }
 
+    private func setupDecryptedView() {
+        tabControl.selectedSegment = InspectorPage.packet.rawValue
+        tabControl.target = self
+        tabControl.action = #selector(selectInspectorPage(_:))
+        tabControl.translatesAutoresizingMaskIntoConstraints = false
+        tabBarView.translatesAutoresizingMaskIntoConstraints = false
+        tabBarView.addSubview(tabControl)
+
+        decryptedTitleLabel.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
+        decryptedTitleLabel.textColor = .labelColor
+
+        decryptedStatusLabel.textColor = .secondaryLabelColor
+        decryptedStatusLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+
+        decryptedDirectionControl.selectedSegment = DecryptedDirection.clientToServer.rawValue
+        decryptedDirectionControl.target = self
+        decryptedDirectionControl.action = #selector(selectDecryptedDirection(_:))
+
+        decryptedActionButton.bezelStyle = .rounded
+        decryptedActionButton.target = self
+        decryptedActionButton.action = #selector(performDecryptedAction(_:))
+
+        decryptedHeaderStack.orientation = .vertical
+        decryptedHeaderStack.alignment = .leading
+        decryptedHeaderStack.spacing = 6
+        decryptedHeaderStack.addArrangedSubview(decryptedTitleLabel)
+        decryptedHeaderStack.addArrangedSubview(decryptedStatusLabel)
+        decryptedHeaderStack.addArrangedSubview(decryptedDirectionControl)
+        decryptedHeaderStack.addArrangedSubview(decryptedActionButton)
+        decryptedHeaderStack.translatesAutoresizingMaskIntoConstraints = false
+
+        decryptedTextView.isEditable = false
+        decryptedTextView.isSelectable = true
+        decryptedTextView.isRichText = false
+        decryptedTextView.font = .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        decryptedTextView.textContainerInset = NSSize(width: 8, height: 8)
+        decryptedTextView.usesFindBar = true
+        decryptedTextView.autoresizingMask = [.width]
+        decryptedScrollView.borderType = .noBorder
+        decryptedScrollView.hasVerticalScroller = true
+        decryptedScrollView.hasHorizontalScroller = true
+        decryptedScrollView.autohidesScrollers = true
+        decryptedScrollView.documentView = decryptedTextView
+        decryptedScrollView.translatesAutoresizingMaskIntoConstraints = false
+
+        decryptedContainerView.translatesAutoresizingMaskIntoConstraints = false
+        decryptedContainerView.addSubview(decryptedHeaderStack)
+        decryptedContainerView.addSubview(decryptedScrollView)
+        NSLayoutConstraint.activate([
+            tabBarView.heightAnchor.constraint(equalToConstant: Metrics.tabBarHeight),
+            tabControl.leadingAnchor.constraint(equalTo: tabBarView.leadingAnchor, constant: 8),
+            tabControl.trailingAnchor.constraint(lessThanOrEqualTo: tabBarView.trailingAnchor, constant: -8),
+            tabControl.centerYAnchor.constraint(equalTo: tabBarView.centerYAnchor),
+            decryptedHeaderStack.leadingAnchor.constraint(equalTo: decryptedContainerView.leadingAnchor, constant: 10),
+            decryptedHeaderStack.trailingAnchor.constraint(equalTo: decryptedContainerView.trailingAnchor, constant: -10),
+            decryptedHeaderStack.topAnchor.constraint(equalTo: decryptedContainerView.topAnchor, constant: 8),
+            decryptedTitleLabel.widthAnchor.constraint(equalTo: decryptedHeaderStack.widthAnchor),
+            decryptedStatusLabel.widthAnchor.constraint(equalTo: decryptedHeaderStack.widthAnchor),
+            decryptedScrollView.leadingAnchor.constraint(equalTo: decryptedContainerView.leadingAnchor),
+            decryptedScrollView.trailingAnchor.constraint(equalTo: decryptedContainerView.trailingAnchor),
+            decryptedScrollView.topAnchor.constraint(equalTo: decryptedHeaderStack.bottomAnchor, constant: 6),
+            decryptedScrollView.bottomAnchor.constraint(equalTo: decryptedContainerView.bottomAnchor),
+        ])
+        decryptedDirectionControl.isHidden = true
+        decryptedActionButton.isHidden = true
+    }
+
     private func setupOutlineView() {
         detailColumn.minWidth = 160
         detailColumn.width = 320
@@ -939,22 +1099,39 @@ final class PacketInspectorViewController: NSViewController {
 
         stackView.orientation = .vertical
         stackView.alignment = .width
+        stackView.distribution = .fill
         stackView.spacing = 0
         stackView.edgeInsets = NSEdgeInsetsZero
         stackView.translatesAutoresizingMaskIntoConstraints = false
+        stackView.addArrangedSubview(tabBarView)
         stackView.addArrangedSubview(filterBarView)
-        stackView.addArrangedSubview(detailContainerView)
+        stackView.addArrangedSubview(pageContainerView)
+        stackView.setVisibilityPriority(.mustHold, for: tabBarView)
+        stackView.setVisibilityPriority(.mustHold, for: filterBarView)
+        stackView.setVisibilityPriority(.mustHold, for: pageContainerView)
+        tabBarView.setContentHuggingPriority(.required, for: .vertical)
+        tabBarView.setContentCompressionResistancePriority(.required, for: .vertical)
         filterBarView.setContentHuggingPriority(.required, for: .vertical)
         filterBarView.setContentCompressionResistancePriority(.required, for: .vertical)
-        detailContainerView.setContentHuggingPriority(.defaultLow, for: .vertical)
-        detailContainerView.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        pageContainerView.setContentHuggingPriority(.defaultLow, for: .vertical)
+        pageContainerView.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
         applyPlacement(.trailing, resetsDefaultDivider: false, forcesDefaultDivider: false)
 
+        pageContainerView.translatesAutoresizingMaskIntoConstraints = false
+        pageContainerView.addSubview(detailContainerView)
+        pageContainerView.addSubview(decryptedContainerView)
         view.addSubview(stackView)
         NSLayoutConstraint.activate([
             filterBarView.widthAnchor.constraint(equalTo: stackView.widthAnchor),
-            detailContainerView.widthAnchor.constraint(equalTo: stackView.widthAnchor),
-            detailContainerView.heightAnchor.constraint(equalTo: stackView.heightAnchor, constant: -Metrics.filterBarHeight),
+            pageContainerView.widthAnchor.constraint(equalTo: stackView.widthAnchor),
+            detailContainerView.leadingAnchor.constraint(equalTo: pageContainerView.leadingAnchor),
+            detailContainerView.trailingAnchor.constraint(equalTo: pageContainerView.trailingAnchor),
+            detailContainerView.topAnchor.constraint(equalTo: pageContainerView.topAnchor),
+            detailContainerView.bottomAnchor.constraint(equalTo: pageContainerView.bottomAnchor),
+            decryptedContainerView.leadingAnchor.constraint(equalTo: pageContainerView.leadingAnchor),
+            decryptedContainerView.trailingAnchor.constraint(equalTo: pageContainerView.trailingAnchor),
+            decryptedContainerView.topAnchor.constraint(equalTo: pageContainerView.topAnchor),
+            decryptedContainerView.bottomAnchor.constraint(equalTo: pageContainerView.bottomAnchor),
             detailSplitViewController.view.leadingAnchor.constraint(equalTo: detailContainerView.leadingAnchor),
             detailSplitViewController.view.trailingAnchor.constraint(equalTo: detailContainerView.trailingAnchor),
             detailSplitViewController.view.topAnchor.constraint(equalTo: detailContainerView.topAnchor),
@@ -964,6 +1141,281 @@ final class PacketInspectorViewController: NSViewController {
             stackView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             stackView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
+        decryptedContainerView.isHidden = true
+    }
+
+    private func updateDecryptedSelection(for inspectionState: PacketInspectionState) {
+        let packetID = inspectionState.selectedPacketID
+        guard packetID != decryptedPacketID else {
+            return
+        }
+        decryptedCancellationFlag?.cancel()
+        decryptedCancellationFlag = nil
+        decryptedLoadGeneration += 1
+        decryptedPacketID = packetID
+        decryptedStream = nil
+        isLoadingDecryptedStream = false
+        decryptedTextView.string = ""
+        decryptedAction = nil
+    }
+
+    private func renderSelectedPage() {
+        let showsPacket = selectedPage == .packet
+        stackView.setVisibilityPriority(showsPacket ? .mustHold : .notVisible, for: filterBarView)
+        filterBarView.isHidden = !showsPacket
+        detailContainerView.isHidden = !showsPacket
+        decryptedContainerView.isHidden = showsPacket
+        guard !showsPacket else {
+            return
+        }
+        guard let packetID = decryptedPacketID else {
+            showDecryptedMessage(
+                title: "No encrypted connection selected",
+                message: "Select a TLS, DTLS, or QUIC packet to inspect its decrypted stream."
+            )
+            return
+        }
+        if let stream = decryptedStream {
+            render(stream: stream)
+        } else if !isLoadingDecryptedStream {
+            loadDecryptedStream(packetID: packetID)
+        }
+    }
+
+    private func loadDecryptedStream(packetID: PacketSummary.ID) {
+        decryptedCancellationFlag?.cancel()
+        let cancellationFlag = TCPFollowCancellationFlag()
+        decryptedCancellationFlag = cancellationFlag
+        isLoadingDecryptedStream = true
+        decryptedLoadGeneration += 1
+        let generation = decryptedLoadGeneration
+        showDecryptedMessage(
+            title: selectedDomainName ?? "Decrypting connection",
+            message: "Loading the complete decrypted stream…"
+        )
+        delegate?.packetInspectorViewController(
+            self,
+            loadDecryptedStreamFor: packetID,
+            progress: { [weak self] progress in
+                DispatchQueue.main.async {
+                    guard let self,
+                          self.decryptedLoadGeneration == generation,
+                          self.decryptedPacketID == packetID else {
+                        return
+                    }
+                    let percent = Int((progress.fractionCompleted * 100).rounded())
+                    self.showDecryptedMessage(
+                        title: self.selectedDomainName ?? "Decrypting connection",
+                        message: "Loading the complete decrypted stream… \(percent)% (\(progress.processedPacketCount)/\(progress.totalPacketCount) packets)"
+                    )
+                }
+            },
+            shouldCancel: {
+                cancellationFlag.isCancelled
+            }
+        ) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else {
+                    return
+                }
+                if self.decryptedCancellationFlag === cancellationFlag {
+                    self.decryptedCancellationFlag = nil
+                }
+                guard self.decryptedLoadGeneration == generation, self.decryptedPacketID == packetID else {
+                    return
+                }
+                self.isLoadingDecryptedStream = false
+                switch result {
+                case .success(let stream):
+                    self.decryptedStream = stream
+                    self.renderSelectedPage()
+                case .failure(let error):
+                    self.showDecryptedError(error)
+                }
+            }
+        }
+    }
+
+    private func render(stream: DecryptedStreamResult) {
+        if stream.request.data.isEmpty, stream.response.data.isEmpty {
+            showDecryptedMessage(
+                title: "No decrypted data found",
+                message: "The key log may not match this capture, the TLS handshake may be missing, or this connection may contain no application data.",
+                action: .chooseTLSKeyLog,
+                actionTitle: "Choose Different Key Log…"
+            )
+            return
+        }
+        let showsClientToServer = selectedDecryptedDirection == .clientToServer
+        let payload = showsClientToServer ? stream.request : stream.response
+        let source = showsClientToServer ? stream.client : stream.server
+        let destination = showsClientToServer ? stream.server : stream.client
+        var status = "\(stream.protocolName.rawValue)  \(endpointText(source)) → \(endpointText(destination))  •  \(payload.data.count) bytes retained"
+        if payload.isTruncated {
+            status += "  •  Truncated after at least \(payload.observedByteCount) observed bytes"
+        }
+        if payload.data.isEmpty {
+            showDecryptedMessage(
+                title: selectedDomainName ?? "Decrypted connection",
+                message: "\(status)\nNo application data exists in this direction. Try the other direction."
+            )
+            decryptedDirectionControl.isHidden = false
+            return
+        }
+        decryptedTitleLabel.stringValue = selectedDomainName ?? "Decrypted connection"
+        decryptedStatusLabel.stringValue = status
+        decryptedAction = nil
+        decryptedActionButton.isHidden = true
+        decryptedDirectionControl.isHidden = false
+        decryptedTextView.string = DecryptedStreamTextFormatter.string(for: payload.data)
+        decryptedScrollView.isHidden = false
+    }
+
+    private func showDecryptedMessage(
+        title: String,
+        message: String,
+        action: DecryptedAction? = nil,
+        actionTitle: String? = nil
+    ) {
+        decryptedTitleLabel.stringValue = title
+        decryptedStatusLabel.stringValue = message
+        decryptedDirectionControl.isHidden = true
+        decryptedAction = action
+        decryptedActionButton.title = actionTitle ?? ""
+        decryptedActionButton.isHidden = action == nil
+        decryptedTextView.string = ""
+        decryptedScrollView.isHidden = true
+    }
+
+    private func showDecryptedError(_ error: Error) {
+        let message = decryptedErrorMessage(error)
+        if message.localizedCaseInsensitiveContains("No TLS key-log file") {
+            showDecryptedMessage(
+                title: "Encrypted connection",
+                message: "Add a TLS key log from the same capture session to decrypt this connection.",
+                action: .chooseTLSKeyLog,
+                actionTitle: "Choose TLS Key Log…"
+            )
+            return
+        }
+        if message.localizedCaseInsensitiveContains("Stop the live capture") {
+            showDecryptedMessage(
+                title: "Stop capture to decrypt",
+                message: "TCP Viewer needs the completed capture to rebuild the full decrypted stream.",
+                action: .stopAndDecrypt,
+                actionTitle: "Stop and Decrypt"
+            )
+            return
+        }
+        if message.localizedCaseInsensitiveContains("Select a TLS") {
+            showDecryptedMessage(
+                title: "No encrypted connection selected",
+                message: message
+            )
+            return
+        }
+        showDecryptedMessage(
+            title: "Could not decrypt this connection",
+            message: "\(message) The key log may not match this capture, or the TLS handshake may be missing.",
+            action: .chooseTLSKeyLog,
+            actionTitle: "Choose Different Key Log…"
+        )
+    }
+
+    private func endpointText(_ endpoint: PacketEndpoint) -> String {
+        let address = endpoint.address ?? "unknown"
+        guard let port = endpoint.port, port != 0 else {
+            return address
+        }
+        return "\(address):\(port)"
+    }
+
+    private func decryptedErrorMessage(_ error: Error) -> String {
+        if let coreError = error as? TCPViewerCoreError {
+            return coreError.message
+        }
+        return error.localizedDescription
+    }
+
+    @objc private func selectInspectorPage(_ sender: NSSegmentedControl) {
+        selectedPage = InspectorPage(rawValue: sender.selectedSegment) ?? .packet
+        renderSelectedPage()
+    }
+
+    @objc private func selectDecryptedDirection(_ sender: NSSegmentedControl) {
+        selectedDecryptedDirection = DecryptedDirection(rawValue: sender.selectedSegment) ?? .clientToServer
+        if let decryptedStream {
+            render(stream: decryptedStream)
+        }
+    }
+
+    @objc private func performDecryptedAction(_ sender: NSButton) {
+        switch decryptedAction {
+        case .chooseTLSKeyLog:
+            chooseTLSKeyLog()
+        case .stopAndDecrypt:
+            stopAndDecrypt()
+        case nil:
+            break
+        }
+    }
+
+    private func chooseTLSKeyLog() {
+        showDecryptedMessage(
+            title: "Choose TLS key log",
+            message: "Waiting for a TLS key-log file…"
+        )
+        delegate?.packetInspectorViewController(self, didRequestChooseTLSKeyLog: { [weak self] outcome in
+            DispatchQueue.main.async {
+                guard let self else {
+                    return
+                }
+                switch outcome {
+                case .cancelled:
+                    self.showDecryptedMessage(
+                        title: "Encrypted connection",
+                        message: "Add a TLS key log from the same capture session to decrypt this connection.",
+                        action: .chooseTLSKeyLog,
+                        actionTitle: "Choose TLS Key Log…"
+                    )
+                case .applied(let state):
+                    let fileName = state.fileURL?.lastPathComponent ?? "the selected key log"
+                    self.decryptedStream = nil
+                    if let packetID = self.decryptedPacketID, !self.isLoadingDecryptedStream {
+                        self.loadDecryptedStream(packetID: packetID)
+                    } else {
+                        self.showDecryptedMessage(
+                            title: "TLS keys loaded",
+                            message: "Updating the capture with \(fileName)…"
+                        )
+                    }
+                case .failed(let error):
+                    self.showDecryptedMessage(
+                        title: "Could not load TLS keys",
+                        message: self.decryptedErrorMessage(error),
+                        action: .chooseTLSKeyLog,
+                        actionTitle: "Choose Different Key Log…"
+                    )
+                }
+            }
+        })
+    }
+
+    private func stopAndDecrypt() {
+        showDecryptedMessage(
+            title: "Stopping capture",
+            message: "TCP Viewer will decrypt this connection when the retained capture is ready."
+        )
+        delegate?.packetInspectorViewControllerDidRequestStopAndDecrypt(self) { [weak self] in
+            DispatchQueue.main.async {
+                guard let self, let packetID = self.decryptedPacketID else {
+                    return
+                }
+                self.decryptedStream = nil
+                self.isLoadingDecryptedStream = false
+                self.loadDecryptedStream(packetID: packetID)
+            }
+        }
     }
 
     // Swap between the launch empty state and packet-detail controls.

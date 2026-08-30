@@ -191,13 +191,18 @@ In Xcode:
 3. Choose `My Mac`.
 4. Press Run.
 
+Signing:
+
+- Set `TCPVIEWER_DEVELOPMENT_TEAM` in `Config/TCPViewer.local.xcconfig`.
+- Use the same development team for every target.
+- `TCPViewer`, `PcapPlusPlusCore`, and `TCPViewerHelperTool` must use the same team.
+- If dyld reports different Team IDs, clean the build folder and build again.
+
 Command-line build:
 
 ```bash
 xcodebuild -project TCPViewer.xcodeproj -scheme TCPViewer build
 ```
-
-If Xcode asks for signing, select a development team for `TCPViewer` and `PcapPlusPlusCore`.
 
 ## Test
 

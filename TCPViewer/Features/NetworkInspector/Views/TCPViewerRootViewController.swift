@@ -12,6 +12,10 @@ protocol TCPViewerRootViewControllerDelegate: AnyObject {
     func tcpviewerRootViewControllerDidChangeToolbarState(_ controller: TCPViewerRootViewController)
     func tcpviewerRootViewController(_ controller: TCPViewerRootViewController, didRequestHelperOnboarding snapshot: TCPViewerNetworkHelperToolSnapshot)
     func tcpviewerRootViewControllerDidRequestPaywall(_ controller: TCPViewerRootViewController)
+    func tcpviewerRootViewController(
+        _ controller: TCPViewerRootViewController,
+        didRequestChooseTLSKeyLog completion: @escaping (TLSKeyLogSelectionOutcome) -> Void
+    )
 }
 
 private final class TCPViewerInspectorSplitViewController: NSSplitViewController {
@@ -1537,6 +1541,35 @@ extension TCPViewerRootViewController: PacketInspectorViewControllerDelegate {
         didRequestCreateCustomColumn request: PacketCustomColumnRequest
     ) {
         workspaceViewController.createCustomColumn(from: request)
+    }
+
+    func packetInspectorViewController(
+        _ controller: PacketInspectorViewController,
+        loadDecryptedStreamFor packetID: PacketSummary.ID,
+        progress: @escaping TCPFollowProgressHandler,
+        shouldCancel: @escaping TCPFollowCancellationCheck,
+        completion: @escaping TCPViewerCompletion<DecryptedStreamResult>
+    ) {
+        viewModel.loadDecryptedStream(
+            containing: packetID,
+            progress: progress,
+            shouldCancel: shouldCancel,
+            completion: completion
+        )
+    }
+
+    func packetInspectorViewController(
+        _ controller: PacketInspectorViewController,
+        didRequestChooseTLSKeyLog completion: @escaping (TLSKeyLogSelectionOutcome) -> Void
+    ) {
+        delegate?.tcpviewerRootViewController(self, didRequestChooseTLSKeyLog: completion)
+    }
+
+    func packetInspectorViewControllerDidRequestStopAndDecrypt(
+        _ controller: PacketInspectorViewController,
+        completion: @escaping () -> Void
+    ) {
+        viewModel.stopLiveCapture(completion: completion)
     }
 }
 

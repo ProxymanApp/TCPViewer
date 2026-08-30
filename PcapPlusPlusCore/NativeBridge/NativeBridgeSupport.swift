@@ -112,6 +112,14 @@ enum NativeBridgeMapper {
             .payload
         case 12:
             .unknown
+        case 13:
+            .http2
+        case 14:
+            .http3
+        case 15:
+            .dtls
+        case 16:
+            .quic
         default:
             .unknown
         }

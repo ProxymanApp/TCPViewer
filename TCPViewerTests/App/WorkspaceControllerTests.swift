@@ -311,6 +311,15 @@ struct WindowControllerTests {
         let controller = TCPViewerWorkspaceController(
             services: TCPViewerServiceRegistry(core: fakeCore)
         )
+        var releaseNotificationCount = 0
+        let releaseObserver = NotificationCenter.default.addObserver(
+            forName: TCPViewerWorkspaceController.liveCaptureDidReleaseWiresharkNotification,
+            object: controller,
+            queue: .main
+        ) { _ in
+            releaseNotificationCount += 1
+        }
+        defer { NotificationCenter.default.removeObserver(releaseObserver) }
 
         await controller.refreshInterfaces()
         await controller.startLiveCapture()
@@ -362,6 +371,7 @@ struct WindowControllerTests {
             controller.snapshot.sessionState.phase == .stopped
         }
         #expect(liveSession.stopCount == 1)
+        #expect(releaseNotificationCount == 1)
 
         await tearDown(controller)
     }
