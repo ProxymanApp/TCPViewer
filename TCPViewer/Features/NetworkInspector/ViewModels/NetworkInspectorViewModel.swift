@@ -1836,12 +1836,21 @@ final class NetworkInspectorViewModel {
     }
 
     func importDocuments(at fileURLs: [URL], completion: (() -> Void)? = nil) {
+        importDocumentsWithResult(at: fileURLs) { _ in
+            completion?()
+        }
+    }
+
+    func importDocumentsWithResult(
+        at fileURLs: [URL],
+        completion: @escaping (TCPViewerCaptureImportResult) -> Void
+    ) {
         let hasSessionFile = fileURLs
             .map(TCPViewerCaptureFileImportPolicy.standardizedFileURL)
             .contains(where: TCPViewerCaptureFileImportPolicy.isSessionFileURL)
-        controller.importDocuments(at: fileURLs) { [weak self] in
+        controller.importDocumentsWithResult(at: fileURLs) { [weak self] result in
             guard let self else {
-                completion?()
+                completion(result)
                 return
             }
 
@@ -1850,15 +1859,17 @@ final class NetworkInspectorViewModel {
                 self.applySessionDocumentState(sessionState)
                 self.pendingSessionImportReport = self.controller.currentDocumentSessionImportReport
                 self.rebuildSnapshot()
-                completion?()
+                completion(result)
             } else if hasSessionFile {
                 self.pendingSessionImportReport = nil
                 self.rebuildSnapshot()
-                completion?()
+                completion(result)
             } else {
                 self.pendingSessionImportReport = nil
                 self.restorePersistentDocumentState()
-                self.finishImportedDocuments(fileURLs: fileURLs, completion: completion)
+                self.finishImportedDocuments(fileURLs: fileURLs) {
+                    completion(result)
+                }
             }
         }
     }

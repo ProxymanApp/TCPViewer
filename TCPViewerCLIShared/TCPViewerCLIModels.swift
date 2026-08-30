@@ -204,15 +204,23 @@ struct TCPViewerCLIResponse: Codable, Equatable {
         requestID: String,
         command: TCPViewerCLICommand,
         code: String,
-        message: String
+        message: String,
+        data: [String: TCPViewerCLIValue]? = nil
     ) -> TCPViewerCLIResponse {
         TCPViewerCLIResponse(
             schemaVersion: schemaVersion,
             requestID: requestID,
             ok: false,
             command: command,
-            data: nil,
+            data: data,
             error: TCPViewerCLIErrorPayload(code: code, message: message)
         )
+    }
+}
+
+extension TCPViewerCLIValue {
+    // Keep filter input lexical because the app applies numeric conversion only for numeric operators.
+    static func lexicalFilterValue(_ value: String) -> TCPViewerCLIValue {
+        .string(value)
     }
 }

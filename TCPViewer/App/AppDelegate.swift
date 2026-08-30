@@ -167,9 +167,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         presentsErrors: Bool = true,
         completion: ((Bool) -> Void)? = nil
     ) {
+        importCaptureURLsWithResult(
+            urls,
+            focusesWindow: focusesWindow,
+            presentsErrors: presentsErrors
+        ) { result in
+            completion?(result.error == nil)
+        }
+    }
+
+    private func importCaptureURLsWithResult(
+        _ urls: [URL],
+        focusesWindow: Bool,
+        presentsErrors: Bool,
+        completion: @escaping (TCPViewerCaptureImportResult) -> Void
+    ) {
         let supportedURLs = urls.filter(TCPViewerCaptureFileImportPolicy.isSupportedCaptureFileURL)
         guard !supportedURLs.isEmpty else {
-            completion?(false)
+            completion(TCPViewerCaptureImportResult(
+                importedURLs: [],
+                error: TCPViewerCoreError(
+                    code: .offlineFileOpenFailed,
+                    message: "No supported capture files were selected."
+                )
+            ))
             return
         }
 
@@ -178,7 +199,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if presentsErrors {
                 presentInvalidSessionOpenSelectionAlert()
             }
-            completion?(false)
+            completion(TCPViewerCaptureImportResult(
+                importedURLs: [],
+                error: TCPViewerCoreError(
+                    code: .offlineFileOpenFailed,
+                    message: "Open one TCPViewer session at a time. Sessions cannot be merged with other capture files."
+                )
+            ))
             return
         }
 
@@ -187,14 +214,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if focusesWindow {
                 focusWindowController(windowController)
             }
-            windowController.rootViewController.importDocuments(at: supportedURLs) {
-                completion?(true)
-            }
+            windowController.rootViewController.importDocumentsWithResult(at: supportedURLs, completion: completion)
         } catch {
             if presentsErrors {
                 NSDocumentController.shared.presentError(error)
             }
-            completion?(false)
+            completion(TCPViewerCaptureImportResult(importedURLs: [], error: error))
         }
     }
 
@@ -203,8 +228,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         try frontmostOrNewTCPViewerWindowController().rootViewController.viewModel
     }
 
-    func cliImportCaptureURLs(_ urls: [URL], completion: @escaping (Bool) -> Void) {
-        importCaptureURLs(urls, focusesWindow: false, presentsErrors: false, completion: completion)
+    func cliImportCaptureURLs(_ urls: [URL], completion: @escaping (TCPViewerCaptureImportResult) -> Void) {
+        importCaptureURLsWithResult(urls, focusesWindow: false, presentsErrors: false, completion: completion)
     }
 
     func cliRefreshSettings() {

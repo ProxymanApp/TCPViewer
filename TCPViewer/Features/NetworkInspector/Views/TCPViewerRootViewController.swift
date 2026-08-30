@@ -295,10 +295,19 @@ final class TCPViewerRootViewController: NSViewController {
     }
 
     func importDocuments(at urls: [URL], completion: (() -> Void)? = nil) {
-        viewModel.importDocuments(at: urls) { [weak self] in
+        importDocumentsWithResult(at: urls) { _ in
+            completion?()
+        }
+    }
+
+    func importDocumentsWithResult(
+        at urls: [URL],
+        completion: @escaping (TCPViewerCaptureImportResult) -> Void
+    ) {
+        viewModel.importDocumentsWithResult(at: urls) { [weak self] result in
             self?.sidebarViewController.revealSelectedImportedFileIfNeeded()
             self?.presentSessionImportReportIfNeeded()
-            completion?()
+            completion(result)
         }
     }
 

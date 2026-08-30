@@ -764,9 +764,9 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
         appliesResultPagination: Bool
     ) -> (ids: [PacketSummary.ID], isTruncated: Bool, nextOffset: Int?, nextScanOffset: Int?) {
         let scannedCount = min(packets.count, query.scanLimit)
-        let candidates: ArraySlice<PacketSummary> = query.order == .recent
-            ? packets.suffix(scannedCount)
-            : packets.prefix(scannedCount)
+        let candidates = query.order == .recent && appliesResultPagination
+            ? Array(packets.suffix(scannedCount).reversed())
+            : Array(packets.prefix(scannedCount))
         var ids: [PacketSummary.ID] = []
         ids.reserveCapacity(min(scannedCount, Limit.maximumExportPacketCount))
         let maximumSelectedCount = appliesResultPagination

@@ -73,6 +73,28 @@ struct WiresharkTCPFollowTests {
         #expect(!result.isTruncated)
     }
 
+    @Test func unrequestedDirectionDoesNotConsumeFollowLimits() throws {
+        let records = makeConversation()
+        let result = try followTCPStream(
+            containing: records[3],
+            records: records,
+            limits: TCPFollowLimits(
+                maximumCandidatePacketCount: records.count,
+                maximumPayloadBytes: 5,
+                maximumRecordCount: 1,
+                includedDirection: .serverToClient
+            ),
+            progress: nil,
+            shouldCancel: nil
+        )
+
+        #expect(payload(in: result, direction: .serverToClient) == Data("reply".utf8))
+        #expect(result.records.allSatisfy { $0.direction == .serverToClient })
+        #expect(result.clientByteCount == 0)
+        #expect(result.serverByteCount == 5)
+        #expect(!result.isTruncated)
+    }
+
     @Test func candidateIndexSeparatesReusedEndpointTupleConnections() throws {
         let firstConnection = makeConversation()
         let firstReset = makeTCPPacket(

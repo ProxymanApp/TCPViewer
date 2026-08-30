@@ -308,8 +308,9 @@ final class WiresharkEpanSession {
                 TCPViewerWiresharkSessionCancelFollowTCPStream(handle)
             }
         }
+        let direction = wiresharkFollowDirection(limits.includedDirection)
         try withContext(for: selectedRecord) { context in
-            guard TCPViewerWiresharkSessionBeginFollowTCPStream(handle, context) else {
+            guard TCPViewerWiresharkSessionBeginFollowTCPStream(handle, context, direction) else {
                 if let criticalError = criticalExceptionErrorIfNeeded() {
                     throw criticalError
                 }
@@ -326,7 +327,8 @@ final class WiresharkEpanSession {
                 TCPViewerWiresharkSessionProcessFollowPacket(
                     handle,
                     context,
-                    limits.maximumPayloadBytes
+                    limits.maximumPayloadBytes,
+                    direction
                 )
             }
             if status == TCPViewerWiresharkFollowPacketFailed {
@@ -348,7 +350,8 @@ final class WiresharkEpanSession {
         guard let resultPointer = TCPViewerWiresharkSessionFinishFollowTCPStream(
             handle,
             limits.maximumPayloadBytes,
-            limits.maximumRecordCount
+            limits.maximumRecordCount,
+            direction
         ) else {
             throw unavailableError("Wireshark returned no TCP stream result.")
         }
@@ -376,6 +379,19 @@ final class WiresharkEpanSession {
             serverByteCount: Int(clamping: result.serverByteCount),
             isTruncated: result.isTruncated
         )
+    }
+
+    private func wiresharkFollowDirection(
+        _ direction: TCPFollowDirection?
+    ) -> TCPViewerWiresharkFollowDirection {
+        switch direction {
+        case .clientToServer:
+            return TCPViewerWiresharkFollowClientToServer
+        case .serverToClient:
+            return TCPViewerWiresharkFollowServerToClient
+        case nil:
+            return TCPViewerWiresharkFollowBothDirections
+        }
     }
 
     private static func validateFollowRequest(
