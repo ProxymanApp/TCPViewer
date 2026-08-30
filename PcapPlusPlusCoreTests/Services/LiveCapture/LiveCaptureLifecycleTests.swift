@@ -184,6 +184,55 @@ struct LiveCaptureLifecycleTests {
         #expect(try offlineSession.summarize(record).infoSummary.isEmpty == false)
     }
 
+    @Test func displayFilterSemanticsMatchRunningAndStoppedLivePackets() throws {
+        let udpPacket = makeUDPPacketRecord().rawBytes
+        let tcpPacket = makeLiveTCPPacket(
+            identifier: 2,
+            sourceIsClient: true,
+            sequence: 100,
+            acknowledgment: 0,
+            flags: 0x02
+        )
+        let reads = [udpPacket, tcpPacket].enumerated().map { index, packet in
+            let header = pcap_pkthdr(
+                ts: timeval(tv_sec: index + 1, tv_usec: 0),
+                caplen: UInt32(packet.count),
+                len: UInt32(packet.count)
+            )
+            return LibpcapPacketReadResult.packet(header: header, bytes: packet)
+        }
+        let backend = TestLiveCaptureBackend(queuedReads: reads)
+        let session = PCPPNativeLiveSession(
+            interfaceIdentifier: "test0",
+            options: makeOptions(),
+            captureBackend: backend,
+            dissectionSessionFactory: { try WiresharkEpanSession(purpose: .live) }
+        )
+        defer { session.shutdown() }
+        let packetDelivered = DispatchSemaphore(value: 0)
+        session.packetHandler = { _ in packetDelivered.signal() }
+
+        try session.start()
+        #expect(packetDelivered.wait(timeout: .now() + 2) == .success)
+        #expect(packetDelivered.wait(timeout: .now() + 2) == .success)
+
+        #expect(try session.activateDisplayFilter("udp", generation: 1).status == .valid)
+        let runningUDP = try session.evaluateDisplayFilter(packetIDs: [1, 2], generation: 1)
+        #expect(runningUDP.evaluatedPacketIDs == [1, 2])
+        #expect(runningUDP.matchingPacketIDs == [1])
+
+        #expect(try session.activateDisplayFilter("tcp", generation: 2).status == .valid)
+        let runningTCP = try session.evaluateDisplayFilter(packetIDs: [1, 2], generation: 2)
+        #expect(runningTCP.matchingPacketIDs == [2])
+
+        try session.stop()
+
+        #expect(try session.activateDisplayFilter("udp", generation: 3).status == .valid)
+        let stoppedUDP = try session.evaluateDisplayFilter(packetIDs: [1, 2], generation: 3)
+        #expect(stoppedUDP.evaluatedPacketIDs == [1, 2])
+        #expect(stoppedUDP.matchingPacketIDs == [1])
+    }
+
     @Test func stoppedLiveCaptureCanFollowRetainedTCPStream() throws {
         let packets = [
             makeLiveTCPPacket(identifier: 1, sourceIsClient: true, sequence: 100, acknowledgment: 0, flags: 0x02),

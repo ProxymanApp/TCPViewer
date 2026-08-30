@@ -99,8 +99,8 @@ final class PacketWiresharkFilterViewController: NSViewController, NSTextFieldDe
         if expressionField.stringValue != state.draftExpression {
             expressionField.stringValue = state.draftExpression
         }
-        applyButton.isEnabled = !state.isValidating && !state.isApplying
-        saveButton.isEnabled = !state.isValidating && !state.isApplying
+        applyButton.isEnabled = !state.isApplying
+        saveButton.isEnabled = !state.isApplying
         progressIndicator.isHidden = !state.isValidating && !state.isApplying
         if state.isValidating || state.isApplying {
             progressIndicator.startAnimation(nil)

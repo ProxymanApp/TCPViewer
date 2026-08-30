@@ -324,6 +324,51 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.packetRows.map(\.id) == [firstPacket.id])
     }
 
+    @Test func invalidSavedWiresharkFilterKeepsTheLastSuccessfulPacketMembership() async throws {
+        let openURL = URL(fileURLWithPath: "/tmp/display-filter-invalid-saved-reapply.pcapng")
+        let firstPacket = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp)
+        let secondPacket = makePacket(packetNumber: 2, source: .offline, transportHint: .udp)
+        let document = InspectorFakeDocument(url: openURL, packets: [firstPacket, secondPacket])
+        document.displayFilterMatchesByExpression["tcp"] = [firstPacket.id]
+        let customFilterService = PacketCustomFilterService(
+            storageURL: temporaryDirectory().appendingPathComponent("CustomFilters.json")
+        )
+        let savedFilter = try customFilterService.save(
+            name: "Legacy expression",
+            mode: .wireshark,
+            group: .default,
+            wiresharkExpression: "invalid filter"
+        )
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                document: document
+            )),
+            userDefaults: isolatedDefaults(),
+            customFilterService: customFilterService
+        )
+
+        await viewModel.openDocument(at: openURL)
+        viewModel.setFilterMode(.wireshark)
+        viewModel.updateWiresharkFilterDraft("tcp")
+        viewModel.applyWiresharkFilter()
+        await waitUntil {
+            viewModel.snapshot.wiresharkFilterState.appliedExpression == "tcp"
+                && viewModel.snapshot.packetRows.map(\.id) == [firstPacket.id]
+        }
+
+        viewModel.applyCustomFilter(id: savedFilter.id)
+        await waitUntil {
+            viewModel.snapshot.wiresharkFilterState.validation.status == .invalid
+                && !viewModel.snapshot.wiresharkFilterState.isValidating
+        }
+
+        #expect(viewModel.snapshot.filterMode == .wireshark)
+        #expect(viewModel.snapshot.wiresharkFilterState.draftExpression == "invalid filter")
+        #expect(viewModel.snapshot.wiresharkFilterState.appliedExpression == "tcp")
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [firstPacket.id])
+    }
+
     @Test func staleWiresharkEvaluationCannotReplaceTheCurrentGeneration() async {
         let openURL = URL(fileURLWithPath: "/tmp/display-filter-generation.pcapng")
         let firstPacket = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp)

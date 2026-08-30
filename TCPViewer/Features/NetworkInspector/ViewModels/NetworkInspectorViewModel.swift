@@ -1626,6 +1626,7 @@ final class NetworkInspectorViewModel {
             return
         }
 
+        displayFilterEvaluationCancellationToken?.cancel()
         displayFilterEvaluationGeneration &+= 1
         let generation = displayFilterEvaluationGeneration
         let cancellationToken = DisplayFilterEvaluationCancellationToken()
@@ -2321,8 +2322,7 @@ final class NetworkInspectorViewModel {
             validation: DisplayFilterValidation(
                 normalizedExpression: wiresharkExpression,
                 status: .valid
-            ),
-            appliedExpression: wiresharkExpression
+            )
         )
         wiresharkFilterMembership = nil
         wiresharkFilterMembershipLineageRevision = nil
@@ -2335,7 +2335,7 @@ final class NetworkInspectorViewModel {
         }
         if isStructuredFilterVisible, filterMode == .wireshark {
             DispatchQueue.main.async { [weak self] in
-                self?.reapplyWiresharkFilterIfNeeded()
+                self?.applyWiresharkFilter()
             }
         }
     }

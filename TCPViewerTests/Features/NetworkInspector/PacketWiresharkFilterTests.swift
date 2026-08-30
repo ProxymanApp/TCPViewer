@@ -69,7 +69,31 @@ struct PacketWiresharkFilterTests {
 
         #expect(entry.membership(generation: 7, expression: "frame.number % 2 == 1").evaluatedPacketCount == 50_000)
         #expect(entry.membership(generation: 7, expression: "frame.number % 2 == 1").matchingPacketIndexes.setBitCount == 10)
+        #expect(entry.evaluatedPrefixCount == 1)
         #expect(entry.unknownPacketIDs(in: ingestState, limit: 3) == [2, 4, 6])
+
+        entry.record(
+            batch: DisplayFilterMatchBatch(
+                generation: 7,
+                evaluatedPacketIDs: stride(from: 2, through: 100_000, by: 2).map(UInt64.init),
+                matchingPacketIDs: []
+            ),
+            packetIndexByID: ingestState.packetIndexByID
+        )
+        #expect(entry.evaluatedPrefixCount == 100_000)
+
+        let appendedPacket = Self.packet(id: 100_001)
+        let appendedState = Self.ingestState(packets: packets + [appendedPacket])
+        #expect(entry.unknownPacketIDs(in: appendedState) == [appendedPacket.id])
+        entry.record(
+            batch: DisplayFilterMatchBatch(
+                generation: 7,
+                evaluatedPacketIDs: [appendedPacket.id],
+                matchingPacketIDs: []
+            ),
+            packetIndexByID: appendedState.packetIndexByID
+        )
+        #expect(entry.evaluatedPrefixCount == 100_001)
     }
 
     @Test func diagnosticRangeConvertsUTF8OffsetsToNativeTextRanges() throws {

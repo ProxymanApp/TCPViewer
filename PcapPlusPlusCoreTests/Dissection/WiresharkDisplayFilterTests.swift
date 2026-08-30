@@ -34,9 +34,9 @@ struct WiresharkDisplayFilterTests {
     @Test func invalidSyntaxReturnsNativeRangesAndMessages() {
         let cases: [(name: String, expression: String, expectedRange: DisplayFilterSourceRange?)] = [
             ("unknown field", "unknown.tcpviewer.field == 1", DisplayFilterSourceRange(utf8StartOffset: 0, utf8Length: 23)),
-            ("missing operand", "tcp.port ==", nil),
-            ("unclosed parenthesis", "(tcp.port == 443", nil),
-            ("unclosed set", "tcp.port in {80,", nil),
+            ("missing operand", "tcp.port ==", DisplayFilterSourceRange(utf8StartOffset: 11, utf8Length: 0)),
+            ("unclosed parenthesis", "(tcp.port == 443", DisplayFilterSourceRange(utf8StartOffset: 16, utf8Length: 0)),
+            ("unclosed set", "tcp.port in {80,", DisplayFilterSourceRange(utf8StartOffset: 16, utf8Length: 0)),
             ("missing quote", "http.host == \"unterminated", DisplayFilterSourceRange(utf8StartOffset: 26, utf8Length: 0)),
             ("incompatible literal", "tcp.port == \"https\"", DisplayFilterSourceRange(utf8StartOffset: 12, utf8Length: 7)),
             ("invalid regular expression", "http.host matches \"[\"", DisplayFilterSourceRange(utf8StartOffset: 18, utf8Length: 3)),

@@ -360,6 +360,11 @@ DisplayFilterValidationCopy CompileDisplayFilter(const char *expression)
             diagnostic.hasRange = true;
             diagnostic.utf8StartOffset = static_cast<size_t>(error->loc.col_start);
             diagnostic.utf8Length = error->loc.col_len;
+        } else {
+            // Wireshark omits locations for incomplete trailing grammar, so place the caret at the end.
+            diagnostic.hasRange = true;
+            diagnostic.utf8StartOffset = sourceExpression.size();
+            diagnostic.utf8Length = 0;
         }
         validation.diagnostics.push_back(std::move(diagnostic));
         df_error_free(&error);
@@ -1426,7 +1431,6 @@ struct TCPViewerWiresharkSession {
     dfilter_t *activeDisplayFilter = nullptr;
     std::string activeDisplayFilterExpression;
     uint64_t activeDisplayFilterGeneration = 0;
-    std::unordered_map<uint64_t, std::pair<uint64_t, bool>> displayFilterMatchByPacketIdentifier;
     follow_info_t *followInfo = nullptr;
     TCPFollowTapContext *followTapContext = nullptr;
     register_follow_t *tcpFollower = nullptr;
@@ -1642,7 +1646,6 @@ struct TCPViewerWiresharkSession {
         }
         activeDisplayFilterExpression.clear();
         activeDisplayFilterGeneration = 0;
-        displayFilterMatchByPacketIdentifier.clear();
     }
 
     void releaseWiresharkResourcesLocked(const std::string &reason, bool finishSession)
@@ -2443,10 +2446,6 @@ struct TCPViewerWiresharkSession {
             result.hasDisplayFilterMatch = true;
             result.displayFilterMatched = matched;
             result.displayFilterGeneration = activeDisplayFilterGeneration;
-            displayFilterMatchByPacketIdentifier[context.packetIdentifier] = {
-                activeDisplayFilterGeneration,
-                matched,
-            };
         }
         if (buildTree) {
             auto sourceSet = ExtractByteSources(rawDissect->pi.data_src);
@@ -2486,13 +2485,6 @@ struct TCPViewerWiresharkSession {
             result->errorMessage = CopyCString("The Wireshark display-filter generation is no longer active.", false);
             return result;
         }
-        const auto cached = displayFilterMatchByPacketIdentifier.find(context.packetIdentifier);
-        if (cached != displayFilterMatchByPacketIdentifier.end() && cached->second.first == generation) {
-            result->succeeded = true;
-            result->matched = cached->second.second;
-            return result;
-        }
-
         const auto dissection = runSecondPassLocked(context, false, false);
         if (!dissection.hasDisplayFilterMatch || dissection.displayFilterGeneration != generation) {
             result->errorMessage = CopyCString(

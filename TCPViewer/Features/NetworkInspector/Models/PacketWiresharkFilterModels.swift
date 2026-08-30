@@ -17,7 +17,7 @@ enum PacketFilterMode: String, Codable, Sendable, CaseIterable {
         case .builder:
             return "Filter Builder"
         case .wireshark:
-            return "Wireshark Filter..."
+            return "Wireshark Filter…"
         }
     }
 }
@@ -116,6 +116,7 @@ struct PacketDisplayFilterCacheKey: Hashable, Sendable {
 struct PacketDisplayFilterCacheEntry: Equatable, Sendable {
     var evaluatedPacketIndexes = PacketIndexBitSet()
     var matchingPacketIndexes = PacketIndexBitSet()
+    private(set) var evaluatedPrefixCount = 0
 
     mutating func record(
         batch: DisplayFilterMatchBatch,
@@ -131,6 +132,9 @@ struct PacketDisplayFilterCacheEntry: Equatable, Sendable {
                 matchingPacketIndexes.insert(index)
             }
         }
+        while evaluatedPacketIndexes.contains(evaluatedPrefixCount) {
+            evaluatedPrefixCount += 1
+        }
     }
 
     func unknownPacketIDs(in ingestState: PacketIngestState, limit: Int? = nil) -> [PacketSummary.ID] {
@@ -138,7 +142,9 @@ struct PacketDisplayFilterCacheEntry: Equatable, Sendable {
         if let limit {
             identifiers.reserveCapacity(min(limit, ingestState.packets.count))
         }
-        for (index, packet) in ingestState.packets.enumerated() where !evaluatedPacketIndexes.contains(index) {
+        let startIndex = min(evaluatedPrefixCount, ingestState.packets.count)
+        for index in startIndex..<ingestState.packets.count where !evaluatedPacketIndexes.contains(index) {
+            let packet = ingestState.packets[index]
             identifiers.append(packet.id)
             if let limit, identifiers.count >= limit {
                 break
