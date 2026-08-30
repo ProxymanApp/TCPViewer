@@ -164,6 +164,26 @@ final class AppConfiguration: NSObject {
         notifyChange()
     }
 
+    // Reset one CLI-exposed preference without affecting unrelated app state.
+    func resetCLISetting(named name: String) -> Bool {
+        let key: String
+        switch name {
+        case "theme": key = Key.appearanceTheme
+        case "packet_font_size": key = Key.packetFontSize
+        case "monospaced_font": key = Key.usesMonospacedPacketFont
+        case "analytics": key = Key.sharesAnalytics
+        case "crash_reports": key = Key.sharesCrashReports
+        case "quit_confirmation": key = Key.confirmsBeforeQuitting
+        case "mcp_enabled": key = Key.isMCPServerEnabled
+        case "mcp_redaction": key = Key.mcpRedactsSensitiveData
+        default: return false
+        }
+        defaults.removeObject(forKey: key)
+        registerDefaults()
+        notifyChange()
+        return true
+    }
+
     private func registerDefaults() {
         defaults.register(defaults: [
             Key.sharesAnalytics: true,

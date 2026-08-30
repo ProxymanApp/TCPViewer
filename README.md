@@ -29,6 +29,7 @@ TCP Viewer captures and reads network packets on macOS. It uses system `libpcap`
 - Follow a full TCP stream.
 - Export packets as PCAP or PCAPNG.
 - Ask an AI agent about your capture with TCP Viewer MCP.
+- Automate capture, packet queries, files, licenses, and settings with [`tcpviewer-cli`](CLI.md).
 - Review the full source code.
 
 ### Easy packet capture

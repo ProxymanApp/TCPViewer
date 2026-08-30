@@ -17,6 +17,7 @@ cask "tcp-viewer" do
   depends_on macos: :sequoia
 
   app "TCP Viewer.app"
+  binary "#{appdir}/TCP Viewer.app/Contents/MacOS/tcpviewer-cli"
 
   uninstall launchctl: "com.proxyman.tcpviewer.helpertool",
             quit:      "com.proxyman.tcpviewer",

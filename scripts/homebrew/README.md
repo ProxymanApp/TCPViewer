@@ -70,3 +70,5 @@ After Homebrew merges the initial cask, users can install the app with:
 ```bash
 brew install --cask tcp-viewer
 ```
+
+The cask links the executable bundled at `TCP Viewer.app/Contents/MacOS/tcpviewer-cli`, so `tcpviewer-cli` is available on `PATH` after installation. Verify it with `tcpviewer-cli --version`.

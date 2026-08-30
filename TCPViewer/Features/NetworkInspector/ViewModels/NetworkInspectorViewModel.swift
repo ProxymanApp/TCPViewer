@@ -2166,12 +2166,14 @@ final class NetworkInspectorViewModel {
 
     func followTCPStream(
         containing identifier: PacketSummary.ID,
+        limits: TCPFollowLimits = .default,
         progress: TCPFollowProgressHandler?,
         shouldCancel: TCPFollowCancellationCheck?,
         completion: @escaping TCPViewerCompletion<TCPFollowStream>
     ) {
         controller.followTCPStream(
             containing: identifier,
+            limits: limits,
             progress: progress,
             shouldCancel: shouldCancel,
             completion: completion

@@ -26,6 +26,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var configurationObserver: NSObjectProtocol?
     private lazy var sentryService = TCPViewerSentryService(configuration: appConfiguration)
     private lazy var factoryResetService = TCPViewerFactoryResetService(helperToolManager: networkHelperToolManager)
+    private lazy var cliCoordinator = TCPViewerCLICommandCoordinator(appDelegate: self)
     private var isHandlingTermination = false
     private var skipsNextQuitConfirmation = false
     private var isShowingRenewalRequiredAlert = false
@@ -39,6 +40,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
+        cliCoordinator.start()
         sentryService.start()
         appConfiguration.applyAppearance()
         observeLicenseStatusChanges()
@@ -83,6 +85,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ aNotification: Notification) {
+        cliCoordinator.stop()
         TCPViewerMCPHTTPServer.shared.stop()
         if let licenseStatusObserver {
             NotificationCenter.default.removeObserver(licenseStatusObserver)
@@ -158,7 +161,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // Imports captures into the current TCP Viewer window, creating one only when needed.
-    private func importCaptureURLs(_ urls: [URL], completion: ((Bool) -> Void)? = nil) {
+    private func importCaptureURLs(
+        _ urls: [URL],
+        focusesWindow: Bool = true,
+        presentsErrors: Bool = true,
+        completion: ((Bool) -> Void)? = nil
+    ) {
         let supportedURLs = urls.filter(TCPViewerCaptureFileImportPolicy.isSupportedCaptureFileURL)
         guard !supportedURLs.isEmpty else {
             completion?(false)
@@ -167,21 +175,46 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let sessionURLs = supportedURLs.filter(TCPViewerCaptureFileImportPolicy.isSessionFileURL)
         guard sessionURLs.isEmpty || (sessionURLs.count == 1 && supportedURLs.count == 1) else {
-            presentInvalidSessionOpenSelectionAlert()
+            if presentsErrors {
+                presentInvalidSessionOpenSelectionAlert()
+            }
             completion?(false)
             return
         }
 
         do {
             let windowController = try frontmostOrNewTCPViewerWindowController()
-            focusWindowController(windowController)
+            if focusesWindow {
+                focusWindowController(windowController)
+            }
             windowController.rootViewController.importDocuments(at: supportedURLs) {
                 completion?(true)
             }
         } catch {
-            NSDocumentController.shared.presentError(error)
+            if presentsErrors {
+                NSDocumentController.shared.presentError(error)
+            }
             completion?(false)
         }
+    }
+
+    // CLI commands share the active workspace but never activate TCP Viewer implicitly.
+    func cliWorkspaceViewModel() throws -> NetworkInspectorViewModel {
+        try frontmostOrNewTCPViewerWindowController().rootViewController.viewModel
+    }
+
+    func cliImportCaptureURLs(_ urls: [URL], completion: @escaping (Bool) -> Void) {
+        importCaptureURLs(urls, focusesWindow: false, presentsErrors: false, completion: completion)
+    }
+
+    func cliRefreshSettings() {
+        appConfiguration.applyAppearance()
+        updateMCPServerAvailability()
+    }
+
+    func cliRevealActiveWindow() {
+        guard let controller = frontmostTCPViewerWindowController() else { return }
+        focusWindowController(controller)
     }
 
     private func presentInvalidSessionOpenSelectionAlert() {
