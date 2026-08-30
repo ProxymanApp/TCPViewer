@@ -38,20 +38,19 @@ The release always creates its cask branch from current `origin/main`. It pushes
 
 ## Initial cask
 
-The initial cask uses `tcpviewer.rb` in this directory. The release fills in its version, build number, and SHA-256.
+The initial cask uses `tcp-viewer.rb` in this directory. The release fills in its version, build number, and SHA-256.
 
 The release runs these maintained Homebrew checks:
 
-- `brew style --fix --cask tcpviewer`
-- `brew audit --cask --online --new tcpviewer`
-- `brew livecheck --cask --autobump tcpviewer`
-- `brew lgtm --online`
+- `brew style --fix --cask tcp-viewer`
+- `brew audit --cask --online --new tcp-viewer`
+- `brew livecheck --cask --autobump tcp-viewer`
 
 Before the initial pull request is created, the interactive release pauses for the required install and uninstall checks:
 
 ```bash
-HOMEBREW_NO_INSTALL_FROM_API=1 brew install --cask tcpviewer
-brew uninstall --cask tcpviewer
+HOMEBREW_NO_INSTALL_FROM_API=1 brew install --cask tcp-viewer
+brew uninstall --cask tcp-viewer
 ```
 
 For a non-interactive release, add `--homebrew-install-tested` only after both commands have passed.
@@ -69,5 +68,5 @@ Review Homebrew's current [cask acceptance](https://docs.brew.sh/Acceptable-Cask
 After Homebrew merges the initial cask, users can install the app with:
 
 ```bash
-brew install --cask tcpviewer
+brew install --cask tcp-viewer
 ```

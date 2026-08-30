@@ -8,6 +8,7 @@ import {
   findReleaseNote,
   generateAppcastXML,
   githubRepoFromRemoteURL,
+  homebrewCaskToken,
   isRetryableHTTPStatus,
   makeBetaDMGFileName,
   makeDMGFileName,
@@ -192,7 +193,7 @@ test("builds versioned DMG file names", () => {
 
 test("updates only Homebrew Cask release metadata", () => {
   const cask = [
-    'cask "tcpviewer" do',
+    'cask "tcp-viewer" do',
     '  version "1.9.0,30"',
     `  sha256 "${"a".repeat(64)}"`,
     "",
@@ -212,6 +213,7 @@ test("updates only Homebrew Cask release metadata", () => {
   assert.match(updated, new RegExp(`sha256 "${"b".repeat(64)}"`));
   assert.match(updated, /app "TCP Viewer\.app"/);
   assert.match(updated, /depends_on arch: :arm64/);
+  assert.equal(homebrewCaskToken, "tcp-viewer");
   assert.equal(makeHomebrewCaskBranchName({ version: "1.10.0", buildNumber: "31" }), "tcpviewer-1.10.0-31");
   assert.throws(
     () => updateHomebrewCaskContent(cask, { version: "../1.10.0", buildNumber: "31", sha256: "b".repeat(64) }),
@@ -225,10 +227,14 @@ test("updates only Homebrew Cask release metadata", () => {
     () => validateHomebrewCaskContent(cask.replace("  depends_on arch: :arm64\n", "")),
     /Apple Silicon/
   );
+  assert.throws(
+    () => validateHomebrewCaskContent(cask.replace('cask "tcp-viewer"', 'cask "tcpviewer"')),
+    /tcp-viewer token/
+  );
 });
 
 test("ships an initial Homebrew Cask template for the ARM64 release", () => {
-  const content = readFileSync(new URL("../scripts/homebrew/tcpviewer.rb", import.meta.url), "utf8");
+  const content = readFileSync(new URL("../scripts/homebrew/tcp-viewer.rb", import.meta.url), "utf8");
   const documentation = readFileSync(new URL("../scripts/homebrew/README.md", import.meta.url), "utf8");
 
   assert.deepEqual(validateHomebrewCaskContent(content), { version: "0.0.0", buildNumber: "0" });
@@ -251,11 +257,11 @@ test("recognizes supported GitHub remote URLs", () => {
 test("builds Homebrew validation and pull request metadata", () => {
   assert.deepEqual(
     makeHomebrewCaskAuditArgs({ isInitialCask: true }),
-    ["audit", "--cask", "--online", "--new", "tcpviewer"]
+    ["audit", "--cask", "--online", "--new", "tcp-viewer"]
   );
   assert.deepEqual(
     makeHomebrewCaskAuditArgs({ isInitialCask: false }),
-    ["audit", "--cask", "--online", "tcpviewer"]
+    ["audit", "--cask", "--online", "tcp-viewer"]
   );
 
   const pullRequestTemplate = [
@@ -303,7 +309,7 @@ test("builds Homebrew validation and pull request metadata", () => {
     template: pullRequestTemplate,
     isInitialCask: false
   });
-  assert.doesNotMatch(updateBody, /brew install --cask tcpviewer/);
+  assert.doesNotMatch(updateBody, /brew install --cask tcp-viewer/);
   assert.match(updateBody, /- \[ \] `brew uninstall --cask <cask>`/);
   assert.match(updateBody, /- \[x\] `brew audit --cask --online <cask>`/);
   assert.match(updateBody, /- \[x\] I did not use AI\/LLM/);
@@ -317,7 +323,7 @@ test("builds Homebrew validation and pull request metadata", () => {
   );
 
   const livecheck = JSON.stringify([{
-    cask: "tcpviewer",
+    cask: "tcp-viewer",
     version: { current: "1.12.0,36", latest: "1.12.0,36", outdated: false }
   }]);
   assert.doesNotThrow(() => validateHomebrewLivecheckOutput(livecheck, "1.12.0,36"));

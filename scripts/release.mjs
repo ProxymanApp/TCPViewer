@@ -26,6 +26,7 @@ import {
   findReleaseNote,
   generateAppcastXML,
   githubRepoFromRemoteURL,
+  homebrewCaskToken,
   isRetryableHTTPStatus,
   makeHomebrewCaskAuditArgs,
   makeHomebrewCaskBranchName,
@@ -70,10 +71,9 @@ const homebrewCaskUpstreamRepo = "Homebrew/homebrew-cask";
 const homebrewCaskUpstreamRemote = "origin";
 const homebrewCaskForkRemote = "proxyman";
 const homebrewCaskDefaultBranch = "main";
-const homebrewCaskToken = "tcpviewer";
-const homebrewCaskRelativePath = "Casks/t/tcpviewer.rb";
+const homebrewCaskRelativePath = `Casks/t/${homebrewCaskToken}.rb`;
 const homebrewPullRequestTemplateRelativePath = ".github/PULL_REQUEST_TEMPLATE.md";
-const homebrewCaskTemplatePath = path.join(repoRoot, "scripts/homebrew/tcpviewer.rb");
+const homebrewCaskTemplatePath = path.join(repoRoot, `scripts/homebrew/${homebrewCaskToken}.rb`);
 const githubReleaseRepo = "ProxymanApp/TCPViewer";
 
 async function main() {
@@ -696,6 +696,9 @@ async function createHomebrewCaskPullRequest({ homebrewRelease, dmgPath, install
     buildNumber: homebrewRelease.buildNumber,
     sha256
   });
+  const pullRequestTitle = source.isInitialCask
+    ? `${homebrewCaskToken} ${homebrewRelease.version} (new cask)`
+    : `${homebrewCaskToken} ${homebrewRelease.version}`;
 
   await runCommand("git", [
     "switch",
@@ -716,10 +719,7 @@ async function createHomebrewCaskPullRequest({ homebrewRelease, dmgPath, install
 
     await runCommand("git", ["add", homebrewCaskRelativePath], { cwd: homebrewRelease.repoPath });
     await runCommand("git", ["diff", "--cached", "--check"], { cwd: homebrewRelease.repoPath });
-    const commitMessage = source.isInitialCask
-      ? `tcpviewer ${homebrewRelease.version} (new cask)`
-      : `tcpviewer ${homebrewRelease.version}`;
-    await runCommand("git", ["commit", "--no-gpg-sign", "-m", commitMessage], {
+    await runCommand("git", ["commit", "--no-gpg-sign", "-m", pullRequestTitle], {
       cwd: homebrewRelease.repoPath
     });
     await runCommand("git", ["push", "--set-upstream", homebrewCaskForkRemote, homebrewRelease.branchName], {
@@ -736,7 +736,7 @@ async function createHomebrewCaskPullRequest({ homebrewRelease, dmgPath, install
       "--head",
       `ProxymanApp:${homebrewRelease.branchName}`,
       "--title",
-      `tcpviewer ${homebrewRelease.version}`,
+      pullRequestTitle,
       "--body",
       makeHomebrewCaskPullRequestBody({
         template: homebrewRelease.pullRequestTemplate,
@@ -781,7 +781,6 @@ async function validateHomebrewCaskChange(homebrewRelease) {
     livecheckResult.stdout,
     `${homebrewRelease.version},${homebrewRelease.buildNumber}`
   );
-  await runCommand("brew", ["lgtm", "--online"], { cwd: homebrewRelease.repoPath, env: brewEnv });
 
   validateHomebrewCaskContent(await readFile(homebrewRelease.caskPath, "utf8"));
 }

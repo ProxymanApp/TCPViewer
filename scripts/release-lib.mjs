@@ -2,6 +2,7 @@ import { createHash, createHmac } from "node:crypto";
 
 export const minimumSystemVersion = "15.0";
 export const releaseDMGAppName = "tcpviewer";
+export const homebrewCaskToken = "tcp-viewer";
 export const emptyPayloadSHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 const fileNameSegmentPattern = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
@@ -332,7 +333,7 @@ export function makeHomebrewCaskBranchName({ version, buildNumber }) {
   return `tcpviewer-${safeVersion}-${safeBuildNumber}`;
 }
 
-export function makeHomebrewCaskAuditArgs({ isInitialCask, token = "tcpviewer" }) {
+export function makeHomebrewCaskAuditArgs({ isInitialCask, token = homebrewCaskToken }) {
   const args = ["audit", "--cask", "--online"];
   if (isInitialCask) {
     args.push("--new");
@@ -511,6 +512,9 @@ export function validateHomebrewCaskContent(content) {
   const parsedVersion = parseHomebrewCaskVersion(current);
   const versionMatches = current.match(/^  version ".*"$/gm) ?? [];
   const shaMatches = current.match(/^  sha256 ".*"$/gm) ?? [];
+  if (!new RegExp(`^cask "${homebrewCaskToken}" do$`, "m").test(current)) {
+    throw new Error(`TCP Viewer Homebrew Cask must use the ${homebrewCaskToken} token.`);
+  }
   if (versionMatches.length !== 1 || shaMatches.length !== 1) {
     throw new Error("TCP Viewer Homebrew Cask must contain exactly one version and one SHA-256 stanza.");
   }
