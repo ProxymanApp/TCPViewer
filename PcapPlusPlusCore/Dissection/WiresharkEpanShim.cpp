@@ -41,6 +41,7 @@
 #include <wiretap/wtap_opttypes.h>
 #include <wsutil/buffer.h>
 #include <wsutil/filesystem.h>
+#include <wsutil/wslog.h>
 
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
@@ -68,6 +69,7 @@ constexpr uint32_t kUnknownFrameNumber = 0;
 constexpr size_t kMaximumInspectorByteSources = 32;
 constexpr size_t kMaximumInspectorByteSourceBytes = 16 * 1024 * 1024;
 constexpr size_t kMaximumInspectorRawValueBytes = 4 * 1024;
+constexpr size_t kMaximumInspectorDisplayFilterValueBytes = 4 * 1024;
 constexpr size_t kMaximumInspectorNodes = 20 * 1024;
 constexpr size_t kMaximumInspectorDepth = 128;
 constexpr size_t kMaximumInspectorTextLength = 16 * 1024;
@@ -100,6 +102,7 @@ struct DetailNode {
     std::string fieldName;
     std::string displayValue;
     std::string rawValue;
+    std::string displayFilterExpression;
     std::optional<ByteRange> range;
     NodeKind kind = NodeKind::Field;
     NodeSeverity severity = NodeSeverity::Normal;
@@ -1058,9 +1061,56 @@ std::optional<DetailNode> InspectorTruncationNode(InspectorTreeBudget &budget, u
     return node;
 }
 
+bool HasOversizedDisplayFilterValue(const field_info *field)
+{
+    const auto type = field->hfinfo->type;
+    switch (type) {
+        case FT_NONE:
+        case FT_STRING:
+        case FT_STRINGZ:
+        case FT_UINT_STRING:
+        case FT_BYTES:
+        case FT_UINT_BYTES:
+        case FT_OID:
+        case FT_REL_OID:
+        case FT_SYSTEM_ID:
+        case FT_STRINGZPAD:
+        case FT_STRINGZTRUNC:
+            if (field->length > static_cast<int>(kMaximumInspectorDisplayFilterValueBytes)) {
+                return true;
+            }
+            return field->value != nullptr
+                && ftype_can_length(type)
+                && fvalue_length2(field->value) > kMaximumInspectorDisplayFilterValueBytes;
+        default:
+            return false;
+    }
+}
+
+// Copy Wireshark's typed match-selected filter without serializing oversized payload values.
+std::string DisplayFilterExpressionForField(field_info *field, epan_dissect_t *dissect)
+{
+    if (HasOversizedDisplayFilterValue(field)) {
+        return "";
+    }
+    char *expression = proto_construct_match_selected_string(field, dissect);
+    if (expression == nullptr) {
+        return "";
+    }
+    const size_t expressionLength = std::strlen(expression);
+    if (expressionLength > kMaximumInspectorTextLength) {
+        wmem_free(nullptr, expression);
+        return "";
+    }
+    std::string copiedExpression(expression, expressionLength);
+    wmem_free(nullptr, expression);
+    return copiedExpression;
+}
+
 std::optional<DetailNode> MapProtoNode(
     proto_node *protoNode,
     const WiresharkSourceSet &sourceSet,
+    epan_dissect_t *dissect,
     uint64_t &sequence,
     InspectorTreeBudget &budget,
     size_t depth
@@ -1086,6 +1136,7 @@ std::optional<DetailNode> MapProtoNode(
     if (node.displayValue.empty() && label != node.title) {
         node.displayValue = TruncateInspectorText(TrimDisplayValue(label));
     }
+    node.displayFilterExpression = DisplayFilterExpressionForField(field, dissect);
     node.id = node.fieldName.empty() ? "wireshark.node." + std::to_string(sequence) : node.fieldName + "." + std::to_string(sequence);
     sequence += 1;
     node.range = MakeRangeForField(field, SourceIdentifierForField(field, sourceSet));
@@ -1100,7 +1151,7 @@ std::optional<DetailNode> MapProtoNode(
     }
 
     for (proto_node *child = protoNode->first_child; child != nullptr; child = child->next) {
-        if (auto childNode = MapProtoNode(child, sourceSet, sequence, budget, depth + 1)) {
+        if (auto childNode = MapProtoNode(child, sourceSet, dissect, sequence, budget, depth + 1)) {
             node.children.push_back(std::move(*childNode));
         }
         if (budget.remainingNodes == 0) {
@@ -1110,7 +1161,7 @@ std::optional<DetailNode> MapProtoNode(
     return node;
 }
 
-std::vector<DetailNode> MapProtoTree(proto_tree *tree, const WiresharkSourceSet &sourceSet)
+std::vector<DetailNode> MapProtoTree(proto_tree *tree, const WiresharkSourceSet &sourceSet, epan_dissect_t *dissect)
 {
     std::vector<DetailNode> nodes;
     uint64_t sequence = 1;
@@ -1119,7 +1170,7 @@ std::vector<DetailNode> MapProtoTree(proto_tree *tree, const WiresharkSourceSet 
         return nodes;
     }
     for (proto_node *child = tree->first_child; child != nullptr; child = child->next) {
-        if (auto node = MapProtoNode(child, sourceSet, sequence, budget, 0)) {
+        if (auto node = MapProtoNode(child, sourceSet, dissect, sequence, budget, 0)) {
             nodes.push_back(std::move(*node));
         }
         if (budget.remainingNodes == 0) {
@@ -1200,6 +1251,7 @@ TCPViewerWiresharkDetailNode CopyDetailNode(const DetailNode &node)
     copied.fieldName = CopyCString(node.fieldName, false);
     copied.value = CopyCString(node.displayValue);
     copied.rawValue = CopyCString(node.rawValue);
+    copied.displayFilterExpression = CopyCString(node.displayFilterExpression);
     copied.kind = strdup(KindString(node.kind));
     copied.severity = strdup(SeverityString(node.severity));
     copied.byteRange = CopyByteRange(node.range);
@@ -1242,6 +1294,7 @@ void DestroyDetailNode(TCPViewerWiresharkDetailNode &node)
     std::free(const_cast<char *>(node.fieldName));
     std::free(const_cast<char *>(node.value));
     std::free(const_cast<char *>(node.rawValue));
+    std::free(const_cast<char *>(node.displayFilterExpression));
     std::free(const_cast<char *>(node.kind));
     std::free(const_cast<char *>(node.severity));
     DestroyByteRange(node.byteRange);
@@ -1301,6 +1354,8 @@ private:
     explicit WiresharkRuntime(const char *personalConfigurationDirectory)
     {
         std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
+        // Display-filter compilation is frequent, so keep embedded Wireshark output to actionable diagnostics.
+        ws_log_set_level(LOG_LEVEL_WARNING);
         if (personalConfigurationDirectory == nullptr || personalConfigurationDirectory[0] == '\0') {
             available_ = false;
             unavailableReason_ = "Wireshark personal configuration directory is unavailable.";
@@ -2502,7 +2557,7 @@ struct TCPViewerWiresharkSession {
         }
         if (buildTree) {
             auto sourceSet = ExtractByteSources(rawDissect->pi.data_src);
-            result.nodes = MapProtoTree(rawDissect->tree, sourceSet);
+            result.nodes = MapProtoTree(rawDissect->tree, sourceSet, rawDissect);
             if (auto sni = FindSNIInNodes(result.nodes)) {
                 result.sniDomainName = *sni;
             }
@@ -3169,5 +3224,16 @@ bool TCPViewerWiresharkSessionTestHasActiveDisplayFilter(TCPViewerWiresharkSessi
     std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
     std::lock_guard<std::mutex> sessionLock(session->mutex);
     return session->activeDisplayFilter != nullptr;
+}
+
+bool TCPViewerWiresharkTestFiltersRoutineLogs(void)
+{
+    std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
+    return !ws_log_msg_is_active("DFilter", LOG_LEVEL_NOISY)
+        && !ws_log_msg_is_active("DFilter", LOG_LEVEL_DEBUG)
+        && !ws_log_msg_is_active("DFilter", LOG_LEVEL_INFO)
+        && !ws_log_msg_is_active("DFilter", LOG_LEVEL_MESSAGE)
+        && ws_log_msg_is_active("DFilter", LOG_LEVEL_WARNING)
+        && ws_log_msg_is_active("DFilter", LOG_LEVEL_CRITICAL);
 }
 #endif

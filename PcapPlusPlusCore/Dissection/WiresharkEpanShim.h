@@ -39,6 +39,7 @@ typedef struct TCPViewerWiresharkDetailNode {
     const char *fieldName;
     const char *value;
     const char *rawValue;
+    const char *displayFilterExpression;
     const char *kind;
     const char *severity;
     TCPViewerWiresharkByteRange *byteRange;
@@ -245,6 +246,7 @@ bool TCPViewerWiresharkSessionTestInjectCriticalException(TCPViewerWiresharkSess
 void TCPViewerWiresharkTestResetDisplayFilterCompilationCount(void);
 size_t TCPViewerWiresharkTestDisplayFilterCompilationCount(void);
 bool TCPViewerWiresharkSessionTestHasActiveDisplayFilter(TCPViewerWiresharkSession *session);
+bool TCPViewerWiresharkTestFiltersRoutineLogs(void);
 #endif
 
 #ifdef __cplusplus

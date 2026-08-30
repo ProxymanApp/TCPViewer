@@ -324,6 +324,483 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.packetRows.map(\.id) == [firstPacket.id])
     }
 
+    @Test func wiresharkRowInDefaultFilterEditorValidatesAndAppliesAutomatically() async {
+        let openURL = URL(fileURLWithPath: "/tmp/default-editor-wireshark-filter.pcapng")
+        let tcpPacket = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp)
+        let udpPacket = makePacket(packetNumber: 2, source: .offline, transportHint: .udp)
+        let expression = "tcp.port == 443"
+        let document = InspectorFakeDocument(url: openURL, packets: [tcpPacket, udpPacket])
+        document.displayFilterMatchesByExpression[expression] = [tcpPacket.id]
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                document: document
+            )),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.openDocument(at: openURL)
+        await waitUntil { viewModel.snapshot.packetRows.count == 2 }
+        viewModel.setStructuredFilterVisible(true)
+        viewModel.updateStructuredFilterGroup(.wireshark(expression: expression))
+
+        await waitUntil {
+            viewModel.snapshot.wiresharkFilterState.appliedExpression == expression
+                && viewModel.snapshot.packetRows.map(\.id) == [tcpPacket.id]
+        }
+        #expect(viewModel.snapshot.filterMode == .wireshark)
+        #expect(viewModel.snapshot.structuredFilterGroup.wiresharkExpression == expression)
+        #expect(viewModel.snapshot.isStructuredFilterVisible)
+    }
+
+    @Test func inspectorWiresharkFilterReplacesEveryFilteringScopeAndPersists() async throws {
+        let openURL = URL(fileURLWithPath: "/tmp/inspector-row-wireshark-filter.pcapng")
+        let tcpPacket = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp)
+        let udpPacket = makePacket(packetNumber: 2, source: .offline, transportHint: .udp)
+        let expression = "tcp.port == 443"
+        let document = InspectorFakeDocument(url: openURL, packets: [tcpPacket, udpPacket])
+        document.displayFilterMatchesByExpression[expression] = [tcpPacket.id]
+        let defaults = isolatedDefaults()
+        let core = InspectorFakeCore(
+            interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+            document: document
+        )
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: core),
+            userDefaults: defaults
+        )
+
+        await viewModel.openDocument(at: openURL)
+        await waitUntil { viewModel.snapshot.packetRows.count == 2 }
+        viewModel.selectSourceList(.saved)
+        viewModel.toggleQuickFilter(.udp)
+        viewModel.updateDisplayFilterText("protocol:udp")
+        viewModel.updateStructuredFilterGroup(PacketStructuredFilterGroup(filters: [
+            PacketStructuredFilter(query: .protocol, condition: .contains, text: "udp")
+        ]))
+        viewModel.setStructuredFilterVisible(true)
+
+        let request = try #require(PacketInspectorFilterRequest(
+            displayFilterExpression: expression,
+            nativeFilter: PacketStructuredFilter(query: .protocol, condition: .contains, text: "tcp")
+        ))
+        viewModel.applyInspectorFilter(request)
+
+        await waitUntil {
+            viewModel.snapshot.wiresharkFilterState.appliedExpression == expression
+                && viewModel.snapshot.packetRows.map(\.id) == [tcpPacket.id]
+        }
+        #expect(viewModel.snapshot.selectedSourceListSelection == .allPackets)
+        #expect(viewModel.snapshot.quickFilterSelection == .all)
+        #expect(viewModel.snapshot.displayFilterText.isEmpty)
+        #expect(viewModel.snapshot.structuredFilterGroup.wiresharkExpression == expression)
+        #expect(viewModel.snapshot.filterMode == .wireshark)
+        #expect(viewModel.snapshot.isStructuredFilterVisible)
+
+        let restoredViewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: core),
+            userDefaults: defaults
+        )
+        #expect(restoredViewModel.snapshot.displayFilterText.isEmpty)
+        #expect(restoredViewModel.snapshot.structuredFilterGroup.wiresharkExpression == expression)
+        #expect(restoredViewModel.snapshot.filterMode == .wireshark)
+        #expect(restoredViewModel.snapshot.isStructuredFilterVisible)
+        #expect(restoredViewModel.snapshot.wiresharkFilterState.draftExpression == expression)
+    }
+
+    @Test func invalidAndUnavailableInspectorWiresharkFiltersFallBackToNativeFilters() async throws {
+        let openURL = URL(fileURLWithPath: "/tmp/inspector-row-native-fallback.pcapng")
+        let tcpPacket = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp)
+        let udpPacket = makePacket(packetNumber: 2, source: .offline, transportHint: .udp)
+        let expression = "tls.unsupported.field == 1"
+        let document = InspectorFakeDocument(url: openURL, packets: [tcpPacket, udpPacket])
+        let core = InspectorFakeCore(
+            interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+            document: document
+        )
+        core.displayFilterValidationOverrides[expression] = DisplayFilterValidation(
+            normalizedExpression: expression,
+            status: .unavailable,
+            diagnostics: [DisplayFilterDiagnostic(severity: .error, message: "Wireshark filter unavailable.")]
+        )
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: core),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.openDocument(at: openURL)
+        await waitUntil { viewModel.snapshot.packetRows.count == 2 }
+        viewModel.toggleQuickFilter(.tcp)
+        viewModel.updateDisplayFilterText("protocol:tcp")
+        let nativeFilter = PacketStructuredFilter(query: .protocol, condition: .contains, text: "udp")
+        let request = try #require(PacketInspectorFilterRequest(
+            displayFilterExpression: "invalid filter",
+            nativeFilter: nativeFilter
+        ))
+
+        viewModel.applyInspectorFilter(request)
+        await waitUntil {
+            viewModel.snapshot.filterMode == .builder
+                && viewModel.snapshot.packetRows.map(\.id) == [udpPacket.id]
+        }
+
+        #expect(viewModel.snapshot.selectedSourceListSelection == .allPackets)
+        #expect(viewModel.snapshot.quickFilterSelection == .all)
+        #expect(viewModel.snapshot.displayFilterText.isEmpty)
+        #expect(viewModel.snapshot.structuredFilterGroup.activeFilters == [nativeFilter])
+        #expect(viewModel.snapshot.isStructuredFilterVisible)
+        #expect(viewModel.snapshot.wiresharkFilterState.draftExpression.isEmpty)
+
+        let unavailableFallback = PacketStructuredFilter(query: .protocol, condition: .contains, text: "tcp")
+        let unavailableRequest = try #require(PacketInspectorFilterRequest(
+            displayFilterExpression: expression,
+            nativeFilter: unavailableFallback
+        ))
+        viewModel.applyInspectorFilter(unavailableRequest)
+        await waitUntil {
+            viewModel.snapshot.structuredFilterGroup.activeFilters == [unavailableFallback]
+                && viewModel.snapshot.packetRows.map(\.id) == [tcpPacket.id]
+        }
+    }
+
+    @Test func rejectedInspectorFilterWithoutFallbackPreservesCurrentTableFilter() async throws {
+        let openURL = URL(fileURLWithPath: "/tmp/inspector-row-rejected-filter.pcapng")
+        let tcpPacket = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp)
+        let udpPacket = makePacket(packetNumber: 2, source: .offline, transportHint: .udp)
+        let document = InspectorFakeDocument(url: openURL, packets: [tcpPacket, udpPacket])
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                document: document
+            )),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.openDocument(at: openURL)
+        await waitUntil { viewModel.snapshot.packetRows.count == 2 }
+        viewModel.updateDisplayFilterText("protocol:tcp")
+        viewModel.toggleQuickFilter(.tcp)
+        let existingGroup = PacketStructuredFilterGroup(filters: [
+            PacketStructuredFilter(query: .protocol, condition: .contains, text: "tcp")
+        ])
+        viewModel.updateStructuredFilterGroup(existingGroup)
+        viewModel.setStructuredFilterVisible(true)
+        let request = try #require(PacketInspectorFilterRequest(
+            displayFilterExpression: "invalid filter",
+            nativeFilter: nil
+        ))
+
+        var rejectionMessage: String?
+        viewModel.applyInspectorFilter(request) { didApply, failureMessage in
+            #expect(!didApply)
+            rejectionMessage = failureMessage
+        }
+        await waitUntil {
+            viewModel.snapshot.wiresharkFilterState.validation.status == .invalid
+                && !viewModel.snapshot.wiresharkFilterState.isValidating
+        }
+
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [tcpPacket.id])
+        #expect(viewModel.snapshot.displayFilterText == "protocol:tcp")
+        #expect(viewModel.snapshot.quickFilterSelection.activeIDs == [.tcp])
+        #expect(viewModel.snapshot.structuredFilterGroup == existingGroup)
+        #expect(viewModel.snapshot.filterMode == .builder)
+        #expect(viewModel.snapshot.isStructuredFilterVisible)
+        #expect(rejectionMessage == "Invalid display filter.")
+    }
+
+    @Test func failedInspectorWiresharkEvaluationFallsBackToNativeFilter() async throws {
+        let openURL = URL(fileURLWithPath: "/tmp/inspector-row-evaluation-fallback.pcapng")
+        let tcpPacket = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp)
+        let udpPacket = makePacket(packetNumber: 2, source: .offline, transportHint: .udp)
+        let expression = "tls.handshake.ciphersuite == 0x1301"
+        let document = InspectorFakeDocument(url: openURL, packets: [tcpPacket, udpPacket])
+        document.displayFilterEvaluationErrorsByExpression[expression] = TCPViewerCoreError(
+            code: .offlineFileOpenFailed,
+            message: "Display-filter evaluation is unavailable."
+        )
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                document: document
+            )),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.openDocument(at: openURL)
+        await waitUntil { viewModel.snapshot.packetRows.count == 2 }
+        let nativeFilter = PacketStructuredFilter(query: .protocol, condition: .contains, text: "udp")
+        let request = try #require(PacketInspectorFilterRequest(
+            displayFilterExpression: expression,
+            nativeFilter: nativeFilter
+        ))
+
+        viewModel.applyInspectorFilter(request)
+        await waitUntil {
+            viewModel.snapshot.filterMode == .builder
+                && viewModel.snapshot.packetRows.map(\.id) == [udpPacket.id]
+        }
+
+        #expect(viewModel.snapshot.structuredFilterGroup.activeFilters == [nativeFilter])
+        #expect(viewModel.snapshot.quickFilterSelection == .all)
+        #expect(viewModel.snapshot.displayFilterText.isEmpty)
+    }
+
+    @Test func staleInspectorWiresharkEvaluationCannotReplaceNewerRequest() async throws {
+        let openURL = URL(fileURLWithPath: "/tmp/inspector-row-stale-evaluation.pcapng")
+        let firstPacket = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp)
+        let secondPacket = makePacket(packetNumber: 2, source: .offline, transportHint: .udp)
+        let document = InspectorFakeDocument(url: openURL, packets: [firstPacket, secondPacket])
+        document.holdsDisplayFilterEvaluations = true
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                document: document
+            )),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.openDocument(at: openURL)
+        await waitUntil { viewModel.snapshot.packetRows.count == 2 }
+        let firstRequest = try #require(PacketInspectorFilterRequest(
+            displayFilterExpression: "first inspector filter",
+            nativeFilter: nil
+        ))
+        let secondRequest = try #require(PacketInspectorFilterRequest(
+            displayFilterExpression: "second inspector filter",
+            nativeFilter: nil
+        ))
+
+        viewModel.applyInspectorFilter(firstRequest)
+        await waitUntil { document.pendingDisplayFilterEvaluationCount == 1 }
+        viewModel.applyInspectorFilter(secondRequest)
+        await waitUntil { document.pendingDisplayFilterEvaluationCount == 2 }
+
+        document.completeDisplayFilterEvaluation(
+            expression: "first inspector filter",
+            matchingPacketIDs: [firstPacket.id]
+        )
+        await Task.yield()
+        #expect(viewModel.snapshot.wiresharkFilterState.appliedExpression.isEmpty)
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [firstPacket.id, secondPacket.id])
+
+        document.completeDisplayFilterEvaluation(
+            expression: "second inspector filter",
+            matchingPacketIDs: [secondPacket.id]
+        )
+        await waitUntil {
+            viewModel.snapshot.wiresharkFilterState.appliedExpression == "second inspector filter"
+                && viewModel.snapshot.packetRows.map(\.id) == [secondPacket.id]
+        }
+    }
+
+    @Test func pendingInspectorEvaluationCannotReplaceNewerManualFilterInput() async throws {
+        let openURL = URL(fileURLWithPath: "/tmp/inspector-row-manual-filter-wins.pcapng")
+        let tcpPacket = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp)
+        let udpPacket = makePacket(packetNumber: 2, source: .offline, transportHint: .udp)
+        let expression = "pending inspector filter"
+        let document = InspectorFakeDocument(url: openURL, packets: [tcpPacket, udpPacket])
+        document.holdsDisplayFilterEvaluations = true
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                document: document
+            )),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.openDocument(at: openURL)
+        await waitUntil { viewModel.snapshot.packetRows.count == 2 }
+        let request = try #require(PacketInspectorFilterRequest(
+            displayFilterExpression: expression,
+            nativeFilter: nil
+        ))
+
+        viewModel.applyInspectorFilter(request)
+        await waitUntil { document.pendingDisplayFilterEvaluationCount == 1 }
+        viewModel.updateDisplayFilterText("protocol:udp")
+        await waitUntil { viewModel.snapshot.packetRows.map(\.id) == [udpPacket.id] }
+
+        document.completeDisplayFilterEvaluation(
+            expression: expression,
+            matchingPacketIDs: [tcpPacket.id]
+        )
+        await Task.yield()
+
+        #expect(viewModel.snapshot.displayFilterText == "protocol:udp")
+        #expect(viewModel.snapshot.wiresharkFilterState.appliedExpression.isEmpty)
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [udpPacket.id])
+    }
+
+    @Test func packetDeletionCancelsPendingInspectorEvaluationFromOldLineage() async throws {
+        let openURL = URL(fileURLWithPath: "/tmp/inspector-filter-delete-lineage.pcapng")
+        let firstPacket = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp)
+        let secondPacket = makePacket(packetNumber: 2, source: .offline, transportHint: .udp)
+        let document = InspectorFakeDocument(url: openURL, packets: [firstPacket, secondPacket])
+        document.holdsDisplayFilterEvaluations = true
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                document: document
+            )),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.openDocument(at: openURL)
+        await waitUntil { viewModel.snapshot.packetRows.count == 2 }
+        let request = try #require(PacketInspectorFilterRequest(
+            displayFilterExpression: "pending inspector filter",
+            nativeFilter: nil
+        ))
+
+        viewModel.applyInspectorFilter(request)
+        await waitUntil { document.pendingDisplayFilterEvaluationCount == 1 }
+        viewModel.deletePackets([firstPacket.id])
+        await waitUntil { viewModel.snapshot.packetRows.map(\.id) == [secondPacket.id] }
+
+        document.completeDisplayFilterEvaluation(
+            expression: "pending inspector filter",
+            matchingPacketIDs: [firstPacket.id]
+        )
+        await Task.yield()
+
+        #expect(viewModel.snapshot.wiresharkFilterState.appliedExpression.isEmpty)
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [secondPacket.id])
+    }
+
+    @Test func packetReplacementCancelsPendingInspectorEvaluationThroughDelegate() async throws {
+        let openURL = URL(fileURLWithPath: "/tmp/inspector-filter-replace-lineage.pcapng")
+        let firstPacket = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp)
+        let secondPacket = makePacket(packetNumber: 2, source: .offline, transportHint: .udp)
+        let replacementPacket = makePacket(packetNumber: 3, source: .offline, transportHint: .udp)
+        let document = InspectorFakeDocument(url: openURL, packets: [firstPacket, secondPacket])
+        document.holdsDisplayFilterEvaluations = true
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                document: document
+            )),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.openDocument(at: openURL)
+        await waitUntil { viewModel.snapshot.packetRows.count == 2 }
+        let request = try #require(PacketInspectorFilterRequest(
+            displayFilterExpression: "pending inspector filter",
+            nativeFilter: nil
+        ))
+
+        viewModel.applyInspectorFilter(request)
+        await waitUntil { document.pendingDisplayFilterEvaluationCount == 1 }
+        document.replacePackets([replacementPacket])
+        document.send(.documentStateChanged(phase: .opening, message: "Reloading capture."))
+        document.send(.packetBatch([replacementPacket], disposition: .replace))
+        await waitUntil { viewModel.snapshot.packetRows.map(\.id) == [replacementPacket.id] }
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [replacementPacket.id])
+
+        document.completeDisplayFilterEvaluation(
+            expression: "pending inspector filter",
+            matchingPacketIDs: [firstPacket.id]
+        )
+        await Task.yield()
+
+        #expect(viewModel.snapshot.wiresharkFilterState.appliedExpression.isEmpty)
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [replacementPacket.id])
+    }
+
+    @Test func pinningCancelsPendingInspectorFilterReplacement() async throws {
+        let openURL = URL(fileURLWithPath: "/tmp/inspector-filter-pinning.pcapng")
+        let pinService = PacketPinService(
+            storageURL: temporaryDirectory().appendingPathComponent("Pins.json")
+        )
+        let firstPacket = makePacket(
+            packetNumber: 1,
+            source: .offline,
+            transportHint: .tcp,
+            streamID: nil,
+            sniDomainName: "api.example.com"
+        )
+        let secondPacket = makePacket(
+            packetNumber: 2,
+            source: .offline,
+            transportHint: .udp,
+            streamID: nil,
+            sniDomainName: "openai.com"
+        )
+        let document = InspectorFakeDocument(url: openURL, packets: [firstPacket, secondPacket])
+        document.holdsDisplayFilterEvaluations = true
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                document: document
+            )),
+            userDefaults: isolatedDefaults(),
+            pinService: pinService
+        )
+
+        await viewModel.openDocument(at: openURL)
+        await waitUntil { viewModel.snapshot.packetRows.count == 2 }
+        let request = try #require(PacketInspectorFilterRequest(
+            displayFilterExpression: "pending inspector filter",
+            nativeFilter: nil
+        ))
+
+        viewModel.applyInspectorFilter(request)
+        await waitUntil { document.pendingDisplayFilterEvaluationCount == 1 }
+        viewModel.pinPacket(firstPacket.id, kind: .domain, clickedColumn: .domain)
+        let pinID = try #require(pinService.pins().first?.id)
+
+        document.completeDisplayFilterEvaluation(
+            expression: "pending inspector filter",
+            matchingPacketIDs: [secondPacket.id]
+        )
+        await Task.yield()
+
+        #expect(viewModel.snapshot.selectedSourceListSelection == .pinnedItem(pinID))
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [firstPacket.id])
+        #expect(viewModel.snapshot.wiresharkFilterState.appliedExpression.isEmpty)
+    }
+
+    @Test func inspectorWiresharkFilterEvaluatesNewLivePacketsIncrementally() async throws {
+        let liveSession = InspectorFakeLiveSession()
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                liveSession: liveSession
+            )),
+            userDefaults: isolatedDefaults()
+        )
+        let initialPackets = [
+            makePacket(packetNumber: 1, source: .live, transportHint: .tcp),
+            makePacket(packetNumber: 2, source: .live, transportHint: .udp),
+        ]
+        let appendedPacket = makePacket(packetNumber: 3, source: .live, transportHint: .tcp)
+
+        await viewModel.performInitialLoadIfNeeded()
+        await viewModel.toggleLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        liveSession.send(.packetBatch(initialPackets, disposition: .append))
+        await waitUntil { viewModel.snapshot.totalPacketCount == initialPackets.count }
+
+        let request = try #require(PacketInspectorFilterRequest(
+            displayFilterExpression: "tcp",
+            nativeFilter: nil
+        ))
+        viewModel.applyInspectorFilter(request)
+        await waitUntil {
+            viewModel.snapshot.wiresharkFilterState.appliedExpression == "tcp"
+                && liveSession.displayFilterEvaluationRequestPacketIDs.flatMap { $0 } == initialPackets.map(\.id)
+        }
+
+        liveSession.send(.packetBatch([appendedPacket], disposition: .append))
+        await waitUntil {
+            viewModel.snapshot.totalPacketCount == initialPackets.count + 1
+                && liveSession.displayFilterEvaluationRequestPacketIDs.last == [appendedPacket.id]
+        }
+
+        #expect(liveSession.displayFilterEvaluationRequestPacketIDs == [initialPackets.map(\.id), [appendedPacket.id]])
+    }
+
     @Test func invalidSavedWiresharkFilterKeepsTheLastSuccessfulPacketMembership() async throws {
         let openURL = URL(fileURLWithPath: "/tmp/display-filter-invalid-saved-reapply.pcapng")
         let firstPacket = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp)
@@ -988,6 +1465,58 @@ struct NetworkInspectorViewModelTests {
         #expect(filterButton.toolTip == "Show or hide packet filters (⌘F)")
     }
 
+    @Test func statusStripFilterButtonTogglesDirectlyWithoutAMenu() throws {
+        let controller = StatusStripViewController()
+        let delegate = StatusStripDelegateSpy()
+        controller.delegate = delegate
+        controller.loadViewIfNeeded()
+        let filterButton = try #require(allSubviews(ofType: NSButton.self, in: controller.view).first { button in
+            button.title.contains("Filter")
+        })
+
+        filterButton.performClick(nil)
+
+        #expect(delegate.toggleFilterRequestCount == 1)
+        #expect(filterButton.menu == nil)
+    }
+
+    @Test func defaultFilterEditorUsesOneExpressionRowForWiresharkMode() throws {
+        let controller = PacketStructuredFilterViewController()
+        var openedURL: URL?
+        controller.externalURLOpener = { openedURL = $0 }
+        controller.loadViewIfNeeded()
+        controller.render(
+            group: .wireshark(expression: "tls.handshake.extensions_server_name == \"example.com\""),
+            isFiltering: false,
+            customFilterItems: []
+        )
+
+        let conditionPopup = try #require(allSubviews(ofType: NSPopUpButton.self, in: controller.view).first { popup in
+            popup.itemTitles.contains(PacketStructuredFilterCondition.contains.title)
+        })
+        let queryPopup = try #require(allSubviews(ofType: NSPopUpButton.self, in: controller.view).first { popup in
+            popup.itemTitles.contains(PacketStructuredFilterQuery.anyText.title)
+        })
+        let expressionField = try #require(allSubviews(ofType: NSSearchField.self, in: controller.view).first)
+        let addButton = try #require(allSubviews(ofType: NSButton.self, in: controller.view).first { button in
+            button.toolTip == "Add filter"
+        })
+        let syntaxHelpButton = try #require(allSubviews(ofType: NSButton.self, in: controller.view).first { button in
+            button.title == "Syntax Help"
+        })
+
+        #expect(conditionPopup.isHidden)
+        let wiresharkFilterIndex = queryPopup.indexOfItem(withTitle: PacketStructuredFilterQuery.anyText.title)
+        #expect(queryPopup.item(at: wiresharkFilterIndex + 1)?.isSeparatorItem == true)
+        #expect(expressionField.placeholderString == "Wireshark display filter…")
+        #expect(!addButton.isEnabled)
+        syntaxHelpButton.performClick(nil)
+        #expect(openedURL == PacketStructuredFilterViewController.wiresharkSyntaxHelpURL)
+
+        controller.render(group: .default, isFiltering: false, customFilterItems: [])
+        #expect(!allSubviews(ofType: NSButton.self, in: controller.view).contains { $0.title == "Syntax Help" })
+    }
+
     @Test func toolbarStatusShowsYellowBPFFilterIndicatorOnlyForNondefaultFilter() throws {
         let inspectorViewModel = NetworkInspectorViewModel(userDefaults: isolatedDefaults())
         let dataSource = TCPViewerToolbarDataSource()
@@ -1114,6 +1643,34 @@ struct NetworkInspectorViewModelTests {
         hiddenReloadedViewModel.toggleInspector()
         #expect(hiddenReloadedViewModel.snapshot.inspectorPlacement == .trailing)
         #expect(hiddenReloadedViewModel.snapshot.isInspectorVisible)
+    }
+
+    @Test func packetDetailFilterShortcutReopensInspectorAndFocusesFilter() async throws {
+        let defaults = isolatedDefaults()
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")]
+            )),
+            userDefaults: defaults
+        )
+        viewModel.setInspectorVisible(false)
+        let controller = TCPViewerRootViewController(
+            viewModel: viewModel,
+            configuration: AppConfiguration(defaults: defaults)
+        )
+        let window = NSWindow(contentViewController: controller)
+        defer { window.close() }
+        controller.loadViewIfNeeded()
+        let inspectorView = try #require(controller.inspectorViewForTesting)
+        let searchField = try #require(allSubviews(ofType: NSSearchField.self, in: inspectorView).first)
+
+        controller.focusPacketDetailFilter()
+        await waitUntil {
+            viewModel.snapshot.isInspectorVisible && searchField.currentEditor() === window.firstResponder
+        }
+
+        #expect(viewModel.snapshot.isInspectorVisible)
+        #expect(searchField.currentEditor() === window.firstResponder)
     }
 
     @Test func inspectorPlacementTogglesCloseActivePlacementAndSwitchVisiblePlacement() {
@@ -3405,7 +3962,7 @@ struct NetworkInspectorViewModelTests {
 
         let unfilteredIDs = viewModel.snapshot.packetRows.map(\.id)
         viewModel.updateStructuredFilterGroup(PacketStructuredFilterGroup(filters: [
-            PacketStructuredFilter(query: .anyText, condition: .matchesRegex, text: "visible-marker-[0-9]+")
+            PacketStructuredFilter(query: .summary, condition: .matchesRegex, text: "visible-marker-[0-9]+")
         ]))
         viewModel.setStructuredFilterVisible(true)
 
@@ -3777,6 +4334,18 @@ private func frame(_ lowerFrame: NSRect, isVisuallyBelow upperFrame: NSRect, in 
     return lowerFrame.maxY <= upperFrame.minY + tolerance
 }
 
+private final class StatusStripDelegateSpy: StatusStripViewControllerDelegate {
+    private(set) var toggleFilterRequestCount = 0
+
+    func statusStripViewControllerDidRequestCancelLoad(_ controller: StatusStripViewController) {}
+
+    func statusStripViewControllerDidRequestClearPackets(_ controller: StatusStripViewController) {}
+
+    func statusStripViewControllerDidRequestToggleFilter(_ controller: StatusStripViewController) {
+        toggleFilterRequestCount += 1
+    }
+}
+
 private final class PacketFilterBuildGate: @unchecked Sendable {
     private struct State {
         var didStart = false
@@ -3814,6 +4383,7 @@ private final class InspectorFakeCore: TCPViewerCoreProviding, @unchecked Sendab
     private let interfaces: [CaptureInterfaceSummary]
     private let liveSessions: [InspectorFakeLiveSession]
     private let document: InspectorFakeDocument
+    var displayFilterValidationOverrides: [String: DisplayFilterValidation] = [:]
     private(set) var makeLiveCaptureSessionCallCount = 0
 
     init(
@@ -3850,6 +4420,10 @@ private final class InspectorFakeCore: TCPViewerCoreProviding, @unchecked Sendab
 
     func validateDisplayFilter(_ expression: String, completion: @escaping (DisplayFilterValidation) -> Void) {
         let normalized = expression.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let override = displayFilterValidationOverrides[normalized] {
+            completion(override)
+            return
+        }
         if normalized == "invalid filter" {
             completion(DisplayFilterValidation(
                 normalizedExpression: normalized,
@@ -4076,6 +4650,7 @@ private final class InspectorFakeDocument: OfflineCaptureDocumentProviding, @unc
 
     var eventHandler: PacketIngestEventHandler?
     var displayFilterMatchesByExpression: [String: Set<PacketSummary.ID>] = [:]
+    var displayFilterEvaluationErrorsByExpression: [String: TCPViewerCoreError] = [:]
     var holdsDisplayFilterEvaluations = false
     private(set) var url: URL
     private(set) var packets: [PacketSummary]
@@ -4156,6 +4731,10 @@ private final class InspectorFakeDocument: OfflineCaptureDocumentProviding, @unc
     ) {
         displayFilterEvaluationRequestPacketIDs.append(packetIDs)
         let expression = displayFilterExpressionByGeneration[generation] ?? ""
+        if let error = displayFilterEvaluationErrorsByExpression[expression] {
+            completion(.failure(error))
+            return
+        }
         if holdsDisplayFilterEvaluations {
             pendingDisplayFilterEvaluations.append(PendingDisplayFilterEvaluation(
                 expression: expression,

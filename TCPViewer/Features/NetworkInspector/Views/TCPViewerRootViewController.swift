@@ -413,6 +413,19 @@ final class TCPViewerRootViewController: NSViewController {
         }
     }
 
+    func focusPacketDetailFilter() {
+        guard inspectorItem?.isCollapsed == true else {
+            inspectorViewController.focusFilterField()
+            return
+        }
+
+        // Reopen the inspector before focusing because collapsed split items cannot accept focus.
+        viewModel.setInspectorVisible(true)
+        DispatchQueue.main.async { [weak self] in
+            self?.inspectorViewController.focusFilterField()
+        }
+    }
+
     func showOpenPanel() {
         viewModel.presentOpenCapturePanel { [weak self] in
             self?.sidebarViewController.revealSelectedImportedFileIfNeeded()
@@ -1418,46 +1431,6 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
         viewModel.setStructuredFilterVisible(false)
     }
 
-    func packetWorkspaceViewController(
-        _ controller: PacketWorkspaceViewController,
-        didUpdateWiresharkFilterExpression expression: String
-    ) {
-        viewModel.updateWiresharkFilterDraft(expression)
-    }
-
-    func packetWorkspaceViewControllerDidRequestApplyWiresharkFilter(_ controller: PacketWorkspaceViewController) {
-        viewModel.applyWiresharkFilter()
-    }
-
-    func packetWorkspaceViewController(
-        _ controller: PacketWorkspaceViewController,
-        didRequestApplyWiresharkFilterBeforeSaving completion: @escaping (Bool) -> Void
-    ) {
-        viewModel.applyWiresharkFilter(completion: completion)
-    }
-
-    func packetWorkspaceViewController(
-        _ controller: PacketWorkspaceViewController,
-        didRequestSaveWiresharkFilterNamed name: String
-    ) {
-        do {
-            try viewModel.saveWiresharkCustomFilter(name: name)
-        } catch {
-            presentCustomFilterError(error, title: "Could Not Save Filter")
-        }
-    }
-
-    func packetWorkspaceViewController(
-        _ controller: PacketWorkspaceViewController,
-        didRequestOverrideWiresharkFilter filterID: PacketCustomFilter.ID
-    ) {
-        do {
-            try viewModel.overrideWiresharkCustomFilter(id: filterID)
-        } catch {
-            presentCustomFilterError(error, title: "Could Not Override Filter")
-        }
-    }
-
     fileprivate func canUsePinFeature() -> Bool {
         TCPViewerLicenseService.shared.isLicenseAuthorized
     }
@@ -1467,6 +1440,19 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        if let window = view.window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
+    }
+
+    private func presentInspectorFilterError(_ message: String) {
+        let alert = NSAlert()
+        alert.messageText = "Could Not Apply Filter"
+        alert.informativeText = message
         alert.alertStyle = .warning
         alert.addButton(withTitle: "OK")
         if let window = view.window {
@@ -1587,6 +1573,21 @@ extension TCPViewerRootViewController: PacketInspectorViewControllerDelegate {
     ) {
         workspaceViewController.createCustomColumn(from: request)
     }
+
+    func packetInspectorViewController(
+        _ controller: PacketInspectorViewController,
+        didRequestApplyFilter request: PacketInspectorFilterRequest
+    ) {
+        viewModel.applyInspectorFilter(request) { [weak self] didApply, failureMessage in
+            guard didApply else {
+                if let failureMessage {
+                    self?.presentInspectorFilterError(failureMessage)
+                }
+                return
+            }
+            self?.workspaceViewController.focusStructuredFilter()
+        }
+    }
 }
 
 extension TCPViewerRootViewController: StatusStripViewControllerDelegate {
@@ -1598,13 +1599,12 @@ extension TCPViewerRootViewController: StatusStripViewControllerDelegate {
         viewModel.clearTablePackets()
     }
 
-    func statusStripViewController(_ controller: StatusStripViewController, didSelectFilterMode mode: PacketFilterMode) {
-        viewModel.setFilterMode(mode)
-        workspaceViewController.focusStructuredFilter()
-    }
-
-    func statusStripViewControllerDidRequestHideFilter(_ controller: StatusStripViewController) {
-        viewModel.setStructuredFilterVisible(false)
+    func statusStripViewControllerDidRequestToggleFilter(_ controller: StatusStripViewController) {
+        let showsFilter = !viewModel.snapshot.isStructuredFilterVisible
+        viewModel.setStructuredFilterVisible(showsFilter)
+        if showsFilter {
+            workspaceViewController.focusStructuredFilter()
+        }
     }
 }
 

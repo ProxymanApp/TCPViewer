@@ -8,18 +8,9 @@
 import Foundation
 import PcapPlusPlusCore
 
-enum PacketFilterMode: String, Codable, Sendable, CaseIterable {
+enum PacketFilterMode: String, Codable, Sendable {
     case builder
     case wireshark
-
-    var title: String {
-        switch self {
-        case .builder:
-            return "Filter Builder"
-        case .wireshark:
-            return "Wireshark Filter…"
-        }
-    }
 }
 
 struct PacketWiresharkFilterState: Equatable, Sendable {

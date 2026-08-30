@@ -356,6 +356,12 @@
                                                 <action selector="focusSidebarFilter:" target="Ady-hI-5gd" id="BPn-Yx-pjs"/>
                                             </connections>
                                         </menuItem>
+                                        <menuItem title="Focus Packet Detail Filter" keyEquivalent="f" id="PDI-FL-tEr">
+                                            <modifierMask key="keyEquivalentModifierMask" option="YES" command="YES"/>
+                                            <connections>
+                                                <action selector="focusPacketDetailFilter:" target="Ady-hI-5gd" id="PDI-FL-act"/>
+                                            </connections>
+                                        </menuItem>
                                         <menuItem title="Enter Full Screen" keyEquivalent="f" id="4J7-dP-txa">
                                             <modifierMask key="keyEquivalentModifierMask" control="YES" command="YES"/>
                                             <connections>

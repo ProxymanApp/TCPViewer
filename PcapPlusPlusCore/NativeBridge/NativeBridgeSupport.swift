@@ -349,6 +349,7 @@ enum NativeBridgeMapper {
             fieldName: descriptor.fieldName,
             value: descriptor.value,
             rawValue: descriptor.rawValue,
+            displayFilterExpression: descriptor.displayFilterExpression,
             kind: detailNodeKind(descriptor.kind),
             severity: detailNodeSeverity(descriptor.severity),
             byteRange: packetByteRange(descriptor.byteRange),

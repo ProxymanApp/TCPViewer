@@ -403,6 +403,7 @@ final class PCPPNativePacketDetailNodeDescriptor {
     let fieldName: String
     let value: String?
     let rawValue: String?
+    let displayFilterExpression: String?
     let kind: String
     let severity: String
     let byteRange: PCPPNativePacketByteRangeDescriptor?
@@ -415,6 +416,7 @@ final class PCPPNativePacketDetailNodeDescriptor {
         fieldName: String,
         value: String?,
         rawValue: String?,
+        displayFilterExpression: String? = nil,
         kind: String,
         severity: String,
         byteRange: PCPPNativePacketByteRangeDescriptor?,
@@ -426,6 +428,7 @@ final class PCPPNativePacketDetailNodeDescriptor {
         self.fieldName = fieldName
         self.value = value
         self.rawValue = rawValue
+        self.displayFilterExpression = displayFilterExpression
         self.kind = kind
         self.severity = severity
         self.byteRange = byteRange
