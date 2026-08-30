@@ -804,6 +804,45 @@ struct WindowControllerTests {
         await tearDown(controller)
     }
 
+    @Test func captureImportResultReportsOnlyOpenedFilesAndTheFirstFailure() async throws {
+        let openedURL = TCPViewerCaptureFileImportPolicy.standardizedFileURL(URL(fileURLWithPath: "/tmp/import-opened.pcap"))
+        let failedURL = TCPViewerCaptureFileImportPolicy.standardizedFileURL(URL(fileURLWithPath: "/tmp/import-failed.pcapng"))
+        let openedDocument = FakeOfflineDocument(
+            url: openedURL,
+            metadata: CaptureDocumentMetadata(format: .pcap),
+            openPlan: .completed([makePacket(packetNumber: 1, source: .offline, transportHint: .tcp)])
+        )
+        let importError = TCPViewerCoreError(code: .offlineFileOpenFailed, message: "Corrupt capture fixture.")
+        let failedDocument = FakeOfflineDocument(
+            url: failedURL,
+            metadata: CaptureDocumentMetadata(format: .pcapng),
+            openPlan: FakeOfflineDocument.LoadPlan(
+                batches: [],
+                progress: [],
+                error: importError
+            )
+        )
+        let controller = TCPViewerWorkspaceController(
+            services: TCPViewerServiceRegistry(core: FakeTCPViewerCore(
+                interfaceInventories: [[makeInterface(id: "en0", displayName: "Wi-Fi")]],
+                documentFactory: { url in url == failedURL ? failedDocument : openedDocument }
+            ))
+        )
+
+        let result = await controller.importDocumentsWithResult(at: [openedURL, failedURL])
+        let reportedError = try #require(result.error as? TCPViewerCoreError)
+
+        #expect(result.importedURLs == [openedURL])
+        #expect(reportedError == importError)
+        #expect(controller.snapshot.packetIngestState.importedFiles.map(\.url) == [openedURL])
+
+        let duplicateResult = await controller.importDocumentsWithResult(at: [openedURL])
+        #expect(duplicateResult.importedURLs.isEmpty)
+        #expect(duplicateResult.error == nil)
+
+        await tearDown(controller)
+    }
+
     @Test func captureFileImportPolicyAcceptsOnlyPcapAndPcapNgExtensions() {
         #expect(TCPViewerCaptureFileImportPolicy.isSupportedCaptureFileURL(URL(fileURLWithPath: "/tmp/sample.pcap")))
         #expect(TCPViewerCaptureFileImportPolicy.isSupportedCaptureFileURL(URL(fileURLWithPath: "/tmp/sample.PCAPNG")))

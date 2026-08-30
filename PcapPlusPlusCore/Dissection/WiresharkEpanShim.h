@@ -120,6 +120,12 @@ typedef enum TCPViewerWiresharkFollowPacketStatus {
     TCPViewerWiresharkFollowPacketLimitReached = 1,
 } TCPViewerWiresharkFollowPacketStatus;
 
+typedef enum TCPViewerWiresharkFollowDirection {
+    TCPViewerWiresharkFollowBothDirections = 0,
+    TCPViewerWiresharkFollowClientToServer = 1,
+    TCPViewerWiresharkFollowServerToClient = 2,
+} TCPViewerWiresharkFollowDirection;
+
 typedef struct TCPViewerWiresharkExceptionReport {
     bool isCriticalException;
     unsigned long exceptionGroup;
@@ -157,16 +163,22 @@ bool TCPViewerWiresharkSessionTCPStreamIdentifier(
 );
 TCPViewerWiresharkSummaryResult *TCPViewerWiresharkSessionSummarizePacket(TCPViewerWiresharkSession *session, const TCPViewerWiresharkPacketContext *context);
 TCPViewerWiresharkInspectionResult *TCPViewerWiresharkSessionInspectPacket(TCPViewerWiresharkSession *session, const TCPViewerWiresharkPacketContext *context);
-bool TCPViewerWiresharkSessionBeginFollowTCPStream(TCPViewerWiresharkSession *session, const TCPViewerWiresharkPacketContext *selectedContext);
+bool TCPViewerWiresharkSessionBeginFollowTCPStream(
+    TCPViewerWiresharkSession *session,
+    const TCPViewerWiresharkPacketContext *selectedContext,
+    TCPViewerWiresharkFollowDirection direction
+);
 TCPViewerWiresharkFollowPacketStatus TCPViewerWiresharkSessionProcessFollowPacket(
     TCPViewerWiresharkSession *session,
     const TCPViewerWiresharkPacketContext *context,
-    size_t maximumPayloadBytes
+    size_t maximumPayloadBytes,
+    TCPViewerWiresharkFollowDirection direction
 );
 TCPViewerWiresharkFollowResult *TCPViewerWiresharkSessionFinishFollowTCPStream(
     TCPViewerWiresharkSession *session,
     size_t maximumPayloadBytes,
-    size_t maximumRecordCount
+    size_t maximumRecordCount,
+    TCPViewerWiresharkFollowDirection direction
 );
 void TCPViewerWiresharkSessionCancelFollowTCPStream(TCPViewerWiresharkSession *session);
 TCPViewerWiresharkExceptionReport *TCPViewerWiresharkSessionCopyLastCriticalException(TCPViewerWiresharkSession *session);

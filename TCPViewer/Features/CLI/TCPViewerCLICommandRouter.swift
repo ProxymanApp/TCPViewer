@@ -155,17 +155,18 @@ final class TCPViewerCLICommandRouter: TCPViewerCLICommandRouting {
             guard sessionCount == 0 || (sessionCount == 1 && urls.count == 1) else {
                 throw CLIError(code: "invalid_parameter", message: "A tcpviewsession must be imported by itself.")
             }
-            appDelegate.cliImportCaptureURLs(urls) { succeeded in
-                guard succeeded else {
-                    completion(self.failure(request, code: "import_failed", message: "TCP Viewer could not import the selected file."))
-                    return
-                }
+            appDelegate.cliImportCaptureURLs(urls) { result in
                 let packetCount = (try? appDelegate.cliWorkspaceViewModel().mcpWorkspaceSnapshot().totalPacketCount) ?? 0
-                completion(self.success(request, data: [
-                    "imported_files": .array(urls.map { .string($0.path) }),
-                    "imported_file_count": .int(urls.count),
+                let data: [String: TCPViewerCLIValue] = [
+                    "imported_files": .array(result.importedURLs.map { .string($0.path) }),
+                    "imported_file_count": .int(result.importedURLs.count),
                     "packet_count": .int(packetCount),
-                ]))
+                ]
+                if let error = result.error {
+                    completion(self.failure(request, code: "import_failed", error: error, data: data))
+                } else {
+                    completion(self.success(request, data: data))
+                }
             }
         } catch let error as CLIError {
             completion(failure(request, code: error.code, message: error.message))
@@ -225,11 +226,17 @@ final class TCPViewerCLICommandRouter: TCPViewerCLICommandRouting {
             guard ["text", "hex", "base64"].contains(encoding) else {
                 throw CLIError(code: "invalid_parameter", message: "encoding is invalid.")
             }
+            let includedDirection: TCPFollowDirection? = switch direction {
+            case "client-to-server": .clientToServer
+            case "server-to-client": .serverToClient
+            default: nil
+            }
             let viewModel = try appDelegate.cliWorkspaceViewModel()
             let limits = TCPFollowLimits(
                 maximumCandidatePacketCount: Limit.maximumFollowCandidates,
                 maximumPayloadBytes: maximumBytes,
-                maximumRecordCount: maximumRecords
+                maximumRecordCount: maximumRecords,
+                includedDirection: includedDirection
             )
             viewModel.followTCPStream(
                 containing: packetID,
@@ -566,12 +573,28 @@ final class TCPViewerCLICommandRouter: TCPViewerCLICommandRouting {
         .success(requestID: request.requestID, command: request.command, data: data)
     }
 
-    private func failure(_ request: TCPViewerCLIRequest, code: String, error: Error) -> TCPViewerCLIResponse {
-        failure(request, code: code, message: error.localizedDescription)
+    private func failure(
+        _ request: TCPViewerCLIRequest,
+        code: String,
+        error: Error,
+        data: [String: TCPViewerCLIValue]? = nil
+    ) -> TCPViewerCLIResponse {
+        failure(request, code: code, message: error.localizedDescription, data: data)
     }
 
-    private func failure(_ request: TCPViewerCLIRequest, code: String, message: String) -> TCPViewerCLIResponse {
-        .failure(requestID: request.requestID, command: request.command, code: code, message: message)
+    private func failure(
+        _ request: TCPViewerCLIRequest,
+        code: String,
+        message: String,
+        data: [String: TCPViewerCLIValue]? = nil
+    ) -> TCPViewerCLIResponse {
+        .failure(
+            requestID: request.requestID,
+            command: request.command,
+            code: code,
+            message: message,
+            data: data
+        )
     }
 
     private struct CLIError: Error {

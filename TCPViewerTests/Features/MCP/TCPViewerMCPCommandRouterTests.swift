@@ -183,11 +183,23 @@ struct TCPViewerMCPCommandRouterTests {
                 "operator": .string("exists"),
             ])]),
             "apply_result_pagination": .bool(true),
-            "offset": .int(1),
             "limit": .int(1),
         ])
         #expect(selectedPage.success)
         #expect(source.exportedIDs == [2])
+
+        let nextSelectedPage = await routeMCP(router, command: .exportPackets, params: [
+            "path": .string(directory.appendingPathComponent("next-selected-page.pcapng").path),
+            "filters": .array([.object([
+                "field": .string("packet_id"),
+                "operator": .string("exists"),
+            ])]),
+            "apply_result_pagination": .bool(true),
+            "offset": .int(1),
+            "limit": .int(1),
+        ])
+        #expect(nextSelectedPage.success)
+        #expect(source.exportedIDs == [1])
 
         let start = await routeMCP(router, command: .startCapture, params: [
             "interface_id": .string("en0"),
