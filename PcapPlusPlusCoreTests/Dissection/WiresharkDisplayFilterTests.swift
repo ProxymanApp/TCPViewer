@@ -73,6 +73,12 @@ struct WiresharkDisplayFilterTests {
         #expect(validation.diagnostics.isEmpty)
     }
 
+    @Test func routineWiresharkLogsAreSuppressed() {
+        _ = WiresharkEpanSession.validateDisplayFilter("tcp")
+
+        #expect(WiresharkEpanSession.testFiltersRoutineLogs)
+    }
+
     @Test func deprecatedTokenRemainsApplicableAndReportsAWarning() {
         let validation = WiresharkEpanSession.validateDisplayFilter("bootp")
 

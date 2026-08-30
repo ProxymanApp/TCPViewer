@@ -635,8 +635,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        // Cmd-F belongs to the packet filter, so remove the storyboard Find conflict.
-        removeFindShortcutConflict(in: editMenu)
+        // The packet filters own Cmd-F and Cmd-Option-F, so remove both standard Find conflicts.
+        removeFilterShortcutConflicts(in: editMenu)
 
         if let existingItem = editMenu.items.first(where: { $0.action == #selector(TCPViewerWindowController.focusStructuredFilter(_:)) }) {
             configureFilterMenuItem(existingItem)
@@ -691,19 +691,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         item.keyEquivalentModifierMask = [.command]
     }
 
-    private func removeFindShortcutConflict(in menu: NSMenu) {
+    func removeFilterShortcutConflicts(in menu: NSMenu) {
         let findPanelAction = NSSelectorFromString("performFindPanelAction:")
 
         for item in menu.items {
+            let modifiers = item.keyEquivalentModifierMask.intersection([.command, .option, .control, .shift])
+            let conflictsWithPacketFilter = modifiers == [.command]
+                || modifiers == [.command, .option]
             if item.action == findPanelAction,
                item.keyEquivalent.lowercased() == "f",
-               item.keyEquivalentModifierMask.intersection([.option, .control, .shift]).isEmpty {
+               conflictsWithPacketFilter {
                 item.keyEquivalent = ""
                 item.keyEquivalentModifierMask = []
             }
 
             if let submenu = item.submenu {
-                removeFindShortcutConflict(in: submenu)
+                removeFilterShortcutConflicts(in: submenu)
             }
         }
     }

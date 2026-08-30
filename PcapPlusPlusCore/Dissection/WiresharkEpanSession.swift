@@ -741,6 +741,10 @@ extension WiresharkEpanSession {
         Int(TCPViewerWiresharkTestDisplayFilterCompilationCount())
     }
 
+    static var testFiltersRoutineLogs: Bool {
+        TCPViewerWiresharkTestFiltersRoutineLogs()
+    }
+
     var testHasActiveDisplayFilter: Bool {
         TCPViewerWiresharkSessionTestHasActiveDisplayFilter(handle)
     }

@@ -246,6 +246,7 @@ bool TCPViewerWiresharkSessionTestInjectCriticalException(TCPViewerWiresharkSess
 void TCPViewerWiresharkTestResetDisplayFilterCompilationCount(void);
 size_t TCPViewerWiresharkTestDisplayFilterCompilationCount(void);
 bool TCPViewerWiresharkSessionTestHasActiveDisplayFilter(TCPViewerWiresharkSession *session);
+bool TCPViewerWiresharkTestFiltersRoutineLogs(void);
 #endif
 
 #ifdef __cplusplus

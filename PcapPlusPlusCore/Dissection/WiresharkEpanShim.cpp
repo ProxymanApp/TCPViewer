@@ -41,6 +41,7 @@
 #include <wiretap/wtap_opttypes.h>
 #include <wsutil/buffer.h>
 #include <wsutil/filesystem.h>
+#include <wsutil/wslog.h>
 
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
@@ -1353,6 +1354,8 @@ private:
     explicit WiresharkRuntime(const char *personalConfigurationDirectory)
     {
         std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
+        // Display-filter compilation is frequent, so keep embedded Wireshark output to actionable diagnostics.
+        ws_log_set_level(LOG_LEVEL_WARNING);
         if (personalConfigurationDirectory == nullptr || personalConfigurationDirectory[0] == '\0') {
             available_ = false;
             unavailableReason_ = "Wireshark personal configuration directory is unavailable.";
@@ -3221,5 +3224,16 @@ bool TCPViewerWiresharkSessionTestHasActiveDisplayFilter(TCPViewerWiresharkSessi
     std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
     std::lock_guard<std::mutex> sessionLock(session->mutex);
     return session->activeDisplayFilter != nullptr;
+}
+
+bool TCPViewerWiresharkTestFiltersRoutineLogs(void)
+{
+    std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
+    return !ws_log_msg_is_active("DFilter", LOG_LEVEL_NOISY)
+        && !ws_log_msg_is_active("DFilter", LOG_LEVEL_DEBUG)
+        && !ws_log_msg_is_active("DFilter", LOG_LEVEL_INFO)
+        && !ws_log_msg_is_active("DFilter", LOG_LEVEL_MESSAGE)
+        && ws_log_msg_is_active("DFilter", LOG_LEVEL_WARNING)
+        && ws_log_msg_is_active("DFilter", LOG_LEVEL_CRITICAL);
 }
 #endif
