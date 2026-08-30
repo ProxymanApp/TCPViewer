@@ -46,6 +46,23 @@ struct InspectorPipelineTests {
         #expect(normalized.captureFilterExpression == "tcp port 443")
     }
 
+    @Test func nativeDetailNodeWithoutWiresharkExpressionKeepsNil() {
+        let descriptor = PCPPNativePacketDetailNodeDescriptor(
+            identifier: "tcpviewer.summary",
+            name: "Summary",
+            fieldName: "tcpviewer.summary",
+            value: "Synthetic summary",
+            rawValue: nil,
+            kind: PacketDetailNodeKind.field.rawValue,
+            severity: PacketDetailNodeSeverity.normal.rawValue,
+            byteRange: nil,
+            jumpTargetPacketIdentifier: nil,
+            children: []
+        )
+
+        #expect(NativeBridgeMapper.packetDetailNode(descriptor).displayFilterExpression == nil)
+    }
+
     @Test func livePacketBatchBufferFlushesByCountTimerAndStop() {
         var buffer = LivePacketBatchBuffer<Int>(maxBatchSize: 3)
 
@@ -125,6 +142,25 @@ struct InspectorPipelineTests {
         #expect(findNode(in: inspection.detailNodes, id: "wireshark.status") == nil)
         #expect(findNode(in: inspection.detailNodes, id: "wireshark.fallback") == nil)
         #expect(findNode(in: inspection.detailNodes, fieldName: "udp.length")?.byteRange == PacketByteRange(offset: 38, length: 2))
+    }
+
+    @Test func oversizedPayloadDoesNotExposeAnUnboundedDisplayFilterExpression() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let captureURL = directory.appendingPathComponent("oversized-display-filter-value.pcap")
+        let payload = Array(repeating: UInt8(0xab), count: 8 * 1_024)
+        try writePCAP(to: captureURL, packets: [makeIPv4UDPPayloadPacket(payload: payload)])
+
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
+        let packet = try #require(try await document.open().first)
+        let inspection = try await document.inspectPacket(id: packet.id)
+        let payloadNode = try #require(findNode(in: inspection.detailNodes, fieldName: "data.data"))
+
+        #expect(payloadNode.byteRange?.length == payload.count)
+        #expect(payloadNode.displayFilterExpression == nil)
+        #expect(findNode(in: inspection.detailNodes, fieldName: "udp")?.displayFilterExpression == "udp")
+        #expect(findNode(in: inspection.detailNodes, fieldName: "udp.length")?.displayFilterExpression != nil)
     }
 
     @Test func inspectionDataRemainsValidAfterNativeResultRelease() async throws {
@@ -441,6 +477,11 @@ struct InspectorPipelineTests {
         let tcpPayload = try #require(findNode(in: inspection.detailNodes, fieldName: "tcp.payload"))
         #expect(tcpPayload.byteRange == PacketByteRange(offset: 54, length: 9))
         #expect(tcpPayload.rawValue?.hasSuffix("de ad be ef") == true)
+        let payloadExpression = try #require(tcpPayload.displayFilterExpression)
+        let validation = await document.activateDisplayFilter(payloadExpression, generation: 41)
+        #expect(validation.status == .valid)
+        let matches = try await document.evaluateDisplayFilter(packetIDs: packets.map(\.id), generation: 41)
+        #expect(matches.matchingPacketIDs == [secondPacket.id])
         #expect(findNode(in: inspection.detailNodes, fieldName: "wireshark.fallback") == nil)
     }
 
@@ -472,8 +513,27 @@ struct InspectorPipelineTests {
 
         let inspection = try await document.inspectPacket(id: clientHello.id)
         let tlsNode = try #require(findNode(in: inspection.detailNodes, fieldName: "tls"))
+        let serverNameNode = try #require(findNode(in: tlsNode.children, fieldName: "tls.handshake.extensions_server_name"))
+        let tlsExpression = try #require(tlsNode.displayFilterExpression)
+        #expect(tlsExpression == "tls")
         #expect(findNode(in: tlsNode.children, fieldName: "tls.handshake.type")?.value?.localizedCaseInsensitiveContains("client hello") == true)
-        #expect(findNode(in: tlsNode.children, fieldName: "tls.handshake.extensions_server_name")?.value == "www.google.com")
+        #expect(serverNameNode.value == "www.google.com")
+        #expect(serverNameNode.displayFilterExpression == "tls.handshake.extensions_server_name == \"www.google.com\"")
+
+        let tlsValidation = await document.activateDisplayFilter(tlsExpression, generation: 42)
+        #expect(tlsValidation.status == .valid)
+        let tlsMatches = try await document.evaluateDisplayFilter(packetIDs: packets.map(\.id), generation: 42)
+        #expect(Set(tlsMatches.matchingPacketIDs) == Set(packets.map(\.id)))
+
+        let serverInspection = try await document.inspectPacket(id: serverHello.id)
+        let cipherSuiteNode = try #require(findNode(in: serverInspection.detailNodes, fieldName: "tls.handshake.ciphersuite"))
+        let cipherSuiteExpression = try #require(cipherSuiteNode.displayFilterExpression)
+        #expect(cipherSuiteExpression == "tls.handshake.ciphersuite == 0x1301")
+
+        let cipherSuiteValidation = await document.activateDisplayFilter(cipherSuiteExpression, generation: 43)
+        #expect(cipherSuiteValidation.status == .valid)
+        let cipherSuiteMatches = try await document.evaluateDisplayFilter(packetIDs: packets.map(\.id), generation: 43)
+        #expect(cipherSuiteMatches.matchingPacketIDs.contains(serverHello.id))
     }
 
     @Test func wiresharkDisplayFilterMatchesSNIAndKeepsPreviousFilterAfterInvalidApply() async throws {
@@ -493,7 +553,10 @@ struct InspectorPipelineTests {
         let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
         let packets = try await document.open()
         let clientHello = try #require(packets.first)
-        let expression = "tls.handshake.extensions_server_name == \"\(hostName)\""
+        let inspection = try await document.inspectPacket(id: clientHello.id)
+        let serverNameNode = try #require(findNode(in: inspection.detailNodes, fieldName: "tls.handshake.extensions_server_name"))
+        let expression = try #require(serverNameNode.displayFilterExpression)
+        #expect(expression == "tls.handshake.extensions_server_name == \"\(hostName)\"")
 
         let validation = await document.activateDisplayFilter(expression, generation: 41)
         #expect(validation.status == .valid)
@@ -558,6 +621,29 @@ struct InspectorPipelineTests {
         for captureURL in [pcapURL, pcapNGURL] {
             let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
             let packets = try await document.open()
+            let httpPacket = try #require(packets.first { $0.packetNumber == 6 })
+            let httpInspection = try await document.inspectPacket(id: httpPacket.id)
+            let methodExpression = try #require(findNode(
+                in: httpInspection.detailNodes,
+                fieldName: "http.request.method"
+            )?.displayFilterExpression)
+            let hostExpression = try #require(findNode(
+                in: httpInspection.detailNodes,
+                fieldName: "http.host"
+            )?.displayFilterExpression)
+            #expect(methodExpression == "http.request.method == \"GET\"")
+            #expect(hostExpression == "http.host == \"example.com\"")
+
+            for (offset, expression) in [methodExpression, hostExpression].enumerated() {
+                let generation = UInt64(1_000 + offset)
+                let validation = await document.activateDisplayFilter(expression, generation: generation)
+                #expect(validation.status == .valid)
+                let batch = try await document.evaluateDisplayFilter(
+                    packetIDs: packets.map(\.id),
+                    generation: generation
+                )
+                #expect(batch.matchingPacketIDs == [httpPacket.id])
+            }
 
             for (offset, expectation) in expectedPacketNumbersByExpression.enumerated() {
                 let generation = UInt64(offset + 1)
@@ -577,6 +663,50 @@ struct InspectorPipelineTests {
                     "`\(expectation.0)` drifted in \(captureURL.lastPathComponent)"
                 )
             }
+        }
+    }
+
+    @Test func cleartextHTTP2InspectorRowsExposeExecutableDisplayFilters() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let captureURL = directory.appendingPathComponent("http2-cleartext.pcap")
+        try writePCAP(to: captureURL, packets: [makeIPv4HTTP2RequestPacket()])
+
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
+        let packets = try await document.open()
+        let packet = try #require(packets.first)
+        #expect(packet.protocolSummary == "HTTP2")
+        let inspection = try await document.inspectPacket(id: packet.id)
+        let methodNode = try #require(findNode(in: inspection.detailNodes, fieldName: "http2.headers.method"))
+        let authorityNode = try #require(findNode(in: inspection.detailNodes, fieldName: "http2.headers.authority"))
+        let pathNode = try #require(findNode(in: inspection.detailNodes, fieldName: "http2.headers.path"))
+        let streamIDNode = try #require(findFirstNode(in: inspection.detailNodes) {
+            $0.fieldName == "http2.streamid" && $0.displayFilterExpression == "http2.streamid == 1"
+        })
+        let frameTypeNode = try #require(findFirstNode(in: inspection.detailNodes) {
+            $0.fieldName == "http2.type" && $0.displayFilterExpression == "http2.type == 1"
+        })
+        let dataNode = try #require(findNode(in: inspection.detailNodes, fieldName: "http2.data.data"))
+
+        #expect(methodNode.value == "GET")
+        #expect(methodNode.displayFilterExpression == "http2.headers.method == \"GET\"")
+        #expect(authorityNode.value == "example.com")
+        #expect(authorityNode.displayFilterExpression == "http2.headers.authority == \"example.com\"")
+        #expect(pathNode.value == "/")
+        #expect(pathNode.displayFilterExpression == "http2.headers.path == \"/\"")
+        #expect(streamIDNode.displayFilterExpression == "http2.streamid == 1")
+        #expect(frameTypeNode.displayFilterExpression == "http2.type == 1")
+        #expect(dataNode.displayFilterExpression == "http2.data.data == 68:65:6c:6c:6f")
+
+        let expressions = try [methodNode, authorityNode, pathNode, streamIDNode, frameTypeNode, dataNode]
+            .map { try #require($0.displayFilterExpression) }
+        for (offset, expression) in expressions.enumerated() {
+            let generation = UInt64(100 + offset)
+            let validation = await document.activateDisplayFilter(expression, generation: generation)
+            #expect(validation.status == .valid)
+            let matches = try await document.evaluateDisplayFilter(packetIDs: [packet.id], generation: generation)
+            #expect(matches.matchingPacketIDs == [packet.id])
         }
     }
 
@@ -1572,17 +1702,27 @@ private func makeIPv4TCPSYNOptionsPacket() -> Data {
     ])
 }
 
-private func makeIPv4UDPPayloadPacket() -> Data {
-    Data([
+private func makeIPv4UDPPayloadPacket(payload: [UInt8] = [0xca, 0xfe, 0xba, 0xbe]) -> Data {
+    let udpLength = UInt16(8 + payload.count)
+    let ipv4TotalLength = UInt16(20 + Int(udpLength))
+    var packet = Data([
         0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
         0x00, 0x11, 0x22, 0x33, 0x44, 0x55,
         0x08, 0x00,
-        0x45, 0x00, 0x00, 0x20, 0x12, 0x35, 0x40, 0x00, 0x40, 0x11, 0x00, 0x00,
+        0x45, 0x00,
+    ])
+    packet.appendBigEndian(ipv4TotalLength)
+    packet.append(contentsOf: [
+        0x12, 0x35, 0x40, 0x00, 0x40, 0x11, 0x00, 0x00,
         0xc0, 0xa8, 0x00, 0x01,
         0xc0, 0xa8, 0x00, 0x02,
-        0x0f, 0xa0, 0x13, 0x88, 0x00, 0x0c, 0x00, 0x00,
-        0xca, 0xfe, 0xba, 0xbe,
     ])
+    packet.appendBigEndian(UInt16(4_000))
+    packet.appendBigEndian(UInt16(5_000))
+    packet.appendBigEndian(udpLength)
+    packet.appendBigEndian(UInt16(0))
+    packet.append(contentsOf: payload)
+    return packet
 }
 
 private func makeIPv4DNSResponsePacket() -> Data {
@@ -1681,6 +1821,26 @@ private func makeIPv4HTTPConversationPackets() -> [Data] {
             payload: request
         ),
     ]
+}
+
+private func makeIPv4HTTP2RequestPacket() -> Data {
+    var payload = Array("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".utf8)
+    payload.append(contentsOf: [
+        0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x10, 0x01, 0x04, 0x00, 0x00, 0x00, 0x01,
+        0x82, 0x87, 0x84, 0x01, 0x0b,
+    ])
+    payload.append(contentsOf: Array("example.com".utf8))
+    payload.append(contentsOf: [
+        0x00, 0x00, 0x05, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+        0x68, 0x65, 0x6c, 0x6c, 0x6f,
+    ])
+    return makeIPv4TCPPacket(
+        sourcePort: 54_321,
+        destinationPort: 80,
+        identification: 0x2243,
+        payload: payload
+    )
 }
 
 private func makeIPv4WebSocketTextFramePacket() -> Data {

@@ -647,6 +647,7 @@ final class WiresharkEpanSession {
             fieldName: Self.string(node.fieldName) ?? "",
             value: Self.string(node.value),
             rawValue: Self.string(node.rawValue),
+            displayFilterExpression: Self.string(node.displayFilterExpression),
             kind: Self.string(node.kind) ?? PacketDetailNodeKind.field.rawValue,
             severity: Self.string(node.severity) ?? PacketDetailNodeSeverity.normal.rawValue,
             byteRange: byteRange(node.byteRange),

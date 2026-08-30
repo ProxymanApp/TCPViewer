@@ -39,6 +39,7 @@ typedef struct TCPViewerWiresharkDetailNode {
     const char *fieldName;
     const char *value;
     const char *rawValue;
+    const char *displayFilterExpression;
     const char *kind;
     const char *severity;
     TCPViewerWiresharkByteRange *byteRange;

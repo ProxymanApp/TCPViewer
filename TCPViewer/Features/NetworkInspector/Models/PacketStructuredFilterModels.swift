@@ -496,7 +496,7 @@ final class PacketStructuredFilterService {
                 packet.transportHint.rawValue,
                 packet.protocolSummary,
                 packet.layers.map(\.name).joined(separator: " "),
-            ])
+            ]) + packet.layers.map(\.name)
         case .source:
             return endpointValues(packet.endpoints.source)
         case .destination:

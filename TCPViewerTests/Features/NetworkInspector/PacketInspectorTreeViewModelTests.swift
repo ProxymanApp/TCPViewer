@@ -228,9 +228,160 @@ struct PacketInspectorTreeViewModelTests {
         #expect(collapseAllItem.title == "Collapse All")
         #expect(collapseAllItem.isEnabled)
         #expect(secondSeparatorItem.isSeparatorItem)
-        #expect(filterItem.title == "Filter")
+        #expect(filterItem.title == "Apply as Filter")
         #expect(filterItem.isEnabled)
+        #expect(filterItem.toolTip == "Apply a filter from the selected packet detail field.")
         #expect(filterItem.keyEquivalent.isEmpty)
+    }
+
+    @MainActor
+    @Test func inspectorContextMenuAppliesSelectedWiresharkFilterThroughDelegate() throws {
+        let packet = makePacket()
+        let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        let delegate = PacketInspectorDelegateSpy()
+        controller.delegate = delegate
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: makeSnapshot(
+            packet: packet,
+            inspectionState: loadedInspectionState(packet: packet, inspection: makeNestedInspection(for: packet))
+        ))
+
+        let outlineView = try #require(firstSubview(ofType: NSOutlineView.self, in: controller.view))
+        let menu = try #require(outlineView.menu)
+        outlineView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        controller.menuNeedsUpdate(menu)
+
+        let filterItem = try #require(menu.items.first { $0.title == "Apply as Filter" })
+        let action = try #require(filterItem.action)
+        #expect(filterItem.isEnabled)
+        #expect(NSApp.sendAction(action, to: filterItem.target, from: filterItem))
+        #expect(delegate.filterRequest?.displayFilterExpression == "frame")
+        #expect(delegate.filterRequest?.nativeFilter == nil)
+    }
+
+    @MainActor
+    @Test func inspectorContextMenuKeepsWiresharkExpressionWhileInspectorSearchIsActive() throws {
+        let packet = makePacket()
+        let inspection = PacketInspection(
+            packetID: packet.id,
+            packetNumber: packet.packetNumber,
+            rawBytes: Data([0x01, 0x02]),
+            detailNodes: [
+                PacketDetailNode(
+                    id: "tls",
+                    name: "TLS",
+                    fieldName: "tls",
+                    kind: .layer,
+                    children: [
+                        PacketDetailNode(
+                            id: "tls.cipher",
+                            name: "Cipher Suite",
+                            fieldName: "tls.handshake.ciphersuite",
+                            value: "TLS_AES_128_GCM_SHA256 (0x1301)",
+                            displayFilterExpression: "tls.handshake.ciphersuite == 0x1301"
+                        ),
+                    ]
+                ),
+            ],
+            decodeStatus: PacketDecodeStatus(kind: .complete)
+        )
+        let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        let delegate = PacketInspectorDelegateSpy()
+        controller.delegate = delegate
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: makeSnapshot(
+            packet: packet,
+            inspectionState: loadedInspectionState(packet: packet, inspection: inspection)
+        ))
+
+        let outlineView = try #require(firstSubview(ofType: NSOutlineView.self, in: controller.view))
+        let searchField = try #require(firstSubview(ofType: NSSearchField.self, in: controller.view))
+        searchField.stringValue = "Cipher Suite"
+        controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: searchField))
+        #expect(outlineView.numberOfRows == 2)
+
+        outlineView.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        let menu = try #require(outlineView.menu)
+        controller.menuNeedsUpdate(menu)
+        let filterItem = try #require(menu.items.first { $0.title == "Apply as Filter" })
+        let action = try #require(filterItem.action)
+
+        #expect(filterItem.isEnabled)
+        #expect(NSApp.sendAction(action, to: filterItem.target, from: filterItem))
+        #expect(delegate.filterRequest?.displayFilterExpression == "tls.handshake.ciphersuite == 0x1301")
+        #expect(delegate.filterRequest?.nativeFilter == nil)
+    }
+
+    @MainActor
+    @Test func inspectorContextMenuAppliesNativeFallbackFromSelectedRow() throws {
+        let packet = makePacket()
+        let inspection = PacketInspection(
+            packetID: packet.id,
+            packetNumber: packet.packetNumber,
+            rawBytes: Data([0x01, 0x02]),
+            detailNodes: [
+                PacketDetailNode(
+                    id: "ipv4",
+                    name: "IPv4",
+                    fieldName: "ip",
+                    kind: .layer,
+                    children: [
+                        PacketDetailNode(id: "ipv4.src", name: "Source", fieldName: "ip.src", value: "10.0.0.1"),
+                    ]
+                ),
+            ],
+            decodeStatus: PacketDecodeStatus(kind: .complete)
+        )
+        let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        let delegate = PacketInspectorDelegateSpy()
+        controller.delegate = delegate
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: makeSnapshot(
+            packet: packet,
+            inspectionState: loadedInspectionState(packet: packet, inspection: inspection)
+        ))
+
+        let outlineView = try #require(firstSubview(ofType: NSOutlineView.self, in: controller.view))
+        let menu = try #require(outlineView.menu)
+        outlineView.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        controller.menuNeedsUpdate(menu)
+
+        let filterItem = try #require(menu.items.first { $0.title == "Apply as Filter" })
+        let action = try #require(filterItem.action)
+        #expect(filterItem.isEnabled)
+        #expect(NSApp.sendAction(action, to: filterItem.target, from: filterItem))
+        #expect(delegate.filterRequest?.displayFilterExpression == nil)
+        #expect(delegate.filterRequest?.nativeFilter?.query == .source)
+        #expect(delegate.filterRequest?.nativeFilter?.text == "^10\\.0\\.0\\.1$")
+    }
+
+    @MainActor
+    @Test func inspectorContextMenuRequiresOneFilterableRowButPreservesMultiSelectionForCopy() throws {
+        let packet = makePacket()
+        let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        let delegate = PacketInspectorDelegateSpy()
+        controller.delegate = delegate
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: makeSnapshot(
+            packet: packet,
+            inspectionState: loadedInspectionState(packet: packet, inspection: makeNestedInspection(for: packet))
+        ))
+
+        let outlineView = try #require(firstSubview(ofType: NSOutlineView.self, in: controller.view))
+        let menu = try #require(outlineView.menu)
+        outlineView.selectRowIndexes(IndexSet(integersIn: 0...1), byExtendingSelection: false)
+        controller.menuNeedsUpdate(menu)
+
+        #expect(outlineView.selectedRowIndexes.count == 2)
+        #expect(menu.items.first?.title == "Copy")
+        #expect(menu.items.first?.isEnabled == true)
+        #expect(menu.items.first { $0.title == "Apply as Filter" }?.isEnabled == false)
+
+        outlineView.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        controller.menuNeedsUpdate(menu)
+        let filterItem = try #require(menu.items.first { $0.title == "Apply as Filter" })
+        #expect(!filterItem.isEnabled)
+        #expect(delegate.filterRequest == nil)
     }
 
     @MainActor
@@ -291,6 +442,13 @@ struct PacketInspectorTreeViewModelTests {
 
         #expect(outlineView.selectedRow == 1)
         #expect(delegate.selectedDetailNodeID == summarySelectionID)
+        #expect(summaryItem.fieldName == nil)
+
+        let menu = try #require(outlineView.menu)
+        controller.menuNeedsUpdate(menu)
+        let filterItem = try #require(menu.items.first { $0.title == "Apply as Filter" })
+        #expect(!filterItem.isEnabled)
+        #expect(delegate.filterRequest == nil)
     }
 
     @Test func loadingStateShowsStatusMessage() {
@@ -1075,7 +1233,9 @@ struct PacketInspectorTreeViewModelTests {
                 PacketDetailNode(
                     id: "frame",
                     name: "Frame",
+                    fieldName: "frame",
                     value: "Packet \(packet.packetNumber)",
+                    displayFilterExpression: "frame",
                     kind: .layer,
                     byteRange: PacketByteRange(offset: 0, length: 2),
                     children: [
@@ -1144,6 +1304,7 @@ struct PacketInspectorTreeViewModelTests {
 private final class PacketInspectorDelegateSpy: PacketInspectorViewControllerDelegate {
     var selectedDetailNodeID: String?
     var customColumnRequest: PacketCustomColumnRequest?
+    var filterRequest: PacketInspectorFilterRequest?
 
     func packetInspectorViewController(_ controller: PacketInspectorViewController, didSelectDetailNode identifier: String?) {
         selectedDetailNodeID = identifier
@@ -1154,5 +1315,12 @@ private final class PacketInspectorDelegateSpy: PacketInspectorViewControllerDel
         didRequestCreateCustomColumn request: PacketCustomColumnRequest
     ) {
         customColumnRequest = request
+    }
+
+    func packetInspectorViewController(
+        _ controller: PacketInspectorViewController,
+        didRequestApplyFilter request: PacketInspectorFilterRequest
+    ) {
+        filterRequest = request
     }
 }

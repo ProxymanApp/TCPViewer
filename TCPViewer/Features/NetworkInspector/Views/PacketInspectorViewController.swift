@@ -11,6 +11,7 @@ import PcapPlusPlusCore
 protocol PacketInspectorViewControllerDelegate: AnyObject {
     func packetInspectorViewController(_ controller: PacketInspectorViewController, didSelectDetailNode identifier: String?)
     func packetInspectorViewController(_ controller: PacketInspectorViewController, didRequestCreateCustomColumn request: PacketCustomColumnRequest)
+    func packetInspectorViewController(_ controller: PacketInspectorViewController, didRequestApplyFilter request: PacketInspectorFilterRequest)
 }
 
 enum PacketInspectorTreeItemKind: Equatable {
@@ -89,6 +90,7 @@ final class PacketInspectorTreeItem: NSObject {
     let fieldName: String?
     let value: String?
     let rawValue: String?
+    let displayFilterExpression: String?
     let kind: PacketInspectorTreeItemKind
     let severity: PacketDetailNodeSeverity
     let byteRange: PacketByteRange?
@@ -102,6 +104,7 @@ final class PacketInspectorTreeItem: NSObject {
         fieldName: String? = nil,
         value: String? = nil,
         rawValue: String? = nil,
+        displayFilterExpression: String? = nil,
         kind: PacketInspectorTreeItemKind,
         severity: PacketDetailNodeSeverity = .normal,
         byteRange: PacketByteRange? = nil,
@@ -114,6 +117,7 @@ final class PacketInspectorTreeItem: NSObject {
         self.fieldName = fieldName
         self.value = value
         self.rawValue = rawValue
+        self.displayFilterExpression = displayFilterExpression
         self.kind = kind
         self.severity = severity
         self.byteRange = byteRange
@@ -291,6 +295,7 @@ final class PacketInspectorTreeViewModel {
             fieldName: item.fieldName,
             value: item.value,
             rawValue: item.rawValue,
+            displayFilterExpression: item.displayFilterExpression,
             kind: item.kind,
             severity: item.severity,
             byteRange: item.byteRange,
@@ -452,6 +457,7 @@ final class PacketInspectorTreeViewModel {
             fieldName: node.fieldName,
             value: displayParts.value,
             rawValue: node.rawValue,
+            displayFilterExpression: node.displayFilterExpression,
             kind: itemKind(from: node.kind),
             severity: node.severity,
             byteRange: node.byteRange,
@@ -512,7 +518,7 @@ final class PacketInspectorTreeViewModel {
         return displayText.count > Metrics.maximumInlineDisplayLength
     }
 
-    // Build non-selectable rows that preserve long summary content under the original selectable node.
+    // Build selectable synthetic rows for copying; their text is not a PacketSummary filter surface.
     private func makeSummaryItems(
         from rows: [SummaryRow],
         parentPath: String,
@@ -988,12 +994,6 @@ final class PacketInspectorViewController: NSViewController {
         return didRevealPacketDetail
     }
 
-    // Focus the always-visible filter field without changing the active query.
-    private func focusFilterField() {
-        view.window?.makeFirstResponder(filterSearchField)
-        filterSearchField.currentEditor()?.selectAll(nil)
-    }
-
     private func applyFilterText(to inspectionState: PacketInspectionState) {
         let renderChange = viewModel.render(inspectionState: inspectionState, filterText: filterSearchField.stringValue)
         applyTreeRenderChange(renderChange, inspectionState: inspectionState)
@@ -1182,6 +1182,22 @@ final class PacketInspectorViewController: NSViewController {
         )
     }
 
+    private func selectedFilterRequest() -> PacketInspectorFilterRequest? {
+        guard outlineView.selectedRowIndexes.count == 1,
+              let row = outlineView.selectedRowIndexes.first,
+              let item = outlineView.item(atRow: row) as? PacketInspectorTreeItem,
+              item.kind != .message else {
+            return nil
+        }
+
+        return PacketInspectorFilterResolver.resolve(
+            displayFilterExpression: item.displayFilterExpression,
+            fieldName: item.fieldName,
+            value: item.value ?? item.name,
+            rawValue: item.rawValue
+        )
+    }
+
     // Write inspector copy rows to the system pasteboard as plain text.
     private func copyRowsToPasteboard(_ rows: [PacketInspectorCopyRow]) {
         let text = PacketInspectorCopyFormatter.text(for: rows)
@@ -1302,16 +1318,20 @@ final class PacketInspectorViewController: NSViewController {
         delegate?.packetInspectorViewController(self, didRequestCreateCustomColumn: request)
     }
 
+    @objc private func applyFilterFromMenu(_ sender: Any?) {
+        guard let request = selectedFilterRequest() else {
+            return
+        }
+
+        delegate?.packetInspectorViewController(self, didRequestApplyFilter: request)
+    }
+
     @objc private func expandAllRowsFromMenu(_ sender: Any?) {
         expandAllInspectorRows()
     }
 
     @objc private func collapseAllRowsFromMenu(_ sender: Any?) {
         collapseAllInspectorRows()
-    }
-
-    @objc private func showFilterFromMenu(_ sender: Any?) {
-        focusFilterField()
     }
 
     private func configuredCell(for item: PacketInspectorTreeItem) -> NSTableCellView {
@@ -1501,6 +1521,7 @@ extension PacketInspectorViewController: NSMenuDelegate {
         let hasSelectedByteRanges = hasSelectedBytes()
         let hasExpandableRows = hasExpandableInspectorRows()
         let canCreateColumn = selectedCustomColumnRequest() != nil
+        let canApplyFilter = selectedFilterRequest() != nil
         menu.addItem(copySubmenuItem(hasSelectedRows: hasSelectedRows, hasSelectedByteRanges: hasSelectedByteRanges))
         menu.addItem(.separator())
         menu.addItem(createColumnItem(isEnabled: canCreateColumn))
@@ -1530,14 +1551,14 @@ extension PacketInspectorViewController: NSMenuDelegate {
         menu.addItem(.separator())
 
         let filterItem = NSMenuItem(
-            title: "Filter",
-            action: #selector(showFilterFromMenu(_:)),
+            title: "Apply as Filter",
+            action: #selector(applyFilterFromMenu(_:)),
             keyEquivalent: ""
         )
         filterItem.target = self
-        filterItem.isEnabled = hasSelectedRows
-        filterItem.toolTip = "Focus the inspector filter."
-        filterItem.image = NSImage(systemSymbolName: "line.3.horizontal.decrease.circle", accessibilityDescription: "Filter")
+        filterItem.isEnabled = canApplyFilter
+        filterItem.toolTip = "Apply a filter from the selected packet detail field."
+        filterItem.image = NSImage(systemSymbolName: "line.3.horizontal.decrease.circle", accessibilityDescription: "Apply as Filter")
         menu.addItem(filterItem)
     }
 

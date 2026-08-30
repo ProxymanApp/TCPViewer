@@ -88,6 +88,7 @@ public struct PacketDetailNode: Identifiable, Sendable, Codable, Hashable {
     public let fieldName: String
     public let value: String?
     public let rawValue: String?
+    public let displayFilterExpression: String?
     public let kind: PacketDetailNodeKind
     public let severity: PacketDetailNodeSeverity
     public let byteRange: PacketByteRange?
@@ -100,6 +101,7 @@ public struct PacketDetailNode: Identifiable, Sendable, Codable, Hashable {
         fieldName: String? = nil,
         value: String? = nil,
         rawValue: String? = nil,
+        displayFilterExpression: String? = nil,
         kind: PacketDetailNodeKind = .field,
         severity: PacketDetailNodeSeverity = .normal,
         byteRange: PacketByteRange? = nil,
@@ -111,6 +113,7 @@ public struct PacketDetailNode: Identifiable, Sendable, Codable, Hashable {
         self.fieldName = fieldName ?? id
         self.value = value
         self.rawValue = rawValue
+        self.displayFilterExpression = displayFilterExpression
         self.kind = kind
         self.severity = severity
         self.byteRange = byteRange

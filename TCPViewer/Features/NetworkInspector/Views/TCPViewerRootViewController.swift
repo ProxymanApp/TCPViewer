@@ -1476,6 +1476,19 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
         }
     }
 
+    private func presentInspectorFilterError(_ message: String) {
+        let alert = NSAlert()
+        alert.messageText = "Could Not Apply Filter"
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        if let window = view.window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
+    }
+
     private func presentSessionImportReportIfNeeded() {
         guard let report = viewModel.consumeSessionImportReportWithFailures() else {
             return
@@ -1586,6 +1599,21 @@ extension TCPViewerRootViewController: PacketInspectorViewControllerDelegate {
         didRequestCreateCustomColumn request: PacketCustomColumnRequest
     ) {
         workspaceViewController.createCustomColumn(from: request)
+    }
+
+    func packetInspectorViewController(
+        _ controller: PacketInspectorViewController,
+        didRequestApplyFilter request: PacketInspectorFilterRequest
+    ) {
+        viewModel.applyInspectorFilter(request) { [weak self] didApply, failureMessage in
+            guard didApply else {
+                if let failureMessage {
+                    self?.presentInspectorFilterError(failureMessage)
+                }
+                return
+            }
+            self?.workspaceViewController.focusStructuredFilter()
+        }
     }
 }
 
