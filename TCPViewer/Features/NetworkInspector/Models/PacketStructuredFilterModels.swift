@@ -34,7 +34,7 @@ enum PacketStructuredFilterQuery: String, CaseIterable, Codable, Identifiable, S
     var title: String {
         switch self {
         case .anyText:
-            "Any Text"
+            "Wireshark filter"
         case .urlDomain:
             "URL/Domain"
         case .protocol:

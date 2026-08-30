@@ -227,7 +227,8 @@ private final class PacketStructuredFilterRowView: NSView {
     private static let rowHeight: CGFloat = 26
     static let queryPopupLeadingOffset = checkboxWidth + controlSpacing
     static let conditionPopupLeadingOffset = queryPopupLeadingOffset + queryPopupWidth + controlSpacing
-    static let textFieldLeadingOffset = conditionPopupLeadingOffset + conditionPopupWidth + controlSpacing
+    static let conditionPopupTrailingOffset = conditionPopupLeadingOffset + conditionPopupWidth
+    static let textFieldLeadingOffset = conditionPopupTrailingOffset + controlSpacing
 
     private static let queryMenuGroups: [[PacketStructuredFilterQuery]] = [
         [.anyText, .urlDomain, .summary, .tags],
@@ -394,6 +395,7 @@ final class PacketStructuredFilterViewController: NSViewController {
         static let verticalInset: CGFloat = 6
         static let operatorWidth: CGFloat = 110
         static let footerOperatorLeadingOffset = PacketStructuredFilterRowView.queryPopupLeadingOffset
+        static let filteringIndicatorTrailingOffset = PacketStructuredFilterRowView.conditionPopupTrailingOffset
         static let footerShortcutLeadingOffset = PacketStructuredFilterRowView.textFieldLeadingOffset
         static let footerShortcutSpacing = max(0, footerShortcutLeadingOffset - footerOperatorLeadingOffset - operatorWidth)
         static let textChangeDebounceInterval: TimeInterval = 0.25
@@ -404,6 +406,7 @@ final class PacketStructuredFilterViewController: NSViewController {
     private let rootStack = NSStackView()
     private let rowStack = NSStackView()
     private let footerStack = NSStackView()
+    private let filteringIndicator = NSProgressIndicator()
     private let operatorPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let saveButton = NSButton(title: "Save", target: nil, action: nil)
     private let bottomSeparator = TCPViewerUI.separator()
@@ -432,22 +435,17 @@ final class PacketStructuredFilterViewController: NSViewController {
     ) {
         let normalizedGroup = PacketStructuredFilterGroup(filters: group.filters, operator: group.operator)
         let rebuildsRows = normalizedGroup != self.group
-        let rebuildsFooter = isFiltering != self.isFiltering
         self.customFilterItems = customFilterItems.filter { $0.mode == .builder }
         self.isFiltering = isFiltering
+        updateFilteringIndicator()
 
-        guard rebuildsRows || rebuildsFooter else {
+        guard rebuildsRows else {
             updateAddButtonStates()
             return
         }
 
         self.group = normalizedGroup
-        if rebuildsRows {
-            rebuildRows()
-        } else {
-            rebuildFooter()
-            updateAddButtonStates()
-        }
+        rebuildRows()
     }
 
     func focusLastFilterTextField() {
@@ -483,10 +481,12 @@ final class PacketStructuredFilterViewController: NSViewController {
 
         configureOperatorPopup()
         configureSaveButton()
+        configureFilteringIndicator()
         rebuildFooter()
 
         view.addSubview(rootStack)
         view.addSubview(bottomSeparator)
+        view.addSubview(filteringIndicator)
         rootStack.addArrangedSubview(rowStack)
         rootStack.addArrangedSubview(footerStack)
 
@@ -497,6 +497,11 @@ final class PacketStructuredFilterViewController: NSViewController {
             rootStack.bottomAnchor.constraint(equalTo: bottomSeparator.topAnchor),
             rowStack.widthAnchor.constraint(equalTo: rootStack.widthAnchor, constant: -(Metrics.horizontalInset * 2)),
             footerStack.widthAnchor.constraint(equalTo: rowStack.widthAnchor),
+            filteringIndicator.centerYAnchor.constraint(equalTo: footerStack.centerYAnchor),
+            filteringIndicator.trailingAnchor.constraint(
+                equalTo: footerStack.leadingAnchor,
+                constant: Metrics.filteringIndicatorTrailingOffset
+            ),
             bottomSeparator.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             bottomSeparator.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             bottomSeparator.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -552,12 +557,6 @@ final class PacketStructuredFilterViewController: NSViewController {
             footerStack.setCustomSpacing(Metrics.footerShortcutSpacing, after: operatorPopup)
         }
 
-        if isFiltering {
-            let filteringIndicator = makeFilteringIndicator()
-            footerStack.addArrangedSubview(filteringIndicator)
-            footerStack.setCustomSpacing(8, after: filteringIndicator)
-        }
-
         ["Show: ⌘F", "New: ⌘N", "Remove: ⇧⌘N", "Up: ⌘↑", "Down: ⌘↓", "On/Off: ⌘B", "Hide: ESC"].forEach { title in
             let label = TCPViewerUI.label(
                 title,
@@ -576,20 +575,28 @@ final class PacketStructuredFilterViewController: NSViewController {
         footerStack.addArrangedSubview(saveButton)
     }
 
-    // Build the small inline loader that sits before the shortcut hints.
-    private func makeFilteringIndicator() -> NSProgressIndicator {
-        let indicator = NSProgressIndicator()
-        indicator.style = .spinning
-        indicator.controlSize = .small
-        indicator.isIndeterminate = true
-        indicator.toolTip = "Filtering packets"
-        indicator.startAnimation(nil)
-        indicator.translatesAutoresizingMaskIntoConstraints = false
+    private func configureFilteringIndicator() {
+        filteringIndicator.style = .spinning
+        filteringIndicator.controlSize = .small
+        filteringIndicator.isIndeterminate = true
+        filteringIndicator.isDisplayedWhenStopped = false
+        filteringIndicator.isHidden = true
+        filteringIndicator.toolTip = "Filtering packets"
+        filteringIndicator.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            indicator.widthAnchor.constraint(equalToConstant: 14),
-            indicator.heightAnchor.constraint(equalToConstant: 14),
+            filteringIndicator.widthAnchor.constraint(equalToConstant: 14),
+            filteringIndicator.heightAnchor.constraint(equalToConstant: 14),
         ])
-        return indicator
+        updateFilteringIndicator()
+    }
+
+    private func updateFilteringIndicator() {
+        filteringIndicator.isHidden = !isFiltering
+        if isFiltering {
+            filteringIndicator.startAnimation(nil)
+        } else {
+            filteringIndicator.stopAnimation(nil)
+        }
     }
 
     private func rebuildRows() {
