@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		BA2DCC0030440B6800487713 /* ArgumentParser in Frameworks */ = {isa = PBXBuildFile; productRef = BA2DCBFF30440B6800487713 /* ArgumentParser */; };
 		BA4D26BD2F9A2F770070BE17 /* PcapPlusPlusCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BA4D26B42F9A2F760070BE17 /* PcapPlusPlusCore.framework */; };
 		BA5E00012FA800000070BE17 /* Sentry in Frameworks */ = {isa = PBXBuildFile; productRef = BA5E00032FA800000070BE17 /* Sentry */; };
 		BA9F00012FBF00000070BE17 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = BA9F00032FBF00000070BE17 /* ZIPFoundation */; };
@@ -220,6 +221,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				BA2DCC0030440B6800487713 /* ArgumentParser in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -373,6 +375,7 @@
 			);
 			name = "tcpviewer-cli";
 			packageProductDependencies = (
+				BA2DCBFF30440B6800487713 /* ArgumentParser */,
 			);
 			productName = "tcpviewer-cli";
 			productReference = BA2DC1D830440ACB00487713 /* tcpviewer-cli */;
@@ -573,6 +576,7 @@
 				BA5E00022FA800000070BE17 /* XCRemoteSwiftPackageReference "sentry-cocoa" */,
 				BA9F00022FBF00000070BE17 /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
 				BAMC0008300F00000070BE17 /* XCRemoteSwiftPackageReference "swift-sdk" */,
+				BA2DCBFE30440B6800487713 /* XCRemoteSwiftPackageReference "swift-argument-parser" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = BA4D26862F9A2F490070BE17 /* Products */;
@@ -953,7 +957,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
-				DEVELOPMENT_TEAM = "$(TCPVIEWER_DEVELOPMENT_TEAM)";
+				DEVELOPMENT_TEAM = 3X57WP8E8V;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -1018,7 +1022,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = "$(TCPVIEWER_DEVELOPMENT_TEAM)";
+				DEVELOPMENT_TEAM = 3X57WP8E8V;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
@@ -1572,6 +1576,14 @@
 				version = 2.9.1;
 			};
 		};
+		BA2DCBFE30440B6800487713 /* XCRemoteSwiftPackageReference "swift-argument-parser" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/apple/swift-argument-parser.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.8.2;
+			};
+		};
 		BA5E00022FA800000070BE17 /* XCRemoteSwiftPackageReference "sentry-cocoa" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/getsentry/sentry-cocoa.git";
@@ -1579,6 +1591,8 @@
 				kind = upToNextMajorVersion;
 				minimumVersion = 9.14.0;
 			};
+			traits = (
+			);
 		};
 		BA9F00022FBF00000070BE17 /* XCRemoteSwiftPackageReference "ZIPFoundation" */ = {
 			isa = XCRemoteSwiftPackageReference;
@@ -1603,6 +1617,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 47F2E4C3668133A54F097208 /* XCRemoteSwiftPackageReference "Sparkle" */;
 			productName = Sparkle;
+		};
+		BA2DCBFF30440B6800487713 /* ArgumentParser */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = BA2DCBFE30440B6800487713 /* XCRemoteSwiftPackageReference "swift-argument-parser" */;
+			productName = ArgumentParser;
 		};
 		BA5E00032FA800000070BE17 /* Sentry */ = {
 			isa = XCSwiftPackageProductDependency;
