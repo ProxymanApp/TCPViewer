@@ -191,7 +191,7 @@ test("builds versioned DMG file names", () => {
   );
 });
 
-test("updates only Homebrew Cask release metadata", () => {
+test("updates Homebrew Cask metadata and migrates the CLI stanza", () => {
   const cask = [
     'cask "tcp-viewer" do',
     '  version "1.9.0,30"',
@@ -209,12 +209,27 @@ test("updates only Homebrew Cask release metadata", () => {
     buildNumber: "31",
     sha256: "B".repeat(64)
   });
+  const existingCaskWithoutCLI = cask.replace(/  binary .*\n/, "");
+  const migrated = updateHomebrewCaskContent(existingCaskWithoutCLI, {
+    version: "1.10.0",
+    buildNumber: "31",
+    sha256: "B".repeat(64)
+  });
 
   assert.deepEqual(parseHomebrewCaskVersion(updated), { version: "1.10.0", buildNumber: "31" });
   assert.match(updated, new RegExp(`sha256 "${"b".repeat(64)}"`));
   assert.match(updated, /app "TCP Viewer\.app"/);
   assert.match(updated, /binary "#\{appdir\}\/TCP Viewer\.app\/Contents\/MacOS\/tcpviewer-cli"/);
   assert.match(updated, /depends_on arch: :arm64/);
+  assert.deepEqual(
+    validateHomebrewCaskContent(existingCaskWithoutCLI, { allowMissingCLI: true }),
+    { version: "1.9.0", buildNumber: "30" }
+  );
+  assert.equal(
+    migrated.match(/binary "#\{appdir\}\/TCP Viewer\.app\/Contents\/MacOS\/tcpviewer-cli"/g)?.length,
+    1
+  );
+  assert.deepEqual(validateHomebrewCaskContent(migrated), { version: "1.10.0", buildNumber: "31" });
   assert.equal(homebrewCaskToken, "tcp-viewer");
   assert.equal(makeHomebrewCaskBranchName({ version: "1.10.0", buildNumber: "31" }), "tcpviewer-1.10.0-31");
   assert.throws(

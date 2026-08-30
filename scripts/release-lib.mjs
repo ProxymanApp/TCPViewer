@@ -6,6 +6,7 @@ export const homebrewCaskToken = "tcp-viewer";
 export const emptyPayloadSHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 const fileNameSegmentPattern = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
+const homebrewCLIStanza = '  binary "#{appdir}/TCP Viewer.app/Contents/MacOS/tcpviewer-cli"';
 
 const commonRequiredEnv = [
   "TCPVIEWER_DEVELOPMENT_TEAM",
@@ -507,11 +508,12 @@ export function githubRepoFromRemoteURL(remoteURL) {
   return match ? match[1].toLowerCase() : null;
 }
 
-export function validateHomebrewCaskContent(content) {
+export function validateHomebrewCaskContent(content, { allowMissingCLI = false } = {}) {
   const current = String(content);
   const parsedVersion = parseHomebrewCaskVersion(current);
   const versionMatches = current.match(/^  version ".*"$/gm) ?? [];
   const shaMatches = current.match(/^  sha256 ".*"$/gm) ?? [];
+  const cliStanzaMatches = current.split(/\r?\n/).filter((line) => line === homebrewCLIStanza);
   if (!new RegExp(`^cask "${homebrewCaskToken}" do$`, "m").test(current)) {
     throw new Error(`TCP Viewer Homebrew Cask must use the ${homebrewCaskToken} token.`);
   }
@@ -524,7 +526,7 @@ export function validateHomebrewCaskContent(content) {
   if (!/^  app "TCP Viewer\.app"$/m.test(current)) {
     throw new Error("TCP Viewer Homebrew Cask must install TCP Viewer.app.");
   }
-  if (!/^  binary "#\{appdir\}\/TCP Viewer\.app\/Contents\/MacOS\/tcpviewer-cli"$/m.test(current)) {
+  if (cliStanzaMatches.length > 1 || (!allowMissingCLI && cliStanzaMatches.length !== 1)) {
     throw new Error("TCP Viewer Homebrew Cask must expose the bundled tcpviewer-cli executable.");
   }
 
@@ -533,7 +535,7 @@ export function validateHomebrewCaskContent(content) {
 
 export function updateHomebrewCaskContent(content, { version, buildNumber, sha256 }) {
   const current = String(content);
-  validateHomebrewCaskContent(current);
+  validateHomebrewCaskContent(current, { allowMissingCLI: true });
   const safeVersion = normalizeFileNameSegment(version, "Homebrew Cask version");
   const safeBuildNumber = normalizeFileNameSegment(buildNumber, "Homebrew Cask build number");
   const safeSHA256 = String(sha256 ?? "").trim().toLowerCase();
@@ -544,9 +546,13 @@ export function updateHomebrewCaskContent(content, { version, buildNumber, sha25
   const versionMatch = current.match(/^  version ".*"$/m)[0];
   const shaMatch = current.match(/^  sha256 ".*"$/m)[0];
 
-  const updated = current
+  // Existing casks predate the CLI stanza, so add it while applying release metadata.
+  let updated = current
     .replace(versionMatch, `  version "${safeVersion},${safeBuildNumber}"`)
     .replace(shaMatch, `  sha256 "${safeSHA256}"`);
+  if (!updated.split(/\r?\n/).includes(homebrewCLIStanza)) {
+    updated = updated.replace('  app "TCP Viewer.app"', `  app "TCP Viewer.app"\n${homebrewCLIStanza}`);
+  }
   validateHomebrewCaskContent(updated);
   return updated;
 }

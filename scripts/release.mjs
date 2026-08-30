@@ -546,7 +546,9 @@ async function preflightHomebrewRelease(homebrewRelease) {
   homebrewRelease.pullRequestTemplate = await readHomebrewPullRequestTemplate(homebrewRelease);
 
   const source = await readHomebrewCaskSource(homebrewRelease);
-  const currentVersion = validateHomebrewCaskContent(source.content);
+  const currentVersion = validateHomebrewCaskContent(source.content, {
+    allowMissingCLI: !source.isInitialCask
+  });
   if (
     !source.isInitialCask
     &&
