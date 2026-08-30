@@ -84,6 +84,8 @@ struct TCPViewSessionFormatTests {
             customFilters: [customFilter],
             quickFilterSelection: PacketQuickFilterSelection(selectedIDs: [.tcp, .dns]),
             structuredFilterGroup: structuredGroup,
+            filterMode: .wireshark,
+            wiresharkExpression: "tls.handshake.extensions_server_name == \"example.com\"",
             selectedPacketID: packet.id,
             selectedSourceListSelection: selectedSource,
             tableColumnLayout: layout
@@ -96,6 +98,23 @@ struct TCPViewSessionFormatTests {
         #expect(decoded.importedPacketReferenceByID[packet.id]?.originalPacketID == 1)
         #expect(decoded.selectedSourceListSelection?.selection() == selectedSource)
         #expect(decoded.importedFileProvenance != nil)
+        #expect(decoded.filterMode == .wireshark)
+        #expect(decoded.wiresharkExpression == "tls.handshake.extensions_server_name == \"example.com\"")
+    }
+
+    @Test func legacySessionWithoutWiresharkFieldsDecodesWithBuilderCompatibleDefaults() throws {
+        let state = Self.makeSnapshot(packets: []).state
+        var object = try #require(JSONSerialization.jsonObject(with: Self.encode(state)) as? [String: Any])
+        object.removeValue(forKey: "filterMode")
+        object.removeValue(forKey: "wiresharkExpression")
+
+        let decoded = try Self.decode(
+            TCPViewSessionState.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+
+        #expect(decoded.filterMode == nil)
+        #expect(decoded.wiresharkExpression == nil)
     }
 
     @Test func annotationsRoundTripReservedCommentAndColorFields() throws {
@@ -634,6 +653,8 @@ struct TCPViewSessionFormatTests {
         customFilters: [PacketCustomFilter] = [],
         quickFilterSelection: PacketQuickFilterSelection = .all,
         structuredFilterGroup: PacketStructuredFilterGroup = .default,
+        filterMode: PacketFilterMode? = nil,
+        wiresharkExpression: String? = nil,
         selectedPacketID: PacketSummary.ID? = nil,
         selectedSourceListSelection: PacketSourceListSelection = .allPackets,
         tableColumnLayout: PacketTableColumnLayout? = nil
@@ -658,6 +679,8 @@ struct TCPViewSessionFormatTests {
             inspectorPlacement: .bottom,
             isInspectorVisible: true,
             isStructuredFilterVisible: true,
+            filterMode: filterMode,
+            wiresharkExpression: wiresharkExpression,
             tableColumnLayout: tableColumnLayout,
             sourceMetadata: TCPViewSessionSourceMetadata(
                 fileName: "source.pcapng",

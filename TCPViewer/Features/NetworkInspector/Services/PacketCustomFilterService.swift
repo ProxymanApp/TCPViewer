@@ -13,6 +13,58 @@ struct PacketCustomFilter: Identifiable, Codable, Hashable, Sendable {
     let createdAt: Date
     var updatedAt: Date
     var group: PacketStructuredFilterGroup
+    var mode: PacketFilterMode
+    var wiresharkExpression: String?
+
+    init(
+        id: String,
+        name: String,
+        createdAt: Date,
+        updatedAt: Date,
+        group: PacketStructuredFilterGroup,
+        mode: PacketFilterMode = .builder,
+        wiresharkExpression: String? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.group = group
+        self.mode = mode
+        self.wiresharkExpression = wiresharkExpression
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case createdAt
+        case updatedAt
+        case group
+        case mode
+        case wiresharkExpression
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        group = try container.decode(PacketStructuredFilterGroup.self, forKey: .group)
+        mode = try container.decodeIfPresent(PacketFilterMode.self, forKey: .mode) ?? .builder
+        wiresharkExpression = try container.decodeIfPresent(String.self, forKey: .wiresharkExpression)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(updatedAt, forKey: .updatedAt)
+        try container.encode(group, forKey: .group)
+        try container.encode(mode, forKey: .mode)
+        try container.encodeIfPresent(wiresharkExpression, forKey: .wiresharkExpression)
+    }
 }
 
 enum PacketCustomFilterValidationError: Error, Equatable, LocalizedError {
@@ -86,13 +138,26 @@ final class PacketCustomFilterService {
     // Append a new custom filter while allowing duplicate display names by design.
     @discardableResult
     func save(name: String, group: PacketStructuredFilterGroup, now: Date = Date()) throws -> PacketCustomFilter {
+        try save(name: name, mode: .builder, group: group, wiresharkExpression: nil, now: now)
+    }
+
+    @discardableResult
+    func save(
+        name: String,
+        mode: PacketFilterMode,
+        group: PacketStructuredFilterGroup,
+        wiresharkExpression: String?,
+        now: Date = Date()
+    ) throws -> PacketCustomFilter {
         let normalizedName = try Self.normalizedName(name)
         let filter = PacketCustomFilter(
             id: UUID().uuidString,
             name: normalizedName,
             createdAt: now,
             updatedAt: now,
-            group: PacketStructuredFilterGroup(filters: group.filters, operator: group.operator)
+            group: PacketStructuredFilterGroup(filters: group.filters, operator: group.operator),
+            mode: mode,
+            wiresharkExpression: wiresharkExpression
         )
         cachedFilters.append(filter)
         do {
@@ -124,12 +189,30 @@ final class PacketCustomFilterService {
 
     // Replace a saved filter payload while keeping its user-facing name and identity.
     func updateGroup(id: PacketCustomFilter.ID, group: PacketStructuredFilterGroup, now: Date = Date()) throws {
+        try update(
+            id: id,
+            mode: .builder,
+            group: group,
+            wiresharkExpression: nil,
+            now: now
+        )
+    }
+
+    func update(
+        id: PacketCustomFilter.ID,
+        mode: PacketFilterMode,
+        group: PacketStructuredFilterGroup,
+        wiresharkExpression: String?,
+        now: Date = Date()
+    ) throws {
         guard let index = cachedFilters.firstIndex(where: { $0.id == id }) else {
             return
         }
 
         let previousFilter = cachedFilters[index]
         cachedFilters[index].group = PacketStructuredFilterGroup(filters: group.filters, operator: group.operator)
+        cachedFilters[index].mode = mode
+        cachedFilters[index].wiresharkExpression = wiresharkExpression
         cachedFilters[index].updatedAt = now
         do {
             try persist()
@@ -152,7 +235,9 @@ final class PacketCustomFilterService {
             name: sourceFilter.name,
             createdAt: now,
             updatedAt: now,
-            group: PacketStructuredFilterGroup(filters: sourceFilter.group.filters, operator: sourceFilter.group.operator)
+            group: PacketStructuredFilterGroup(filters: sourceFilter.group.filters, operator: sourceFilter.group.operator),
+            mode: sourceFilter.mode,
+            wiresharkExpression: sourceFilter.wiresharkExpression
         )
         cachedFilters.insert(duplicatedFilter, at: cachedFilters.index(after: index))
         do {

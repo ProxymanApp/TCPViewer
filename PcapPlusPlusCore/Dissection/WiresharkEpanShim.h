@@ -131,6 +131,38 @@ typedef struct TCPViewerWiresharkExceptionReport {
     const char *reason;
 } TCPViewerWiresharkExceptionReport;
 
+typedef enum TCPViewerDisplayFilterValidationStatus {
+    TCPViewerDisplayFilterValidationValid = 0,
+    TCPViewerDisplayFilterValidationInvalid = 1,
+    TCPViewerDisplayFilterValidationUnavailable = 2,
+} TCPViewerDisplayFilterValidationStatus;
+
+typedef enum TCPViewerDisplayFilterDiagnosticSeverity {
+    TCPViewerDisplayFilterDiagnosticWarning = 0,
+    TCPViewerDisplayFilterDiagnosticError = 1,
+} TCPViewerDisplayFilterDiagnosticSeverity;
+
+typedef struct TCPViewerDisplayFilterDiagnostic {
+    TCPViewerDisplayFilterDiagnosticSeverity severity;
+    const char *message;
+    size_t utf8StartOffset;
+    size_t utf8Length;
+    bool hasRange;
+} TCPViewerDisplayFilterDiagnostic;
+
+typedef struct TCPViewerDisplayFilterValidationResult {
+    TCPViewerDisplayFilterValidationStatus status;
+    const char *normalizedExpression;
+    TCPViewerDisplayFilterDiagnostic *diagnostics;
+    size_t diagnosticCount;
+} TCPViewerDisplayFilterValidationResult;
+
+typedef struct TCPViewerDisplayFilterMatchResult {
+    bool succeeded;
+    bool matched;
+    const char *errorMessage;
+} TCPViewerDisplayFilterMatchResult;
+
 TCPViewerWiresharkSession *TCPViewerWiresharkSessionCreate(bool disabled, bool livePriority, const char *personalConfigurationDirectory);
 void TCPViewerWiresharkSessionDestroy(TCPViewerWiresharkSession *session);
 void TCPViewerWiresharkSessionReleaseResources(TCPViewerWiresharkSession *session);
@@ -171,12 +203,29 @@ TCPViewerWiresharkFollowResult *TCPViewerWiresharkSessionFinishFollowTCPStream(
 void TCPViewerWiresharkSessionCancelFollowTCPStream(TCPViewerWiresharkSession *session);
 TCPViewerWiresharkExceptionReport *TCPViewerWiresharkSessionCopyLastCriticalException(TCPViewerWiresharkSession *session);
 TCPViewerWiresharkExceptionReport *TCPViewerWiresharkSessionCopyNextCriticalException(TCPViewerWiresharkSession *session);
+TCPViewerDisplayFilterValidationResult *TCPViewerWiresharkValidateDisplayFilter(
+    const char *expression,
+    const char *personalConfigurationDirectory
+);
+TCPViewerDisplayFilterValidationResult *TCPViewerWiresharkSessionActivateDisplayFilter(
+    TCPViewerWiresharkSession *session,
+    const char *expression,
+    uint64_t generation
+);
+TCPViewerDisplayFilterMatchResult *TCPViewerWiresharkSessionEvaluateDisplayFilter(
+    TCPViewerWiresharkSession *session,
+    const TCPViewerWiresharkPacketContext *context,
+    uint64_t generation
+);
+void TCPViewerWiresharkSessionClearDisplayFilter(TCPViewerWiresharkSession *session);
 void TCPViewerWiresharkSummaryResultDestroy(TCPViewerWiresharkSummaryResult *result);
 void TCPViewerWiresharkInspectionResultDestroy(TCPViewerWiresharkInspectionResult *result);
 void TCPViewerWiresharkTCPStreamIndexResultDestroy(TCPViewerWiresharkTCPStreamIndexResult *result);
 void TCPViewerWiresharkFollowCandidateResultDestroy(TCPViewerWiresharkFollowCandidateResult *result);
 void TCPViewerWiresharkFollowResultDestroy(TCPViewerWiresharkFollowResult *result);
 void TCPViewerWiresharkExceptionReportDestroy(TCPViewerWiresharkExceptionReport *report);
+void TCPViewerDisplayFilterValidationResultDestroy(TCPViewerDisplayFilterValidationResult *result);
+void TCPViewerDisplayFilterMatchResultDestroy(TCPViewerDisplayFilterMatchResult *result);
 
 #if DEBUG
 TCPViewerWiresharkExceptionReport *TCPViewerWiresharkTestCopyCaughtExceptionReport(const char *personalConfigurationDirectory);

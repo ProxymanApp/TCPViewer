@@ -1409,6 +1409,35 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
         viewModel.setStructuredFilterVisible(false)
     }
 
+    func packetWorkspaceViewController(
+        _ controller: PacketWorkspaceViewController,
+        didUpdateWiresharkFilterExpression expression: String
+    ) {
+        viewModel.updateWiresharkFilterDraft(expression)
+    }
+
+    func packetWorkspaceViewControllerDidRequestApplyWiresharkFilter(_ controller: PacketWorkspaceViewController) {
+        viewModel.applyWiresharkFilter()
+    }
+
+    func packetWorkspaceViewController(
+        _ controller: PacketWorkspaceViewController,
+        didRequestApplyWiresharkFilterBeforeSaving completion: @escaping (Bool) -> Void
+    ) {
+        viewModel.applyWiresharkFilter(completion: completion)
+    }
+
+    func packetWorkspaceViewController(
+        _ controller: PacketWorkspaceViewController,
+        didRequestSaveWiresharkFilterNamed name: String
+    ) {
+        do {
+            try viewModel.saveWiresharkCustomFilter(name: name)
+        } catch {
+            presentCustomFilterError(error, title: "Could Not Save Filter")
+        }
+    }
+
     fileprivate func canUsePinFeature() -> Bool {
         TCPViewerLicenseService.shared.isLicenseAuthorized
     }
@@ -1549,12 +1578,13 @@ extension TCPViewerRootViewController: StatusStripViewControllerDelegate {
         viewModel.clearTablePackets()
     }
 
-    func statusStripViewControllerDidToggleStructuredFilter(_ controller: StatusStripViewController) {
-        let shouldShow = !viewModel.snapshot.isStructuredFilterVisible
-        viewModel.setStructuredFilterVisible(shouldShow)
-        if shouldShow {
-            workspaceViewController.focusStructuredFilter()
-        }
+    func statusStripViewController(_ controller: StatusStripViewController, didSelectFilterMode mode: PacketFilterMode) {
+        viewModel.setFilterMode(mode)
+        workspaceViewController.focusStructuredFilter()
+    }
+
+    func statusStripViewControllerDidRequestHideFilter(_ controller: StatusStripViewController) {
+        viewModel.setStructuredFilterVisible(false)
     }
 }
 

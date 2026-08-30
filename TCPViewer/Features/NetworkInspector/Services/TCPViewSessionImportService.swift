@@ -357,6 +357,8 @@ final class TCPViewSessionImportService {
             inspectorPlacement: state.inspectorPlacement,
             isInspectorVisible: state.isInspectorVisible,
             isStructuredFilterVisible: state.isStructuredFilterVisible,
+            filterMode: state.filterMode,
+            wiresharkExpression: state.wiresharkExpression,
             tableColumnLayout: state.tableColumnLayout,
             importedFileProvenance: importedFiles.isEmpty ? nil : state.importedFileProvenance,
             sourceMetadata: state.sourceMetadata.map { metadata in
@@ -862,6 +864,8 @@ final class TCPViewSessionOfflineDocument: OfflineCaptureDocumentProviding {
             inspectorPlacement: state.inspectorPlacement,
             isInspectorVisible: state.isInspectorVisible,
             isStructuredFilterVisible: state.isStructuredFilterVisible,
+            filterMode: state.filterMode,
+            wiresharkExpression: state.wiresharkExpression,
             tableColumnLayout: state.tableColumnLayout,
             importedFileProvenance: importedFileRecords.isEmpty ? nil : state.importedFileProvenance,
             sourceMetadata: state.sourceMetadata.map { metadata in

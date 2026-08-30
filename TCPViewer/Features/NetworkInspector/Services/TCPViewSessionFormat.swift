@@ -348,6 +348,8 @@ struct TCPViewSessionState: Codable, Equatable {
     let inspectorPlacement: String
     let isInspectorVisible: Bool
     let isStructuredFilterVisible: Bool
+    var filterMode: PacketFilterMode? = nil
+    var wiresharkExpression: String? = nil
     let tableColumnLayout: PacketTableColumnLayout?
     let importedFileProvenance: String?
     let sourceMetadata: TCPViewSessionSourceMetadata?
@@ -393,6 +395,8 @@ struct TCPViewSessionExportSnapshot {
     let inspectorPlacement: NetworkInspectorPlacement
     let isInspectorVisible: Bool
     let isStructuredFilterVisible: Bool
+    var filterMode: PacketFilterMode? = nil
+    var wiresharkExpression: String? = nil
     let tableColumnLayout: PacketTableColumnLayout?
     let sourceMetadata: TCPViewSessionSourceMetadata?
 
@@ -418,6 +422,8 @@ struct TCPViewSessionExportSnapshot {
             inspectorPlacement: inspectorPlacement.rawValue,
             isInspectorVisible: isInspectorVisible,
             isStructuredFilterVisible: isStructuredFilterVisible,
+            filterMode: filterMode,
+            wiresharkExpression: wiresharkExpression,
             tableColumnLayout: tableColumnLayout,
             importedFileProvenance: importedFiles.isEmpty ? nil : "Imported capture grouping is preserved for TCPViewer source-list reconstruction.",
             sourceMetadata: sourceMetadata

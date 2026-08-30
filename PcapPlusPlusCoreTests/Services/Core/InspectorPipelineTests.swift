@@ -476,6 +476,39 @@ struct InspectorPipelineTests {
         #expect(findNode(in: tlsNode.children, fieldName: "tls.handshake.extensions_server_name")?.value == "www.google.com")
     }
 
+    @Test func wiresharkDisplayFilterMatchesSNIAndKeepsPreviousFilterAfterInvalidApply() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let captureURL = directory.appendingPathComponent("display-filter-sni.pcap")
+        let hostName = "display-filter.example"
+        try writePCAP(
+            to: captureURL,
+            packets: [
+                makeIPv4TLSClientHelloPacket(hostName: hostName),
+                makeIPv4TLSServerHelloPacket(),
+            ]
+        )
+
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
+        let packets = try await document.open()
+        let clientHello = try #require(packets.first)
+        let expression = "tls.handshake.extensions_server_name == \"\(hostName)\""
+
+        let validation = await document.activateDisplayFilter(expression, generation: 41)
+        #expect(validation.status == .valid)
+
+        let firstBatch = try await document.evaluateDisplayFilter(packetIDs: packets.map(\.id), generation: 41)
+        #expect(firstBatch.evaluatedPacketIDs == packets.map(\.id))
+        #expect(firstBatch.matchingPacketIDs == [clientHello.id])
+
+        let invalid = await document.activateDisplayFilter("tcp.port ==", generation: 42)
+        #expect(invalid.status == .invalid)
+
+        let preservedBatch = try await document.evaluateDisplayFilter(packetIDs: packets.map(\.id), generation: 41)
+        #expect(preservedBatch.matchingPacketIDs == [clientHello.id])
+    }
+
     @Test func splitTCPTLSClientHelloProducesSNIFromWiresharkState() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

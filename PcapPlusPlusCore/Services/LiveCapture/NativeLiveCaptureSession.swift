@@ -49,6 +49,30 @@ public final class NativeLiveCaptureSession: LiveCaptureSessionProviding, @unche
         state.inspectPacket(id: id, completion: completion)
     }
 
+    public func validateDisplayFilter(_ expression: String, completion: @escaping (DisplayFilterValidation) -> Void) {
+        state.validateDisplayFilter(expression, completion: completion)
+    }
+
+    public func activateDisplayFilter(
+        _ expression: String,
+        generation: UInt64,
+        completion: @escaping (DisplayFilterValidation) -> Void
+    ) {
+        state.activateDisplayFilter(expression, generation: generation, completion: completion)
+    }
+
+    public func evaluateDisplayFilter(
+        packetIDs: [PacketSummary.ID],
+        generation: UInt64,
+        completion: @escaping TCPViewerCompletion<DisplayFilterMatchBatch>
+    ) {
+        state.evaluateDisplayFilter(packetIDs: packetIDs, generation: generation, completion: completion)
+    }
+
+    public func clearDisplayFilter(completion: @escaping TCPViewerVoidCompletion) {
+        state.clearDisplayFilter(completion: completion)
+    }
+
     public func followTCPStream(
         containing packetID: PacketSummary.ID,
         limits: TCPFollowLimits,
@@ -465,6 +489,65 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
             completion(Result {
                 try self.inspectPacketOnQueue(id: id)
             })
+        }
+    }
+
+    func validateDisplayFilter(_ expression: String, completion: @escaping (DisplayFilterValidation) -> Void) {
+        queue.async {
+            completion(WiresharkEpanSession.validateDisplayFilter(expression))
+        }
+    }
+
+    func activateDisplayFilter(
+        _ expression: String,
+        generation: UInt64,
+        completion: @escaping (DisplayFilterValidation) -> Void
+    ) {
+        queue.async {
+            do {
+                completion(try DisplayFilterEvaluationCoordinator.perform {
+                    try self.nativeSession.activateDisplayFilter(expression, generation: generation)
+                })
+            } catch {
+                completion(DisplayFilterValidation(
+                    normalizedExpression: expression.trimmingCharacters(in: .whitespacesAndNewlines),
+                    status: .unavailable,
+                    diagnostics: [DisplayFilterDiagnostic(
+                        severity: .error,
+                        message: NativeBridgeMapper.coreError(error, defaultCode: .unavailableFeature).message
+                    )]
+                ))
+            }
+        }
+    }
+
+    func evaluateDisplayFilter(
+        packetIDs: [PacketSummary.ID],
+        generation: UInt64,
+        completion: @escaping TCPViewerCompletion<DisplayFilterMatchBatch>
+    ) {
+        queue.async {
+            completion(Result {
+                do {
+                    return try DisplayFilterEvaluationCoordinator.perform {
+                        try self.nativeSession.evaluateDisplayFilter(
+                            packetIDs: packetIDs,
+                            generation: generation
+                        )
+                    }
+                } catch {
+                    throw NativeBridgeMapper.coreError(error, defaultCode: .unavailableFeature)
+                }
+            })
+        }
+    }
+
+    func clearDisplayFilter(completion: @escaping TCPViewerVoidCompletion) {
+        queue.async {
+            DisplayFilterEvaluationCoordinator.perform {
+                self.nativeSession.clearDisplayFilter()
+            }
+            completion(.success(()))
         }
     }
 

@@ -154,6 +154,45 @@ struct PacketCustomFilterServiceTests {
         #expect(reloadedFilters.map(\.name) == ["Traffic", "Traffic", "Methods"])
     }
 
+    @Test func wiresharkFilterRoundTripsAndDuplicatePreservesItsModeAndExpression() throws {
+        let storageURL = temporaryDirectory().appendingPathComponent("CustomFilters.json")
+        let service = PacketCustomFilterService(storageURL: storageURL)
+        let saved = try service.save(
+            name: "TLS SNI",
+            mode: .wireshark,
+            group: .default,
+            wiresharkExpression: "tls.handshake.extensions_server_name == \"example.com\"",
+            now: Date(timeIntervalSince1970: 10)
+        )
+
+        let duplicate = try #require(try service.duplicate(id: saved.id, now: Date(timeIntervalSince1970: 20)))
+        let reloaded = PacketCustomFilterService(storageURL: storageURL).filters()
+
+        #expect(reloaded.map(\.mode) == [.wireshark, .wireshark])
+        #expect(reloaded.map(\.wiresharkExpression) == [saved.wiresharkExpression, duplicate.wiresharkExpression])
+    }
+
+    @Test func legacyFilterWithoutModeDecodesAsBuilder() throws {
+        let filter = PacketCustomFilter(
+            id: "legacy",
+            name: "Legacy",
+            createdAt: Date(timeIntervalSince1970: 10),
+            updatedAt: Date(timeIntervalSince1970: 20),
+            group: .default
+        )
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(filter)) as? [String: Any])
+        object.removeValue(forKey: "mode")
+        object.removeValue(forKey: "wiresharkExpression")
+
+        let decoded = try JSONDecoder().decode(
+            PacketCustomFilter.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+
+        #expect(decoded.mode == .builder)
+        #expect(decoded.wiresharkExpression == nil)
+    }
+
     private func expectValidationError(
         _ expectedError: PacketCustomFilterValidationError,
         operation: () throws -> Void

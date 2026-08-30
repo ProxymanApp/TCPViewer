@@ -45,6 +45,19 @@ protocol PacketWorkspaceViewControllerDelegate: AnyObject {
     func packetWorkspaceViewControllerCanSaveCustomFilter(_ controller: PacketWorkspaceViewController) -> Bool
     func packetWorkspaceViewControllerDidRequestStructuredFilterPaywall(_ controller: PacketWorkspaceViewController)
     func packetWorkspaceViewControllerDidRequestHideStructuredFilter(_ controller: PacketWorkspaceViewController)
+    func packetWorkspaceViewController(
+        _ controller: PacketWorkspaceViewController,
+        didUpdateWiresharkFilterExpression expression: String
+    )
+    func packetWorkspaceViewControllerDidRequestApplyWiresharkFilter(_ controller: PacketWorkspaceViewController)
+    func packetWorkspaceViewController(
+        _ controller: PacketWorkspaceViewController,
+        didRequestApplyWiresharkFilterBeforeSaving completion: @escaping (Bool) -> Void
+    )
+    func packetWorkspaceViewController(
+        _ controller: PacketWorkspaceViewController,
+        didRequestSaveWiresharkFilterNamed name: String
+    )
 }
 
 private final class VerticallyCenteredTextFieldCell: NSTextFieldCell {
@@ -119,10 +132,13 @@ final class PacketWorkspaceViewController: NSViewController {
     private let viewModel = PacketWorkspaceViewModel()
     private let contentContainer = NSView()
     private let structuredFilterController = PacketStructuredFilterViewController()
+    private let wiresharkFilterController = PacketWiresharkFilterViewController()
     private let tableController: PacketTableViewController
     private var placeholderView: NSView?
     private var isStructuredFilterVisible = false
-    private var contentTopToFilterBottomConstraint: NSLayoutConstraint?
+    private var filterMode: PacketFilterMode = .builder
+    private var contentTopToBuilderBottomConstraint: NSLayoutConstraint?
+    private var contentTopToWiresharkBottomConstraint: NSLayoutConstraint?
     private var contentTopToSafeAreaConstraint: NSLayoutConstraint?
 
     init(configuration: AppConfiguration) {
@@ -144,6 +160,7 @@ final class PacketWorkspaceViewController: NSViewController {
         super.viewDidLoad()
         tableController.delegate = self
         structuredFilterController.delegate = self
+        wiresharkFilterController.delegate = self
     }
 
     // Render the packet workspace and swap between the table and empty state as needed.
@@ -154,7 +171,8 @@ final class PacketWorkspaceViewController: NSViewController {
             isFiltering: snapshot.isPacketTableFiltering,
             customFilterItems: snapshot.customFilterItems
         )
-        applyStructuredFilterVisibility(snapshot.isStructuredFilterVisible)
+        wiresharkFilterController.render(state: snapshot.wiresharkFilterState)
+        applyFilterVisibility(snapshot.isStructuredFilterVisible, mode: snapshot.filterMode)
 
         if viewModel.isEmpty {
             showPlaceholder(
@@ -182,8 +200,13 @@ final class PacketWorkspaceViewController: NSViewController {
     }
 
     func focusStructuredFilter() {
-        applyStructuredFilterVisibility(true)
-        structuredFilterController.focusLastFilterTextField()
+        applyFilterVisibility(true, mode: filterMode)
+        switch filterMode {
+        case .builder:
+            structuredFilterController.focusLastFilterTextField()
+        case .wireshark:
+            wiresharkFilterController.focusExpressionField()
+        }
     }
 
     func createCustomColumn(from request: PacketCustomColumnRequest) {
@@ -195,15 +218,21 @@ final class PacketWorkspaceViewController: NSViewController {
         view.addSubview(contentContainer)
 
         addChild(structuredFilterController)
+        addChild(wiresharkFilterController)
         addChild(tableController)
         structuredFilterController.view.translatesAutoresizingMaskIntoConstraints = false
+        wiresharkFilterController.view.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(structuredFilterController.view)
+        view.addSubview(wiresharkFilterController.view)
 
-        let contentTopToFilterBottomConstraint = contentContainer.topAnchor.constraint(equalTo: structuredFilterController.view.bottomAnchor)
+        let contentTopToBuilderBottomConstraint = contentContainer.topAnchor.constraint(equalTo: structuredFilterController.view.bottomAnchor)
+        let contentTopToWiresharkBottomConstraint = contentContainer.topAnchor.constraint(equalTo: wiresharkFilterController.view.bottomAnchor)
         let contentTopToSafeAreaConstraint = contentContainer.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor)
-        self.contentTopToFilterBottomConstraint = contentTopToFilterBottomConstraint
+        self.contentTopToBuilderBottomConstraint = contentTopToBuilderBottomConstraint
+        self.contentTopToWiresharkBottomConstraint = contentTopToWiresharkBottomConstraint
         self.contentTopToSafeAreaConstraint = contentTopToSafeAreaConstraint
         structuredFilterController.view.isHidden = true
+        wiresharkFilterController.view.isHidden = true
 
         NSLayoutConstraint.activate([
             contentContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -214,21 +243,33 @@ final class PacketWorkspaceViewController: NSViewController {
             structuredFilterController.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             structuredFilterController.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             structuredFilterController.view.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+
+            wiresharkFilterController.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            wiresharkFilterController.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            wiresharkFilterController.view.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
         ])
     }
 
-    private func applyStructuredFilterVisibility(_ isVisible: Bool) {
-        guard isStructuredFilterVisible != isVisible else {
+    private func applyFilterVisibility(_ isVisible: Bool, mode: PacketFilterMode) {
+        guard isStructuredFilterVisible != isVisible || filterMode != mode else {
             return
         }
 
         isStructuredFilterVisible = isVisible
-        structuredFilterController.view.isHidden = !isVisible
+        filterMode = mode
+        structuredFilterController.view.isHidden = !isVisible || mode != .builder
+        wiresharkFilterController.view.isHidden = !isVisible || mode != .wireshark
+        contentTopToBuilderBottomConstraint?.isActive = false
+        contentTopToWiresharkBottomConstraint?.isActive = false
         if isVisible {
             contentTopToSafeAreaConstraint?.isActive = false
-            contentTopToFilterBottomConstraint?.isActive = true
+            switch mode {
+            case .builder:
+                contentTopToBuilderBottomConstraint?.isActive = true
+            case .wireshark:
+                contentTopToWiresharkBottomConstraint?.isActive = true
+            }
         } else {
-            contentTopToFilterBottomConstraint?.isActive = false
             contentTopToSafeAreaConstraint?.isActive = true
         }
     }
@@ -483,6 +524,48 @@ extension PacketWorkspaceViewController: PacketStructuredFilterViewControllerDel
     }
 
     func packetStructuredFilterViewControllerDidRequestHide(_ controller: PacketStructuredFilterViewController) {
+        delegate?.packetWorkspaceViewControllerDidRequestHideStructuredFilter(self)
+    }
+}
+
+extension PacketWorkspaceViewController: PacketWiresharkFilterViewControllerDelegate {
+    func packetWiresharkFilterViewController(
+        _ controller: PacketWiresharkFilterViewController,
+        didUpdateExpression expression: String
+    ) {
+        delegate?.packetWorkspaceViewController(self, didUpdateWiresharkFilterExpression: expression)
+    }
+
+    func packetWiresharkFilterViewControllerDidRequestApply(_ controller: PacketWiresharkFilterViewController) {
+        delegate?.packetWorkspaceViewControllerDidRequestApplyWiresharkFilter(self)
+    }
+
+    func packetWiresharkFilterViewController(
+        _ controller: PacketWiresharkFilterViewController,
+        didRequestApplyBeforeSaving completion: @escaping (Bool) -> Void
+    ) {
+        delegate?.packetWorkspaceViewController(
+            self,
+            didRequestApplyWiresharkFilterBeforeSaving: completion
+        )
+    }
+
+    func packetWiresharkFilterViewController(
+        _ controller: PacketWiresharkFilterViewController,
+        didRequestSaveNamed name: String
+    ) {
+        delegate?.packetWorkspaceViewController(self, didRequestSaveWiresharkFilterNamed: name)
+    }
+
+    func packetWiresharkFilterViewControllerCanSave(_ controller: PacketWiresharkFilterViewController) -> Bool {
+        delegate?.packetWorkspaceViewControllerCanSaveCustomFilter(self) ?? true
+    }
+
+    func packetWiresharkFilterViewControllerDidRequestPaywall(_ controller: PacketWiresharkFilterViewController) {
+        delegate?.packetWorkspaceViewControllerDidRequestStructuredFilterPaywall(self)
+    }
+
+    func packetWiresharkFilterViewControllerDidRequestHide(_ controller: PacketWiresharkFilterViewController) {
         delegate?.packetWorkspaceViewControllerDidRequestHideStructuredFilter(self)
     }
 }

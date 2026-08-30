@@ -138,6 +138,7 @@ private struct InterfaceBuilder {
 
 private struct PCPPNativeOfflineDocumentState {
     var file: NativeCaptureFile
+    var recordIndexByIdentifier: [UInt64: Int]
     var partiallyLoaded = false
     var dissectionSession: WiresharkEpanSession?
     var currentURL: URL
@@ -182,6 +183,7 @@ final class PCPPNativeOfflineDocument {
         }
         self.state = Protected(PCPPNativeOfflineDocumentState(
             file: loadedFile,
+            recordIndexByIdentifier: Self.recordIndex(in: loadedFile),
             partiallyLoaded: loadedFile.isPartialResult,
             currentURL: url,
             currentFormat: loadedFormat
@@ -204,6 +206,7 @@ final class PCPPNativeOfflineDocument {
         }
         self.state = Protected(PCPPNativeOfflineDocumentState(
             file: loadedFile,
+            recordIndexByIdentifier: Self.recordIndex(in: loadedFile),
             partiallyLoaded: loadedFile.isPartialResult,
             currentURL: url,
             currentFormat: loadedFormat
@@ -241,13 +244,57 @@ final class PCPPNativeOfflineDocument {
 
     func inspectPacket(withIdentifier identifier: UInt64) throws -> PCPPNativePacketInspectionDescriptor {
         try state.write { state in
-            guard let record = state.file.records.first(where: { $0.identifier == identifier }) else {
+            guard let index = state.recordIndexByIdentifier[identifier],
+                  state.file.records.indices.contains(index) else {
                 throw NativeNSError(.fileReadFailed, "Packet \(identifier) is not available in the backing store.")
             }
+            let record = state.file.records[index]
             return try autoreleasepool {
                 try self.makePacketInspectionDescriptorSafely(record: record, state: &state)
             }
         }
+    }
+
+    func activateDisplayFilter(_ expression: String, generation: UInt64) throws -> DisplayFilterValidation {
+        try state.write { state in
+            let session = try prepareDisplayFilterSession(in: &state)
+            return session.activateDisplayFilter(expression, generation: generation)
+        }
+    }
+
+    func evaluateDisplayFilter(packetIDs: [UInt64], generation: UInt64) throws -> DisplayFilterMatchBatch {
+        guard packetIDs.count <= 128 else {
+            throw NativeNSError(.unavailableFeature, "Display-filter batches are limited to 128 packets.")
+        }
+        return try state.write { state in
+            guard let session = state.dissectionSession else {
+                throw NativeNSError(.unavailableFeature, "Wireshark display-filter evaluation is unavailable for this capture.")
+            }
+            var evaluatedPacketIDs: [UInt64] = []
+            var matchingPacketIDs: [UInt64] = []
+            evaluatedPacketIDs.reserveCapacity(packetIDs.count)
+            matchingPacketIDs.reserveCapacity(packetIDs.count)
+            for packetID in packetIDs {
+                guard let index = state.recordIndexByIdentifier[packetID],
+                      state.file.records.indices.contains(index) else {
+                    continue
+                }
+                let record = state.file.records[index]
+                if try session.evaluateDisplayFilter(record, generation: generation) {
+                    matchingPacketIDs.append(packetID)
+                }
+                evaluatedPacketIDs.append(packetID)
+            }
+            return DisplayFilterMatchBatch(
+                generation: generation,
+                evaluatedPacketIDs: evaluatedPacketIDs,
+                matchingPacketIDs: matchingPacketIDs
+            )
+        }
+    }
+
+    func clearDisplayFilter() {
+        state.write { $0.dissectionSession?.clearDisplayFilter() }
     }
 
     // Copy the selected conversation before retapping the document's loaded Wireshark session.
@@ -359,6 +406,7 @@ final class PCPPNativeOfflineDocument {
                 let loaded = try NativeCaptureFile.load(from: sourceURL)
                 try state.write {
                     $0.file = loaded
+                    $0.recordIndexByIdentifier = Self.recordIndex(in: loaded)
                     $0.currentFormat = loaded.format.rawValue
                     $0.partiallyLoaded = loaded.isPartialResult
                     $0.dissectionSession = try WiresharkEpanSession(disabled: disablesWireshark)
@@ -459,6 +507,29 @@ final class PCPPNativeOfflineDocument {
             throw NativeNSError(.unavailableFeature, "Wireshark libwireshark backend is unavailable.")
         }
         return dissectionSession
+    }
+
+    // Rebuild a complete first pass when another document previously owned process-global EPAN state.
+    private func prepareDisplayFilterSession(
+        in state: inout PCPPNativeOfflineDocumentState
+    ) throws -> WiresharkEpanSession {
+        let identifiers = state.file.records.map(\.identifier)
+        if let session = state.dissectionSession,
+           identifiers.isEmpty || session.canFollowObservedPackets(withIdentifiers: identifiers) {
+            return session
+        }
+
+        let session = try WiresharkEpanSession(disabled: disablesWireshark)
+        for record in state.file.records {
+            try session.observe(record)
+        }
+        try session.finishFirstPass()
+        state.dissectionSession = session
+        return session
+    }
+
+    private static func recordIndex(in file: NativeCaptureFile) -> [UInt64: Int] {
+        Dictionary(uniqueKeysWithValues: file.records.enumerated().map { ($0.element.identifier, $0.offset) })
     }
 
     private func makePacketSummaryDescriptorSafely(
@@ -805,6 +876,44 @@ final class PCPPNativeLiveSession {
         }
     }
 
+    func activateDisplayFilter(_ expression: String, generation: UInt64) throws -> DisplayFilterValidation {
+        try state.write { state in
+            let session = try prepareDisplayFilterSession(in: &state)
+            return session.activateDisplayFilter(expression, generation: generation)
+        }
+    }
+
+    func evaluateDisplayFilter(packetIDs: [UInt64], generation: UInt64) throws -> DisplayFilterMatchBatch {
+        guard packetIDs.count <= 128 else {
+            throw NativeNSError(.unavailableFeature, "Display-filter batches are limited to 128 packets.")
+        }
+        return try state.write { state in
+            guard let session = state.dissectionSession else {
+                throw NativeNSError(.unavailableFeature, "Wireshark display-filter evaluation is unavailable for this capture.")
+            }
+            let records = try state.packetStore.records(withIdentifiers: packetIDs)
+            var evaluatedPacketIDs: [UInt64] = []
+            var matchingPacketIDs: [UInt64] = []
+            evaluatedPacketIDs.reserveCapacity(records.count)
+            matchingPacketIDs.reserveCapacity(records.count)
+            for record in records {
+                if try session.evaluateDisplayFilter(record, generation: generation) {
+                    matchingPacketIDs.append(record.identifier)
+                }
+                evaluatedPacketIDs.append(record.identifier)
+            }
+            return DisplayFilterMatchBatch(
+                generation: generation,
+                evaluatedPacketIDs: evaluatedPacketIDs,
+                matchingPacketIDs: matchingPacketIDs
+            )
+        }
+    }
+
+    func clearDisplayFilter() {
+        state.write { $0.dissectionSession?.clearDisplayFilter() }
+    }
+
     // Follow a duplicated disk snapshot without blocking live packet storage during the retap.
     func followTCPStream(
         containing identifier: UInt64,
@@ -1084,6 +1193,32 @@ final class PCPPNativeLiveSession {
         state.dissectionSession = nil
         state.hadWorkingDissectionSession = false
         state.statusMessage = "Wireshark details are unavailable; capture continues with the Swift dissector. \(message)"
+    }
+
+    // Rehydrate stopped live captures once, while active captures keep their incremental first pass.
+    private func prepareDisplayFilterSession(
+        in state: inout PCPPNativeLiveSessionState
+    ) throws -> WiresharkEpanSession {
+        if let session = state.dissectionSession,
+           state.phase == .running || state.phase == .paused {
+            return session
+        }
+
+        let records = try state.packetStore.records(withIdentifiers: nil)
+        let identifiers = records.map(\.identifier)
+        if let session = state.dissectionSession,
+           identifiers.isEmpty || session.canFollowObservedPackets(withIdentifiers: identifiers) {
+            return session
+        }
+
+        let session = try WiresharkEpanSession()
+        for record in records {
+            try session.observe(record)
+        }
+        try session.finishFirstPass()
+        state.dissectionSession = session
+        state.hadWorkingDissectionSession = true
+        return session
     }
 
     private func healthDescriptor(status: String?, state: PCPPNativeLiveSessionState) -> PCPPNativeCaptureHealthDescriptor {
