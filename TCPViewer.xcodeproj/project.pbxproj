@@ -8,10 +8,10 @@
 
 /* Begin PBXBuildFile section */
 		BA2DCC0030440B6800487713 /* ArgumentParser in Frameworks */ = {isa = PBXBuildFile; productRef = BA2DCBFF30440B6800487713 /* ArgumentParser */; };
-		BACL0002304400000070BE17 /* tcpviewer-cli in Copy CLI Executable */ = {isa = PBXBuildFile; fileRef = BA2DC1D830440ACB00487713 /* tcpviewer-cli */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 		BA4D26BD2F9A2F770070BE17 /* PcapPlusPlusCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BA4D26B42F9A2F760070BE17 /* PcapPlusPlusCore.framework */; };
 		BA5E00012FA800000070BE17 /* Sentry in Frameworks */ = {isa = PBXBuildFile; productRef = BA5E00032FA800000070BE17 /* Sentry */; };
 		BA9F00012FBF00000070BE17 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = BA9F00032FBF00000070BE17 /* ZIPFoundation */; };
+		BACL0002304400000070BE17 /* tcpviewer-cli in Copy CLI Executable */ = {isa = PBXBuildFile; fileRef = BA2DC1D830440ACB00487713 /* tcpviewer-cli */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 		BAMC0001300F00000070BE17 /* MCP in Frameworks */ = {isa = PBXBuildFile; productRef = BAMC0002300F00000070BE17 /* MCP */; };
 		BAMC0003300F00000070BE17 /* tcpviewer-mcp in Copy MCP Executable */ = {isa = PBXBuildFile; fileRef = BA63DEFA300E7E7700530A67 /* tcpviewer-mcp */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 		BAPM00012F9D00000070BE17 /* PcapPlusPlusCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BA4D26B42F9A2F760070BE17 /* PcapPlusPlusCore.framework */; };
@@ -40,19 +40,19 @@
 			remoteGlobalIDString = BAAE975C2F9B815F00C52A7C;
 			remoteInfo = TCPViewer;
 		};
-		BAMC0004300F00000070BE17 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = BA4D267D2F9A2F490070BE17 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = BA63DEF9300E7E7700530A67;
-			remoteInfo = "tcpviewer-mcp";
-		};
 		BACL0003304400000070BE17 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = BA4D267D2F9A2F490070BE17 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = BA2DC1D730440ACB00487713;
 			remoteInfo = "tcpviewer-cli";
+		};
+		BAMC0004300F00000070BE17 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = BA4D267D2F9A2F490070BE17 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = BA63DEF9300E7E7700530A67;
+			remoteInfo = "tcpviewer-mcp";
 		};
 		BAPM00102F9D00000070BE17 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -96,17 +96,6 @@
 			);
 			runOnlyForDeploymentPostprocessing = 1;
 		};
-		BAMC0005300F00000070BE17 /* Copy MCP Executable */ = {
-			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 2147483647;
-			dstPath = "";
-			dstSubfolderSpec = 6;
-			files = (
-				BAMC0003300F00000070BE17 /* tcpviewer-mcp in Copy MCP Executable */,
-			);
-			name = "Copy MCP Executable";
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		BACL0004304400000070BE17 /* Copy CLI Executable */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
@@ -116,6 +105,17 @@
 				BACL0002304400000070BE17 /* tcpviewer-cli in Copy CLI Executable */,
 			);
 			name = "Copy CLI Executable";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BAMC0005300F00000070BE17 /* Copy MCP Executable */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 6;
+			files = (
+				BAMC0003300F00000070BE17 /* tcpviewer-mcp in Copy MCP Executable */,
+			);
+			name = "Copy MCP Executable";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		BAPM00202F9D00000070BE17 /* Embed Frameworks */ = {
@@ -870,15 +870,15 @@
 			target = BAAE975C2F9B815F00C52A7C /* TCPViewer */;
 			targetProxy = BAAE97702F9B816000C52A7C /* PBXContainerItemProxy */;
 		};
-		BAMC0007300F00000070BE17 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = BA63DEF9300E7E7700530A67 /* tcpviewer-mcp */;
-			targetProxy = BAMC0004300F00000070BE17 /* PBXContainerItemProxy */;
-		};
 		BACL0005304400000070BE17 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = BA2DC1D730440ACB00487713 /* tcpviewer-cli */;
 			targetProxy = BACL0003304400000070BE17 /* PBXContainerItemProxy */;
+		};
+		BAMC0007300F00000070BE17 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = BA63DEF9300E7E7700530A67 /* tcpviewer-mcp */;
+			targetProxy = BAMC0004300F00000070BE17 /* PBXContainerItemProxy */;
 		};
 		BAPM00302F9D00000070BE17 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
@@ -1334,7 +1334,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 36;
+				CURRENT_PROJECT_VERSION = 40;
 				DEVELOPMENT_TEAM = "$(TCPVIEWER_DEVELOPMENT_TEAM)";
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -1357,7 +1357,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 1.12.0;
+				MARKETING_VERSION = 1.13.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.proxyman.tcpviewer;
 				PRODUCT_MODULE_NAME = TCPViewer;
 				PRODUCT_NAME = "TCP Viewer";
@@ -1380,7 +1380,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 36;
+				CURRENT_PROJECT_VERSION = 40;
 				DEVELOPMENT_TEAM = "$(TCPVIEWER_DEVELOPMENT_TEAM)";
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -1403,7 +1403,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 1.12.0;
+				MARKETING_VERSION = 1.13.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.proxyman.tcpviewer;
 				PRODUCT_MODULE_NAME = TCPViewer;
 				PRODUCT_NAME = "TCP Viewer";
