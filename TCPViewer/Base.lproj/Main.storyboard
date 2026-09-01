@@ -371,6 +371,19 @@
                                     </items>
                                 </menu>
                             </menuItem>
+                            <menuItem title="Statistics" id="Z7s-Ep-t0p">
+                                <modifierMask key="keyEquivalentModifierMask"/>
+                                <menu key="submenu" title="Statistics" id="Z7s-Ep-m3n">
+                                    <items>
+                                        <menuItem title="Endpoints…" id="Z7s-Ep-r0w">
+                                            <modifierMask key="keyEquivalentModifierMask"/>
+                                            <connections>
+                                                <action selector="showEndpointStatistics:" target="Ady-hI-5gd" id="Z7s-Ep-act"/>
+                                            </connections>
+                                        </menuItem>
+                                    </items>
+                                </menu>
+                            </menuItem>
                             <menuItem title="Window" id="aUF-d1-5bR">
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <menu key="submenu" title="Window" systemMenu="window" id="Td7-aD-5lo">

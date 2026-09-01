@@ -543,6 +543,7 @@ struct NetworkInspectorSnapshot: Equatable {
     var displayFilter: PacketDisplayFilter
     var displayFilterChips: [PacketFilterChip]
     var structuredFilterGroup: PacketStructuredFilterGroup
+    var endpointStatisticsFilterLabel: String?
     var isPacketTableFiltering: Bool
     var packetTableRowStore: PacketTableRowStore
     var packetTableGeneration: UInt64
@@ -571,6 +572,7 @@ struct NetworkInspectorSnapshot: Equatable {
         wiresharkFilterState: PacketWiresharkFilterState = PacketWiresharkFilterState(),
         displayFilterText: String,
         structuredFilterGroup: PacketStructuredFilterGroup = .default,
+        endpointStatisticsFilterLabel: String? = nil,
         isPacketTableFiltering: Bool = false,
         packetTableContent: PacketTableContent
     ) -> NetworkInspectorSnapshot {
@@ -594,6 +596,7 @@ struct NetworkInspectorSnapshot: Equatable {
             displayFilter: packetTableContent.displayFilter,
             displayFilterChips: packetTableContent.displayFilterChips,
             structuredFilterGroup: structuredFilterGroup,
+            endpointStatisticsFilterLabel: endpointStatisticsFilterLabel,
             isPacketTableFiltering: isPacketTableFiltering,
             packetTableRowStore: packetTableContent.store,
             packetTableGeneration: packetTableContent.generation,
@@ -629,6 +632,7 @@ struct NetworkInspectorSnapshot: Equatable {
             lhs.displayFilter == rhs.displayFilter &&
             lhs.displayFilterChips == rhs.displayFilterChips &&
             lhs.structuredFilterGroup == rhs.structuredFilterGroup &&
+            lhs.endpointStatisticsFilterLabel == rhs.endpointStatisticsFilterLabel &&
             lhs.isPacketTableFiltering == rhs.isPacketTableFiltering &&
             lhs.packetTableGeneration == rhs.packetTableGeneration &&
             lhs.packetTableUpdatePlan == rhs.packetTableUpdatePlan &&
@@ -656,7 +660,7 @@ struct NetworkInspectorSnapshot: Equatable {
     var activeFilterBarLabels: [String] {
         quickFilterSelection.activeLabels + customFilterItems
             .filter(\.isSelected)
-            .map(\.title)
+            .map(\.title) + [endpointStatisticsFilterLabel].compactMap { $0 }
     }
 
     var isQuickFilterResetVisible: Bool {

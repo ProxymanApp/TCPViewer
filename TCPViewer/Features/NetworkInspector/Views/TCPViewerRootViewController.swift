@@ -191,6 +191,7 @@ final class TCPViewerRootViewController: NSViewController {
 
     let viewModel: NetworkInspectorViewModel
 
+    private let configuration: AppConfiguration
     private let mainSplitViewController = NSSplitViewController()
     private let contentSplitViewController = TCPViewerInspectorSplitViewController()
     private let mainContainerViewController = NSViewController()
@@ -211,6 +212,7 @@ final class TCPViewerRootViewController: NSViewController {
     private var hasRenderedHelperOnboarding = false
     private var sessionImportSheetViewController: TCPViewSessionImportSheetViewController?
     private var followStreamWindowControllers: [TCPFollowStreamWindowController] = []
+    private var endpointStatisticsWindowController: EndpointStatisticsWindowController?
     private var pendingTCPFollowReveal: PendingTCPFollowReveal?
     private var isMainEmptyStateVisible = false
     #if DEBUG
@@ -226,6 +228,7 @@ final class TCPViewerRootViewController: NSViewController {
 
     init(viewModel: NetworkInspectorViewModel, configuration: AppConfiguration) {
         self.viewModel = viewModel
+        self.configuration = configuration
         self.workspaceViewController = PacketWorkspaceViewController(configuration: configuration)
         self.inspectorViewController = PacketInspectorViewController(configuration: configuration)
         super.init(nibName: nil, bundle: nil)
@@ -317,6 +320,12 @@ final class TCPViewerRootViewController: NSViewController {
 
     func clearAllPackets() {
         viewModel.clearPackets()
+    }
+
+    func showEndpointStatistics() {
+        let controller = endpointStatisticsWindowController ?? makeEndpointStatisticsWindowController()
+        controller.render(snapshot: viewModel.snapshot)
+        controller.present(title: endpointStatisticsWindowTitle)
     }
 
     func saveDocument() {
@@ -549,6 +558,8 @@ final class TCPViewerRootViewController: NSViewController {
         let snapshot = viewModel.snapshot
         sidebarViewController.render(snapshot: snapshot)
         workspaceViewController.render(snapshot: snapshot)
+        endpointStatisticsWindowController?.render(snapshot: snapshot)
+        endpointStatisticsWindowController?.updateTitle(endpointStatisticsWindowTitle)
         inspectorViewController.render(snapshot: snapshot)
         applyPendingTCPFollowReveal(snapshot)
         mainEmptyStateViewController.render(snapshot: snapshot)
@@ -1415,6 +1426,10 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
         viewModel.resetQuickFilters()
     }
 
+    func packetWorkspaceViewControllerDidRequestClearEndpointStatisticsFilter(_ controller: PacketWorkspaceViewController) {
+        viewModel.clearEndpointStatisticsFilter()
+    }
+
     func packetWorkspaceViewControllerCanAddStructuredFilter(_ controller: PacketWorkspaceViewController) -> Bool {
         TCPViewerLicenseService.shared.isLicenseAuthorized
     }
@@ -1486,6 +1501,47 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
 }
 
 private extension TCPViewerRootViewController {
+    // Keep one statistics window per document and resolve packet IDs against its latest capture snapshot.
+    func makeEndpointStatisticsWindowController() -> EndpointStatisticsWindowController {
+        let controller = EndpointStatisticsWindowController(
+            configuration: configuration,
+            packetProvider: { [weak self] packetIDs in
+                self?.viewModel.packetSummariesForEndpointStatistics(packetIDs) ?? []
+            },
+            showRelatedPackets: { [weak self] rowID in
+                guard let self else {
+                    return
+                }
+                self.viewModel.showRelatedPackets(forEndpoint: rowID)
+                self.view.window?.makeKeyAndOrderFront(nil)
+            },
+            latestIngestStateProvider: { [weak self] in
+                self?.viewModel.currentPacketIngestStateForEndpointStatistics()
+            }
+        )
+        controller.consume(ingestState: viewModel.currentPacketIngestStateForEndpointStatistics())
+        viewModel.endpointStatisticsIngestHandler = { [weak controller] ingestState in
+            controller?.consume(ingestState: ingestState)
+        }
+        endpointStatisticsWindowController = controller
+        controller.closeHandler = { [weak self, weak controller] in
+            guard let self, let controller,
+                  self.endpointStatisticsWindowController === controller else {
+                return
+            }
+            self.viewModel.endpointStatisticsIngestHandler = nil
+            self.endpointStatisticsWindowController = nil
+        }
+        return controller
+    }
+
+    var endpointStatisticsWindowTitle: String {
+        guard let fileName = viewModel.snapshot.base.documentState.fileURL?.lastPathComponent else {
+            return "Endpoints"
+        }
+        return "Endpoints - \(fileName)"
+    }
+
     // Open a dedicated native workspace and keep its bounded background operation cancellable.
     func presentFollowTCPStreamWindow(packetID: PacketSummary.ID) {
         let captureIdentity = viewModel.tcpFollowCaptureIdentity
