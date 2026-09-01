@@ -51,6 +51,64 @@ struct EndpointStatisticsDisplayedScopeForwarderTests {
         #expect(forwarder.packetCount == 3)
     }
 
+    @Test func sameGenerationDoesNotReplayAnAlreadyConsumedUpdatePlan() throws {
+        var forwarder = EndpointStatisticsDisplayedScopeForwarder()
+        let packets = Self.packets(count: 3)
+        Self.prime(&forwarder, source: Self.source(
+            generation: 1,
+            packetIDs: [1, 2],
+            updatePlan: .reload
+        ), packets: Array(packets.prefix(2)))
+
+        let appended = Self.update(from: forwarder.forwardingResult(
+            from: Self.source(generation: 2, packetIDs: [1, 2, 3], updatePlan: .append(2..<3)),
+            expectedSourceIdentity: Self.sourceIdentity,
+            forceReplacement: false,
+            packetProvider: Self.provider(packets)
+        ))
+        _ = try #require(appended)
+        var providerCallCount = 0
+
+        let replayedAppend = forwarder.forwardingResult(
+            from: Self.source(generation: 2, packetIDs: [1, 2, 3], updatePlan: .append(2..<3)),
+            expectedSourceIdentity: Self.sourceIdentity,
+            forceReplacement: false,
+            packetProvider: { _ in
+                providerCallCount += 1
+                return []
+            }
+        )
+        let replayedReload = forwarder.forwardingResult(
+            from: Self.source(generation: 2, packetIDs: [1, 2, 3], updatePlan: .reload),
+            expectedSourceIdentity: Self.sourceIdentity,
+            forceReplacement: false,
+            packetProvider: { _ in
+                providerCallCount += 1
+                return []
+            }
+        )
+
+        #expect(Self.isNone(replayedAppend))
+        #expect(Self.isNone(replayedReload))
+        #expect(providerCallCount == 0)
+        #expect(forwarder.packetCount == 3)
+    }
+
+    @Test func settledFilterWithoutADeltaRequestsAPresentation() {
+        #expect(EndpointStatisticsDisplayedSourcePolicy.shouldPresentAfterFiltering(
+            wasWaitingForFilter: true,
+            didForward: false
+        ))
+        #expect(!EndpointStatisticsDisplayedSourcePolicy.shouldPresentAfterFiltering(
+            wasWaitingForFilter: false,
+            didForward: false
+        ))
+        #expect(!EndpointStatisticsDisplayedSourcePolicy.shouldPresentAfterFiltering(
+            wasWaitingForFilter: true,
+            didForward: true
+        ))
+    }
+
     @Test func reloadRowsCopiesOnlyUpdatedPackets() throws {
         var forwarder = EndpointStatisticsDisplayedScopeForwarder()
         let packets = Self.packets(count: 2)

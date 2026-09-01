@@ -195,6 +195,11 @@ enum EndpointStatisticsDisplayedSourcePolicy {
             latestSource.packetTableGeneration == source.packetTableGeneration &&
             latestSource.visiblePacketCount == source.visiblePacketCount
     }
+
+    // Finish the UI refresh when a display-filter job settles without changing the visible packet set.
+    static func shouldPresentAfterFiltering(wasWaitingForFilter: Bool, didForward: Bool) -> Bool {
+        wasWaitingForFilter && !didForward
+    }
 }
 
 enum EndpointStatisticsPacketIDSelection {
@@ -657,14 +662,15 @@ struct EndpointStatisticsDisplayedScopeForwarder {
         }
 
         let sourceChanged = sourceIdentity != source.identity
-        let skippedTableGeneration: Bool
-        if let packetTableGeneration {
-            skippedTableGeneration = source.packetTableGeneration != packetTableGeneration &+ 1 &&
-                source.packetTableGeneration != packetTableGeneration
-        } else {
-            skippedTableGeneration = true
+        guard !forceReplacement,
+              !sourceChanged,
+              let currentPacketTableGeneration = packetTableGeneration else {
+            return .replacementRequired
         }
-        if forceReplacement || sourceChanged || skippedTableGeneration {
+        if source.packetTableGeneration == currentPacketTableGeneration {
+            return source.visiblePacketCount == packetCount ? .none : .replacementRequired
+        }
+        guard source.packetTableGeneration == currentPacketTableGeneration &+ 1 else {
             return .replacementRequired
         }
 
@@ -1466,6 +1472,7 @@ private final class EndpointStatisticsViewController: NSViewController {
                 abandonActivePresentation()
                 setCalculating(true, text: "Updating displayed packets…")
             } else {
+                let wasWaitingForFilter = isWaitingForDisplayFilter
                 isWaitingForDisplayFilter = false
                 if displayedPacketsPipeline.isPaused || isDisplayedReplacementPaused {
                     displayedPacketsPipeline.recordDroppedMutation(
@@ -1482,6 +1489,11 @@ private final class EndpointStatisticsViewController: NSViewController {
                 let didForward = consumeDisplayedSource(source, forceReplacement: forcedReplacement)
                 if forcedReplacement && didForward {
                     recordPresentationIntentAfterDrain(.explicit, usesDisplayedPackets: true)
+                } else if EndpointStatisticsDisplayedSourcePolicy.shouldPresentAfterFiltering(
+                    wasWaitingForFilter: wasWaitingForFilter,
+                    didForward: didForward
+                ) {
+                    requestPresentation(intent: .explicit)
                 }
             }
         }
