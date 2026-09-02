@@ -1853,8 +1853,8 @@ struct NetworkInspectorViewModelTests {
         controller.loadViewIfNeeded()
         controller.render(snapshot: snapshot)
 
-        let labels = allSubviews(ofType: NSTextField.self, in: controller.view).map(\.stringValue)
-        #expect(labels.contains("No traffic captured yet."))
+        #expect(controller.isSwiftUIHostedForTesting)
+        #expect(controller.showsNoTrafficStateForTesting)
         #expect(allSubviews(ofType: NSProgressIndicator.self, in: controller.view).isEmpty)
     }
 

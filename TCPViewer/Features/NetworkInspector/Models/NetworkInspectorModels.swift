@@ -100,6 +100,64 @@ private extension String {
     }
 }
 
+private enum PacketTableSummaryFormatter {
+    static func summary(for packet: PacketSummary) -> String {
+        guard packet.transportHint == .dns,
+              let dnsSummary = conciseDNS(
+                packet.infoSummary,
+                resolutions: packet.dnsResolutions
+              ) else {
+            return packet.infoSummary
+        }
+        return dnsSummary
+    }
+
+    // Wireshark's DNS sentence is useful in packet details but too long for a scannable table row.
+    private static func conciseDNS(
+        _ summary: String,
+        resolutions: [DNSResolutionObservation]?
+    ) -> String? {
+        let components = summary.split(whereSeparator: \Character.isWhitespace).map(String.init)
+        let words = components.map { $0.lowercased() }
+        let isResponse: Bool
+        var queryIndex: Int
+
+        if words.starts(with: ["standard", "query", "response"]) {
+            isResponse = true
+            queryIndex = 3
+        } else if words.starts(with: ["standard", "query"]) {
+            isResponse = false
+            queryIndex = 2
+        } else {
+            return nil
+        }
+
+        if components.indices.contains(queryIndex), components[queryIndex].hasPrefix("0x") {
+            queryIndex += 1
+        }
+        guard components.indices.contains(queryIndex + 1) else {
+            return nil
+        }
+
+        let queryType = components[queryIndex]
+        let queryName = components[queryIndex + 1].trimmingCharacters(in: CharacterSet(charactersIn: ","))
+        guard !queryType.isEmpty, !queryName.isEmpty else {
+            return nil
+        }
+
+        guard isResponse else {
+            return "\(queryType)? \(queryName)"
+        }
+        let matchingResolution = resolutions?.first {
+            $0.domainName.caseInsensitiveCompare(queryName) == .orderedSame
+        } ?? resolutions?.first
+        guard let matchingResolution else {
+            return "\(queryType) \(queryName)"
+        }
+        return "\(queryType) \(queryName) → \(matchingResolution.ipAddress)"
+    }
+}
+
 enum PacketInspectorTab: String, CaseIterable, Identifiable, Sendable, Hashable {
     case summary
     case detail
@@ -245,7 +303,7 @@ struct PacketTableRow: Identifiable, Sendable, Hashable {
         self.decodeStatusText = NetworkInspectorFormatters.decodeStatusLabel(packet.decodeStatus).tcpviewerNativeCopy
         self.interfaceText = (packet.captureMetadata.interfaceName ?? packet.interfaceID ?? "-").tcpviewerNativeCopy
         self.lengthText = NetworkInspectorFormatters.byteCount(packet.capturedLength)
-        self.summaryText = packet.infoSummary.tcpviewerNativeCopy
+        self.summaryText = PacketTableSummaryFormatter.summary(for: packet).tcpviewerNativeCopy
         self.comment = packet.resolvedComment?.tcpviewerNativeCopy
         self.commentText = (packet.resolvedComment ?? "")
             .components(separatedBy: .newlines)
