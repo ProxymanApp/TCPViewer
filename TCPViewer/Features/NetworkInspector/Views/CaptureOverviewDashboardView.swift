@@ -119,12 +119,6 @@ struct CaptureOverviewProtocolPresentation: Identifiable, Equatable {
     let colorIndex: Int
 }
 
-struct CaptureOverviewDetailPresentation: Identifiable, Equatable {
-    let id: String
-    let label: String
-    let value: String
-}
-
 struct CaptureOverviewDashboardModel: Equatable {
     let title: String
     let subtitle: String
@@ -139,9 +133,6 @@ struct CaptureOverviewDashboardModel: Equatable {
     let topApps: [CaptureOverviewTopTrafficPresentation]
     let topDestinations: [CaptureOverviewTopTrafficPresentation]
     let protocolRows: [CaptureOverviewProtocolPresentation]
-    let warningText: String?
-    let details: [CaptureOverviewDetailPresentation]
-    let isDetailsExpanded: Bool
 
     static let empty = CaptureOverviewDashboardModel(
         title: "Capture overview",
@@ -156,10 +147,7 @@ struct CaptureOverviewDashboardModel: Equatable {
         receivedText: "0 bytes",
         topApps: [],
         topDestinations: [],
-        protocolRows: [],
-        warningText: nil,
-        details: [],
-        isDetailsExpanded: false
+        protocolRows: []
     )
 }
 
@@ -168,7 +156,6 @@ struct CaptureOverviewDashboardView: View {
     let onViewPackets: () -> Void
     let onShowEndpoints: () -> Void
     let onSelectTrafficRow: (PacketSourceListSelection) -> Void
-    let onToggleDetails: () -> Void
 
     var body: some View {
         ZStack {
@@ -224,16 +211,6 @@ struct CaptureOverviewDashboardView: View {
             } else {
                 CaptureOverviewEmptyStateView()
             }
-
-            if let warningText = model.warningText {
-                CaptureOverviewWarningView(text: warningText)
-            }
-
-            CaptureOverviewDetailsView(
-                details: model.details,
-                isExpanded: model.isDetailsExpanded,
-                onToggle: onToggleDetails
-            )
         }
     }
 }
@@ -902,78 +879,6 @@ private struct CaptureOverviewEmptyStateView: View {
         )
         .frame(maxWidth: .infinity, minHeight: 360)
         .captureOverviewSurface(tint: .orange)
-    }
-}
-
-private struct CaptureOverviewWarningView: View {
-    let text: String
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
-                .accessibilityHidden(true)
-            Text(text)
-                .font(.subheadline.weight(.medium))
-            Spacer()
-        }
-        .padding(16)
-        .captureOverviewSurface(tint: .orange)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Capture warning, \(text)")
-    }
-}
-
-private struct CaptureOverviewDetailsView: View {
-    let details: [CaptureOverviewDetailPresentation]
-    let isExpanded: Bool
-    let onToggle: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Button(action: onToggle) {
-                HStack(spacing: 9) {
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.semibold))
-                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                    Text("Capture details")
-                        .font(.subheadline.weight(.semibold))
-                    Spacer()
-                    Text("\(details.count) items")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            if isExpanded {
-                Divider()
-                LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 250), spacing: 12)],
-                    alignment: .leading,
-                    spacing: 12
-                ) {
-                    ForEach(details) { detail in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(detail.label)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Text(detail.value)
-                                .font(.callout.weight(.medium))
-                                .textSelection(.enabled)
-                                .lineLimit(2)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(12)
-                        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    }
-                }
-            }
-        }
-        .padding(16)
-        .captureOverviewSurface(tint: .secondary)
-        .animation(.easeInOut(duration: 0.18), value: isExpanded)
     }
 }
 

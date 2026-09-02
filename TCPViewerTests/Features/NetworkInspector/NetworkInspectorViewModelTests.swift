@@ -1819,27 +1819,11 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.isInspectorVisible)
     }
 
-    @Test func overviewEndpointActionForcesTheExistingWindowToAllPackets() throws {
-        let defaults = isolatedDefaults()
-        let controller = EndpointStatisticsWindowController(
-            configuration: AppConfiguration(defaults: defaults),
-            packetProvider: { _ in [] },
-            showRelatedPackets: { _ in }
-        )
-        defer { controller.close() }
-        let displayedOnlyCheckbox = try #require(
-            controller.window?.toolbar?.items.compactMap { $0.view as? NSButton }.first {
-                $0.title == "Displayed packets only"
-            }
-        )
-        displayedOnlyCheckbox.state = .on
-
-        controller.present(title: "Endpoints", forceAllPackets: true)
-
-        #expect(displayedOnlyCheckbox.state == .off)
+    @Test func endpointStatisticsUsesTheLargerDefaultContentSize() {
+        #expect(EndpointStatisticsWindowController.defaultContentSize == NSSize(width: 1_440, height: 820))
     }
 
-    @Test func endpointStatisticsUsesTheWindowToolbarForCommonControls() throws {
+    @Test func endpointStatisticsToolbarOnlyShowsEndpointTypesAndSearch() throws {
         let controller = EndpointStatisticsWindowController(
             configuration: AppConfiguration(defaults: isolatedDefaults()),
             packetProvider: { _ in [] },
@@ -1848,19 +1832,22 @@ struct NetworkInspectorViewModelTests {
         defer { controller.close() }
         let toolbar = try #require(controller.window?.toolbar)
         let identifiers = toolbar.items.map(\.itemIdentifier.rawValue)
+        let endpointIdentifiers = identifiers.filter { $0.hasPrefix("TCPViewer.EndpointStatistics") }
 
-        #expect(identifiers.contains("TCPViewer.EndpointStatistics.endpointTypes"))
-        #expect(identifiers.contains("TCPViewer.EndpointStatistics.displayedPackets"))
-        #expect(identifiers.contains("TCPViewer.EndpointStatistics.showPackets"))
-        #expect(identifiers.contains("TCPViewer.EndpointStatistics.copy"))
-        #expect(identifiers.contains("TCPViewer.EndpointStatistics.search"))
+        #expect(endpointIdentifiers == [
+            "TCPViewer.EndpointStatistics.endpointTypes",
+            "TCPViewer.EndpointStatistics.search",
+        ])
+        #expect(toolbar.centeredItemIdentifiers == [
+            NSToolbarItem.Identifier("TCPViewer.EndpointStatistics.endpointTypes"),
+        ])
 
         let endpointTypes = try #require(
             toolbar.items.compactMap { $0.view as? NSSegmentedControl }.first
         )
         #expect(endpointTypes.segmentCount == EndpointStatisticsGroup.allCases.count)
         #expect(toolbar.items.contains { $0 is NSSearchToolbarItem })
-        #expect(toolbar.items.contains { $0 is NSMenuToolbarItem })
+        #expect(!toolbar.items.contains { $0 is NSMenuToolbarItem })
     }
 
     @Test func emptyOverviewShowsNoTrafficStateWithoutACalculatingSpinner() {

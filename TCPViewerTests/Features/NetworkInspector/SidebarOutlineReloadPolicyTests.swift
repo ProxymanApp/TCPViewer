@@ -150,7 +150,7 @@ struct SidebarOutlineReloadPolicyTests {
     }
 
     @MainActor
-    @Test func captureOverviewIsFirstAlwaysExpandedAndHasNoPacketContextActions() async throws {
+    @Test func captureOverviewIsFirstInitiallyExpandedAndHasNoPacketContextActions() async throws {
         let controller = SidebarViewController()
         let selectionRecorder = SidebarSelectionRecorder()
         controller.delegate = selectionRecorder
@@ -171,7 +171,6 @@ struct SidebarOutlineReloadPolicyTests {
 
         #expect(captureRow == 0)
         #expect(outlineView.isItemExpanded(captureItem))
-        #expect(!controller.outlineView(outlineView, shouldCollapseItem: captureItem))
         #expect(outlineView.selectedRow == overviewRow)
 
         await Task.yield()
@@ -183,6 +182,34 @@ struct SidebarOutlineReloadPolicyTests {
 
         #expect(selectionRecorder.selectedWorkspaceModes == [.overview])
         #expect(menu.items.isEmpty)
+    }
+
+    @MainActor
+    @Test func collapsedCaptureGroupStaysCollapsedAfterSidebarRefresh() throws {
+        let controller = SidebarViewController()
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: makeSnapshot(
+            sourceListSnapshot: .empty,
+            selectedSelection: .allPackets,
+            packetMutation: .none
+        ))
+
+        let outlineView = try #require(findOutlineScrollView(in: controller.view)?.documentView as? NSOutlineView)
+        let captureRow = try #require(row(withItemID: PacketSourceListTreeBuilder.captureGroupID, in: outlineView))
+        let captureItem = try #require(outlineView.item(atRow: captureRow))
+        outlineView.collapseItem(captureItem)
+        #expect(!outlineView.isItemExpanded(captureItem))
+
+        controller.render(snapshot: makeSnapshot(
+            sourceListSnapshot: snapshotWithApp(),
+            selectedSelection: .allPackets,
+            packetMutation: .replace
+        ))
+
+        let refreshedCaptureRow = try #require(row(withItemID: PacketSourceListTreeBuilder.captureGroupID, in: outlineView))
+        let refreshedCaptureItem = try #require(outlineView.item(atRow: refreshedCaptureRow))
+        #expect(!outlineView.isItemExpanded(refreshedCaptureItem))
+        #expect(row(withItemID: PacketSourceListTreeBuilder.overviewItemID, in: outlineView) == nil)
     }
 
     @MainActor

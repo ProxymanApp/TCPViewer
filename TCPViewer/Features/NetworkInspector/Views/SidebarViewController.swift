@@ -496,7 +496,6 @@ final class SidebarViewController: NSViewController {
         expandedItemIDs = Set(viewModel.allItems().compactMap { item in
             outlineView.isItemExpanded(item) ? item.sourceItem.id : nil
         })
-        expandedItemIDs.insert(PacketSourceListTreeBuilder.captureGroupID)
     }
 
     private func restoreExpandedItems(expandAll: Bool) {
@@ -839,10 +838,6 @@ extension SidebarViewController: NSOutlineViewDataSource, NSOutlineViewDelegate 
         sourceItem(for: item)?.isNavigable == true
     }
 
-    func outlineView(_ outlineView: NSOutlineView, shouldCollapseItem item: Any) -> Bool {
-        sourceItem(for: item)?.id != PacketSourceListTreeBuilder.captureGroupID
-    }
-
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
         guard let sourceItem = sourceItem(for: item) else {
             return nil
@@ -950,10 +945,6 @@ extension SidebarViewController: NSOutlineViewDataSource, NSOutlineViewDelegate 
             return
         }
 
-        guard item.sourceItem.id != PacketSourceListTreeBuilder.captureGroupID else {
-            outlineView.expandItem(item)
-            return
-        }
         expandedItemIDs.remove(item.sourceItem.id)
     }
 }

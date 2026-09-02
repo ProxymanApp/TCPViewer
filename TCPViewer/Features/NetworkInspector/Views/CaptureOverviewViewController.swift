@@ -24,18 +24,12 @@ private struct CaptureOverviewNetworkFingerprint: Equatable {
     let packetLineageRevision: UInt64
     let source: CaptureSource?
     let sessionPhase: CaptureSessionState.Phase
-    let interfaceID: String?
     let interfaceName: String?
     let interfaceTechnicalName: String?
-    let interfaceLinkType: CaptureLinkType?
     let documentPhase: CaptureDocumentState.Phase
     let documentFileName: String?
     let importedFileCount: Int
     let firstImportedFileName: String?
-    let captureFilter: String?
-    let droppedPacketCount: UInt64
-    let truncatedPacketCount: Int
-    let decodeIssueCount: Int
 
     init(snapshot: NetworkInspectorSnapshot) {
         let ingest = snapshot.base.packetIngestState
@@ -45,18 +39,12 @@ private struct CaptureOverviewNetworkFingerprint: Equatable {
         packetLineageRevision = ingest.packetLineageRevision
         source = ingest.source
         sessionPhase = snapshot.base.sessionState.phase
-        interfaceID = interface?.id
         interfaceName = interface?.displayName
         interfaceTechnicalName = interface?.technicalName
-        interfaceLinkType = interface?.linkType
         documentPhase = snapshot.base.documentState.phase
         documentFileName = snapshot.base.documentState.fileURL?.lastPathComponent
         importedFileCount = ingest.importedFiles.count
         firstImportedFileName = ingest.importedFiles.first?.displayName
-        captureFilter = snapshot.base.filterState.normalizedCaptureFilter
-        droppedPacketCount = snapshot.droppedPacketCount
-        truncatedPacketCount = ingest.truncatedPacketCount
-        decodeIssueCount = ingest.decodeIssueCount
     }
 }
 
@@ -68,7 +56,6 @@ final class CaptureOverviewViewController: NSViewController {
     private var hostingController: NSHostingController<CaptureOverviewDashboardView>?
     private var latestNetworkSnapshot: NetworkInspectorSnapshot?
     private var overviewSnapshot = CaptureOverviewSnapshot.empty
-    private var isCaptureDetailsExpanded = false
     private var renderedBackingIdentity: String?
     private var renderedPacketLineageRevision: UInt64?
     private var renderedNetworkFingerprint: CaptureOverviewNetworkFingerprint?
@@ -183,11 +170,6 @@ final class CaptureOverviewViewController: NSViewController {
             onSelectTrafficRow: { [weak self] selection in
                 guard let self else { return }
                 delegate?.captureOverviewViewController(self, didSelect: selection)
-            },
-            onToggleDetails: { [weak self] in
-                guard let self else { return }
-                isCaptureDetailsExpanded.toggle()
-                renderDashboard()
             }
         )
     }
@@ -250,10 +232,7 @@ final class CaptureOverviewViewController: NSViewController {
                     fraction: fraction(row.totals.bytes, of: totals.bytes),
                     colorIndex: index
                 )
-            },
-            warningText: warningText(network),
-            details: captureDetails(network),
-            isDetailsExpanded: isCaptureDetailsExpanded
+            }
         )
     }
 
@@ -411,45 +390,6 @@ final class CaptureOverviewViewController: NSViewController {
             tone = .neutral
         }
         return CaptureOverviewStatusPresentation(title: phase.rawValue.capitalized, tone: tone)
-    }
-
-    private func warningText(_ snapshot: NetworkInspectorSnapshot) -> String? {
-        var warnings: [String] = []
-        if snapshot.droppedPacketCount > 0 {
-            warnings.append("\(formattedNumber(snapshot.droppedPacketCount)) packets dropped")
-        }
-        if overviewSnapshot.malformedPacketCount > 0 {
-            warnings.append("\(formattedNumber(overviewSnapshot.malformedPacketCount)) malformed packets")
-        }
-        let ingest = snapshot.base.packetIngestState
-        if ingest.truncatedPacketCount > 0 {
-            warnings.append("\(formattedNumber(UInt64(ingest.truncatedPacketCount))) truncated packets")
-        }
-        if ingest.decodeIssueCount > 0 {
-            warnings.append("\(formattedNumber(UInt64(ingest.decodeIssueCount))) decode issues")
-        }
-        return warnings.isEmpty ? nil : warnings.joined(separator: " · ")
-    }
-
-    private func captureDetails(_ snapshot: NetworkInspectorSnapshot) -> [CaptureOverviewDetailPresentation] {
-        let session = snapshot.base.sessionState
-        let ingest = snapshot.base.packetIngestState
-        var details: [CaptureOverviewDetailPresentation] = []
-        if ingest.source != .offline, let interface = session.selectedInterface {
-            details.append(.init(id: "interface", label: "Interface", value: "\(interface.displayName) (\(interface.technicalName))"))
-            details.append(.init(id: "link", label: "Link type", value: interface.linkType.rawValue.capitalized))
-        }
-        if let fileName = snapshot.base.documentState.fileURL?.lastPathComponent {
-            details.append(.init(id: "file", label: "File", value: fileName))
-        }
-        if !ingest.importedFiles.isEmpty {
-            details.append(.init(id: "imports", label: "Imported files", value: formattedNumber(UInt64(ingest.importedFiles.count))))
-        }
-        if let captureFilter = snapshot.base.filterState.normalizedCaptureFilter, !captureFilter.isEmpty {
-            details.append(.init(id: "filter", label: "Capture filter", value: captureFilter))
-        }
-        details.append(.init(id: "source", label: "Source", value: ingest.source?.rawValue.capitalized ?? "None"))
-        return details
     }
 
     private var durationText: String {
