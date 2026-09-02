@@ -4,6 +4,10 @@
 <dict>
 	<key>Label</key>
 	<string>com.proxyman.tcpviewer.helpertool</string>
+	<key>AssociatedBundleIdentifiers</key>
+	<array>
+		<string>com.proxyman.tcpviewer</string>
+	</array>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>
