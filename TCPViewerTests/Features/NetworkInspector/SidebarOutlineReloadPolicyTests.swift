@@ -213,6 +213,38 @@ struct SidebarOutlineReloadPolicyTests {
     }
 
     @MainActor
+    @Test func repeatedStartupRendersKeepDefaultGroupsExpanded() throws {
+        let controller = SidebarViewController()
+        controller.loadViewIfNeeded()
+        let startupSnapshot = makeSnapshot(
+            sourceListSnapshot: .empty,
+            selectedSelection: .allPackets,
+            packetMutation: .none
+        )
+
+        controller.render(snapshot: startupSnapshot)
+        controller.render(snapshot: makeSnapshot(
+            sourceListSnapshot: snapshotWithApp(),
+            selectedSelection: .allPackets,
+            packetMutation: .replace
+        ))
+
+        let outlineView = try #require(findOutlineScrollView(in: controller.view)?.documentView as? NSOutlineView)
+        for itemID in [
+            PacketSourceListTreeBuilder.captureGroupID,
+            PacketSourceListTreeBuilder.favoritesGroupID,
+            PacketSourceListTreeBuilder.allGroupID,
+            PacketSourceListTreeBuilder.pinnedFolderID,
+            PacketSourceListTreeBuilder.appsFolderID,
+            PacketSourceListTreeBuilder.domainsFolderID,
+        ] {
+            let itemRow = try #require(row(withItemID: itemID, in: outlineView))
+            let item = try #require(outlineView.item(atRow: itemRow))
+            #expect(outlineView.isItemExpanded(item))
+        }
+    }
+
+    @MainActor
     @Test func sidebarContextMenuPlacesPinFirstAndShowInFinderAboveDelete() throws {
         let appKey = PacketSourceClientKey(rawValue: "bundleIdentifier:com.example.App")
         let controller = SidebarViewController()

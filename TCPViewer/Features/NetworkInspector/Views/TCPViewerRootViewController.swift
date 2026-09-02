@@ -215,7 +215,6 @@ final class TCPViewerRootViewController: NSViewController {
     private var followStreamWindowControllers: [TCPFollowStreamWindowController] = []
     private var endpointStatisticsWindowController: EndpointStatisticsWindowController?
     private var pendingTCPFollowReveal: PendingTCPFollowReveal?
-    private var isMainEmptyStateVisible = false
     private lazy var overviewViewController = CaptureOverviewViewController(
         latestIngestStateProvider: { [weak self] in
             self?.viewModel.currentPacketIngestStateForEndpointStatistics() ?? .empty
@@ -275,6 +274,7 @@ final class TCPViewerRootViewController: NSViewController {
 
     override func viewDidLayout() {
         super.viewDidLayout()
+        applyMainEmptyStateVisibility(viewModel.snapshot)
         if needsSidebarDividerRefresh, sidebarItem?.isCollapsed == false {
             needsSidebarDividerRefresh = false
             applySidebarDividerPosition()
@@ -642,11 +642,7 @@ final class TCPViewerRootViewController: NSViewController {
     private func applyMainEmptyStateVisibility(_ snapshot: NetworkInspectorSnapshot) {
         // Swap only the central content region so sidebar and status remain available.
         let shouldShowEmptyState = snapshot.workspaceMode != .overview && snapshot.shouldShowMainEmptyState
-        guard isMainEmptyStateVisible != shouldShowEmptyState else {
-            return
-        }
-
-        isMainEmptyStateVisible = shouldShowEmptyState
+        // Reapply both flags because AppKit can restore split-item visibility during initial layout.
         contentSplitViewController.view.isHidden = shouldShowEmptyState
         mainEmptyStateViewController.view.isHidden = !shouldShowEmptyState
     }
@@ -1325,11 +1321,18 @@ extension TCPViewerRootViewController {
     }
 
     var isMainEmptyStateVisibleForTesting: Bool {
-        isMainEmptyStateVisible
+        !mainEmptyStateViewController.view.isHidden
     }
 
     var isContentSplitViewHiddenForTesting: Bool {
         contentSplitViewController.view.isHidden
+    }
+
+    // Mimic AppKit restoring split visibility before the next layout repairs it.
+    func simulateInitialSplitVisibilityRestoreForTesting() {
+        contentSplitViewController.view.isHidden = false
+        mainEmptyStateViewController.view.isHidden = true
+        viewDidLayout()
     }
 
     var isOverviewWorkspaceVisibleForTesting: Bool {

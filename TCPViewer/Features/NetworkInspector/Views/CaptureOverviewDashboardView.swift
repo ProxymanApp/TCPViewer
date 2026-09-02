@@ -161,29 +161,58 @@ struct CaptureOverviewDashboardView: View {
         ZStack {
             CaptureOverviewBackgroundView()
             ScrollView {
-                dashboard
-                    .frame(maxWidth: 1_720)
+                CaptureOverviewDashboardContent(
+                    model: model,
+                    onViewPackets: onViewPackets,
+                    onShowEndpoints: onShowEndpoints,
+                    onSelectTrafficRow: onSelectTrafficRow
+                )
+                    .frame(maxWidth: 1_900)
                     .frame(maxWidth: .infinity)
-                    .padding(.horizontal, 28)
-                    .padding(.top, 24)
-                    .padding(.bottom, 36)
+                    .padding(.horizontal, 22)
+                    .padding(.top, 16)
+                    .padding(.bottom, 24)
             }
         }
     }
+}
+
+private struct CaptureOverviewDashboardContent: View {
+    let model: CaptureOverviewDashboardModel
+    let onViewPackets: () -> Void
+    let onShowEndpoints: () -> Void
+    let onSelectTrafficRow: (PacketSourceListSelection) -> Void
 
     @ViewBuilder
-    private var dashboard: some View {
+    var body: some View {
         if #available(macOS 26.0, *) {
-            GlassEffectContainer(spacing: 18) {
-                content
+            GlassEffectContainer(spacing: 12) {
+                CaptureOverviewSections(
+                    model: model,
+                    onViewPackets: onViewPackets,
+                    onShowEndpoints: onShowEndpoints,
+                    onSelectTrafficRow: onSelectTrafficRow
+                )
             }
         } else {
-            content
+            CaptureOverviewSections(
+                model: model,
+                onViewPackets: onViewPackets,
+                onShowEndpoints: onShowEndpoints,
+                onSelectTrafficRow: onSelectTrafficRow
+            )
         }
     }
+}
 
-    private var content: some View {
-        VStack(spacing: 18) {
+private struct CaptureOverviewSections: View {
+    let model: CaptureOverviewDashboardModel
+    let onViewPackets: () -> Void
+    let onShowEndpoints: () -> Void
+    let onSelectTrafficRow: (PacketSourceListSelection) -> Void
+
+    var body: some View {
+        VStack(spacing: 12) {
             CaptureOverviewHeaderView(
                 title: model.title,
                 subtitle: model.subtitle,
@@ -216,21 +245,19 @@ struct CaptureOverviewDashboardView: View {
 }
 
 private struct CaptureOverviewBackgroundView: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
         Color(nsColor: .windowBackgroundColor)
-            .overlay(alignment: .topLeading) {
-                Circle()
-                    .fill(Color.orange.opacity(0.11))
-                    .frame(width: 620, height: 620)
-                    .blur(radius: 150)
-                    .offset(x: -220, y: -300)
-            }
-            .overlay(alignment: .bottomTrailing) {
-                Circle()
-                    .fill(Color.cyan.opacity(0.08))
-                    .frame(width: 720, height: 720)
-                    .blur(radius: 170)
-                    .offset(x: 260, y: 320)
+            .overlay {
+                LinearGradient(
+                    colors: [
+                        Color.accentColor.opacity(colorScheme == .dark ? 0.035 : 0.02),
+                        .clear,
+                    ],
+                    startPoint: .top,
+                    endPoint: .center
+                )
             }
             .ignoresSafeArea()
     }
@@ -246,19 +273,19 @@ private struct CaptureOverviewHeaderView: View {
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 20) {
-                identity
-                Spacer(minLength: 24)
+            HStack(spacing: 14) {
+                CaptureOverviewHeaderIdentity(title: title, subtitle: subtitle, status: status)
+                Spacer(minLength: 20)
                 CaptureOverviewHeaderActions(
                     hasTraffic: hasTraffic,
                     onViewPackets: onViewPackets,
                     onShowEndpoints: onShowEndpoints
                 )
             }
-            .frame(minWidth: 700)
+            .frame(minWidth: 640)
 
-            VStack(alignment: .leading, spacing: 18) {
-                identity
+            VStack(alignment: .leading, spacing: 12) {
+                CaptureOverviewHeaderIdentity(title: title, subtitle: subtitle, status: status)
                 CaptureOverviewHeaderActions(
                     hasTraffic: hasTraffic,
                     onViewPackets: onViewPackets,
@@ -266,37 +293,55 @@ private struct CaptureOverviewHeaderView: View {
                 )
             }
         }
-        .padding(22)
-        .captureOverviewSurface(tint: .orange)
+        .padding(.horizontal, 4)
+        .padding(.vertical, 2)
     }
+}
 
-    private var identity: some View {
-        HStack(spacing: 16) {
-            Image(systemName: "chart.xyaxis.line")
-                .font(.system(size: 24, weight: .semibold))
-                .foregroundStyle(.orange)
-                .frame(width: 54, height: 54)
-                .background(Color.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .strokeBorder(Color.orange.opacity(0.24), lineWidth: 1)
-                }
-                .accessibilityHidden(true)
+private struct CaptureOverviewHeaderIdentity: View {
+    let title: String
+    let subtitle: String
+    let status: CaptureOverviewStatusPresentation
 
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 10) {
+    var body: some View {
+        HStack(spacing: 12) {
+            CaptureOverviewHeaderIcon()
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 8) {
                     Text(title)
-                        .font(.title2.weight(.semibold))
+                        .font(.headline)
                         .lineLimit(1)
                     CaptureOverviewStatusPill(status: status)
                 }
                 Text(subtitle)
-                    .font(.subheadline)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
         }
         .accessibilityElement(children: .combine)
+    }
+}
+
+private struct CaptureOverviewHeaderIcon: View {
+    @ViewBuilder
+    var body: some View {
+        if #available(macOS 26.0, *) {
+            icon
+                .glassEffect(.regular.tint(.orange.opacity(0.12)), in: .rect(cornerRadius: 10))
+        } else {
+            icon
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+    }
+
+    private var icon: some View {
+        Image(systemName: "chart.xyaxis.line")
+            .font(.system(size: 16, weight: .semibold))
+            .foregroundStyle(.orange)
+            .frame(width: 38, height: 38)
+            .accessibilityHidden(true)
     }
 }
 
@@ -307,17 +352,14 @@ private struct CaptureOverviewStatusPill: View {
         HStack(spacing: 6) {
             Circle()
                 .fill(status.tone.color)
-                .frame(width: 7, height: 7)
+                .frame(width: 6, height: 6)
             Text(status.title)
-                .font(.caption.weight(.semibold))
+                .font(.caption2.weight(.semibold))
         }
         .foregroundStyle(status.tone.color)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
         .background(status.tone.color.opacity(0.12), in: Capsule())
-        .overlay {
-            Capsule().strokeBorder(status.tone.color.opacity(0.2), lineWidth: 1)
-        }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Capture status, \(status.title)")
     }
@@ -331,7 +373,7 @@ private struct CaptureOverviewHeaderActions: View {
     @ViewBuilder
     var body: some View {
         if #available(macOS 26.0, *) {
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 Button(action: onViewPackets) {
                     Label("View Packets", systemImage: "list.bullet.rectangle")
                 }
@@ -342,9 +384,9 @@ private struct CaptureOverviewHeaderActions: View {
                 .buttonStyle(.glass)
                 .disabled(!hasTraffic)
             }
-            .controlSize(.large)
+            .controlSize(.regular)
         } else {
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 Button(action: onViewPackets) {
                     Label("View Packets", systemImage: "list.bullet.rectangle")
                 }
@@ -355,7 +397,7 @@ private struct CaptureOverviewHeaderActions: View {
                 .buttonStyle(.bordered)
                 .disabled(!hasTraffic)
             }
-            .controlSize(.large)
+            .controlSize(.regular)
         }
     }
 }
@@ -365,65 +407,78 @@ private struct CaptureOverviewMetricsView: View {
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 14) {
-                cards
-            }
-            .frame(minWidth: 1_080)
-
-            LazyVGrid(
-                columns: Array(repeating: GridItem(.flexible(minimum: 160), spacing: 14), count: 3),
-                spacing: 14
-            ) {
-                cards
-            }
-
-            LazyVGrid(
-                columns: Array(repeating: GridItem(.flexible(minimum: 150), spacing: 14), count: 2),
-                spacing: 14
-            ) {
-                cards
-            }
+            CaptureOverviewMetricStrip(metrics: metrics)
+                .frame(minWidth: 1_020)
+            CaptureOverviewMetricGrid(metrics: metrics, columnCount: 3)
+            CaptureOverviewMetricGrid(metrics: metrics, columnCount: 2)
         }
+        .padding(.vertical, 4)
+        .captureOverviewPanel()
     }
+}
 
-    private var cards: some View {
-        ForEach(metrics) { metric in
-            CaptureOverviewMetricCard(metric: metric)
-                .frame(maxWidth: .infinity)
+private struct CaptureOverviewMetricStrip: View {
+    let metrics: [CaptureOverviewMetricPresentation]
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(metrics) { metric in
+                CaptureOverviewMetricCell(metric: metric)
+                    .overlay(alignment: .trailing) {
+                        if metric.id != metrics.last?.id {
+                            Divider()
+                                .padding(.vertical, 10)
+                        }
+                    }
+            }
         }
     }
 }
 
-private struct CaptureOverviewMetricCard: View {
+private struct CaptureOverviewMetricGrid: View {
+    let metrics: [CaptureOverviewMetricPresentation]
+    let columnCount: Int
+
+    var body: some View {
+        LazyVGrid(
+            columns: Array(repeating: GridItem(.flexible(minimum: 150), spacing: 0), count: columnCount),
+            spacing: 0
+        ) {
+            ForEach(metrics) { metric in
+                CaptureOverviewMetricCell(metric: metric)
+            }
+        }
+    }
+}
+
+private struct CaptureOverviewMetricCell: View {
     let metric: CaptureOverviewMetricPresentation
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 13) {
-            HStack {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
                 Image(systemName: metric.symbol)
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(metric.tone.color)
-                    .frame(width: 30, height: 30)
-                    .background(metric.tone.color.opacity(0.14), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                     .accessibilityHidden(true)
                 Text(metric.title)
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
             }
             Text(metric.value)
-                .font(.title3.weight(.semibold))
+                .font(.headline)
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
             Text(metric.detail)
-                .font(.caption)
+                .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
         }
-        .frame(maxWidth: .infinity, minHeight: 92, alignment: .leading)
-        .padding(16)
-        .captureOverviewSurface(tint: metric.tone.color)
+        .frame(maxWidth: .infinity, minHeight: 66, alignment: .leading)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
         .accessibilityElement(children: .combine)
     }
 }
@@ -438,7 +493,7 @@ private struct CaptureOverviewPrimaryDataView: View {
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(alignment: .top, spacing: 18) {
+            HStack(alignment: .top, spacing: 0) {
                 CaptureOverviewTrafficChartView(
                     points: trafficPoints,
                     hasDirectionalTraffic: hasDirectionalTraffic,
@@ -447,12 +502,14 @@ private struct CaptureOverviewPrimaryDataView: View {
                     receivedText: receivedText
                 )
                 .frame(maxWidth: .infinity)
+                Divider()
+                    .padding(.vertical, 16)
                 CaptureOverviewProtocolView(rows: protocols)
-                    .frame(width: 410)
+                    .frame(width: 370)
             }
-            .frame(minWidth: 1_040)
+            .frame(minWidth: 980)
 
-            VStack(spacing: 18) {
+            VStack(spacing: 0) {
                 CaptureOverviewTrafficChartView(
                     points: trafficPoints,
                     hasDirectionalTraffic: hasDirectionalTraffic,
@@ -460,9 +517,12 @@ private struct CaptureOverviewPrimaryDataView: View {
                     sentText: sentText,
                     receivedText: receivedText
                 )
+                Divider()
+                    .padding(.horizontal, 16)
                 CaptureOverviewProtocolView(rows: protocols)
             }
         }
+        .captureOverviewPanel()
     }
 }
 
@@ -474,7 +534,7 @@ private struct CaptureOverviewTrafficChartView: View {
     let receivedText: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Traffic over time")
@@ -542,15 +602,14 @@ private struct CaptureOverviewTrafficChartView: View {
                 }
             }
             .chartPlotStyle { plotArea in
-                plotArea.background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                plotArea.background(Color.primary.opacity(0.018))
             }
             .accessibilityLabel(
                 hasDirectionalTraffic ? "Sent and received traffic over time" : "Total traffic over time"
             )
         }
-        .frame(maxWidth: .infinity, minHeight: 292, maxHeight: 292, alignment: .topLeading)
-        .padding(20)
-        .captureOverviewSurface(tint: .blue)
+        .frame(maxWidth: .infinity, minHeight: 258, maxHeight: 258, alignment: .topLeading)
+        .padding(16)
     }
 }
 
@@ -589,7 +648,7 @@ private struct CaptureOverviewProtocolView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Protocols")
                     .font(.headline)
@@ -598,7 +657,7 @@ private struct CaptureOverviewProtocolView: View {
                     .foregroundStyle(.secondary)
             }
 
-            HStack(spacing: 18) {
+            HStack(spacing: 14) {
                 Chart(rows) { row in
                     SectorMark(
                         angle: .value("Bytes", row.fraction),
@@ -620,10 +679,10 @@ private struct CaptureOverviewProtocolView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                .frame(width: 142, height: 142)
+                .frame(width: 122, height: 122)
                 .accessibilityLabel("Protocol traffic breakdown")
 
-                VStack(spacing: 11) {
+                VStack(spacing: 9) {
                     ForEach(rows) { row in
                         CaptureOverviewProtocolLegendRow(row: row)
                     }
@@ -631,9 +690,8 @@ private struct CaptureOverviewProtocolView: View {
                 .frame(maxWidth: .infinity)
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 292, maxHeight: 292, alignment: .topLeading)
-        .padding(20)
-        .captureOverviewSurface(tint: .purple)
+        .frame(maxWidth: .infinity, minHeight: 258, maxHeight: 258, alignment: .topLeading)
+        .padding(16)
     }
 }
 
@@ -683,19 +741,19 @@ private struct CaptureOverviewTopTrafficView: View {
             HStack(alignment: .top, spacing: 0) {
                 appRanking
                 Divider()
-                    .padding(.horizontal, 20)
+                    .padding(.horizontal, 16)
                 destinationRanking
             }
             .frame(minWidth: 900)
 
-            VStack(spacing: 20) {
+            VStack(spacing: 16) {
                 appRanking
                 Divider()
                 destinationRanking
             }
         }
-        .padding(20)
-        .captureOverviewSurface(tint: .orange)
+        .padding(16)
+        .captureOverviewPanel()
     }
 
     private var appRanking: some View {
@@ -741,7 +799,7 @@ private struct CaptureOverviewTrafficRankingView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            .padding(.bottom, 10)
+            .padding(.bottom, 8)
 
             if rows.isEmpty {
                 VStack(spacing: 10) {
@@ -756,7 +814,7 @@ private struct CaptureOverviewTrafficRankingView: View {
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                 }
-                .frame(maxWidth: .infinity, minHeight: 220)
+                .frame(maxWidth: .infinity, minHeight: 180)
                 .accessibilityElement(children: .combine)
             } else {
                 VStack(spacing: 0) {
@@ -819,9 +877,9 @@ private struct CaptureOverviewCompactTrafficRow: View {
                 )
             }
         }
-        .padding(.vertical, 7)
+        .padding(.vertical, 5)
         .padding(.horizontal, 4)
-        .frame(maxWidth: .infinity, minHeight: 43, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: 39, alignment: .leading)
         .overlay(alignment: .bottom) {
             Rectangle()
                 .fill(Color.primary.opacity(0.07))
@@ -864,9 +922,10 @@ private struct CaptureOverviewStackedTrafficBar: View {
 private struct CaptureOverviewTrafficRowButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .opacity(configuration.isPressed ? 0.78 : 1)
-            .scaleEffect(configuration.isPressed ? 0.992 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .background(
+                configuration.isPressed ? Color.primary.opacity(0.06) : .clear,
+                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+            )
     }
 }
 
@@ -877,46 +936,36 @@ private struct CaptureOverviewEmptyStateView: View {
             systemImage: "waveform.path.ecg",
             description: Text("Start a capture or open a capture file. This overview will fill in as packets arrive.")
         )
-        .frame(maxWidth: .infinity, minHeight: 360)
-        .captureOverviewSurface(tint: .orange)
+        .frame(maxWidth: .infinity, minHeight: 280)
+        .captureOverviewPanel()
     }
 }
 
-private struct CaptureOverviewSurfaceModifier: ViewModifier {
+private struct CaptureOverviewPanelModifier: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
-
-    let tint: Color
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 22, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
         if #available(macOS 26.0, *) {
             content
-                .background(tint.opacity(colorScheme == .dark ? 0.055 : 0.035), in: shape)
-                .overlay {
-                    shape.strokeBorder(
-                        colorScheme == .dark ? Color.white.opacity(0.13) : Color.black.opacity(0.09),
-                        lineWidth: 1
-                    )
-                }
-                .glassEffect(.regular.tint(tint.opacity(0.045)), in: .rect(cornerRadius: 22))
+                .background(
+                    Color(nsColor: .controlBackgroundColor)
+                        .opacity(colorScheme == .dark ? 0.24 : 0.42),
+                    in: shape
+                )
+                .glassEffect(.regular, in: .rect(cornerRadius: 14))
         } else {
             content
                 .background(.regularMaterial, in: shape)
-                .overlay {
-                    shape.strokeBorder(
-                        colorScheme == .dark ? Color.white.opacity(0.13) : Color.black.opacity(0.09),
-                        lineWidth: 1
-                    )
-                }
-                .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.16 : 0.07), radius: 16, y: 6)
+                .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.12 : 0.05), radius: 8, y: 2)
         }
     }
 }
 
 private extension View {
-    func captureOverviewSurface(tint: Color) -> some View {
-        modifier(CaptureOverviewSurfaceModifier(tint: tint))
+    func captureOverviewPanel() -> some View {
+        modifier(CaptureOverviewPanelModifier())
     }
 }
 

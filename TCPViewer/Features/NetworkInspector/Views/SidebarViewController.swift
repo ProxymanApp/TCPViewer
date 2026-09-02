@@ -268,6 +268,7 @@ final class SidebarViewController: NSViewController {
     private var pendingReloadState: SidebarOutlineReloadState?
     private var pendingReloadWorkItem: DispatchWorkItem?
     private var isSyncingSelection = false
+    private var isSyncingExpansion = false
     private var isSyncingFilter = false
     private var contextMenuItemID: String?
     private var outlineReloadGeneration = 0
@@ -342,18 +343,13 @@ final class SidebarViewController: NSViewController {
         normalizeOutlineScrollOriginIfNeeded()
         let shouldPreserveOutlineState = shouldPreserveOutlineState(for: state)
         let preservedOutlineState = shouldPreserveOutlineState ? captureOutlineState() : nil
-        if hasRenderedOutline, viewModel.filterText.isEmpty {
-            captureExpandedItemIDs()
-        }
-
         isSyncingSelection = true
         viewModel.render(state: state)
         syncSearchField(state.filterText)
         if shouldRevealSelectedImportedFile {
             expandedItemIDs.insert(PacketSourceListTreeBuilder.filesGroupID)
         }
-        outlineView.reloadData()
-        restoreExpandedItems(expandAll: !viewModel.filterText.isEmpty)
+        reloadOutlinePreservingExpansion(expandAll: !viewModel.filterText.isEmpty)
         if let preservedOutlineState {
             restoreOutlineState(preservedOutlineState)
         } else {
@@ -492,10 +488,12 @@ final class SidebarViewController: NSViewController {
         scrollView.reflectScrolledClipView(clipView)
     }
 
-    private func captureExpandedItemIDs() {
-        expandedItemIDs = Set(viewModel.allItems().compactMap { item in
-            outlineView.isItemExpanded(item) ? item.sourceItem.id : nil
-        })
+    private func reloadOutlinePreservingExpansion(expandAll: Bool) {
+        // Ignore AppKit's collapse notifications while reloadData temporarily rebuilds the outline.
+        isSyncingExpansion = true
+        outlineView.reloadData()
+        restoreExpandedItems(expandAll: expandAll)
+        isSyncingExpansion = false
     }
 
     private func restoreExpandedItems(expandAll: Bool) {
@@ -933,7 +931,9 @@ extension SidebarViewController: NSOutlineViewDataSource, NSOutlineViewDelegate 
     }
 
     func outlineViewItemDidExpand(_ notification: Notification) {
-        guard let item = notification.userInfo?["NSObject"] as? SidebarOutlineItem else {
+        guard !isSyncingExpansion,
+              let item = notification.userInfo?["NSObject"] as? SidebarOutlineItem,
+              viewModel.item(withID: item.sourceItem.id) === item else {
             return
         }
 
@@ -941,7 +941,9 @@ extension SidebarViewController: NSOutlineViewDataSource, NSOutlineViewDelegate 
     }
 
     func outlineViewItemDidCollapse(_ notification: Notification) {
-        guard let item = notification.userInfo?["NSObject"] as? SidebarOutlineItem else {
+        guard !isSyncingExpansion,
+              let item = notification.userInfo?["NSObject"] as? SidebarOutlineItem,
+              viewModel.item(withID: item.sourceItem.id) === item else {
             return
         }
 

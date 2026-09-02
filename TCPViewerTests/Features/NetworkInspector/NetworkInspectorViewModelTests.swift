@@ -1960,6 +1960,10 @@ struct NetworkInspectorViewModelTests {
         #expect(controller.isMainEmptyStateVisibleForTesting)
         #expect(controller.isContentSplitViewHiddenForTesting)
 
+        controller.simulateInitialSplitVisibilityRestoreForTesting()
+        #expect(controller.isMainEmptyStateVisibleForTesting)
+        #expect(controller.isContentSplitViewHiddenForTesting)
+
         await viewModel.openDocument(at: document.currentURL())
         await waitUntil {
             viewModel.snapshot.totalPacketCount == 1 &&
