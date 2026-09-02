@@ -68,7 +68,6 @@ final class CaptureOverviewViewController: NSViewController {
     private var hostingController: NSHostingController<CaptureOverviewDashboardView>?
     private var latestNetworkSnapshot: NetworkInspectorSnapshot?
     private var overviewSnapshot = CaptureOverviewSnapshot.empty
-    private var selectedTopGroup = CaptureOverviewTopGroup.apps
     private var isCaptureDetailsExpanded = false
     private var renderedBackingIdentity: String?
     private var renderedPacketLineageRevision: UInt64?
@@ -181,11 +180,6 @@ final class CaptureOverviewViewController: NSViewController {
                 guard let self else { return }
                 delegate?.captureOverviewViewControllerDidRequestEndpoints(self)
             },
-            onSelectTopGroup: { [weak self] group in
-                guard let self, selectedTopGroup != group else { return }
-                selectedTopGroup = group
-                renderDashboard()
-            },
             onSelectTrafficRow: { [weak self] selection in
                 guard let self else { return }
                 delegate?.captureOverviewViewController(self, didSelect: selection)
@@ -213,8 +207,8 @@ final class CaptureOverviewViewController: NSViewController {
 
     private func makeDashboardModel(network: NetworkInspectorSnapshot) -> CaptureOverviewDashboardModel {
         let totals = overviewSnapshot.totals
-        let topRows = overviewSnapshot.topRows(for: selectedTopGroup)
-        let maximumTopBytes = topRows.map(\.totals.bytes).max() ?? 0
+        let maximumAppBytes = overviewSnapshot.topApps.map(\.totals.bytes).max() ?? 0
+        let maximumDestinationBytes = overviewSnapshot.topDestinations.map(\.totals.bytes).max() ?? 0
         let hasDirectionalTraffic = totals.sentBytes > 0 || totals.receivedBytes > 0
         let chartPoints = overviewSnapshot.timeline.flatMap { point -> [CaptureOverviewChartPoint] in
             let directions: [(CaptureOverviewChartPoint.Direction, UInt64)] = hasDirectionalTraffic
@@ -241,8 +235,12 @@ final class CaptureOverviewViewController: NSViewController {
             totalText: formattedBytes(totals.bytes),
             sentText: formattedBytes(totals.sentBytes),
             receivedText: formattedBytes(totals.receivedBytes),
-            selectedTopGroup: selectedTopGroup,
-            topRows: topRows.map { rowPresentation($0, maximumBytes: maximumTopBytes) },
+            topApps: overviewSnapshot.topApps.enumerated().map { index, row in
+                rowPresentation(row, rank: index + 1, maximumBytes: maximumAppBytes)
+            },
+            topDestinations: overviewSnapshot.topDestinations.enumerated().map { index, row in
+                rowPresentation(row, rank: index + 1, maximumBytes: maximumDestinationBytes)
+            },
             protocolRows: overviewSnapshot.protocols.enumerated().map { index, row in
                 CaptureOverviewProtocolPresentation(
                     id: row.id,
@@ -322,10 +320,12 @@ final class CaptureOverviewViewController: NSViewController {
 
     private func rowPresentation(
         _ row: CaptureOverviewTopRow,
+        rank: Int,
         maximumBytes: UInt64
     ) -> CaptureOverviewTopTrafficPresentation {
         CaptureOverviewTopTrafficPresentation(
             id: row.id,
+            rank: rank,
             title: row.title,
             icon: icon(for: row),
             iconFilePath: row.iconFilePath,
@@ -341,14 +341,13 @@ final class CaptureOverviewViewController: NSViewController {
     }
 
     private func icon(for row: CaptureOverviewTopRow) -> NSImage {
-        if let path = row.iconFilePath {
+        if let path = PacketClientIconCache.normalizedIconPath(row.iconFilePath) {
             if let cached = iconCache[path] {
                 return cached
             }
-            if let image = NSImage(contentsOfFile: path) {
-                iconCache[path] = image
-                return image
-            }
+            let image = PacketClientIconImageLoader.image(forNormalizedPath: path)
+            iconCache[path] = image
+            return image
         }
         let symbol: String
         switch row.selection {
@@ -356,6 +355,8 @@ final class CaptureOverviewViewController: NSViewController {
             symbol = "app.fill"
         case .domain:
             symbol = "globe"
+        case .ipAddress:
+            symbol = "network"
         default:
             symbol = "network"
         }

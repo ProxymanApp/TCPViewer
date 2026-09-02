@@ -85,6 +85,7 @@ struct EndpointStatisticsRow: Identifiable, Equatable, Sendable {
     let port: String?
     let protocolName: String?
     let client: String?
+    let clientIconFilePath: String?
     let domain: String?
     let isAddressMultiple: Bool
     let isPortMultiple: Bool
@@ -106,6 +107,7 @@ struct EndpointStatisticsRow: Identifiable, Equatable, Sendable {
         port: String?,
         protocolName: String?,
         client: String?,
+        clientIconFilePath: String? = nil,
         domain: String?,
         isAddressMultiple: Bool = false,
         isPortMultiple: Bool = false,
@@ -126,6 +128,7 @@ struct EndpointStatisticsRow: Identifiable, Equatable, Sendable {
         self.port = port
         self.protocolName = protocolName
         self.client = client
+        self.clientIconFilePath = clientIconFilePath
         self.domain = domain
         self.isAddressMultiple = isAddressMultiple
         self.isPortMultiple = isPortMultiple

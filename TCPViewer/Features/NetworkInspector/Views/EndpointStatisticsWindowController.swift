@@ -8,6 +8,14 @@
 import AppKit
 import PcapPlusPlusCore
 
+private enum EndpointStatisticsToolbarItem {
+    static let endpointTypes = NSToolbarItem.Identifier("TCPViewer.EndpointStatistics.endpointTypes")
+    static let displayedPackets = NSToolbarItem.Identifier("TCPViewer.EndpointStatistics.displayedPackets")
+    static let showPackets = NSToolbarItem.Identifier("TCPViewer.EndpointStatistics.showPackets")
+    static let copy = NSToolbarItem.Identifier("TCPViewer.EndpointStatistics.copy")
+    static let search = NSToolbarItem.Identifier("TCPViewer.EndpointStatistics.search")
+}
+
 final class EndpointStatisticsWindowController: NSWindowController, NSWindowDelegate {
     var closeHandler: (() -> Void)?
 
@@ -26,7 +34,7 @@ final class EndpointStatisticsWindowController: NSWindowController, NSWindowDele
             latestIngestStateProvider: latestIngestStateProvider
         )
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1_240, height: 720),
+            contentRect: NSRect(x: 0, y: 0, width: 1_340, height: 720),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
@@ -38,6 +46,7 @@ final class EndpointStatisticsWindowController: NSWindowController, NSWindowDele
         super.init(window: window)
         window.delegate = self
         window.contentViewController = statisticsViewController
+        statisticsViewController.installToolbar(in: window)
     }
 
     @available(*, unavailable)
@@ -1180,7 +1189,7 @@ final class EndpointStatisticsRawReplacementWork {
     }
 }
 
-private final class EndpointStatisticsViewController: NSViewController {
+private final class EndpointStatisticsViewController: NSViewController, NSToolbarDelegate {
     private let configuration: AppConfiguration
     private let packetProvider: ([PacketSummary.ID]) -> [PacketSummary]
     private let showRelatedPackets: (EndpointStatisticsRow.ID) -> Void
@@ -1204,7 +1213,12 @@ private final class EndpointStatisticsViewController: NSViewController {
 
     private let segmentControl = NSSegmentedControl()
     private let displayedPacketsCheckbox = NSButton(checkboxWithTitle: "Displayed packets only", target: nil, action: nil)
-    private let searchField = NSSearchField()
+    private let endpointTypesToolbarItem = NSToolbarItem(itemIdentifier: EndpointStatisticsToolbarItem.endpointTypes)
+    private let displayedPacketsToolbarItem = NSToolbarItem(itemIdentifier: EndpointStatisticsToolbarItem.displayedPackets)
+    private let showPacketsToolbarItem = NSToolbarItem(itemIdentifier: EndpointStatisticsToolbarItem.showPackets)
+    private let copyToolbarItem = NSMenuToolbarItem(itemIdentifier: EndpointStatisticsToolbarItem.copy)
+    private let searchToolbarItem = NSSearchToolbarItem(itemIdentifier: EndpointStatisticsToolbarItem.search)
+    private let copyMenu = NSMenu(title: "Copy Endpoints")
     private let scrollView = NSScrollView()
     private let tableView = EndpointStatisticsTableView()
     private let footerLabel = NSTextField(labelWithString: "No endpoints")
@@ -1265,6 +1279,10 @@ private final class EndpointStatisticsViewController: NSViewController {
     private var isWaitingForDisplayFilter = false
     private var committedActionState: EndpointStatisticsActionState?
     private var isCancelled = false
+
+    private var searchField: NSSearchField {
+        searchToolbarItem.searchField
+    }
 
     init(
         configuration: AppConfiguration,
@@ -1342,6 +1360,7 @@ private final class EndpointStatisticsViewController: NSViewController {
     override func loadView() {
         view = NSView()
         setupControls()
+        setupToolbarItems()
         setupTable()
         setupLayout()
         applyColumnLayout(for: selectedGroup)
@@ -1353,6 +1372,18 @@ private final class EndpointStatisticsViewController: NSViewController {
             name: AppConfiguration.didChangeNotification,
             object: configuration
         )
+    }
+
+    // Keep navigation and common table actions in the native window toolbar.
+    func installToolbar(in window: NSWindow) {
+        loadViewIfNeeded()
+        let toolbar = NSToolbar(identifier: "TCPViewer.EndpointStatisticsToolbar.v1")
+        toolbar.delegate = self
+        toolbar.displayMode = .iconOnly
+        toolbar.allowsUserCustomization = false
+        toolbar.autosavesConfiguration = false
+        window.toolbarStyle = .unified
+        window.toolbar = toolbar
     }
 
     // Convert a main-thread ingest state into a small owned update before crossing queues.
@@ -1609,6 +1640,42 @@ private final class EndpointStatisticsViewController: NSViewController {
         refreshButton.isHidden = true
     }
 
+    private func setupToolbarItems() {
+        endpointTypesToolbarItem.label = "Endpoint Type"
+        endpointTypesToolbarItem.paletteLabel = "Endpoint Type"
+        endpointTypesToolbarItem.view = segmentControl
+        endpointTypesToolbarItem.visibilityPriority = .user
+
+        displayedPacketsCheckbox.controlSize = .small
+        displayedPacketsToolbarItem.label = "Displayed Packets"
+        displayedPacketsToolbarItem.paletteLabel = "Displayed Packets Only"
+        displayedPacketsToolbarItem.view = displayedPacketsCheckbox
+        displayedPacketsToolbarItem.visibilityPriority = .high
+
+        showPacketsToolbarItem.label = "Show Packets"
+        showPacketsToolbarItem.paletteLabel = "Show Related Packets"
+        showPacketsToolbarItem.toolTip = "Show packets for the selected endpoint"
+        showPacketsToolbarItem.image = TCPViewerUI.image("list.bullet.rectangle")
+        showPacketsToolbarItem.target = self
+        showPacketsToolbarItem.action = #selector(showRelatedPacketsFromToolbar(_:))
+        showPacketsToolbarItem.visibilityPriority = .high
+        showPacketsToolbarItem.isEnabled = false
+
+        copyToolbarItem.label = "Copy"
+        copyToolbarItem.paletteLabel = "Copy Endpoints"
+        copyToolbarItem.toolTip = "Copy endpoint rows as CSV or JSON"
+        copyToolbarItem.image = TCPViewerUI.image("doc.on.doc")
+        copyToolbarItem.menu = copyMenu
+        copyToolbarItem.visibilityPriority = .high
+        copyToolbarItem.isEnabled = false
+        copyMenu.autoenablesItems = false
+        copyMenu.delegate = self
+
+        searchToolbarItem.label = "Search"
+        searchToolbarItem.paletteLabel = "Search Endpoints"
+        searchToolbarItem.visibilityPriority = .high
+    }
+
     private func setupTable() {
         tableView.delegate = self
         tableView.dataSource = self
@@ -1637,15 +1704,8 @@ private final class EndpointStatisticsViewController: NSViewController {
         scrollView.backgroundColor = .controlBackgroundColor
     }
 
-    // Keep the common controls visible while the table consumes the flexible window area.
+    // Let the table use the space freed by moving its common controls into the toolbar.
     private func setupLayout() {
-        let topStack = NSStackView(views: [segmentControl, displayedPacketsCheckbox, searchField])
-        topStack.orientation = .horizontal
-        topStack.alignment = .centerY
-        topStack.spacing = 12
-        segmentControl.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        searchField.setContentHuggingPriority(.required, for: .horizontal)
-
         let refreshStack = NSStackView(views: [refreshNoticeLabel, refreshButton])
         refreshStack.orientation = .horizontal
         refreshStack.alignment = .centerY
@@ -1659,20 +1719,15 @@ private final class EndpointStatisticsViewController: NSViewController {
         refreshNoticeLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         refreshStack.setContentHuggingPriority(.defaultHigh, for: .horizontal)
 
-        [topStack, scrollView, footerStack].forEach {
+        [scrollView, footerStack].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview($0)
         }
 
         NSLayoutConstraint.activate([
-            topStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
-            topStack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
-            topStack.topAnchor.constraint(equalTo: view.topAnchor, constant: 10),
-            searchField.widthAnchor.constraint(equalToConstant: 220),
-
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            scrollView.topAnchor.constraint(equalTo: topStack.bottomAnchor, constant: 10),
+            scrollView.topAnchor.constraint(equalTo: view.topAnchor),
             scrollView.bottomAnchor.constraint(equalTo: footerStack.topAnchor, constant: -6),
 
             footerStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
@@ -1680,6 +1735,42 @@ private final class EndpointStatisticsViewController: NSViewController {
             footerStack.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -7),
             footerStack.heightAnchor.constraint(greaterThanOrEqualToConstant: 20),
         ])
+    }
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [
+            EndpointStatisticsToolbarItem.endpointTypes,
+            .flexibleSpace,
+            EndpointStatisticsToolbarItem.displayedPackets,
+            EndpointStatisticsToolbarItem.showPackets,
+            EndpointStatisticsToolbarItem.copy,
+            EndpointStatisticsToolbarItem.search,
+        ]
+    }
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        toolbarAllowedItemIdentifiers(toolbar)
+    }
+
+    func toolbar(
+        _ toolbar: NSToolbar,
+        itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
+        willBeInsertedIntoToolbar flag: Bool
+    ) -> NSToolbarItem? {
+        switch itemIdentifier {
+        case EndpointStatisticsToolbarItem.endpointTypes:
+            endpointTypesToolbarItem
+        case EndpointStatisticsToolbarItem.displayedPackets:
+            displayedPacketsToolbarItem
+        case EndpointStatisticsToolbarItem.showPackets:
+            showPacketsToolbarItem
+        case EndpointStatisticsToolbarItem.copy:
+            copyToolbarItem
+        case EndpointStatisticsToolbarItem.search:
+            searchToolbarItem
+        default:
+            nil
+        }
     }
 
     private func addColumn(_ definition: PacketTableColumnDefinition) {
@@ -2622,6 +2713,7 @@ private final class EndpointStatisticsViewController: NSViewController {
                 context: request.context,
                 classificationRevision: request.classificationRevision
             )
+            updateToolbarActions()
             automaticRefreshPolicy.didCommit(
                 unfilteredEndpointCount: result.table.unfilteredRowCount
             )
@@ -2755,10 +2847,12 @@ private final class EndpointStatisticsViewController: NSViewController {
         selectedGroup = EndpointStatisticsGroup.allCases[sender.selectedSegment]
         applyColumnLayout(for: selectedGroup)
         applySortDescriptor(currentSort)
+        updateToolbarActions()
         requestPresentation(intent: .explicit)
     }
 
     @objc private func displayedPacketsScopeChanged(_ sender: NSButton) {
+        updateToolbarActions()
         var waitsForAggregation = false
         if usesDisplayedPackets {
             needsDisplayedReplacement = true
@@ -2804,6 +2898,11 @@ private final class EndpointStatisticsViewController: NSViewController {
             return
         }
         showRelatedPackets(rows[rowIndex].id)
+    }
+
+    @objc private func showRelatedPacketsFromToolbar(_ sender: Any?) {
+        contextTarget = .none
+        showRelatedPacketsFromMenu(sender)
     }
 
     @objc private func showRelatedPacketsFromMenu(_ sender: Any?) {
@@ -3051,6 +3150,26 @@ private final class EndpointStatisticsViewController: NSViewController {
         menu.addItem(menuItem("Copy All Rows as JSON", action: #selector(copyAllJSONFromMenu(_:)), isEnabled: rowsAreActionable && !rows.isEmpty))
     }
 
+    private func updateCopyMenu(_ menu: NSMenu) {
+        contextTarget = .none
+        menu.removeAllItems()
+        let selection = targetSelection()
+        let hasSelection = rowsAreActionable && !selection.isEmpty(rowCount: rows.count)
+        let hasRows = rowsAreActionable && !rows.isEmpty
+
+        menu.addItem(menuItem("Copy Selected Rows as CSV", action: #selector(copySelectedCSVFromMenu(_:)), isEnabled: hasSelection))
+        menu.addItem(menuItem("Copy Selected Rows as JSON", action: #selector(copySelectedJSONFromMenu(_:)), isEnabled: hasSelection))
+        menu.addItem(.separator())
+        menu.addItem(menuItem("Copy All Rows as CSV", action: #selector(copyAllCSVFromMenu(_:)), isEnabled: hasRows))
+        menu.addItem(menuItem("Copy All Rows as JSON", action: #selector(copyAllJSONFromMenu(_:)), isEnabled: hasRows))
+    }
+
+    private func updateToolbarActions() {
+        let hasSelection = rowsAreActionable && !tableView.selectedRowIndexes.isEmpty
+        showPacketsToolbarItem.isEnabled = hasSelection
+        copyToolbarItem.isEnabled = rowsAreActionable && !rows.isEmpty
+    }
+
     private func menuItem(_ title: String, action: Selector, isEnabled: Bool) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
         item.target = self
@@ -3231,6 +3350,7 @@ private final class EndpointStatisticsViewController: NSViewController {
 
 extension EndpointStatisticsViewController: NSSearchFieldDelegate {
     func controlTextDidChange(_ obj: Notification) {
+        updateToolbarActions()
         requestPresentation(intent: .explicit)
     }
 }
@@ -3275,7 +3395,7 @@ extension EndpointStatisticsViewController: NSTableViewDataSource, NSTableViewDe
         } else if let cell = cell as? PacketClientCell {
             cell.configure(
                 displayName: endpoint.client ?? "",
-                iconFilePath: nil,
+                iconFilePath: endpoint.clientIconFilePath,
                 textStyle: .plain,
                 configuration: configuration
             )
@@ -3299,6 +3419,7 @@ extension EndpointStatisticsViewController: NSTableViewDataSource, NSTableViewDe
               let key = descriptor.key,
               let column = EndpointStatisticsTableColumn(rawValue: key) else {
             sortByGroup[selectedGroup] = .busiestFirst
+            updateToolbarActions()
             requestPresentation(intent: .explicit)
             return
         }
@@ -3306,7 +3427,12 @@ extension EndpointStatisticsViewController: NSTableViewDataSource, NSTableViewDe
             column: column,
             isAscending: descriptor.ascending
         )
+        updateToolbarActions()
         requestPresentation(intent: .explicit)
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        updateToolbarActions()
     }
 
     func tableViewColumnDidMove(_ notification: Notification) {
@@ -3322,6 +3448,8 @@ extension EndpointStatisticsViewController: NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         if menu === tableView.menu {
             updateContextMenu(menu)
+        } else if menu === copyMenu {
+            updateCopyMenu(menu)
         }
     }
 }

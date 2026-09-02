@@ -45,18 +45,6 @@ struct CaptureOverviewTrafficTotals: Equatable, Sendable {
     }
 }
 
-enum CaptureOverviewTopGroup: Int, CaseIterable, Sendable {
-    case apps
-    case domains
-
-    var title: String {
-        switch self {
-        case .apps: "Apps"
-        case .domains: "Domains"
-        }
-    }
-}
-
 struct CaptureOverviewTopRow: Identifiable, Equatable, Sendable {
     let id: String
     let title: String
@@ -84,7 +72,7 @@ struct CaptureOverviewSnapshot: Equatable, Sendable {
     let domainCount: Int
     let malformedPacketCount: UInt64
     let topApps: [CaptureOverviewTopRow]
-    let topDomains: [CaptureOverviewTopRow]
+    let topDestinations: [CaptureOverviewTopRow]
     let protocols: [CaptureOverviewProtocolRow]
     let timeline: [CaptureOverviewTimelinePoint]
 
@@ -96,17 +84,11 @@ struct CaptureOverviewSnapshot: Equatable, Sendable {
         domainCount: 0,
         malformedPacketCount: 0,
         topApps: [],
-        topDomains: [],
+        topDestinations: [],
         protocols: [],
         timeline: []
     )
 
-    func topRows(for group: CaptureOverviewTopGroup) -> [CaptureOverviewTopRow] {
-        switch group {
-        case .apps: topApps
-        case .domains: topDomains
-        }
-    }
 }
 
 private struct CaptureOverviewContribution: Equatable {
@@ -114,6 +96,7 @@ private struct CaptureOverviewContribution: Equatable {
     let timestamp: Date
     let app: PacketSourceClientIdentity?
     let domain: PacketSourceDomainIdentity?
+    let ipAddresses: [PacketSourceIPAddressIdentity]
     let protocolName: String
     let totals: CaptureOverviewTrafficTotals
     let isMalformed: Bool
@@ -126,6 +109,11 @@ private struct CaptureOverviewAppBucket {
 
 private struct CaptureOverviewDomainBucket {
     var identity: PacketSourceDomainIdentity
+    var totals = CaptureOverviewTrafficTotals()
+}
+
+private struct CaptureOverviewIPAddressBucket {
+    var identity: PacketSourceIPAddressIdentity
     var totals = CaptureOverviewTrafficTotals()
 }
 
@@ -142,12 +130,13 @@ private struct CaptureOverviewSourceIdentity: Equatable {
 struct CaptureOverviewAccumulator {
     static let maximumTimelineBucketCount = 1_024
     static let maximumRenderedTimelinePointCount = 240
-    static let maximumTopRowCount = 8
+    static let maximumTopRowCount = 10
     static let maximumProtocolRowCount = 5
 
     private var contributionsByPacketID: [PacketSummary.ID: CaptureOverviewContribution] = [:]
     private var appBuckets: [PacketSourceClientKey: CaptureOverviewAppBucket] = [:]
     private var domainBuckets: [PacketSourceDomainKey: CaptureOverviewDomainBucket] = [:]
+    private var ipAddressBuckets: [PacketSourceIPAddressKey: CaptureOverviewIPAddressBucket] = [:]
     private var protocolBuckets: [String: CaptureOverviewProtocolBucket] = [:]
     private var timelineBuckets: [Int64: CaptureOverviewTrafficTotals] = [:]
     private var timelineBucketWidth: TimeInterval = 1
@@ -161,6 +150,7 @@ struct CaptureOverviewAccumulator {
         contributionsByPacketID.removeAll(keepingCapacity: false)
         appBuckets.removeAll(keepingCapacity: false)
         domainBuckets.removeAll(keepingCapacity: false)
+        ipAddressBuckets.removeAll(keepingCapacity: false)
         protocolBuckets.removeAll(keepingCapacity: false)
         timelineBuckets.removeAll(keepingCapacity: false)
         timelineBucketWidth = 1
@@ -240,7 +230,7 @@ struct CaptureOverviewAccumulator {
             domainCount: domainBuckets.count,
             malformedPacketCount: malformedPacketCount,
             topApps: topAppRows(),
-            topDomains: topDomainRows(),
+            topDestinations: topDestinationRows(),
             protocols: protocolRows(),
             timeline: timelinePoints()
         )
@@ -271,6 +261,12 @@ struct CaptureOverviewAccumulator {
             bucket.identity = domain
             bucket.totals.add(contribution.totals)
             domainBuckets[domain.key] = bucket
+        }
+        for ipAddress in contribution.ipAddresses {
+            var bucket = ipAddressBuckets[ipAddress.key] ?? CaptureOverviewIPAddressBucket(identity: ipAddress)
+            bucket.identity = ipAddress
+            bucket.totals.add(contribution.totals)
+            ipAddressBuckets[ipAddress.key] = bucket
         }
         var protocolBucket = protocolBuckets[contribution.protocolName]
             ?? CaptureOverviewProtocolBucket(title: contribution.protocolName)
@@ -307,6 +303,17 @@ struct CaptureOverviewAccumulator {
                 domainBuckets[domain.key] = bucket
             }
         }
+        for ipAddress in contribution.ipAddresses {
+            guard var bucket = ipAddressBuckets[ipAddress.key] else {
+                continue
+            }
+            bucket.totals.remove(contribution.totals)
+            if bucket.totals.isEmpty {
+                ipAddressBuckets.removeValue(forKey: ipAddress.key)
+            } else {
+                ipAddressBuckets[ipAddress.key] = bucket
+            }
+        }
         if var bucket = protocolBuckets[contribution.protocolName] {
             bucket.totals.remove(contribution.totals)
             if bucket.totals.isEmpty {
@@ -333,6 +340,7 @@ struct CaptureOverviewAccumulator {
             timestamp: packet.timestamp,
             app: PacketSourceListClassifier.clientIdentity(for: packet),
             domain: PacketSourceListClassifier.domainIdentity(for: packet),
+            ipAddresses: PacketSourceListClassifier.ipAddressIdentities(for: packet),
             protocolName: EndpointStatisticsClassifier.protocolName(for: packet),
             totals: trafficTotals(bytes: UInt64(max(0, packet.originalLength)), direction: packet.direction),
             isMalformed: packet.decodeStatus.kind == .malformed
@@ -370,35 +378,51 @@ struct CaptureOverviewAccumulator {
         })
     }
 
-    private func topDomainRows() -> [CaptureOverviewTopRow] {
-        topRows(domainBuckets.values.lazy.map { bucket in
-            CaptureOverviewTopRow(
-                id: bucket.identity.key.rawValue,
+    private func topDestinationRows() -> [CaptureOverviewTopRow] {
+        var result: [CaptureOverviewTopRow] = []
+        result.reserveCapacity(Self.maximumTopRowCount)
+        for bucket in domainBuckets.values {
+            insertTopRow(CaptureOverviewTopRow(
+                id: "domain:\(bucket.identity.key.rawValue)",
                 title: bucket.identity.displayName,
                 iconFilePath: nil,
                 selection: .domain(bucket.identity.key),
                 totals: bucket.totals
-            )
-        })
+            ), into: &result)
+        }
+        for bucket in ipAddressBuckets.values {
+            insertTopRow(CaptureOverviewTopRow(
+                id: "ip:\(bucket.identity.key.rawValue)",
+                title: bucket.identity.displayName,
+                iconFilePath: nil,
+                selection: .ipAddress(bucket.identity.key),
+                totals: bucket.totals
+            ), into: &result)
+        }
+        return result
     }
 
-    // Keep only eight candidates while scanning so high-cardinality captures avoid a full sort.
+    // Keep only ten candidates while scanning so high-cardinality captures avoid a full sort.
     private func topRows<Rows: Sequence>(_ rows: Rows) -> [CaptureOverviewTopRow]
         where Rows.Element == CaptureOverviewTopRow {
         var result: [CaptureOverviewTopRow] = []
         result.reserveCapacity(Self.maximumTopRowCount)
         for row in rows {
-            let insertionIndex = result.firstIndex { Self.precedes(row, $0) } ?? result.endIndex
-            if insertionIndex < Self.maximumTopRowCount {
-                result.insert(row, at: insertionIndex)
-                if result.count > Self.maximumTopRowCount {
-                    result.removeLast()
-                }
-            } else if result.count < Self.maximumTopRowCount {
-                result.append(row)
-            }
+            insertTopRow(row, into: &result)
         }
         return result
+    }
+
+    private func insertTopRow(_ row: CaptureOverviewTopRow, into result: inout [CaptureOverviewTopRow]) {
+        let insertionIndex = result.firstIndex { Self.precedes(row, $0) } ?? result.endIndex
+        if insertionIndex < Self.maximumTopRowCount {
+            result.insert(row, at: insertionIndex)
+            if result.count > Self.maximumTopRowCount {
+                result.removeLast()
+            }
+        } else if result.count < Self.maximumTopRowCount {
+            result.append(row)
+        }
     }
 
     private static func precedes(_ lhs: CaptureOverviewTopRow, _ rhs: CaptureOverviewTopRow) -> Bool {

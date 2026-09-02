@@ -29,7 +29,7 @@ struct CaptureOverviewServiceTests {
 
         let snapshot = replacementSnapshot(packets)
         let app = try #require(snapshot.topApps.first)
-        let domain = try #require(snapshot.topDomains.first)
+        let domain = try #require(snapshot.topDestinations.first)
 
         #expect(snapshot.totals.packets == 3)
         #expect(snapshot.totals.bytes == 350)
@@ -75,7 +75,7 @@ struct CaptureOverviewServiceTests {
         #expect(snapshot.appCount == 1)
         #expect(snapshot.domainCount == 1)
         #expect(snapshot.topApps.map(\.title) == ["New App"])
-        #expect(snapshot.topDomains.map(\.title) == ["new.example"])
+        #expect(snapshot.topDestinations.map(\.title) == ["new.example"])
         #expect(snapshot.totals.sentBytes == 0)
         #expect(snapshot.totals.receivedBytes == 128)
         #expect(snapshot.totals.bytes == 128)
@@ -95,7 +95,7 @@ struct CaptureOverviewServiceTests {
         let snapshot = accumulator.snapshot()
         #expect(snapshot.totals.packets == 1)
         #expect(snapshot.totals.bytes == 512)
-        #expect(snapshot.topDomains.map(\.title) == ["new.example"])
+        #expect(snapshot.topDestinations.map(\.title) == ["new.example"])
     }
 
     @Test func topRowsAreBoundedAndUseStableTieOrdering() {
@@ -111,12 +111,31 @@ struct CaptureOverviewServiceTests {
 
         let snapshot = replacementSnapshot(tiedPackets + extraPackets)
 
-        #expect(snapshot.topDomains.count == CaptureOverviewAccumulator.maximumTopRowCount)
-        #expect(snapshot.topDomains.prefix(3).map(\.title) == [
+        #expect(snapshot.topDestinations.count == CaptureOverviewAccumulator.maximumTopRowCount)
+        #expect(snapshot.topDestinations.prefix(3).map(\.title) == [
             "gamma.example",
             "alpha.example",
             "beta.example",
         ])
+    }
+
+    @Test func unresolvedAddressesJoinDomainsInTheDestinationRanking() {
+        let snapshot = replacementSnapshot([
+            makePacket(id: 1, length: 256),
+            makePacket(id: 2, length: 128, domain: "api.example"),
+        ])
+
+        #expect(snapshot.topDestinations.map(\.title) == [
+            "10.0.0.2",
+            "93.184.216.34",
+            "api.example",
+        ])
+        #expect(snapshot.topDestinations[0].selection == .ipAddress(
+            PacketSourceIPAddressKey(rawValue: "10.0.0.2")
+        ))
+        #expect(snapshot.topDestinations[2].selection == .domain(
+            PacketSourceDomainKey(rawValue: "api.example", isMissingDomain: false)
+        ))
     }
 
     @Test func protocolTotalsAndRenderedTimelineStayBounded() {
@@ -170,7 +189,7 @@ struct CaptureOverviewServiceTests {
         var latestSnapshot = CaptureOverviewSnapshot.empty
         service.snapshotHandler = { latestSnapshot = $0 }
         service.consume(state)
-        try await waitUntil { latestSnapshot.topDomains.first?.title == "old.example" }
+        try await waitUntil { latestSnapshot.topDestinations.first?.title == "old.example" }
 
         var replacement = PacketIngestState.empty
         replacement.backingIdentity = "capture-b"
@@ -179,7 +198,7 @@ struct CaptureOverviewServiceTests {
         #expect(replacement.packetLineageRevision == state.packetLineageRevision)
         state = replacement
         service.consume(state)
-        try await waitUntil(timeout: 2) { latestSnapshot.topDomains.first?.title == "new.example" }
+        try await waitUntil(timeout: 2) { latestSnapshot.topDestinations.first?.title == "new.example" }
 
         #expect(latestSnapshot.totals.packets == 1)
         service.cancel()

@@ -199,7 +199,11 @@ enum EndpointStatisticsClassifier {
 
     fileprivate static func metadata(for packet: PacketSummary) -> PacketStatisticsMetadata {
         let clientIdentity = PacketSourceListClassifier.clientIdentity(for: packet).map {
-            PacketStatisticsClient(key: $0.key.rawValue, displayName: $0.displayName)
+            PacketStatisticsClient(
+                key: $0.key.rawValue,
+                displayName: $0.displayName,
+                iconFilePath: $0.iconFilePath
+            )
         }
         return PacketStatisticsMetadata(
             client: clientIdentity,
@@ -636,6 +640,7 @@ final class EndpointStatisticsService {
                     ports: remoteValues.ports,
                     protocolNames: [metadata.protocolName],
                     clients: [client.displayName],
+                    clientIconFilePaths: client.iconFilePath.map { [$0] } ?? [],
                     domains: metadata.domain.map { [$0] } ?? []
                 ),
                 totals: directionalTotals(bytes: bytes, direction: metadata.direction),
@@ -650,7 +655,8 @@ final class EndpointStatisticsService {
                     addresses: remoteValues.addresses,
                     ports: remoteValues.ports,
                     protocolNames: [metadata.protocolName],
-                    clients: metadata.client.map { [$0.displayName] } ?? []
+                    clients: metadata.client.map { [$0.displayName] } ?? [],
+                    clientIconFilePaths: metadata.client.flatMap(\.iconFilePath).map { [$0] } ?? []
                 ),
                 totals: directionalTotals(bytes: bytes, direction: metadata.direction, reversesDirection: true),
                 operation: operation
@@ -750,6 +756,7 @@ final class EndpointStatisticsService {
             ports: transportGroup == nil ? unique(endpoints.compactMap { $0.port.map(String.init) }) : [],
             protocolNames: [metadata.protocolName],
             clients: metadata.client.map { [$0.displayName] } ?? [],
+            clientIconFilePaths: metadata.client.flatMap(\.iconFilePath).map { [$0] } ?? [],
             domains: metadata.domain.map { [$0] } ?? []
         )
     }
@@ -939,6 +946,7 @@ private enum PacketStatisticsOperation {
 private struct PacketStatisticsClient: Equatable {
     let key: String
     let displayName: String
+    let iconFilePath: String?
 }
 
 fileprivate struct PacketStatisticsMetadata: Equatable {
@@ -987,6 +995,7 @@ private struct PacketStatisticsRelatedValues {
     var ports: [String] = []
     var protocolNames: [String] = []
     var clients: [String] = []
+    var clientIconFilePaths: [String] = []
     var domains: [String] = []
 }
 
@@ -1002,6 +1011,10 @@ private struct PacketStatisticsValueCounts {
 
     var isMultiple: Bool {
         counts.count > 1
+    }
+
+    var singleValue: String? {
+        counts.count == 1 ? counts.keys.first : nil
     }
 
     mutating func add(_ values: [String]) {
@@ -1032,6 +1045,7 @@ private struct PacketStatisticsBucket {
     private var ports = PacketStatisticsValueCounts()
     private var protocolNames = PacketStatisticsValueCounts()
     private var clients = PacketStatisticsValueCounts()
+    private var clientIconFilePaths = PacketStatisticsValueCounts()
     private var domains = PacketStatisticsValueCounts()
 
     init(id: EndpointStatisticsRowID, identity: PacketStatisticsIdentity) {
@@ -1046,6 +1060,7 @@ private struct PacketStatisticsBucket {
             port: identity.port ?? ports.displayValue,
             protocolName: identity.protocolName ?? protocolNames.displayValue,
             client: identity.client ?? clients.displayValue,
+            clientIconFilePath: clients.isMultiple ? nil : clientIconFilePaths.singleValue,
             domain: identity.domain ?? domains.displayValue,
             isAddressMultiple: identity.address == nil && addresses.isMultiple,
             isPortMultiple: identity.port == nil && ports.isMultiple,
@@ -1069,6 +1084,7 @@ private struct PacketStatisticsBucket {
         ports.add(related.ports)
         protocolNames.add(related.protocolNames)
         clients.add(related.clients)
+        clientIconFilePaths.add(related.clientIconFilePaths)
         domains.add(related.domains)
     }
 
@@ -1078,6 +1094,7 @@ private struct PacketStatisticsBucket {
         ports.remove(related.ports)
         protocolNames.remove(related.protocolNames)
         clients.remove(related.clients)
+        clientIconFilePaths.remove(related.clientIconFilePaths)
         domains.remove(related.domains)
     }
 }

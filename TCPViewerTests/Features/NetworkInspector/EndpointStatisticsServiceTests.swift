@@ -78,6 +78,8 @@ struct EndpointStatisticsServiceTests {
         #expect(snapshot.endpointCount(for: .apps) == 1)
         #expect(snapshot.endpointCount(for: .domains) == 1)
         #expect(app.client == "Example Browser")
+        #expect(app.clientIconFilePath == "/Applications/Example Browser.app")
+        #expect(domain.clientIconFilePath == "/Applications/Example Browser.app")
         #expect(app.packets == 3)
         #expect(app.bytes == 350)
         #expect(app.txPackets == 1)
@@ -196,7 +198,24 @@ struct EndpointStatisticsServiceTests {
         let app = try row(in: snapshot, group: .apps, key: "bundleIdentifier:com.example.browser")
 
         #expect(app.client == "Example Browser")
+        #expect(app.clientIconFilePath == "/Applications/Example Browser.app")
         #expect(app.packets == 1)
+    }
+
+    @Test func aggregateRowsShowAnIconOnlyForOneClient() throws {
+        let firstClient = makeClient(displayName: "First App", bundleIdentifier: "com.example.first")
+        let secondClient = makeClient(displayName: "Second App", bundleIdentifier: "com.example.second")
+        let snapshot = EndpointStatisticsService().rebuild(from: [
+            makePacket(id: 1, client: firstClient),
+            makePacket(id: 2, client: secondClient),
+        ])
+
+        let app = try row(in: snapshot, group: .apps, key: "bundleIdentifier:com.example.first")
+        let address = try row(in: snapshot, group: .ipv4, key: "10.0.0.2")
+
+        #expect(app.clientIconFilePath == "/Applications/First App.app")
+        #expect(address.client == EndpointStatisticsRow.multipleValue)
+        #expect(address.clientIconFilePath == nil)
     }
 
     @Test func layerNamesClassifyApplicationHintsIntoTCPAndUDP() {

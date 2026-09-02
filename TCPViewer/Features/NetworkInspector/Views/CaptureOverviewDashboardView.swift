@@ -81,6 +81,7 @@ struct CaptureOverviewChartPoint: Identifiable, Equatable {
 
 struct CaptureOverviewTopTrafficPresentation: Identifiable, Equatable {
     let id: String
+    let rank: Int
     let title: String
     let icon: NSImage
     let iconFilePath: String?
@@ -95,6 +96,7 @@ struct CaptureOverviewTopTrafficPresentation: Identifiable, Equatable {
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.id == rhs.id &&
+            lhs.rank == rhs.rank &&
             lhs.title == rhs.title &&
             lhs.iconFilePath == rhs.iconFilePath &&
             lhs.selection == rhs.selection &&
@@ -134,8 +136,8 @@ struct CaptureOverviewDashboardModel: Equatable {
     let totalText: String
     let sentText: String
     let receivedText: String
-    let selectedTopGroup: CaptureOverviewTopGroup
-    let topRows: [CaptureOverviewTopTrafficPresentation]
+    let topApps: [CaptureOverviewTopTrafficPresentation]
+    let topDestinations: [CaptureOverviewTopTrafficPresentation]
     let protocolRows: [CaptureOverviewProtocolPresentation]
     let warningText: String?
     let details: [CaptureOverviewDetailPresentation]
@@ -152,8 +154,8 @@ struct CaptureOverviewDashboardModel: Equatable {
         totalText: "0 bytes",
         sentText: "0 bytes",
         receivedText: "0 bytes",
-        selectedTopGroup: .apps,
-        topRows: [],
+        topApps: [],
+        topDestinations: [],
         protocolRows: [],
         warningText: nil,
         details: [],
@@ -165,7 +167,6 @@ struct CaptureOverviewDashboardView: View {
     let model: CaptureOverviewDashboardModel
     let onViewPackets: () -> Void
     let onShowEndpoints: () -> Void
-    let onSelectTopGroup: (CaptureOverviewTopGroup) -> Void
     let onSelectTrafficRow: (PacketSourceListSelection) -> Void
     let onToggleDetails: () -> Void
 
@@ -216,9 +217,8 @@ struct CaptureOverviewDashboardView: View {
                     protocols: model.protocolRows
                 )
                 CaptureOverviewTopTrafficView(
-                    selectedGroup: model.selectedTopGroup,
-                    rows: model.topRows,
-                    onSelectGroup: onSelectTopGroup,
+                    apps: model.topApps,
+                    destinations: model.topDestinations,
                     onSelectRow: onSelectTrafficRow
                 )
             } else {
@@ -697,129 +697,142 @@ private struct CaptureOverviewProtocolLegendRow: View {
 }
 
 private struct CaptureOverviewTopTrafficView: View {
-    let selectedGroup: CaptureOverviewTopGroup
-    let rows: [CaptureOverviewTopTrafficPresentation]
-    let onSelectGroup: (CaptureOverviewTopGroup) -> Void
+    let apps: [CaptureOverviewTopTrafficPresentation]
+    let destinations: [CaptureOverviewTopTrafficPresentation]
     let onSelectRow: (PacketSourceListSelection) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Top traffic")
-                        .font(.headline)
-                    Text("Ranked by total bytes across the capture")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                CaptureOverviewSegmentedControl(selection: selectedGroup, onSelect: onSelectGroup)
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: 0) {
+                appRanking
+                Divider()
+                    .padding(.horizontal, 20)
+                destinationRanking
             }
+            .frame(minWidth: 900)
 
-            if rows.isEmpty {
-                ContentUnavailableView(
-                    selectedGroup == .apps ? "No app traffic" : "No resolved domains",
-                    systemImage: selectedGroup == .apps ? "app.dashed" : "globe.desk",
-                    description: Text(
-                        selectedGroup == .apps
-                            ? "App attribution will appear when TCP Viewer can identify the local process."
-                            : "Resolved domains will appear as packet metadata becomes available."
-                    )
-                )
-                .frame(minHeight: 210)
-            } else {
-                ViewThatFits(in: .horizontal) {
-                    CaptureOverviewTopTrafficGrid(rows: rows, columnCount: 2, onSelect: onSelectRow)
-                        .frame(minWidth: 880)
-                    CaptureOverviewTopTrafficGrid(rows: rows, columnCount: 1, onSelect: onSelectRow)
-                }
+            VStack(spacing: 20) {
+                appRanking
+                Divider()
+                destinationRanking
             }
         }
         .padding(20)
         .captureOverviewSurface(tint: .orange)
     }
-}
 
-private struct CaptureOverviewSegmentedControl: View {
-    let selection: CaptureOverviewTopGroup
-    let onSelect: (CaptureOverviewTopGroup) -> Void
+    private var appRanking: some View {
+        CaptureOverviewTrafficRankingView(
+            title: "Top apps",
+            subtitle: "Top 10 by total traffic",
+            emptyTitle: "No app traffic",
+            emptyDescription: "Apps appear when TCP Viewer identifies the local process.",
+            emptySymbol: "app.dashed",
+            rows: apps,
+            onSelect: onSelectRow
+        )
+    }
 
-    var body: some View {
-        HStack(spacing: 3) {
-            ForEach(CaptureOverviewTopGroup.allCases, id: \.rawValue) { group in
-                Button(group.title) {
-                    onSelect(group)
-                }
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(selection == group ? Color.white : Color.secondary)
-                .padding(.horizontal, 13)
-                .padding(.vertical, 7)
-                .background(selection == group ? Color.orange : Color.clear, in: Capsule())
-                .buttonStyle(.plain)
-                .accessibilityAddTraits(selection == group ? .isSelected : [])
-            }
-        }
-        .padding(3)
-        .background(Color.primary.opacity(0.06), in: Capsule())
-        .overlay {
-            Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Top traffic category")
+    private var destinationRanking: some View {
+        CaptureOverviewTrafficRankingView(
+            title: "Top domains & IPs",
+            subtitle: "Top 10 by total traffic",
+            emptyTitle: "No domains or IP addresses",
+            emptyDescription: "Destinations appear as traffic is captured.",
+            emptySymbol: "globe.desk",
+            rows: destinations,
+            onSelect: onSelectRow
+        )
     }
 }
 
-private struct CaptureOverviewTopTrafficGrid: View {
+private struct CaptureOverviewTrafficRankingView: View {
+    let title: String
+    let subtitle: String
+    let emptyTitle: String
+    let emptyDescription: String
+    let emptySymbol: String
     let rows: [CaptureOverviewTopTrafficPresentation]
-    let columnCount: Int
     let onSelect: (PacketSourceListSelection) -> Void
 
     var body: some View {
-        LazyVGrid(
-            columns: Array(repeating: GridItem(.flexible(minimum: 360), spacing: 12), count: columnCount),
-            spacing: 12
-        ) {
-            ForEach(rows) { row in
-                Button {
-                    onSelect(row.selection)
-                } label: {
-                    CaptureOverviewTopTrafficRow(row: row)
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.headline)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.bottom, 10)
+
+            if rows.isEmpty {
+                VStack(spacing: 10) {
+                    Image(systemName: emptySymbol)
+                        .font(.title2)
+                        .foregroundStyle(.tertiary)
+                        .accessibilityHidden(true)
+                    Text(emptyTitle)
+                        .font(.subheadline.weight(.semibold))
+                    Text(emptyDescription)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
                 }
-                .buttonStyle(CaptureOverviewTrafficRowButtonStyle())
-                .accessibilityLabel("\(row.title), \(row.totalText), \(row.percentageText) of capture")
-                .accessibilityHint("Shows matching packets in the main table")
+                .frame(maxWidth: .infinity, minHeight: 220)
+                .accessibilityElement(children: .combine)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(rows) { row in
+                        Button {
+                            onSelect(row.selection)
+                        } label: {
+                            CaptureOverviewCompactTrafficRow(row: row)
+                        }
+                        .buttonStyle(CaptureOverviewTrafficRowButtonStyle())
+                        .accessibilityLabel(
+                            "Number \(row.rank), \(row.title), \(row.totalText), \(row.percentageText) of capture"
+                        )
+                        .accessibilityHint("Shows matching packets in the main table")
+                    }
+                }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 }
 
-private struct CaptureOverviewTopTrafficRow: View {
+private struct CaptureOverviewCompactTrafficRow: View {
     let row: CaptureOverviewTopTrafficPresentation
 
     var body: some View {
-        HStack(spacing: 13) {
+        HStack(spacing: 10) {
+            Text("\(row.rank)")
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.tertiary)
+                .monospacedDigit()
+                .frame(width: 18, alignment: .trailing)
+
             Image(nsImage: row.icon)
                 .resizable()
                 .aspectRatio(contentMode: .fit)
-                .frame(width: 32, height: 32)
-                .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .frame(width: 24, height: 24)
                 .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline) {
                     Text(row.title)
-                        .font(.subheadline.weight(.semibold))
+                        .font(.caption.weight(.semibold))
                         .lineLimit(1)
+                    Spacer(minLength: 8)
+                    Text(row.totalText)
+                        .font(.caption.weight(.semibold))
+                        .monospacedDigit()
                     Text(row.percentageText)
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.orange)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 2)
-                        .background(Color.orange.opacity(0.12), in: Capsule())
-                    Spacer(minLength: 8)
-                    Text(row.totalText)
-                        .font(.subheadline.weight(.semibold))
                         .monospacedDigit()
+                        .frame(minWidth: 30, alignment: .trailing)
                 }
 
                 CaptureOverviewStackedTrafficBar(
@@ -827,25 +840,17 @@ private struct CaptureOverviewTopTrafficRow: View {
                     receivedFraction: row.receivedFraction,
                     unknownFraction: row.unknownFraction
                 )
-
-                HStack(spacing: 14) {
-                    Label(row.sentText, systemImage: "arrow.up.right")
-                        .foregroundStyle(.blue)
-                    Label(row.receivedText, systemImage: "arrow.down.left")
-                        .foregroundStyle(.cyan)
-                }
-                .font(.caption2.weight(.medium))
-                .monospacedDigit()
             }
         }
-        .padding(13)
-        .frame(maxWidth: .infinity, minHeight: 88, alignment: .leading)
-        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 15, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.075), lineWidth: 1)
+        .padding(.vertical, 7)
+        .padding(.horizontal, 4)
+        .frame(maxWidth: .infinity, minHeight: 43, alignment: .leading)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color.primary.opacity(0.07))
+                .frame(height: 1)
         }
-        .contentShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+        .contentShape(Rectangle())
     }
 }
 
@@ -874,7 +879,7 @@ private struct CaptureOverviewStackedTrafficBar: View {
                 .compositingGroup()
                 .clipShape(Capsule())
         }
-        .frame(height: 6)
+        .frame(height: 4)
         .accessibilityHidden(true)
     }
 }

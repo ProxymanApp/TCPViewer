@@ -1827,9 +1827,8 @@ struct NetworkInspectorViewModelTests {
             showRelatedPackets: { _ in }
         )
         defer { controller.close() }
-        let contentView = try #require(controller.window?.contentViewController?.view)
         let displayedOnlyCheckbox = try #require(
-            allSubviews(ofType: NSButton.self, in: contentView).first {
+            controller.window?.toolbar?.items.compactMap { $0.view as? NSButton }.first {
                 $0.title == "Displayed packets only"
             }
         )
@@ -1838,6 +1837,30 @@ struct NetworkInspectorViewModelTests {
         controller.present(title: "Endpoints", forceAllPackets: true)
 
         #expect(displayedOnlyCheckbox.state == .off)
+    }
+
+    @Test func endpointStatisticsUsesTheWindowToolbarForCommonControls() throws {
+        let controller = EndpointStatisticsWindowController(
+            configuration: AppConfiguration(defaults: isolatedDefaults()),
+            packetProvider: { _ in [] },
+            showRelatedPackets: { _ in }
+        )
+        defer { controller.close() }
+        let toolbar = try #require(controller.window?.toolbar)
+        let identifiers = toolbar.items.map(\.itemIdentifier.rawValue)
+
+        #expect(identifiers.contains("TCPViewer.EndpointStatistics.endpointTypes"))
+        #expect(identifiers.contains("TCPViewer.EndpointStatistics.displayedPackets"))
+        #expect(identifiers.contains("TCPViewer.EndpointStatistics.showPackets"))
+        #expect(identifiers.contains("TCPViewer.EndpointStatistics.copy"))
+        #expect(identifiers.contains("TCPViewer.EndpointStatistics.search"))
+
+        let endpointTypes = try #require(
+            toolbar.items.compactMap { $0.view as? NSSegmentedControl }.first
+        )
+        #expect(endpointTypes.segmentCount == EndpointStatisticsGroup.allCases.count)
+        #expect(toolbar.items.contains { $0 is NSSearchToolbarItem })
+        #expect(toolbar.items.contains { $0 is NSMenuToolbarItem })
     }
 
     @Test func emptyOverviewShowsNoTrafficStateWithoutACalculatingSpinner() {
