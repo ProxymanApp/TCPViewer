@@ -150,6 +150,42 @@ struct SidebarOutlineReloadPolicyTests {
     }
 
     @MainActor
+    @Test func captureOverviewIsFirstAlwaysExpandedAndHasNoPacketContextActions() async throws {
+        let controller = SidebarViewController()
+        let selectionRecorder = SidebarSelectionRecorder()
+        controller.delegate = selectionRecorder
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: makeSnapshot(
+            sourceListSnapshot: PacketSourceListSnapshot.empty.filtered(matching: "no-match"),
+            selectedSelection: .allPackets,
+            packetMutation: .none,
+            filterText: "no-match",
+            workspaceMode: .overview
+        ))
+
+        let outlineView = try #require(findOutlineScrollView(in: controller.view)?.documentView as? NSOutlineView)
+        let captureRow = try #require(row(withItemID: PacketSourceListTreeBuilder.captureGroupID, in: outlineView))
+        let overviewRow = try #require(row(withItemID: PacketSourceListTreeBuilder.overviewItemID, in: outlineView))
+        let captureItem = try #require(outlineView.item(atRow: captureRow))
+        let menu = try #require(outlineView.menu)
+
+        #expect(captureRow == 0)
+        #expect(outlineView.isItemExpanded(captureItem))
+        #expect(!controller.outlineView(outlineView, shouldCollapseItem: captureItem))
+        #expect(outlineView.selectedRow == overviewRow)
+
+        await Task.yield()
+        controller.outlineViewSelectionDidChange(Notification(
+            name: NSOutlineView.selectionDidChangeNotification,
+            object: outlineView
+        ))
+        controller.menuNeedsUpdate(menu)
+
+        #expect(selectionRecorder.selectedWorkspaceModes == [.overview])
+        #expect(menu.items.isEmpty)
+    }
+
+    @MainActor
     @Test func sidebarContextMenuPlacesPinFirstAndShowInFinderAboveDelete() throws {
         let appKey = PacketSourceClientKey(rawValue: "bundleIdentifier:com.example.App")
         let controller = SidebarViewController()
@@ -509,7 +545,9 @@ struct SidebarOutlineReloadPolicyTests {
     private func makeSnapshot(
         sourceListSnapshot: PacketSourceListSnapshot,
         selectedSelection: PacketSourceListSelection,
-        packetMutation: PacketIngestMutation
+        packetMutation: PacketIngestMutation,
+        filterText: String = "",
+        workspaceMode: NetworkInspectorWorkspaceMode = .packets
     ) -> NetworkInspectorSnapshot {
         var base = TCPViewerWindowSnapshot.foundation
         base.packetIngestState.lastMutation = packetMutation
@@ -527,8 +565,8 @@ struct SidebarOutlineReloadPolicyTests {
             selectedSidebar: .liveCapture,
             selectedSourceListSelection: selectedSelection,
             sourceListSnapshot: sourceListSnapshot,
-            sourceListFilterText: "",
-            workspaceMode: .packets,
+            sourceListFilterText: filterText,
+            workspaceMode: workspaceMode,
             inspectorTab: .summary,
             isInspectorVisible: true,
             displayFilterText: "",
@@ -591,10 +629,18 @@ struct SidebarOutlineReloadPolicyTests {
 private final class SidebarSelectionRecorder: SidebarViewControllerDelegate {
     var selectedSelection: PacketSourceListSelection?
     var selectedSelections: [PacketSourceListSelection?] = []
+    var selectedWorkspaceModes: [NetworkInspectorWorkspaceMode] = []
 
     func sidebarViewController(_ controller: SidebarViewController, didSelect selection: PacketSourceListSelection?) {
         selectedSelection = selection
         selectedSelections.append(selection)
+    }
+
+    func sidebarViewController(
+        _ controller: SidebarViewController,
+        didSelectWorkspaceMode mode: NetworkInspectorWorkspaceMode
+    ) {
+        selectedWorkspaceModes.append(mode)
     }
 
     func sidebarViewController(_ controller: SidebarViewController, didUpdateFilterText text: String) {}

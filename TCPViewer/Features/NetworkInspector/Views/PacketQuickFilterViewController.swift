@@ -80,6 +80,7 @@ final class PacketQuickFilterViewController: NSTitlebarAccessoryViewController {
     private let resetSeparator = NSBox()
     private let bottomSeparator = NSBox()
     private let resetButton = NSButton(title: "Reset Filters", target: nil, action: nil)
+    private var heightConstraint: NSLayoutConstraint?
     private var buttons: [PacketQuickFilterID: PacketQuickFilterButton] = [:]
     private var customButtons: [PacketCustomFilter.ID: PacketCustomFilterButton] = [:]
     private var customItemsByID: [PacketCustomFilter.ID: PacketCustomFilterItem] = [:]
@@ -108,6 +109,10 @@ final class PacketQuickFilterViewController: NSTitlebarAccessoryViewController {
     }
 
     func render(snapshot: NetworkInspectorSnapshot) {
+        let isAvailable = snapshot.workspaceMode != .overview
+        view.isHidden = !isAvailable
+        preferredContentSize = NSSize(width: 0, height: isAvailable ? Metrics.height : 0)
+        heightConstraint?.constant = isAvailable ? Metrics.height : 0
         ensureButtons(for: snapshot.quickFilterItems, customItems: snapshot.customFilterItems)
         customItemsByID = [:]
         for item in snapshot.customFilterItems {
@@ -167,8 +172,10 @@ final class PacketQuickFilterViewController: NSTitlebarAccessoryViewController {
 
         view.addSubview(stackView)
         view.addSubview(bottomSeparator)
+        let heightConstraint = view.heightAnchor.constraint(equalToConstant: Metrics.height)
+        self.heightConstraint = heightConstraint
         NSLayoutConstraint.activate([
-            view.heightAnchor.constraint(equalToConstant: Metrics.height),
+            heightConstraint,
             stackView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             stackView.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor),
             stackView.topAnchor.constraint(equalTo: view.topAnchor),

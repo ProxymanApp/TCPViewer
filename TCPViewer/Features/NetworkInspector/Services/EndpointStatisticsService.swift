@@ -254,14 +254,7 @@ enum EndpointStatisticsClassifier {
     }
 
     private static func canonicalDomain(_ value: String?) -> String? {
-        let normalized = value?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
-            .lowercased()
-        guard let normalized, !normalized.isEmpty, normalized.utf8.count <= 253 else {
-            return nil
-        }
-        return normalized
+        PacketSourceListClassifier.canonicalDomainName(value)
     }
 
     private static func canonicalIPAddress(_ rawValue: String?) -> (address: String, group: EndpointStatisticsGroup)? {
@@ -295,7 +288,7 @@ enum EndpointStatisticsClassifier {
         return nil
     }
 
-    private static func protocolName(for packet: PacketSummary) -> String {
+    static func protocolName(for packet: PacketSummary) -> String {
         switch packet.transportHint {
         case .ethernet: return "Ethernet"
         case .arp: return "ARP"

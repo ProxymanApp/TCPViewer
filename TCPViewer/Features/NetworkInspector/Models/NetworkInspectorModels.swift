@@ -9,6 +9,7 @@ import Foundation
 import PcapPlusPlusCore
 
 enum NetworkInspectorWorkspaceMode: String, CaseIterable, Identifiable, Sendable, Hashable {
+    case overview
     case packets
     case flows
     case timeline
@@ -19,6 +20,8 @@ enum NetworkInspectorWorkspaceMode: String, CaseIterable, Identifiable, Sendable
 
     var title: String {
         switch self {
+        case .overview:
+            "Overview"
         case .packets:
             "Packets"
         case .flows:
@@ -34,6 +37,8 @@ enum NetworkInspectorWorkspaceMode: String, CaseIterable, Identifiable, Sendable
 
     var systemImage: String {
         switch self {
+        case .overview:
+            "chart.bar.xaxis"
         case .packets:
             "list.bullet.rectangle"
         case .flows:
@@ -49,6 +54,8 @@ enum NetworkInspectorWorkspaceMode: String, CaseIterable, Identifiable, Sendable
 
     var preparedStateMessage: String {
         switch self {
+        case .overview:
+            "Capture overview is ready."
         case .packets:
             "Packet inspection is ready."
         case .flows:

@@ -1382,6 +1382,27 @@ final class NetworkInspectorViewModel {
         rebuildSnapshot()
     }
 
+    // Leave Overview without discarding the user's packet filters.
+    func showPacketsFromOverview() {
+        cancelPendingInspectorFilterApplication()
+        endpointStatisticsFilter = nil
+        selectedSourceListSelection = .allPackets
+        workspaceMode = .packets
+        selectedSidebar = .liveCapture
+        rebuildSnapshot()
+    }
+
+    // Use the sidebar's exact identity so an Overview row opens the same packet scope as a normal click.
+    func showSourceListSelectionFromOverview(_ selection: PacketSourceListSelection) {
+        cancelPendingInspectorFilterApplication()
+        sourceListFilterText = ""
+        endpointStatisticsFilter = nil
+        selectedSourceListSelection = selection
+        workspaceMode = .packets
+        selectedSidebar = .liveCapture
+        rebuildSnapshot()
+    }
+
     func selectInterface(_ identifier: String) {
         cancelPendingInspectorFilterApplication()
         selectedSidebar = .interface(identifier)

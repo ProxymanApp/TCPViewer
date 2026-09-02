@@ -58,7 +58,10 @@ final class EndpointStatisticsWindowController: NSWindowController, NSWindowDele
         window?.title = title
     }
 
-    func present(title: String) {
+    func present(title: String, forceAllPackets: Bool = false) {
+        if forceAllPackets {
+            statisticsViewController.useAllPacketsScope()
+        }
         updateTitle(title)
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
@@ -1506,6 +1509,16 @@ private final class EndpointStatisticsViewController: NSViewController {
                 }
             }
         }
+    }
+
+    // Overview always opens the complete capture while keeping the selected tab and column layout.
+    func useAllPacketsScope() {
+        loadViewIfNeeded()
+        guard usesDisplayedPackets else {
+            return
+        }
+        displayedPacketsCheckbox.state = .off
+        displayedPacketsScopeChanged(displayedPacketsCheckbox)
     }
 
     func focusSearch() {

@@ -10,6 +10,7 @@ import PcapPlusPlusCore
 
 protocol SidebarViewControllerDelegate: AnyObject {
     func sidebarViewController(_ controller: SidebarViewController, didSelect selection: PacketSourceListSelection?)
+    func sidebarViewController(_ controller: SidebarViewController, didSelectWorkspaceMode mode: NetworkInspectorWorkspaceMode)
     func sidebarViewController(_ controller: SidebarViewController, didUpdateFilterText text: String)
     func sidebarViewController(_ controller: SidebarViewController, didRequestPin targets: [PacketSourceListPinTarget])
     func sidebarViewController(_ controller: SidebarViewController, didRequestDelete action: PacketSourceListDeletionAction)
@@ -26,17 +27,20 @@ struct SidebarOutlineReloadState: Equatable {
     let sourceListSnapshot: PacketSourceListSnapshot
     let filterText: String
     let selectedSelection: PacketSourceListSelection
+    let workspaceMode: NetworkInspectorWorkspaceMode
     let packetMutation: PacketIngestMutation
 
     init(
         sourceListSnapshot: PacketSourceListSnapshot,
         filterText: String,
         selectedSelection: PacketSourceListSelection,
+        workspaceMode: NetworkInspectorWorkspaceMode = .packets,
         packetMutation: PacketIngestMutation
     ) {
         self.sourceListSnapshot = sourceListSnapshot
         self.filterText = filterText
         self.selectedSelection = selectedSelection
+        self.workspaceMode = workspaceMode
         self.packetMutation = packetMutation
     }
 
@@ -45,6 +49,7 @@ struct SidebarOutlineReloadState: Equatable {
             sourceListSnapshot: snapshot.sourceListSnapshot,
             filterText: snapshot.sourceListFilterText,
             selectedSelection: snapshot.selectedSourceListSelection,
+            workspaceMode: snapshot.workspaceMode,
             packetMutation: snapshot.base.packetIngestState.lastMutation
         )
     }
@@ -61,12 +66,14 @@ enum SidebarOutlineReloadPolicy {
 
         guard previous.sourceListSnapshot != next.sourceListSnapshot ||
                 previous.filterText != next.filterText ||
-                previous.selectedSelection != next.selectedSelection else {
+                previous.selectedSelection != next.selectedSelection ||
+                previous.workspaceMode != next.workspaceMode else {
             return .none
         }
 
         if previous.filterText != next.filterText ||
-            previous.selectedSelection != next.selectedSelection {
+            previous.selectedSelection != next.selectedSelection ||
+            previous.workspaceMode != next.workspaceMode {
             return .immediate
         }
 
@@ -163,14 +170,17 @@ private final class SidebarOutlineItem: NSObject {
 private final class SidebarViewModel {
     private(set) var roots: [SidebarOutlineItem] = []
     private(set) var selectedSelection: PacketSourceListSelection = .allPackets
+    private(set) var workspaceMode: NetworkInspectorWorkspaceMode = .packets
     private(set) var filterText = ""
 
     private var itemsByID: [String: SidebarOutlineItem] = [:]
     private var itemIDBySelection: [PacketSourceListSelection: String] = [:]
+    private var itemIDByWorkspaceMode: [NetworkInspectorWorkspaceMode: String] = [:]
 
     // Convert source-list render data into outline-view objects with no parent references.
     func render(state: SidebarOutlineReloadState) {
         selectedSelection = state.selectedSelection
+        workspaceMode = state.workspaceMode
         filterText = state.filterText
         let filteredSnapshot = state.sourceListSnapshot.filtered(matching: filterText)
         roots = filteredSnapshot.roots.map(SidebarOutlineItem.init)
@@ -185,6 +195,13 @@ private final class SidebarViewModel {
         return itemsByID[itemID]
     }
 
+    func item(for workspaceMode: NetworkInspectorWorkspaceMode) -> SidebarOutlineItem? {
+        guard let itemID = itemIDByWorkspaceMode[workspaceMode] else {
+            return nil
+        }
+        return itemsByID[itemID]
+    }
+
     func item(withID itemID: String) -> SidebarOutlineItem? {
         itemsByID[itemID]
     }
@@ -196,6 +213,7 @@ private final class SidebarViewModel {
     private func rebuildLookupTables() {
         itemsByID = [:]
         itemIDBySelection = [:]
+        itemIDByWorkspaceMode = [:]
 
         for item in roots {
             register(item)
@@ -206,6 +224,9 @@ private final class SidebarViewModel {
         itemsByID[item.sourceItem.id] = item
         if let selection = item.sourceItem.selection {
             itemIDBySelection[selection] = item.sourceItem.id
+        }
+        if let workspaceMode = item.sourceItem.workspaceMode {
+            itemIDByWorkspaceMode[workspaceMode] = item.sourceItem.id
         }
 
         for child in item.children {
@@ -289,6 +310,26 @@ final class SidebarViewController: NSViewController {
         expandedItemIDs.insert(PacketSourceListTreeBuilder.filesGroupID)
         if let filesItem = viewModel.item(withID: PacketSourceListTreeBuilder.filesGroupID) {
             outlineView.expandItem(filesItem)
+        }
+        syncSelection(scrollToSelection: true)
+    }
+
+    // Reveal programmatic Overview drill-downs even when the user collapsed their parent folders.
+    func revealSourceListSelection(_ selection: PacketSourceListSelection) {
+        let ancestorIDs: [String]
+        switch selection {
+        case .app:
+            ancestorIDs = [PacketSourceListTreeBuilder.allGroupID, PacketSourceListTreeBuilder.appsFolderID]
+        case .domain:
+            ancestorIDs = [PacketSourceListTreeBuilder.allGroupID, PacketSourceListTreeBuilder.domainsFolderID]
+        default:
+            ancestorIDs = []
+        }
+        for itemID in ancestorIDs {
+            expandedItemIDs.insert(itemID)
+            if let item = viewModel.item(withID: itemID) {
+                outlineView.expandItem(item)
+            }
         }
         syncSelection(scrollToSelection: true)
     }
@@ -455,6 +496,7 @@ final class SidebarViewController: NSViewController {
         expandedItemIDs = Set(viewModel.allItems().compactMap { item in
             outlineView.isItemExpanded(item) ? item.sourceItem.id : nil
         })
+        expandedItemIDs.insert(PacketSourceListTreeBuilder.captureGroupID)
     }
 
     private func restoreExpandedItems(expandAll: Bool) {
@@ -474,7 +516,8 @@ final class SidebarViewController: NSViewController {
 
         // Preserve the user's outline position only for source data refreshes, not filter or selection changes.
         return appliedReloadState.filterText == state.filterText &&
-            appliedReloadState.selectedSelection == state.selectedSelection
+            appliedReloadState.selectedSelection == state.selectedSelection &&
+            appliedReloadState.workspaceMode == state.workspaceMode
     }
 
     private func captureOutlineState() -> SidebarOutlineState {
@@ -578,6 +621,14 @@ final class SidebarViewController: NSViewController {
     }
 
     private func syncSelection(scrollToSelection: Bool = false) {
+        if viewModel.workspaceMode == .overview,
+           let selectedItem = viewModel.item(for: .overview) {
+            let row = outlineView.row(forItem: selectedItem)
+            if row >= 0 {
+                selectOutlineRows(IndexSet(integer: row), scrollToSelection: scrollToSelection)
+                return
+            }
+        }
         guard viewModel.selectedSelection != .allPackets,
               let selectedItem = viewModel.item(for: viewModel.selectedSelection) else {
             outlineView.deselectAll(nil)
@@ -683,7 +734,7 @@ final class SidebarViewController: NSViewController {
         let row = outlineView.row(at: point)
         guard row >= 0,
               let item = outlineView.item(atRow: row),
-              sourceItem(for: item)?.selection != nil else {
+              sourceItem(for: item)?.isNavigable == true else {
             outlineView.deselectAll(nil)
             return
         }
@@ -785,7 +836,11 @@ extension SidebarViewController: NSOutlineViewDataSource, NSOutlineViewDelegate 
     }
 
     func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool {
-        sourceItem(for: item)?.selection != nil
+        sourceItem(for: item)?.isNavigable == true
+    }
+
+    func outlineView(_ outlineView: NSOutlineView, shouldCollapseItem item: Any) -> Bool {
+        sourceItem(for: item)?.id != PacketSourceListTreeBuilder.captureGroupID
     }
 
     func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
@@ -875,7 +930,11 @@ extension SidebarViewController: NSOutlineViewDataSource, NSOutlineViewDelegate 
             return
         }
 
-        delegate?.sidebarViewController(self, didSelect: item.sourceItem.selection)
+        if let workspaceMode = item.sourceItem.workspaceMode {
+            delegate?.sidebarViewController(self, didSelectWorkspaceMode: workspaceMode)
+        } else {
+            delegate?.sidebarViewController(self, didSelect: item.sourceItem.selection)
+        }
     }
 
     func outlineViewItemDidExpand(_ notification: Notification) {
@@ -891,6 +950,10 @@ extension SidebarViewController: NSOutlineViewDataSource, NSOutlineViewDelegate 
             return
         }
 
+        guard item.sourceItem.id != PacketSourceListTreeBuilder.captureGroupID else {
+            outlineView.expandItem(item)
+            return
+        }
         expandedItemIDs.remove(item.sourceItem.id)
     }
 }
