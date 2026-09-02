@@ -245,6 +245,45 @@ struct SidebarOutlineReloadPolicyTests {
     }
 
     @MainActor
+    @Test func firstWindowAppearanceRestoresDefaultGroupsAfterAppKitCollapsesThem() throws {
+        let controller = SidebarViewController()
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: makeSnapshot(
+            sourceListSnapshot: snapshotWithApp(),
+            selectedSelection: .allPackets,
+            packetMutation: .none
+        ))
+
+        let outlineView = try #require(findOutlineScrollView(in: controller.view)?.documentView as? NSOutlineView)
+        for itemID in [
+            PacketSourceListTreeBuilder.captureGroupID,
+            PacketSourceListTreeBuilder.favoritesGroupID,
+            PacketSourceListTreeBuilder.allGroupID,
+        ] {
+            let itemRow = try #require(row(withItemID: itemID, in: outlineView))
+            outlineView.collapseItem(outlineView.item(atRow: itemRow))
+        }
+
+        let window = NSWindow(contentViewController: controller)
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+        controller.viewDidAppear()
+
+        for itemID in [
+            PacketSourceListTreeBuilder.captureGroupID,
+            PacketSourceListTreeBuilder.favoritesGroupID,
+            PacketSourceListTreeBuilder.allGroupID,
+            PacketSourceListTreeBuilder.pinnedFolderID,
+            PacketSourceListTreeBuilder.appsFolderID,
+            PacketSourceListTreeBuilder.domainsFolderID,
+        ] {
+            let itemRow = try #require(row(withItemID: itemID, in: outlineView))
+            let item = try #require(outlineView.item(atRow: itemRow))
+            #expect(outlineView.isItemExpanded(item))
+        }
+    }
+
+    @MainActor
     @Test func revealingEndpointAppExpandsAncestorsAndSelectsItsRow() throws {
         let appKey = PacketSourceClientKey(rawValue: "bundleIdentifier:com.example.App")
         let controller = SidebarViewController()

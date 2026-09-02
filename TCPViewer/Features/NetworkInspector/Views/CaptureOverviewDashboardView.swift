@@ -71,6 +71,22 @@ struct CaptureOverviewChartPoint: Identifiable, Equatable {
         case sent = "Sent"
         case received = "Received"
         case total = "Total"
+
+        var color: Color {
+            switch self {
+            case .sent: .blue
+            case .received: .cyan
+            case .total: .orange
+            }
+        }
+
+        var sortOrder: Int {
+            switch self {
+            case .sent: 0
+            case .received: 1
+            case .total: 2
+            }
+        }
     }
 
     let id: ID
@@ -117,6 +133,59 @@ struct CaptureOverviewProtocolPresentation: Identifiable, Equatable {
     let percentageText: String
     let fraction: Double
     let colorIndex: Int
+}
+
+enum CaptureOverviewChartHoverSelection {
+    static func nearestDate(to date: Date, in points: [CaptureOverviewChartPoint]) -> Date? {
+        points.reduce(nil) { nearestDate, point in
+            guard let nearestDate else {
+                return point.date
+            }
+            let nearestDistance = abs(nearestDate.timeIntervalSince(date))
+            let pointDistance = abs(point.date.timeIntervalSince(date))
+            if pointDistance == nearestDistance {
+                return min(nearestDate, point.date)
+            }
+            return pointDistance < nearestDistance ? point.date : nearestDate
+        }
+    }
+
+    static func protocolRow(
+        at location: CGPoint,
+        in size: CGSize,
+        innerRadiusRatio: CGFloat,
+        rows: [CaptureOverviewProtocolPresentation]
+    ) -> CaptureOverviewProtocolPresentation? {
+        let radius = min(size.width, size.height) / 2
+        let center = CGPoint(x: size.width / 2, y: size.height / 2)
+        let offsetX = location.x - center.x
+        let offsetY = location.y - center.y
+        let distance = hypot(offsetX, offsetY)
+        guard radius > 0,
+              distance >= radius * innerRadiusRatio,
+              distance <= radius else {
+            return nil
+        }
+
+        var clockwiseAngle = atan2(offsetX, -offsetY)
+        if clockwiseAngle < 0 {
+            clockwiseAngle += 2 * .pi
+        }
+        let totalFraction = rows.reduce(0) { $0 + max(0, $1.fraction) }
+        guard totalFraction > 0 else {
+            return nil
+        }
+
+        let targetFraction = clockwiseAngle / (2 * .pi) * totalFraction
+        var accumulatedFraction = 0.0
+        for row in rows {
+            accumulatedFraction += max(0, row.fraction)
+            if targetFraction <= accumulatedFraction {
+                return row
+            }
+        }
+        return rows.last
+    }
 }
 
 struct CaptureOverviewDashboardModel: Equatable {
@@ -533,6 +602,17 @@ private struct CaptureOverviewTrafficChartView: View {
     let sentText: String
     let receivedText: String
 
+    @State private var hoveredDate: Date?
+
+    private var hoveredPoints: [CaptureOverviewChartPoint] {
+        guard let hoveredDate else {
+            return []
+        }
+        return points
+            .filter { $0.date == hoveredDate }
+            .sorted { $0.direction.sortOrder < $1.direction.sortOrder }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .firstTextBaseline) {
@@ -552,30 +632,63 @@ private struct CaptureOverviewTrafficChartView: View {
                 }
             }
 
-            Chart(points) { point in
-                AreaMark(
-                    x: .value("Time", point.date),
-                    y: .value("Bytes", point.bytes),
-                    stacking: .unstacked
-                )
-                .foregroundStyle(by: .value("Direction", point.direction.rawValue))
-                .interpolationMethod(.catmullRom)
-                .opacity(0.1)
+            Chart {
+                ForEach(points) { point in
+                    AreaMark(
+                        x: .value("Time", point.date),
+                        y: .value("Bytes", point.bytes),
+                        stacking: .unstacked
+                    )
+                    .foregroundStyle(by: .value("Direction", point.direction.rawValue))
+                    .interpolationMethod(.catmullRom)
+                    .opacity(0.1)
 
-                LineMark(
-                    x: .value("Time", point.date),
-                    y: .value("Bytes", point.bytes)
-                )
-                .foregroundStyle(by: .value("Direction", point.direction.rawValue))
-                .interpolationMethod(.catmullRom)
-                .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
+                    LineMark(
+                        x: .value("Time", point.date),
+                        y: .value("Bytes", point.bytes)
+                    )
+                    .foregroundStyle(by: .value("Direction", point.direction.rawValue))
+                    .interpolationMethod(.catmullRom)
+                    .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
 
-                PointMark(
-                    x: .value("Time", point.date),
-                    y: .value("Bytes", point.bytes)
-                )
-                .foregroundStyle(by: .value("Direction", point.direction.rawValue))
-                .symbolSize(16)
+                    PointMark(
+                        x: .value("Time", point.date),
+                        y: .value("Bytes", point.bytes)
+                    )
+                    .foregroundStyle(by: .value("Direction", point.direction.rawValue))
+                    .symbolSize(16)
+                }
+
+                if let hoveredDate, !hoveredPoints.isEmpty {
+                    RuleMark(x: .value("Hovered time", hoveredDate))
+                        .foregroundStyle(Color.primary.opacity(0.24))
+                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                        .annotation(
+                            position: .top,
+                            overflowResolution: .init(x: .fit(to: .chart), y: .disabled)
+                        ) {
+                            CaptureOverviewChartTooltip(
+                                title: hoveredDate.formatted(.dateTime.hour().minute().second()),
+                                rows: hoveredPoints.map {
+                                    CaptureOverviewChartTooltipRow(
+                                        id: $0.direction.rawValue,
+                                        title: $0.direction.rawValue,
+                                        value: CaptureOverviewByteFormatting.string($0.bytes),
+                                        color: $0.direction.color
+                                    )
+                                }
+                            )
+                        }
+
+                    ForEach(hoveredPoints) { point in
+                        PointMark(
+                            x: .value("Hovered time", point.date),
+                            y: .value("Hovered bytes", point.bytes)
+                        )
+                        .foregroundStyle(point.direction.color)
+                        .symbolSize(50)
+                    }
+                }
             }
             .chartForegroundStyleScale([
                 CaptureOverviewChartPoint.Direction.sent.rawValue: Color.blue,
@@ -603,6 +716,37 @@ private struct CaptureOverviewTrafficChartView: View {
             }
             .chartPlotStyle { plotArea in
                 plotArea.background(Color.primary.opacity(0.018))
+            }
+            .chartOverlay { proxy in
+                GeometryReader { geometry in
+                    Rectangle()
+                        .fill(.clear)
+                        .contentShape(Rectangle())
+                        .onContinuousHover { phase in
+                            switch phase {
+                            case let .active(location):
+                                guard let plotFrame = proxy.plotFrame else {
+                                    hoveredDate = nil
+                                    return
+                                }
+                                let plotRect = geometry[plotFrame]
+                                guard plotRect.contains(location),
+                                      let date = proxy.value(
+                                          atX: location.x - plotRect.minX,
+                                          as: Date.self
+                                      ) else {
+                                    hoveredDate = nil
+                                    return
+                                }
+                                hoveredDate = CaptureOverviewChartHoverSelection.nearestDate(
+                                    to: date,
+                                    in: points
+                                )
+                            case .ended:
+                                hoveredDate = nil
+                            }
+                        }
+                }
             }
             .accessibilityLabel(
                 hasDirectionalTraffic ? "Sent and received traffic over time" : "Total traffic over time"
@@ -639,12 +783,21 @@ private struct CaptureOverviewChartLegend: View {
 private struct CaptureOverviewProtocolView: View {
     let rows: [CaptureOverviewProtocolPresentation]
 
+    @State private var hoverState: CaptureOverviewProtocolHoverState?
+
     private var protocolNames: [String] {
         rows.map(\.title)
     }
 
     private var protocolColors: [Color] {
         rows.map { CaptureOverviewPalette.protocolColor(at: $0.colorIndex) }
+    }
+
+    private var hoveredRow: CaptureOverviewProtocolPresentation? {
+        guard let hoverState else {
+            return nil
+        }
+        return rows.first { $0.id == hoverState.rowID }
     }
 
     var body: some View {
@@ -666,9 +819,72 @@ private struct CaptureOverviewProtocolView: View {
                     )
                     .cornerRadius(4)
                     .foregroundStyle(by: .value("Protocol", row.title))
+                    .opacity(hoverState == nil || hoverState?.rowID == row.id ? 1 : 0.42)
                 }
                 .chartForegroundStyleScale(domain: protocolNames, range: protocolColors)
                 .chartLegend(.hidden)
+                .chartOverlay { proxy in
+                    GeometryReader { geometry in
+                        ZStack(alignment: .topLeading) {
+                            Rectangle()
+                                .fill(.clear)
+                                .contentShape(Rectangle())
+                                .onContinuousHover { phase in
+                                    switch phase {
+                                    case let .active(location):
+                                        guard let plotFrame = proxy.plotFrame else {
+                                            hoverState = nil
+                                            return
+                                        }
+                                        let plotRect = geometry[plotFrame]
+                                        let plotLocation = CGPoint(
+                                            x: location.x - plotRect.minX,
+                                            y: location.y - plotRect.minY
+                                        )
+                                        guard plotRect.contains(location),
+                                              let row = CaptureOverviewChartHoverSelection.protocolRow(
+                                                  at: plotLocation,
+                                                  in: plotRect.size,
+                                                  innerRadiusRatio: 0.67,
+                                                  rows: rows
+                                              ) else {
+                                            hoverState = nil
+                                            return
+                                        }
+                                        hoverState = CaptureOverviewProtocolHoverState(
+                                            rowID: row.id,
+                                            location: location
+                                        )
+                                    case .ended:
+                                        hoverState = nil
+                                    }
+                                }
+
+                            if let hoverState, let hoveredRow {
+                                CaptureOverviewChartTooltip(
+                                    title: hoveredRow.title,
+                                    rows: [
+                                        CaptureOverviewChartTooltipRow(
+                                            id: hoveredRow.id,
+                                            title: hoveredRow.percentageText,
+                                            value: hoveredRow.totalText,
+                                            color: CaptureOverviewPalette.protocolColor(
+                                                at: hoveredRow.colorIndex
+                                            )
+                                        ),
+                                    ]
+                                )
+                                .position(
+                                    x: min(max(hoverState.location.x, 48), geometry.size.width - 48),
+                                    y: hoverState.location.y < geometry.size.height / 2
+                                        ? min(geometry.size.height - 24, hoverState.location.y + 34)
+                                        : max(24, hoverState.location.y - 34)
+                                )
+                                .allowsHitTesting(false)
+                            }
+                        }
+                    }
+                }
                 .overlay {
                     VStack(spacing: 2) {
                         Text("\(rows.count)")
@@ -678,6 +894,7 @@ private struct CaptureOverviewProtocolView: View {
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
+                    .allowsHitTesting(false)
                 }
                 .frame(width: 122, height: 122)
                 .accessibilityLabel("Protocol traffic breakdown")
@@ -692,6 +909,54 @@ private struct CaptureOverviewProtocolView: View {
         }
         .frame(maxWidth: .infinity, minHeight: 258, maxHeight: 258, alignment: .topLeading)
         .padding(16)
+    }
+}
+
+private struct CaptureOverviewProtocolHoverState {
+    let rowID: String
+    let location: CGPoint
+}
+
+private struct CaptureOverviewChartTooltipRow: Identifiable {
+    let id: String
+    let title: String
+    let value: String
+    let color: Color
+}
+
+private struct CaptureOverviewChartTooltip: View {
+    let title: String
+    let rows: [CaptureOverviewChartTooltipRow]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .monospacedDigit()
+            ForEach(rows) { row in
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(row.color)
+                        .frame(width: 6, height: 6)
+                    Text(row.title)
+                        .foregroundStyle(.secondary)
+                    Text(row.value)
+                        .fontWeight(.semibold)
+                        .monospacedDigit()
+                }
+                .font(.caption2)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+        }
+        .shadow(color: Color.black.opacity(0.14), radius: 4, y: 2)
+        .fixedSize()
+        .accessibilityHidden(true)
     }
 }
 

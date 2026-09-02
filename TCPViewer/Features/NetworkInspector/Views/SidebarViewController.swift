@@ -264,6 +264,7 @@ final class SidebarViewController: NSViewController {
 
     private var expandedItemIDs = PacketSourceListTreeBuilder.defaultExpandedItemIDs
     private var hasRenderedOutline = false
+    private var hasRestoredInitialExpansion = false
     private var appliedReloadState: SidebarOutlineReloadState?
     private var pendingReloadState: SidebarOutlineReloadState?
     private var pendingReloadWorkItem: DispatchWorkItem?
@@ -288,6 +289,19 @@ final class SidebarViewController: NSViewController {
     override func viewDidLayout() {
         super.viewDidLayout()
         normalizeOutlineScrollOriginIfNeeded()
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        // Restore defaults after AppKit finishes attaching the source list to its window.
+        guard hasRenderedOutline, !hasRestoredInitialExpansion else {
+            return
+        }
+
+        hasRestoredInitialExpansion = true
+        expandedItemIDs.formUnion(PacketSourceListTreeBuilder.defaultExpandedItemIDs)
+        restoreExpandedItems(expandAll: false)
+        syncSelection()
     }
 
     func render(snapshot: NetworkInspectorSnapshot) {

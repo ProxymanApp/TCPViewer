@@ -160,6 +160,72 @@ struct CaptureOverviewServiceTests {
         #expect(snapshot.timeline.count <= CaptureOverviewAccumulator.maximumRenderedTimelinePointCount)
     }
 
+    @Test func trafficChartHoverSelectsTheNearestTimestamp() {
+        let firstDate = Date(timeIntervalSince1970: 100)
+        let secondDate = Date(timeIntervalSince1970: 110)
+        let points = [
+            CaptureOverviewChartPoint(
+                id: .init(date: firstDate, direction: .sent),
+                date: firstDate,
+                direction: .sent,
+                bytes: 100
+            ),
+            CaptureOverviewChartPoint(
+                id: .init(date: secondDate, direction: .sent),
+                date: secondDate,
+                direction: .sent,
+                bytes: 200
+            ),
+        ]
+
+        #expect(CaptureOverviewChartHoverSelection.nearestDate(
+            to: Date(timeIntervalSince1970: 104),
+            in: points
+        ) == firstDate)
+        #expect(CaptureOverviewChartHoverSelection.nearestDate(
+            to: Date(timeIntervalSince1970: 106),
+            in: points
+        ) == secondDate)
+        #expect(CaptureOverviewChartHoverSelection.nearestDate(
+            to: Date(timeIntervalSince1970: 105),
+            in: points
+        ) == firstDate)
+    }
+
+    @Test func protocolChartHoverSelectsOnlyDonutSegments() {
+        let rows = [
+            makeProtocolRow(id: "tcp", fraction: 0.25),
+            makeProtocolRow(id: "tls", fraction: 0.5),
+            makeProtocolRow(id: "dns", fraction: 0.25),
+        ]
+        let size = CGSize(width: 100, height: 100)
+
+        #expect(CaptureOverviewChartHoverSelection.protocolRow(
+            at: CGPoint(x: 50, y: 0),
+            in: size,
+            innerRadiusRatio: 0.67,
+            rows: rows
+        )?.id == "tcp")
+        #expect(CaptureOverviewChartHoverSelection.protocolRow(
+            at: CGPoint(x: 90, y: 70),
+            in: size,
+            innerRadiusRatio: 0.67,
+            rows: rows
+        )?.id == "tls")
+        #expect(CaptureOverviewChartHoverSelection.protocolRow(
+            at: CGPoint(x: 30, y: 10),
+            in: size,
+            innerRadiusRatio: 0.67,
+            rows: rows
+        )?.id == "dns")
+        #expect(CaptureOverviewChartHoverSelection.protocolRow(
+            at: CGPoint(x: 50, y: 50),
+            in: size,
+            innerRadiusRatio: 0.67,
+            rows: rows
+        ) == nil)
+    }
+
     @MainActor
     @Test func livePublishingIsThrottledToOneSnapshotPerInterval() async throws {
         var state = PacketIngestState.empty
@@ -261,6 +327,17 @@ struct CaptureOverviewServiceTests {
             executablePath: "/Applications/\(name).app/Contents/MacOS/\(name)",
             bundleIdentifier: bundleIdentifier,
             bundlePath: "/Applications/\(name).app"
+        )
+    }
+
+    private func makeProtocolRow(id: String, fraction: Double) -> CaptureOverviewProtocolPresentation {
+        CaptureOverviewProtocolPresentation(
+            id: id,
+            title: id.uppercased(),
+            totalText: "1 KB",
+            percentageText: "25%",
+            fraction: fraction,
+            colorIndex: 0
         )
     }
 
