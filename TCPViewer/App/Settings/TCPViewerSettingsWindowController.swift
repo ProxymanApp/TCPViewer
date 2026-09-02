@@ -9,6 +9,8 @@ import AppKit
 import SwiftUI
 
 final class TCPViewerSettingsWindowController: NSWindowController {
+    private static let frameAutosaveName = "TCPViewer.SettingsWindow"
+
     private let tabViewController = TCPViewerSettingsTabViewController()
     private var tabChromeHeight: CGFloat = 112
 
@@ -68,6 +70,8 @@ final class TCPViewerSettingsWindowController: NSWindowController {
         tabViewController.onSelectionChanged = { [weak self] in
             self?.resizeWindowToSelectedTab()
         }
+        resizeWindowToSelectedTab()
+        TCPViewerUI.restoreWindowFrameOrCenter(window, autosaveName: Self.frameAutosaveName)
         resizeWindowToSelectedTab()
     }
 

@@ -123,6 +123,14 @@ enum TCPViewerUI {
             view.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -insets.bottom),
         ])
     }
+
+    // Fixed-size windows need a forced restore before AppKit can autosave later moves.
+    static func restoreWindowFrameOrCenter(_ window: NSWindow, autosaveName: String) {
+        if !window.setFrameUsingName(autosaveName, force: true) {
+            window.center()
+        }
+        window.setFrameAutosaveName(autosaveName)
+    }
 }
 
 extension NSEdgeInsets {

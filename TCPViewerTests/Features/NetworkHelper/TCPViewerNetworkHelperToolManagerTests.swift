@@ -194,6 +194,18 @@ struct TCPViewerNetworkHelperToolManagerTests {
         #expect(TCPViewerNetworkHelperConstants.displayName == "TCP Viewer Network Helper Tool")
     }
 
+    @Test func bundledLaunchDaemonIsAssociatedWithTCPViewerApp() throws {
+        let plistURL = Bundle.main.bundleURL.appendingPathComponent(
+            TCPViewerNetworkHelperConstants.bundledLaunchDaemonPlistRelativePath
+        )
+        let data = try Data(contentsOf: plistURL)
+        let plist = try #require(
+            PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        )
+
+        #expect(plist["AssociatedBundleIdentifiers"] as? [String] == ["com.proxyman.tcpviewer"])
+    }
+
     @Test func smJobBlessStatusReportsNotFoundWhenBundledPayloadIsMissing() throws {
         let fixture = try makeBlessFixture()
         defer { try? FileManager.default.removeItem(at: fixture.rootURL) }
