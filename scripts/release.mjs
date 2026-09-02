@@ -1671,6 +1671,9 @@ function parseArgs(argv) {
       args.homebrewInstallTested = true;
     } else if (arg === "--homebrew-only") {
       args.homebrewOnly = true;
+    } else {
+      const argumentName = arg.split("=", 1)[0];
+      throw new Error(`Unknown release argument: ${argumentName}`);
     }
   }
   return args;
