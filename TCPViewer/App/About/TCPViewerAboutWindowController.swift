@@ -9,6 +9,8 @@ import AppKit
 import SwiftUI
 
 final class TCPViewerAboutWindowController: NSWindowController {
+    private static let frameAutosaveName = "TCPViewer.AboutWindow"
+
     init(info: TCPViewerAboutInfo = .current) {
         let hostingController = NSHostingController(rootView: TCPViewerAboutView(info: info))
         let window = NSWindow(contentViewController: hostingController)
@@ -32,6 +34,7 @@ final class TCPViewerAboutWindowController: NSWindowController {
         window.standardWindowButton(.closeButton)?.isEnabled = true
 
         super.init(window: window)
+        TCPViewerUI.restoreWindowFrameOrCenter(window, autosaveName: Self.frameAutosaveName)
     }
 
     @available(*, unavailable)
