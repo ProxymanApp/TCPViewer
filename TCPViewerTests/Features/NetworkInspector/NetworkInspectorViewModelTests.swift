@@ -1846,7 +1846,8 @@ struct NetworkInspectorViewModelTests {
             toolbar.items.compactMap { $0.view as? NSSegmentedControl }.first
         )
         #expect(endpointTypes.segmentCount == EndpointStatisticsGroup.allCases.count)
-        #expect(toolbar.items.contains { $0 is NSSearchToolbarItem })
+        let searchItem = try #require(toolbar.items.compactMap { $0 as? NSSearchToolbarItem }.first)
+        #expect(searchItem.searchField.placeholderString == "Search endpoints (⌘F)")
         #expect(!toolbar.items.contains { $0 is NSMenuToolbarItem })
     }
 

@@ -349,7 +349,7 @@ private struct EndpointStatisticsPresentationResult: Sendable {
 }
 
 enum EndpointStatisticsPresentationCadence {
-    static let maximumRefreshRateInterval: TimeInterval = 0.25
+    static let maximumRefreshRateInterval: TimeInterval = 0.5
     static let maximumCooldown: TimeInterval = 2
 
     // Automatic refreshes wait after the last table commit, while user actions skip that cadence delay.
@@ -1616,7 +1616,7 @@ private final class EndpointStatisticsViewController: NSViewController, NSToolba
         displayedPacketsCheckbox.action = #selector(displayedPacketsScopeChanged(_:))
         displayedPacketsCheckbox.toolTip = "Use the packets currently shown in the main table."
 
-        searchField.placeholderString = "Search endpoints"
+        searchField.placeholderString = "Search endpoints (⌘F)"
         searchField.sendsSearchStringImmediately = true
         searchField.delegate = self
         searchField.setAccessibilityLabel("Search endpoints")

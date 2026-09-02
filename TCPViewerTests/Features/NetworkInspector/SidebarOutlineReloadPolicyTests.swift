@@ -245,6 +245,39 @@ struct SidebarOutlineReloadPolicyTests {
     }
 
     @MainActor
+    @Test func revealingEndpointAppExpandsAncestorsAndSelectsItsRow() throws {
+        let appKey = PacketSourceClientKey(rawValue: "bundleIdentifier:com.example.App")
+        let controller = SidebarViewController()
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: makeSnapshot(
+            sourceListSnapshot: snapshotWithApp(),
+            selectedSelection: .saved,
+            packetMutation: .none
+        ))
+
+        let outlineView = try #require(findOutlineScrollView(in: controller.view)?.documentView as? NSOutlineView)
+        let allRow = try #require(row(withItemID: PacketSourceListTreeBuilder.allGroupID, in: outlineView))
+        let allItem = try #require(outlineView.item(atRow: allRow))
+        outlineView.collapseItem(allItem)
+
+        controller.render(snapshot: makeSnapshot(
+            sourceListSnapshot: snapshotWithApp(),
+            selectedSelection: .app(appKey),
+            packetMutation: .replace
+        ))
+        controller.revealSourceListSelection(.app(appKey))
+
+        let appRow = try #require(row(withItemID: "app:\(appKey.rawValue)", in: outlineView))
+        let refreshedAllRow = try #require(row(withItemID: PacketSourceListTreeBuilder.allGroupID, in: outlineView))
+        let refreshedAllItem = try #require(outlineView.item(atRow: refreshedAllRow))
+        let appsRow = try #require(row(withItemID: PacketSourceListTreeBuilder.appsFolderID, in: outlineView))
+        let appsItem = try #require(outlineView.item(atRow: appsRow))
+        #expect(outlineView.isItemExpanded(refreshedAllItem))
+        #expect(outlineView.isItemExpanded(appsItem))
+        #expect(outlineView.selectedRow == appRow)
+    }
+
+    @MainActor
     @Test func sidebarContextMenuPlacesPinFirstAndShowInFinderAboveDelete() throws {
         let appKey = PacketSourceClientKey(rawValue: "bundleIdentifier:com.example.App")
         let controller = SidebarViewController()

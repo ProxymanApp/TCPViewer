@@ -1636,15 +1636,38 @@ final class NetworkInspectorViewModel {
         rebuildSnapshot(clearsSelectedPacket: true)
     }
 
-    // Keep endpoint drill-down separate so it composes with every existing packet filter.
-    func showRelatedPackets(forEndpoint rowID: EndpointStatisticsRow.ID) {
+    // Select the closest sidebar scope while the endpoint filter keeps the packet match exact.
+    @discardableResult
+    func showRelatedPackets(forEndpoint rowID: EndpointStatisticsRow.ID) -> PacketSourceListSelection {
         cancelPendingInspectorFilterApplication()
+        sourceListFilterText = ""
         endpointStatisticsFilter = rowID
+        selectedSourceListSelection = sourceListSelection(forEndpoint: rowID)
         workspaceMode = .packets
         if case .view = selectedSidebar {
             selectedSidebar = .liveCapture
         }
         rebuildSnapshot(selectsFirstVisiblePacketAfterFiltering: true)
+        return selectedSourceListSelection
+    }
+
+    private func sourceListSelection(forEndpoint rowID: EndpointStatisticsRow.ID) -> PacketSourceListSelection {
+        let exactSelection: PacketSourceListSelection
+        switch rowID.group {
+        case .apps:
+            exactSelection = .app(PacketSourceClientKey(rawValue: rowID.key))
+        case .domains:
+            exactSelection = .domain(PacketSourceDomainKey(rawValue: rowID.key, isMissingDomain: false))
+        case .ipv4, .ipv6:
+            exactSelection = .ipAddress(PacketSourceIPAddressKey(rawValue: rowID.key))
+        case .tcp, .udp:
+            return .allPackets
+        }
+
+        if snapshot.sourceListSnapshot.contains(selection: exactSelection) {
+            return exactSelection
+        }
+        return rowID.group == .apps ? .apps : .domains
     }
 
     func clearEndpointStatisticsFilter() {
@@ -3288,7 +3311,7 @@ final class NetworkInspectorViewModel {
                 structuredFilterGroup: activeStructuredFilterGroup,
                 structuredFilterService: structuredFilterService,
                 endpointStatisticsFilter: endpointStatisticsFilter,
-                sourceListSelection: selectedSourceListSelection,
+                sourceListSelection: packetTableSourceListSelection,
                 pinnedItems: pinnedItems,
                 savedRecords: savedRecords,
                 wiresharkFilterMembership: activeWiresharkFilterMembership,
@@ -3368,7 +3391,7 @@ final class NetworkInspectorViewModel {
             quickFilterSelection: quickFilterService.selection,
             structuredFilterGroup: activeStructuredFilterGroup,
             endpointStatisticsFilter: endpointStatisticsFilter,
-            sourceListSelection: selectedSourceListSelection,
+            sourceListSelection: packetTableSourceListSelection,
             pinnedItems: pinnedItems,
             savedRecords: savedRecords,
             wiresharkFilterMembership: isStructuredFilterVisible && filterMode == .wireshark
@@ -3379,6 +3402,11 @@ final class NetworkInspectorViewModel {
             ingestState: controller.snapshot.packetIngestState,
             signature: signature
         )
+    }
+
+    // The endpoint identity is canonical and exact; the sidebar selection only reveals its nearest navigation row.
+    private var packetTableSourceListSelection: PacketSourceListSelection {
+        endpointStatisticsFilter == nil ? selectedSourceListSelection : .allPackets
     }
 
     private func shouldKeepActivePacketTableFilterJob(for input: PacketTableBuildInput) -> Bool {

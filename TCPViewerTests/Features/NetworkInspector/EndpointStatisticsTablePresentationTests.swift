@@ -316,14 +316,15 @@ struct EndpointStatisticsPresentationCommitPolicyTests {
             now: 10.1
         )
 
-        #expect(abs(automaticDelay - 0.15) < 0.000_001)
+        #expect(abs(automaticDelay - 0.4) < 0.000_001)
         #expect(explicitDelay == 0)
         #expect(abs(backpressureDelay - 0.5) < 0.000_001)
     }
 
     @Test func slowPresentationsReceiveABoundedCooldown() {
         #expect(EndpointStatisticsPresentationCadence.cooldown(after: 0.1) == 0)
-        #expect(EndpointStatisticsPresentationCadence.cooldown(after: 0.5) == 0.5)
+        #expect(EndpointStatisticsPresentationCadence.cooldown(after: 0.5) == 0)
+        #expect(EndpointStatisticsPresentationCadence.cooldown(after: 0.75) == 0.75)
         #expect(EndpointStatisticsPresentationCadence.cooldown(after: 5) == 2)
     }
 

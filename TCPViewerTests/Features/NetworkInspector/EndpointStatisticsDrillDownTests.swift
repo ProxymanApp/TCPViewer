@@ -72,51 +72,60 @@ struct EndpointStatisticsDrillDownTests {
         await viewModel.openDocument(at: URL(fileURLWithPath: "/tmp/endpoint-drilldown-identities.pcapng"))
         await waitUntil { viewModel.snapshot.packetRows.count == packets.count }
 
-        let cases: [(String, EndpointStatisticsRow.ID, [PacketSummary.ID])] = [
+        let cases: [(String, EndpointStatisticsRow.ID, PacketSourceListSelection, [PacketSummary.ID])] = [
             (
                 "app",
                 EndpointStatisticsRow.ID(group: .apps, key: "bundleIdentifier:com.example.alpha"),
+                .app(PacketSourceClientKey(rawValue: "bundleIdentifier:com.example.alpha")),
                 [packets[0].id, packets[1].id]
             ),
             (
                 "domain",
                 EndpointStatisticsRow.ID(group: .domains, key: "api.example.com"),
+                .domain(PacketSourceDomainKey(rawValue: "api.example.com", isMissingDomain: false)),
                 [packets[3].id, packets[4].id]
             ),
             (
                 "IPv4",
                 EndpointStatisticsRow.ID(group: .ipv4, key: "198.51.100.8"),
+                .ipAddress(PacketSourceIPAddressKey(rawValue: "198.51.100.8")),
                 [packets[6].id, packets[7].id]
             ),
             (
                 "IPv6",
                 EndpointStatisticsRow.ID(group: .ipv6, key: "2001:db8::8"),
+                .ipAddress(PacketSourceIPAddressKey(rawValue: "2001:db8::8")),
                 [packets[9].id, packets[10].id]
             ),
             (
                 "TCP",
                 EndpointStatisticsRow.ID(group: .tcp, key: "192.0.2.20:443"),
+                .allPackets,
                 [packets[12].id]
             ),
             (
                 "UDP",
                 EndpointStatisticsRow.ID(group: .udp, key: "192.0.2.30:53"),
+                .allPackets,
                 [packets[15].id]
             ),
         ]
 
-        for (name, rowID, expectedPacketIDs) in cases {
+        for (name, rowID, expectedSelection, expectedPacketIDs) in cases {
+            viewModel.selectSourceList(.saved)
             viewModel.showRelatedPackets(forEndpoint: rowID)
 
+            #expect(viewModel.snapshot.selectedSourceListSelection == expectedSelection, "Wrong sidebar selection for \(name)")
             #expect(viewModel.snapshot.packetRows.map(\.id) == expectedPacketIDs, "Wrong exact match for \(name)")
             #expect(viewModel.snapshot.selectedPacket?.id == expectedPacketIDs.first, "Wrong first selection for \(name)")
 
             viewModel.clearEndpointStatisticsFilter()
+            viewModel.selectSourceList(.allPackets)
             #expect(viewModel.snapshot.packetRows.map(\.id) == packets.map(\.id), "Clear did not restore rows after \(name)")
         }
     }
 
-    @Test func composesWithExistingFiltersAndClearRestoresTheirScope() async {
+    @Test func preservesExistingFiltersAndClearKeepsTheSelectedEndpointScope() async {
         let alphaClient = makeClient(name: "Alpha", bundleIdentifier: "com.example.alpha")
         let betaClient = makeClient(name: "Beta", bundleIdentifier: "com.example.beta")
         let packets = [
@@ -140,13 +149,16 @@ struct EndpointStatisticsDrillDownTests {
 
         #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[0].id])
         #expect(viewModel.snapshot.selectedPacket?.id == packets[0].id)
+        #expect(viewModel.snapshot.selectedSourceListSelection == .app(
+            PacketSourceClientKey(rawValue: "bundleIdentifier:com.example.alpha")
+        ))
         #expect(viewModel.snapshot.endpointStatisticsFilterLabel == "Apps: com.example.alpha")
         #expect(viewModel.snapshot.quickFilterSelection.activeIDs == [.tcp])
         #expect(viewModel.snapshot.displayFilterText == "port:443")
 
         viewModel.clearEndpointStatisticsFilter()
 
-        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[0].id, packets[2].id])
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[0].id])
         #expect(viewModel.snapshot.endpointStatisticsFilterLabel == nil)
         #expect(viewModel.snapshot.quickFilterSelection.activeIDs == [.tcp])
         #expect(viewModel.snapshot.displayFilterText == "port:443")

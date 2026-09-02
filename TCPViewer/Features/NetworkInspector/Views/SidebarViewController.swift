@@ -315,7 +315,7 @@ final class SidebarViewController: NSViewController {
         syncSelection(scrollToSelection: true)
     }
 
-    // Reveal programmatic Overview drill-downs even when the user collapsed their parent folders.
+    // Reveal programmatic drill-downs even when the user collapsed their parent folders.
     func revealSourceListSelection(_ selection: PacketSourceListSelection) {
         let ancestorIDs: [String]
         switch selection {
@@ -323,6 +323,14 @@ final class SidebarViewController: NSViewController {
             ancestorIDs = [PacketSourceListTreeBuilder.allGroupID, PacketSourceListTreeBuilder.appsFolderID]
         case .domain:
             ancestorIDs = [PacketSourceListTreeBuilder.allGroupID, PacketSourceListTreeBuilder.domainsFolderID]
+        case .apps, .domains:
+            ancestorIDs = [PacketSourceListTreeBuilder.allGroupID]
+        case .ipAddress:
+            ancestorIDs = [
+                PacketSourceListTreeBuilder.allGroupID,
+                PacketSourceListTreeBuilder.domainsFolderID,
+                viewModel.item(for: .domain(.ipAddresses))?.sourceItem.id,
+            ].compactMap { $0 }
         default:
             ancestorIDs = []
         }

@@ -1597,7 +1597,8 @@ private extension TCPViewerRootViewController {
                 guard let self else {
                     return
                 }
-                self.viewModel.showRelatedPackets(forEndpoint: rowID)
+                let selection = self.viewModel.showRelatedPackets(forEndpoint: rowID)
+                self.sidebarViewController.revealSourceListSelection(selection)
                 self.view.window?.makeKeyAndOrderFront(nil)
             },
             latestIngestStateProvider: { [weak self] in
