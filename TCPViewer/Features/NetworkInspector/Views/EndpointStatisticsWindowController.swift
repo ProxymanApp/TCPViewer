@@ -341,6 +341,19 @@ enum EndpointStatisticsPresentationCadence {
     static let maximumRefreshRateInterval: TimeInterval = 0.25
     static let maximumCooldown: TimeInterval = 2
 
+    // Automatic refreshes wait after the last table commit, while user actions skip that cadence delay.
+    static func delay(
+        for intent: EndpointStatisticsPresentationIntent,
+        lastCommitTime: TimeInterval,
+        nextAllowedTime: TimeInterval,
+        now: TimeInterval
+    ) -> TimeInterval {
+        let refreshDelay = intent == .automatic
+            ? maximumRefreshRateInterval - (now - lastCommitTime)
+            : 0
+        return max(0, refreshDelay, nextAllowedTime - now)
+    }
+
     static func cooldown(after processingDuration: TimeInterval) -> TimeInterval {
         guard processingDuration > maximumRefreshRateInterval else {
             return 0
@@ -1192,8 +1205,6 @@ private final class EndpointStatisticsViewController: NSViewController {
     private let scrollView = NSScrollView()
     private let tableView = EndpointStatisticsTableView()
     private let footerLabel = NSTextField(labelWithString: "No endpoints")
-    private let progressIndicator = NSProgressIndicator()
-    private let calculatingLabel = NSTextField(labelWithString: "Calculating…")
     private let refreshNoticeLabel = NSTextField(labelWithString: "")
     private let refreshButton = NSButton(title: "Refresh", target: nil, action: nil)
     private let numberFormatter: NumberFormatter
@@ -1242,7 +1253,7 @@ private final class EndpointStatisticsViewController: NSViewController {
     private var isPresentationInFlight = false
     private var activePresentationCancellationToken: EndpointStatisticsCancellationToken?
     private var pendingPresentationIntent: EndpointStatisticsPresentationIntent?
-    private var lastPresentationStartTime: TimeInterval = 0
+    private var lastPresentationCommitTime: TimeInterval = 0
     private var nextPresentationAllowedTime: TimeInterval = 0
     private var automaticRefreshPolicy = EndpointStatisticsAutomaticRefreshPolicy()
     private var contextTarget = EndpointStatisticsContextTarget.none
@@ -1366,7 +1377,6 @@ private final class EndpointStatisticsViewController: NSViewController {
                 presentationGeneration &+= 1
                 pendingPresentationIntent = .explicit
                 abandonActivePresentation()
-                setCalculating(true, text: "Updating displayed packets…")
             }
         }
         if sourceChanged, displayedPacketsPipeline.isPaused || isDisplayedReplacementPaused {
@@ -1470,7 +1480,6 @@ private final class EndpointStatisticsViewController: NSViewController {
                 presentationGeneration &+= 1
                 pendingPresentationIntent = nil
                 abandonActivePresentation()
-                setCalculating(true, text: "Updating displayed packets…")
             } else {
                 let wasWaitingForFilter = isWaitingForDisplayFilter
                 isWaitingForDisplayFilter = false
@@ -1572,13 +1581,6 @@ private final class EndpointStatisticsViewController: NSViewController {
         searchField.delegate = self
         searchField.setAccessibilityLabel("Search endpoints")
 
-        progressIndicator.style = .spinning
-        progressIndicator.controlSize = .small
-        progressIndicator.isDisplayedWhenStopped = false
-        calculatingLabel.textColor = .secondaryLabelColor
-        calculatingLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        calculatingLabel.isHidden = true
-
         footerLabel.textColor = .secondaryLabelColor
         footerLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         footerLabel.lineBreakMode = .byTruncatingTail
@@ -1631,24 +1633,18 @@ private final class EndpointStatisticsViewController: NSViewController {
         segmentControl.setContentHuggingPriority(.defaultLow, for: .horizontal)
         searchField.setContentHuggingPriority(.required, for: .horizontal)
 
-        let calculationStack = NSStackView(views: [progressIndicator, calculatingLabel])
-        calculationStack.orientation = .horizontal
-        calculationStack.alignment = .centerY
-        calculationStack.spacing = 5
-
         let refreshStack = NSStackView(views: [refreshNoticeLabel, refreshButton])
         refreshStack.orientation = .horizontal
         refreshStack.alignment = .centerY
         refreshStack.spacing = 6
 
-        let footerStack = NSStackView(views: [footerLabel, refreshStack, calculationStack])
+        let footerStack = NSStackView(views: [footerLabel, refreshStack])
         footerStack.orientation = .horizontal
         footerStack.alignment = .centerY
         footerStack.spacing = 8
         footerLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         refreshNoticeLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         refreshStack.setContentHuggingPriority(.defaultHigh, for: .horizontal)
-        calculationStack.setContentHuggingPriority(.required, for: .horizontal)
 
         [topStack, scrollView, footerStack].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
@@ -1761,7 +1757,6 @@ private final class EndpointStatisticsViewController: NSViewController {
         displayedReplacementWork = work
         isDisplayedReplacementPaused = false
         needsDisplayedReplacement = true
-        setCalculating(true, text: "Loading displayed endpoints…")
         scheduleDisplayedReplacementContinuation(work)
         return true
     }
@@ -1964,9 +1959,6 @@ private final class EndpointStatisticsViewController: NSViewController {
         )
         rawReplacementWork = work
         isRawReplacementPaused = false
-        if !usesDisplayedPackets {
-            setCalculating(true, text: "Loading endpoints…")
-        }
         scheduleRawReplacementContinuation(work)
     }
 
@@ -2364,12 +2356,8 @@ private final class EndpointStatisticsViewController: NSViewController {
         guard usesDisplayedPackets,
               let latestRenderedSource,
               !latestRenderedSource.isFiltering else {
-            if usesDisplayedPackets {
-                setCalculating(true, text: "Refreshing displayed packets…")
-            }
             return
         }
-        setCalculating(true, text: "Refreshing displayed packets…")
         if consumeDisplayedSource(latestRenderedSource, forceReplacement: true) {
             recordPresentationIntentAfterDrain(.explicit, usesDisplayedPackets: true)
         } else {
@@ -2392,7 +2380,6 @@ private final class EndpointStatisticsViewController: NSViewController {
         } else if allPacketsPresentationIntentAfterDrain != .explicit {
             allPacketsPresentationIntentAfterDrain = intent
         }
-        setCalculating(true, text: "Calculating…")
     }
 
     private func attemptPendingAllPacketsSourceReplacement() {
@@ -2470,10 +2457,11 @@ private final class EndpointStatisticsViewController: NSViewController {
         }
         if effectiveIntent == .explicit {
             abandonActivePresentation()
+            scheduledPresentationWorkItem?.cancel()
+            scheduledPresentationWorkItem = nil
         }
         presentationGeneration &+= 1
         pendingPresentationIntent = effectiveIntent
-        setCalculating(true, text: "Calculating…")
         guard !usesDisplayedPackets || (
             !needsDisplayedReplacement && latestRenderedSource?.identity == latestSourceIdentity
         ) else {
@@ -2490,10 +2478,12 @@ private final class EndpointStatisticsViewController: NSViewController {
         }
 
         let now = Date.timeIntervalSinceReferenceDate
-        let elapsed = now - lastPresentationStartTime
-        let rateLimitDelay = EndpointStatisticsPresentationCadence.maximumRefreshRateInterval - elapsed
-        let backpressureDelay = nextPresentationAllowedTime - now
-        let delay = max(0, rateLimitDelay, backpressureDelay)
+        let delay = EndpointStatisticsPresentationCadence.delay(
+            for: effectiveIntent,
+            lastCommitTime: lastPresentationCommitTime,
+            nextAllowedTime: nextPresentationAllowedTime,
+            now: now
+        )
         let workItem = DispatchWorkItem { [weak self] in
             self?.beginPresentation()
         }
@@ -2526,7 +2516,6 @@ private final class EndpointStatisticsViewController: NSViewController {
         isPresentationInFlight = true
         let presentationCancellationToken = EndpointStatisticsCancellationToken()
         activePresentationCancellationToken = presentationCancellationToken
-        lastPresentationStartTime = Date.timeIntervalSinceReferenceDate
 
         let request = EndpointStatisticsPresentationRequest(
             generation: presentationGeneration,
@@ -2623,7 +2612,7 @@ private final class EndpointStatisticsViewController: NSViewController {
             automaticRefreshPolicy.didCommit(
                 unfilteredEndpointCount: result.table.unfilteredRowCount
             )
-            setCalculating(false, text: "")
+            lastPresentationCommitTime = Date.timeIntervalSinceReferenceDate
             updateRefreshNotice()
         }
 
@@ -2670,16 +2659,6 @@ private final class EndpointStatisticsViewController: NSViewController {
         )).joined(separator: " · ")
     }
 
-    private func setCalculating(_ isCalculating: Bool, text: String) {
-        calculatingLabel.stringValue = text
-        calculatingLabel.isHidden = !isCalculating
-        if isCalculating {
-            progressIndicator.startAnimation(nil)
-        } else {
-            progressIndicator.stopAnimation(nil)
-        }
-    }
-
     private func updateRefreshNotice() {
         let message: String?
         if currentPipelineIsPaused {
@@ -2705,12 +2684,10 @@ private final class EndpointStatisticsViewController: NSViewController {
             return
         }
         if currentPipelineIsPaused {
-            setCalculating(true, text: "Refreshing…")
             if usesDisplayedPackets {
                 waitsForDisplayedPacketsManualRefresh = true
                 pendingDisplayedPacketsSourceReplacement = false
                 guard let latestRenderedSource, !latestRenderedSource.isFiltering else {
-                    setCalculating(true, text: "Updating displayed packets…")
                     return
                 }
                 resumeDisplayedPacketsForSourceReplacement(latestRenderedSource)
@@ -2776,7 +2753,6 @@ private final class EndpointStatisticsViewController: NSViewController {
                 isWaitingForDisplayFilter = true
                 waitsForAggregation = true
                 recordPresentationIntentAfterDrain(.explicit, usesDisplayedPackets: true)
-                setCalculating(true, text: "Updating displayed packets…")
             } else if displayedPacketsPipeline.isPaused || isDisplayedReplacementPaused {
                 isWaitingForDisplayFilter = false
                 waitsForAggregation = true

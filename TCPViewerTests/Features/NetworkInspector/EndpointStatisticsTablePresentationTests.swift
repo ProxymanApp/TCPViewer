@@ -296,6 +296,31 @@ struct EndpointStatisticsTablePresentationTests {
 }
 
 struct EndpointStatisticsPresentationCommitPolicyTests {
+    @Test func automaticRefreshWaitsForTheLastVisibleCommit() {
+        let automaticDelay = EndpointStatisticsPresentationCadence.delay(
+            for: .automatic,
+            lastCommitTime: 10,
+            nextAllowedTime: 0,
+            now: 10.1
+        )
+        let explicitDelay = EndpointStatisticsPresentationCadence.delay(
+            for: .explicit,
+            lastCommitTime: 10,
+            nextAllowedTime: 0,
+            now: 10.1
+        )
+        let backpressureDelay = EndpointStatisticsPresentationCadence.delay(
+            for: .automatic,
+            lastCommitTime: 10,
+            nextAllowedTime: 10.6,
+            now: 10.1
+        )
+
+        #expect(abs(automaticDelay - 0.15) < 0.000_001)
+        #expect(explicitDelay == 0)
+        #expect(abs(backpressureDelay - 0.5) < 0.000_001)
+    }
+
     @Test func slowPresentationsReceiveABoundedCooldown() {
         #expect(EndpointStatisticsPresentationCadence.cooldown(after: 0.1) == 0)
         #expect(EndpointStatisticsPresentationCadence.cooldown(after: 0.5) == 0.5)
