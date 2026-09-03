@@ -106,6 +106,10 @@ final class TCPViewerWindowController: NSWindowController {
         rootViewController.clearAllPackets()
     }
 
+    @IBAction func showEndpointStatistics(_ sender: Any?) {
+        rootViewController.showEndpointStatistics()
+    }
+
     private func setupToolbar() {
         toolbarDataSource.delegate = self
         window?.toolbar = toolbarDataSource.toolbar

@@ -186,6 +186,7 @@ private struct PacketTableFilterSignature: Equatable, Sendable {
     let displayFilterText: String
     let quickFilterSelection: PacketQuickFilterSelection
     let structuredFilterGroup: PacketStructuredFilterGroup
+    let endpointStatisticsFilter: EndpointStatisticsRow.ID?
     let sourceListSelection: PacketSourceListSelection
     let pinnedItems: [PacketPin]
     let savedRecords: [SavedPacketRecord]
@@ -255,6 +256,7 @@ private enum PacketTableContentBuilder {
                   displayFilter.isEmpty || displayFilter.matches(packet),
                   quickFilterService.matches(packet, selection: input.signature.quickFilterSelection),
                   structuredFilterService.matches(packet, context: structuredFilterContext),
+                  input.signature.endpointStatisticsFilter?.matches(packet) != false,
                   input.signature.wiresharkFilterMembership?.matches(packet, in: input.ingestState) != false else {
                 continue
             }
@@ -329,6 +331,7 @@ private struct PacketTableContentCache {
     private var displayFilterText: String?
     private var quickFilterSelection: PacketQuickFilterSelection?
     private var structuredFilterGroup: PacketStructuredFilterGroup?
+    private var endpointStatisticsFilter: EndpointStatisticsRow.ID?
     private var sourceListSelection: PacketSourceListSelection?
     private var pinnedItems: [PacketPin] = []
     private var savedRecords: [SavedPacketRecord] = []
@@ -345,6 +348,7 @@ private struct PacketTableContentCache {
         displayFilterText = nil
         quickFilterSelection = nil
         structuredFilterGroup = nil
+        endpointStatisticsFilter = nil
         sourceListSelection = nil
         pinnedItems = []
         savedRecords = []
@@ -371,6 +375,7 @@ private struct PacketTableContentCache {
         quickFilterService: PacketQuickFilterService,
         structuredFilterGroup: PacketStructuredFilterGroup,
         structuredFilterService: PacketStructuredFilterService,
+        endpointStatisticsFilter: EndpointStatisticsRow.ID?,
         sourceListSelection: PacketSourceListSelection,
         pinnedItems: [PacketPin],
         savedRecords: [SavedPacketRecord],
@@ -383,6 +388,7 @@ private struct PacketTableContentCache {
             displayFilterText: displayFilterText,
             quickFilterSelection: quickFilterSelection,
             structuredFilterGroup: structuredFilterGroup,
+            endpointStatisticsFilter: endpointStatisticsFilter,
             sourceListSelection: sourceListSelection,
             pinnedItems: pinnedItems,
             savedRecords: savedRecords,
@@ -397,6 +403,7 @@ private struct PacketTableContentCache {
             self.displayFilterText == displayFilterText &&
             self.quickFilterSelection == quickFilterSelection &&
             self.structuredFilterGroup == structuredFilterGroup &&
+            self.endpointStatisticsFilter == endpointStatisticsFilter &&
             self.sourceListSelection == sourceListSelection &&
             self.pinnedItems == pinnedItems &&
             self.savedRecords == savedRecords &&
@@ -421,6 +428,7 @@ private struct PacketTableContentCache {
                     quickFilterService: quickFilterService,
                     structuredFilterGroup: structuredFilterGroup,
                     structuredFilterService: structuredFilterService,
+                    endpointStatisticsFilter: endpointStatisticsFilter,
                     sourceListSelection: sourceListSelection,
                     pinnedItems: pinnedItems,
                     savedRecords: savedRecords,
@@ -439,6 +447,7 @@ private struct PacketTableContentCache {
                     quickFilterService: quickFilterService,
                     structuredFilterGroup: structuredFilterGroup,
                     structuredFilterService: structuredFilterService,
+                    endpointStatisticsFilter: endpointStatisticsFilter,
                     sourceListSelection: sourceListSelection,
                     pinnedItems: pinnedItems,
                     savedRecords: savedRecords,
@@ -456,6 +465,7 @@ private struct PacketTableContentCache {
                     quickFilterService: quickFilterService,
                     structuredFilterGroup: structuredFilterGroup,
                     structuredFilterService: structuredFilterService,
+                    endpointStatisticsFilter: endpointStatisticsFilter,
                     sourceListSelection: sourceListSelection,
                     pinnedItems: pinnedItems,
                     savedRecords: savedRecords,
@@ -474,6 +484,7 @@ private struct PacketTableContentCache {
                     quickFilterService: quickFilterService,
                     structuredFilterGroup: structuredFilterGroup,
                     structuredFilterService: structuredFilterService,
+                    endpointStatisticsFilter: endpointStatisticsFilter,
                     sourceListSelection: sourceListSelection,
                     pinnedItems: pinnedItems,
                     savedRecords: savedRecords,
@@ -490,6 +501,7 @@ private struct PacketTableContentCache {
             displayFilterText: displayFilterText,
             quickFilterSelection: quickFilterSelection,
             structuredFilterGroup: structuredFilterGroup,
+            endpointStatisticsFilter: endpointStatisticsFilter,
             sourceListSelection: sourceListSelection,
             pinnedItems: pinnedItems,
             savedRecords: savedRecords,
@@ -512,6 +524,7 @@ private struct PacketTableContentCache {
         displayFilterText: String,
         quickFilterSelection: PacketQuickFilterSelection,
         structuredFilterGroup: PacketStructuredFilterGroup,
+        endpointStatisticsFilter: EndpointStatisticsRow.ID?,
         sourceListSelection: PacketSourceListSelection,
         pinnedItems: [PacketPin],
         savedRecords: [SavedPacketRecord],
@@ -522,6 +535,7 @@ private struct PacketTableContentCache {
             self.displayFilterText != displayFilterText ||
             self.quickFilterSelection != quickFilterSelection ||
             self.structuredFilterGroup != structuredFilterGroup ||
+            self.endpointStatisticsFilter != endpointStatisticsFilter ||
             self.sourceListSelection != sourceListSelection ||
             self.pinnedItems != pinnedItems ||
             self.savedRecords != savedRecords ||
@@ -580,6 +594,7 @@ private struct PacketTableContentCache {
         quickFilterService: PacketQuickFilterService,
         structuredFilterGroup: PacketStructuredFilterGroup,
         structuredFilterService: PacketStructuredFilterService,
+        endpointStatisticsFilter: EndpointStatisticsRow.ID?,
         sourceListSelection: PacketSourceListSelection,
         pinnedItems: [PacketPin],
         savedRecords: [SavedPacketRecord],
@@ -593,6 +608,7 @@ private struct PacketTableContentCache {
                 displayFilterText: displayFilterText,
                 quickFilterSelection: quickFilterSelection,
                 structuredFilterGroup: structuredFilterGroup,
+                endpointStatisticsFilter: endpointStatisticsFilter,
                 sourceListSelection: sourceListSelection,
                 pinnedItems: pinnedItems,
                 savedRecords: savedRecords,
@@ -622,6 +638,7 @@ private struct PacketTableContentCache {
                   displayFilter.isEmpty || displayFilter.matches(packet),
                   quickFilterService.matches(packet, selection: quickFilterSelection),
                   structuredFilterService.matches(packet, context: structuredFilterContext),
+                  endpointStatisticsFilter?.matches(packet) != false,
                   wiresharkFilterMembership?.matches(packet, in: ingestState) != false else {
                 continue
             }
@@ -657,6 +674,7 @@ private struct PacketTableContentCache {
             displayFilterText: displayFilterText,
             quickFilterSelection: quickFilterSelection,
             structuredFilterGroup: structuredFilterGroup,
+            endpointStatisticsFilter: endpointStatisticsFilter,
             sourceListSelection: sourceListSelection,
             pinnedItems: pinnedItems,
             savedRecords: savedRecords,
@@ -676,6 +694,7 @@ private struct PacketTableContentCache {
         quickFilterService: PacketQuickFilterService,
         structuredFilterGroup: PacketStructuredFilterGroup,
         structuredFilterService: PacketStructuredFilterService,
+        endpointStatisticsFilter: EndpointStatisticsRow.ID?,
         sourceListSelection: PacketSourceListSelection,
         pinnedItems: [PacketPin],
         savedRecords: [SavedPacketRecord],
@@ -689,6 +708,7 @@ private struct PacketTableContentCache {
             quickFilterService: quickFilterService,
             structuredFilterGroup: structuredFilterGroup,
             structuredFilterService: structuredFilterService,
+            endpointStatisticsFilter: endpointStatisticsFilter,
             sourceListSelection: sourceListSelection,
             pinnedItems: pinnedItems,
             wiresharkFilterMembership: wiresharkFilterMembership,
@@ -717,6 +737,7 @@ private struct PacketTableContentCache {
             displayFilterText: displayFilterText,
             quickFilterSelection: quickFilterSelection,
             structuredFilterGroup: structuredFilterGroup,
+            endpointStatisticsFilter: endpointStatisticsFilter,
             sourceListSelection: sourceListSelection,
             pinnedItems: pinnedItems,
             savedRecords: savedRecords,
@@ -735,6 +756,7 @@ private struct PacketTableContentCache {
         quickFilterService: PacketQuickFilterService,
         structuredFilterGroup: PacketStructuredFilterGroup,
         structuredFilterService: PacketStructuredFilterService,
+        endpointStatisticsFilter: EndpointStatisticsRow.ID?,
         sourceListSelection: PacketSourceListSelection,
         pinnedItems: [PacketPin],
         savedRecords: [SavedPacketRecord],
@@ -751,6 +773,7 @@ private struct PacketTableContentCache {
             quickFilterService: quickFilterService,
             structuredFilterGroup: structuredFilterGroup,
             structuredFilterService: structuredFilterService,
+            endpointStatisticsFilter: endpointStatisticsFilter,
             sourceListSelection: sourceListSelection,
             pinnedItems: pinnedItems,
             savedRecords: savedRecords,
@@ -770,6 +793,7 @@ private struct PacketTableContentCache {
             quickFilterService: quickFilterService,
             structuredFilterGroup: structuredFilterGroup,
             structuredFilterService: structuredFilterService,
+            endpointStatisticsFilter: endpointStatisticsFilter,
             sourceListSelection: sourceListSelection,
             pinnedItems: pinnedItems,
             wiresharkFilterMembership: wiresharkFilterMembership,
@@ -817,6 +841,7 @@ private struct PacketTableContentCache {
             displayFilterText: displayFilterText,
             quickFilterSelection: quickFilterSelection,
             structuredFilterGroup: structuredFilterGroup,
+            endpointStatisticsFilter: endpointStatisticsFilter,
             sourceListSelection: sourceListSelection,
             pinnedItems: pinnedItems,
             savedRecords: savedRecords,
@@ -842,6 +867,7 @@ private struct PacketTableContentCache {
         quickFilterService: PacketQuickFilterService,
         structuredFilterGroup: PacketStructuredFilterGroup,
         structuredFilterService: PacketStructuredFilterService,
+        endpointStatisticsFilter: EndpointStatisticsRow.ID?,
         sourceListSelection: PacketSourceListSelection,
         pinnedItems: [PacketPin],
         wiresharkFilterMembership: PacketWiresharkFilterMembership?,
@@ -860,6 +886,7 @@ private struct PacketTableContentCache {
                 (displayFilter.isEmpty || displayFilter.matches(packet)) &&
                 quickFilterService.matches(packet, selection: quickFilterSelection) &&
                 structuredFilterService.matches(packet, context: structuredFilterContext) &&
+                endpointStatisticsFilter?.matches(packet) != false &&
                 wiresharkFilterMembership?.matches(packet, in: ingestState) != false
             let wasVisible = store.visiblePacketRowIndexByID[packetID] != nil
             guard wasVisible == isVisibleNow else {
@@ -892,6 +919,7 @@ private struct PacketTableContentCache {
         displayFilterText = input.signature.displayFilterText
         quickFilterSelection = input.signature.quickFilterSelection
         structuredFilterGroup = input.signature.structuredFilterGroup
+        endpointStatisticsFilter = input.signature.endpointStatisticsFilter
         sourceListSelection = input.signature.sourceListSelection
         pinnedItems = input.signature.pinnedItems
         savedRecords = input.signature.savedRecords
@@ -907,6 +935,7 @@ private struct PacketTableContentCache {
         displayFilterText: String,
         quickFilterSelection: PacketQuickFilterSelection,
         structuredFilterGroup: PacketStructuredFilterGroup,
+        endpointStatisticsFilter: EndpointStatisticsRow.ID?,
         sourceListSelection: PacketSourceListSelection,
         pinnedItems: [PacketPin],
         savedRecords: [SavedPacketRecord],
@@ -919,6 +948,7 @@ private struct PacketTableContentCache {
         self.displayFilterText = displayFilterText
         self.quickFilterSelection = quickFilterSelection
         self.structuredFilterGroup = structuredFilterGroup
+        self.endpointStatisticsFilter = endpointStatisticsFilter
         self.sourceListSelection = sourceListSelection
         self.pinnedItems = pinnedItems
         self.savedRecords = savedRecords
@@ -1022,6 +1052,7 @@ extension NetworkInspectorViewModelDelegate {
 
 final class NetworkInspectorViewModel {
     weak var delegate: NetworkInspectorViewModelDelegate?
+    var endpointStatisticsIngestHandler: ((PacketIngestState) -> Void)?
 
     private(set) var snapshot: NetworkInspectorSnapshot {
         didSet {
@@ -1053,7 +1084,7 @@ final class NetworkInspectorViewModel {
     private var activePacketTableFilterJob: PacketTableFilterJob?
     private var packetTableFilterGeneration = 0
     private var isPacketTableFiltering = false
-    private var selectsFirstVisiblePacketAfterFiltering = false
+    private var shouldSelectFirstVisiblePacketWhenFilteringCompletes = false
     private var pendingSessionImportReport: TCPViewSessionImportReport?
     private var pendingDisplayFilterValidationWorkItem: DispatchWorkItem?
     private var displayFilterValidationGeneration: UInt64 = 0
@@ -1086,9 +1117,25 @@ final class NetworkInspectorViewModel {
     private var wiresharkFilterMembershipLineageRevision: UInt64?
     private var displayFilterText: String
     private var structuredFilterGroup: PacketStructuredFilterGroup
+    private var endpointStatisticsFilter: EndpointStatisticsRow.ID?
     private var selectedCustomFilterID: PacketCustomFilter.ID?
     private var helperOnboardingDismissed = false
     private var isUsingSessionDocumentState = false
+
+    private var endpointStatisticsFilterLabel: String? {
+        guard let endpointStatisticsFilter else {
+            return nil
+        }
+
+        let displayKey: String
+        if endpointStatisticsFilter.group == .apps,
+           let separator = endpointStatisticsFilter.key.firstIndex(of: ":") {
+            displayKey = String(endpointStatisticsFilter.key[endpointStatisticsFilter.key.index(after: separator)...])
+        } else {
+            displayKey = endpointStatisticsFilter.key
+        }
+        return "\(endpointStatisticsFilter.group.title): \(displayKey)"
+    }
 
     convenience init(userDefaults: UserDefaults = .standard) {
         self.init(services: .foundation, userDefaults: userDefaults)
@@ -1138,6 +1185,7 @@ final class NetworkInspectorViewModel {
         self.structuredFilterGroup = preferences.filterMode == .wireshark
             ? .wireshark(expression: preferences.wiresharkFilterDraft)
             : structuredFilterStore.load()
+        self.endpointStatisticsFilter = nil
         let sourceListSnapshot = sourceListService.snapshot(
             for: controller.snapshot.packetIngestState,
             pinnedItems: pinService.pins(),
@@ -1151,6 +1199,7 @@ final class NetworkInspectorViewModel {
             quickFilterService: quickFilterService,
             structuredFilterGroup: activeStructuredFilterGroup,
             structuredFilterService: structuredFilterService,
+            endpointStatisticsFilter: nil,
             sourceListSelection: selectedSourceListSelection,
             pinnedItems: pinService.pins(),
             savedRecords: savedPacketService.records(),
@@ -1184,6 +1233,7 @@ final class NetworkInspectorViewModel {
             wiresharkFilterState: wiresharkFilterState,
             displayFilterText: displayFilterText,
             structuredFilterGroup: structuredFilterGroup,
+            endpointStatisticsFilterLabel: nil,
             isPacketTableFiltering: isPacketTableFiltering,
             packetTableContent: packetTableContent
         )
@@ -1329,6 +1379,27 @@ final class NetworkInspectorViewModel {
         cancelPendingInspectorFilterApplication()
         workspaceMode = mode
         selectedSidebar = .view(mode)
+        rebuildSnapshot()
+    }
+
+    // Leave Overview without discarding the user's packet filters.
+    func showPacketsFromOverview() {
+        cancelPendingInspectorFilterApplication()
+        endpointStatisticsFilter = nil
+        selectedSourceListSelection = .allPackets
+        workspaceMode = .packets
+        selectedSidebar = .liveCapture
+        rebuildSnapshot()
+    }
+
+    // Use the sidebar's exact identity so an Overview row opens the same packet scope as a normal click.
+    func showSourceListSelectionFromOverview(_ selection: PacketSourceListSelection) {
+        cancelPendingInspectorFilterApplication()
+        sourceListFilterText = ""
+        endpointStatisticsFilter = nil
+        selectedSourceListSelection = selection
+        workspaceMode = .packets
+        selectedSidebar = .liveCapture
         rebuildSnapshot()
     }
 
@@ -1556,13 +1627,81 @@ final class NetworkInspectorViewModel {
     func toggleQuickFilter(_ id: PacketQuickFilterID) {
         cancelPendingInspectorFilterApplication()
         quickFilterService.toggle(id)
-        rebuildSnapshot(selectsFirstVisiblePacketForQuickFilter: true)
+        rebuildSnapshot(selectsFirstVisiblePacketAfterFiltering: true)
     }
 
     func resetQuickFilters() {
         cancelPendingInspectorFilterApplication()
         quickFilterService.reset()
         rebuildSnapshot(clearsSelectedPacket: true)
+    }
+
+    // Select the closest sidebar scope while the endpoint filter keeps the packet match exact.
+    @discardableResult
+    func showRelatedPackets(forEndpoint rowID: EndpointStatisticsRow.ID) -> PacketSourceListSelection {
+        cancelPendingInspectorFilterApplication()
+        sourceListFilterText = ""
+        endpointStatisticsFilter = rowID
+        selectedSourceListSelection = sourceListSelection(forEndpoint: rowID)
+        workspaceMode = .packets
+        if case .view = selectedSidebar {
+            selectedSidebar = .liveCapture
+        }
+        rebuildSnapshot(selectsFirstVisiblePacketAfterFiltering: true)
+        return selectedSourceListSelection
+    }
+
+    private func sourceListSelection(forEndpoint rowID: EndpointStatisticsRow.ID) -> PacketSourceListSelection {
+        let exactSelection: PacketSourceListSelection
+        switch rowID.group {
+        case .apps:
+            exactSelection = .app(PacketSourceClientKey(rawValue: rowID.key))
+        case .domains:
+            exactSelection = .domain(PacketSourceDomainKey(rawValue: rowID.key, isMissingDomain: false))
+        case .ipv4, .ipv6:
+            exactSelection = .ipAddress(PacketSourceIPAddressKey(rawValue: rowID.key))
+        case .tcp, .udp:
+            return .allPackets
+        }
+
+        if snapshot.sourceListSnapshot.contains(selection: exactSelection) {
+            return exactSelection
+        }
+        return rowID.group == .apps ? .apps : .domains
+    }
+
+    func clearEndpointStatisticsFilter() {
+        guard endpointStatisticsFilter != nil else {
+            return
+        }
+
+        endpointStatisticsFilter = nil
+        rebuildSnapshot()
+    }
+
+    func packetSummariesForEndpointStatistics(_ identifiers: [PacketSummary.ID]) -> [PacketSummary] {
+        let ingestState = controller.snapshot.packetIngestState
+        if selectedSourceListSelection == .saved {
+            return savedPacketService.packets(withIDs: identifiers)
+        }
+
+        // Live append batches normally resolve from the indexed ingest state, so avoid rescanning saved packets.
+        var activePackets: [PacketSummary] = []
+        activePackets.reserveCapacity(identifiers.count)
+        for identifier in identifiers {
+            guard let packet = ingestState.packet(withID: identifier) else {
+                return identifiers.compactMap { identifier in
+                    ingestState.packet(withID: identifier) ?? savedPacketService.packet(withID: identifier)
+                }
+            }
+            activePackets.append(packet)
+        }
+        return activePackets
+    }
+
+    // Statistics recovery must read the workspace directly because the rendered snapshot is coalesced.
+    func currentPacketIngestStateForEndpointStatistics() -> PacketIngestState {
+        controller.snapshot.packetIngestState
     }
 
     // Save the current structured filter group as a reusable custom titlebar filter.
@@ -1797,6 +1936,7 @@ final class NetworkInspectorViewModel {
         workspaceMode = .packets
         displayFilterText = ""
         quickFilterService.reset()
+        endpointStatisticsFilter = nil
         selectedCustomFilterID = nil
     }
 
@@ -2094,6 +2234,7 @@ final class NetworkInspectorViewModel {
         #endif
         cancelWiresharkFilterEvaluation(clearMembership: true)
         cancelActivePacketTableFilterJob()
+        endpointStatisticsFilter = nil
         controller.clearPackets()
         packetTableContentCache.reset()
         sourceListService.reset()
@@ -2571,6 +2712,7 @@ final class NetworkInspectorViewModel {
 
     func openDocument(at fileURL: URL, completion: (() -> Void)? = nil) {
         cancelWiresharkFilterEvaluation(clearMembership: true)
+        endpointStatisticsFilter = nil
         let standardizedURL = TCPViewerCaptureFileImportPolicy.standardizedFileURL(fileURL)
         let isSessionFile = TCPViewerCaptureFileImportPolicy.isSessionFileURL(standardizedURL)
         controller.openDocument(at: fileURL) { [weak self] in
@@ -2608,6 +2750,7 @@ final class NetworkInspectorViewModel {
         completion: @escaping (TCPViewerCaptureImportResult) -> Void
     ) {
         cancelWiresharkFilterEvaluation(clearMembership: true)
+        endpointStatisticsFilter = nil
         let hasSessionFile = fileURLs
             .map(TCPViewerCaptureFileImportPolicy.standardizedFileURL)
             .contains(where: TCPViewerCaptureFileImportPolicy.isSessionFileURL)
@@ -2644,6 +2787,7 @@ final class NetworkInspectorViewModel {
     }
 
     private func finishImportedDocuments(fileURLs: [URL], completion: (() -> Void)? = nil) {
+        endpointStatisticsFilter = nil
         workspaceMode = .packets
         selectedSourceListSelection = importedFileSelection(for: fileURLs)
         rebuildSnapshot()
@@ -2652,6 +2796,7 @@ final class NetworkInspectorViewModel {
 
     private func applySessionDocumentState(_ state: TCPViewSessionState) {
         isUsingSessionDocumentState = true
+        endpointStatisticsFilter = nil
         pinService.useDocumentPins(state.pins)
         savedPacketService.useDocumentRecords(remappedSavedRecordsForCurrentDocument(state.savedPackets))
         customFilterService.useDocumentFilters(state.customFilters)
@@ -2705,6 +2850,7 @@ final class NetworkInspectorViewModel {
         savedPacketService.reloadPersistentRecords()
         customFilterService.reloadPersistentFilters()
         quickFilterService.reset()
+        endpointStatisticsFilter = nil
         selectedCustomFilterID = nil
         sourceListFilterText = ""
         displayFilterText = preferences.displayFilterText
@@ -3126,7 +3272,7 @@ final class NetworkInspectorViewModel {
     }
 
     private func rebuildSnapshot(
-        selectsFirstVisiblePacketForQuickFilter: Bool = false,
+        selectsFirstVisiblePacketAfterFiltering: Bool = false,
         clearsSelectedPacket: Bool = false
     ) {
         cancelPendingRebuild()
@@ -3164,7 +3310,8 @@ final class NetworkInspectorViewModel {
                 quickFilterService: quickFilterService,
                 structuredFilterGroup: activeStructuredFilterGroup,
                 structuredFilterService: structuredFilterService,
-                sourceListSelection: selectedSourceListSelection,
+                endpointStatisticsFilter: endpointStatisticsFilter,
+                sourceListSelection: packetTableSourceListSelection,
                 pinnedItems: pinnedItems,
                 savedRecords: savedRecords,
                 wiresharkFilterMembership: activeWiresharkFilterMembership,
@@ -3180,13 +3327,14 @@ final class NetworkInspectorViewModel {
                 isPacketTableFiltering = true
             }
         }
-        if isPacketTableFiltering, selectsFirstVisiblePacketForQuickFilter {
-            selectsFirstVisiblePacketAfterFiltering = true
+        if isPacketTableFiltering, selectsFirstVisiblePacketAfterFiltering {
+            shouldSelectFirstVisiblePacketWhenFilteringCompletes = true
         }
         if clearsSelectedPacket {
             applyPacketSelectionDuringRebuild(nil)
-        } else if selectsFirstVisiblePacketForQuickFilter, !isPacketTableFiltering {
-            let firstVisiblePacketID = quickFilterService.selection.isActive ? packetTableContent.rows.first?.id : nil
+        } else if selectsFirstVisiblePacketAfterFiltering, !isPacketTableFiltering {
+            let shouldSelectFirstPacket = quickFilterService.selection.isActive || endpointStatisticsFilter != nil
+            let firstVisiblePacketID = shouldSelectFirstPacket ? packetTableContent.rows.first?.id : nil
             applyPacketSelectionDuringRebuild(firstVisiblePacketID)
             if firstVisiblePacketID != nil {
                 inspectorTab = .summary
@@ -3210,6 +3358,7 @@ final class NetworkInspectorViewModel {
             wiresharkFilterState: wiresharkFilterState,
             displayFilterText: displayFilterText,
             structuredFilterGroup: structuredFilterGroup,
+            endpointStatisticsFilterLabel: endpointStatisticsFilterLabel,
             isPacketTableFiltering: isPacketTableFiltering,
             packetTableContent: packetTableContent
         )
@@ -3241,7 +3390,8 @@ final class NetworkInspectorViewModel {
             displayFilterText: displayFilterText,
             quickFilterSelection: quickFilterService.selection,
             structuredFilterGroup: activeStructuredFilterGroup,
-            sourceListSelection: selectedSourceListSelection,
+            endpointStatisticsFilter: endpointStatisticsFilter,
+            sourceListSelection: packetTableSourceListSelection,
             pinnedItems: pinnedItems,
             savedRecords: savedRecords,
             wiresharkFilterMembership: isStructuredFilterVisible && filterMode == .wireshark
@@ -3252,6 +3402,11 @@ final class NetworkInspectorViewModel {
             ingestState: controller.snapshot.packetIngestState,
             signature: signature
         )
+    }
+
+    // The endpoint identity is canonical and exact; the sidebar selection only reveals its nearest navigation row.
+    private var packetTableSourceListSelection: PacketSourceListSelection {
+        endpointStatisticsFilter == nil ? selectedSourceListSelection : .allPackets
     }
 
     private func shouldKeepActivePacketTableFilterJob(for input: PacketTableBuildInput) -> Bool {
@@ -3348,16 +3503,16 @@ final class NetworkInspectorViewModel {
         _ = packetTableContentCache.storeAsyncRebuild(output, input: job.input)
         activePacketTableFilterJob = nil
         isPacketTableFiltering = false
-        let shouldSelectFirst = selectsFirstVisiblePacketAfterFiltering
-        selectsFirstVisiblePacketAfterFiltering = false
-        rebuildSnapshot(selectsFirstVisiblePacketForQuickFilter: shouldSelectFirst)
+        let shouldSelectFirst = shouldSelectFirstVisiblePacketWhenFilteringCompletes
+        shouldSelectFirstVisiblePacketWhenFilteringCompletes = false
+        rebuildSnapshot(selectsFirstVisiblePacketAfterFiltering: shouldSelectFirst)
     }
 
     private func cancelActivePacketTableFilterJob() {
         activePacketTableFilterJob?.cancellationToken.cancel()
         activePacketTableFilterJob = nil
         isPacketTableFiltering = false
-        selectsFirstVisiblePacketAfterFiltering = false
+        shouldSelectFirstVisiblePacketWhenFilteringCompletes = false
     }
 
     private func applyPacketSelectionDuringRebuild(_ identifier: PacketSummary.ID?) {
@@ -3522,6 +3677,7 @@ final class NetworkInspectorViewModel {
 
 extension NetworkInspectorViewModel: TCPViewerWorkspaceControllerDelegate {
     func tcpViewerWorkspaceControllerDidChange(_ controller: TCPViewerWorkspaceController) {
+        endpointStatisticsIngestHandler?(controller.snapshot.packetIngestState)
         recordStatusMetrics(from: controller.snapshot)
         let ingestState = controller.snapshot.packetIngestState
         let pendingInspectorCaptureChanged = pendingInspectorFilterApplicationGeneration != nil

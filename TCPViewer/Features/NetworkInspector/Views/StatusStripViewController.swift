@@ -19,6 +19,7 @@ final class StatusStripViewModel {
     private(set) var canCancelLoad = false
     private(set) var canClear = false
     private(set) var isStructuredFilterVisible = false
+    private(set) var showsFilterButton = true
     private(set) var metricsText = TCPViewerStatusMetricsFormatter.displayText(for: .empty)
 
     // Build the compact bottom strip controls from the current packet/capture snapshot.
@@ -28,6 +29,7 @@ final class StatusStripViewModel {
         canCancelLoad = snapshot.base.loadState.canCancel
         canClear = snapshot.visiblePacketCount > 0 && !canCancelLoad
         isStructuredFilterVisible = snapshot.isStructuredFilterVisible
+        showsFilterButton = snapshot.workspaceMode != .overview
     }
 
     // Format the lightweight process and captured-traffic metrics for the strip.
@@ -76,6 +78,7 @@ final class StatusStripViewController: NSViewController {
         clearButton.isHidden = viewModel.canCancelLoad
         clearButton.isEnabled = viewModel.canClear
         filterButton.state = viewModel.isStructuredFilterVisible ? .on : .off
+        filterButton.isHidden = !viewModel.showsFilterButton
         totalLabel.stringValue = viewModel.totalText
         metricsLabel.stringValue = viewModel.metricsText
     }

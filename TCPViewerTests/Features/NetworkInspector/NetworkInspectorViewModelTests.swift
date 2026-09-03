@@ -15,6 +15,56 @@ import PcapPlusPlusCore
 @MainActor
 struct NetworkInspectorViewModelTests {
 
+    @Test func overviewPacketActionsPreserveNormalFiltersAndClearEndpointDrillDown() async {
+        let client = PacketClient(
+            pid: 123,
+            name: "Browser",
+            displayName: "Browser",
+            executablePath: "/Applications/Browser.app/Contents/MacOS/Browser",
+            bundleIdentifier: "com.example.browser",
+            bundlePath: "/Applications/Browser.app"
+        )
+        let packet = makePacket(
+            packetNumber: 1,
+            source: .offline,
+            transportHint: .tcp,
+            sniDomainName: "example.com",
+            client: client,
+            direction: .outbound
+        )
+        let viewModel = makeOfflineViewModel(packets: [packet])
+        await viewModel.openDocument(at: URL(fileURLWithPath: "/tmp/overview-actions.pcapng"))
+        await waitUntil { viewModel.snapshot.totalPacketCount == 1 }
+        viewModel.updateDisplayFilterText("protocol:tcp")
+        viewModel.toggleQuickFilter(.tcp)
+        viewModel.updateSourceListFilterText("hidden")
+        viewModel.showRelatedPackets(forEndpoint: EndpointStatisticsRowID(group: .tcp, key: "10.0.0.1:1234"))
+
+        viewModel.selectWorkspaceMode(.overview)
+        #expect(viewModel.snapshot.workspaceMode == .overview)
+        #expect(viewModel.snapshot.endpointStatisticsFilterLabel != nil)
+
+        viewModel.showPacketsFromOverview()
+        #expect(viewModel.snapshot.workspaceMode == .packets)
+        #expect(viewModel.snapshot.selectedSourceListSelection == .allPackets)
+        #expect(viewModel.snapshot.endpointStatisticsFilterLabel == nil)
+        #expect(viewModel.snapshot.displayFilterText == "protocol:tcp")
+        #expect(viewModel.snapshot.quickFilterSelection.contains(.tcp))
+
+        viewModel.updateSourceListFilterText("hidden")
+        viewModel.showRelatedPackets(forEndpoint: EndpointStatisticsRowID(group: .tcp, key: "10.0.0.1:1234"))
+        viewModel.selectWorkspaceMode(.overview)
+        let appKey = PacketSourceClientKey(rawValue: "bundleIdentifier:com.example.browser")
+        viewModel.showSourceListSelectionFromOverview(.app(appKey))
+
+        #expect(viewModel.snapshot.workspaceMode == .packets)
+        #expect(viewModel.snapshot.selectedSourceListSelection == .app(appKey))
+        #expect(viewModel.snapshot.sourceListFilterText.isEmpty)
+        #expect(viewModel.snapshot.endpointStatisticsFilterLabel == nil)
+        #expect(viewModel.snapshot.displayFilterText == "protocol:tcp")
+        #expect(viewModel.snapshot.quickFilterSelection.contains(.tcp))
+    }
+
     @Test func liveCaptureBuildsPacketRowsSelectionAndFilters() async {
         let packet = makePacket(
             packetNumber: 1,
@@ -1734,6 +1784,91 @@ struct NetworkInspectorViewModelTests {
         #expect(!hiddenReloadedViewModel.snapshot.isInspectorVisible)
     }
 
+    @Test func overviewReplacesPacketWorkspaceAndRestoresInspectorPreference() async {
+        let defaults = isolatedDefaults()
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")]
+            )),
+            userDefaults: defaults
+        )
+        let controller = TCPViewerRootViewController(
+            viewModel: viewModel,
+            configuration: AppConfiguration(defaults: defaults)
+        )
+        let window = NSWindow(contentViewController: controller)
+        defer { window.close() }
+        controller.loadViewIfNeeded()
+
+        viewModel.selectWorkspaceMode(.overview)
+        controller.view.layoutSubtreeIfNeeded()
+
+        #expect(viewModel.snapshot.isInspectorVisible)
+        #expect(controller.isOverviewWorkspaceVisibleForTesting)
+        #expect(!controller.isPacketWorkspaceVisibleForTesting)
+        #expect(controller.isInspectorCollapsedForTesting)
+        #expect(!controller.isMainEmptyStateVisibleForTesting)
+
+        viewModel.showPacketsFromOverview()
+        await waitUntil {
+            controller.isPacketWorkspaceVisibleForTesting &&
+                !controller.isOverviewWorkspaceVisibleForTesting &&
+                !controller.isInspectorCollapsedForTesting
+        }
+
+        #expect(viewModel.snapshot.isInspectorVisible)
+    }
+
+    @Test func endpointStatisticsUsesTheLargerDefaultContentSize() {
+        #expect(EndpointStatisticsWindowController.defaultContentSize == NSSize(width: 1_440, height: 820))
+    }
+
+    @Test func endpointStatisticsToolbarOnlyShowsEndpointTypesAndSearch() throws {
+        let controller = EndpointStatisticsWindowController(
+            configuration: AppConfiguration(defaults: isolatedDefaults()),
+            packetProvider: { _ in [] },
+            showRelatedPackets: { _ in }
+        )
+        defer { controller.close() }
+        let toolbar = try #require(controller.window?.toolbar)
+        let identifiers = toolbar.items.map(\.itemIdentifier.rawValue)
+        let endpointIdentifiers = identifiers.filter { $0.hasPrefix("TCPViewer.EndpointStatistics") }
+
+        #expect(endpointIdentifiers == [
+            "TCPViewer.EndpointStatistics.endpointTypes",
+            "TCPViewer.EndpointStatistics.search",
+        ])
+        #expect(toolbar.centeredItemIdentifiers == [
+            NSToolbarItem.Identifier("TCPViewer.EndpointStatistics.endpointTypes"),
+        ])
+
+        let endpointTypes = try #require(
+            toolbar.items.compactMap { $0.view as? NSSegmentedControl }.first
+        )
+        #expect(endpointTypes.segmentCount == EndpointStatisticsGroup.allCases.count)
+        let searchItem = try #require(toolbar.items.compactMap { $0 as? NSSearchToolbarItem }.first)
+        #expect(searchItem.searchField.placeholderString == "Search endpoints (⌘F)")
+        #expect(!toolbar.items.contains { $0 is NSMenuToolbarItem })
+    }
+
+    @Test func emptyOverviewShowsNoTrafficStateWithoutACalculatingSpinner() {
+        var snapshot = makeInspectorSnapshot(
+            packets: [],
+            selectedPacketID: nil,
+            generation: 0,
+            updatePlan: .none
+        )
+        snapshot.workspaceMode = .overview
+        let controller = CaptureOverviewViewController(latestIngestStateProvider: { .empty })
+
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: snapshot)
+
+        #expect(controller.isSwiftUIHostedForTesting)
+        #expect(controller.showsNoTrafficStateForTesting)
+        #expect(allSubviews(ofType: NSProgressIndicator.self, in: controller.view).isEmpty)
+    }
+
     @Test func bottomInspectorPlacementLaysOutInspectorBelowWorkspace() async throws {
         let packet = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp)
         let document = InspectorFakeDocument(
@@ -1823,6 +1958,10 @@ struct NetworkInspectorViewModelTests {
                 controller.isMainEmptyStateVisibleForTesting
         }
 
+        #expect(controller.isMainEmptyStateVisibleForTesting)
+        #expect(controller.isContentSplitViewHiddenForTesting)
+
+        controller.simulateInitialSplitVisibilityRestoreForTesting()
         #expect(controller.isMainEmptyStateVisibleForTesting)
         #expect(controller.isContentSplitViewHiddenForTesting)
 

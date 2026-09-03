@@ -75,10 +75,37 @@ struct PacketSourceListItem: Identifiable, Equatable, Sendable {
     let count: Int?
     let kind: PacketSourceListItemKind
     let selection: PacketSourceListSelection?
+    let workspaceMode: NetworkInspectorWorkspaceMode?
     let children: [PacketSourceListItem]
+
+    init(
+        id: String,
+        title: String,
+        systemImageName: String?,
+        iconFilePath: String?,
+        count: Int?,
+        kind: PacketSourceListItemKind,
+        selection: PacketSourceListSelection?,
+        workspaceMode: NetworkInspectorWorkspaceMode? = nil,
+        children: [PacketSourceListItem]
+    ) {
+        self.id = id
+        self.title = title
+        self.systemImageName = systemImageName
+        self.iconFilePath = iconFilePath
+        self.count = count
+        self.kind = kind
+        self.selection = selection
+        self.workspaceMode = workspaceMode
+        self.children = children
+    }
 
     var isGroup: Bool {
         kind == .group
+    }
+
+    var isNavigable: Bool {
+        selection != nil || workspaceMode != nil
     }
 
     var countText: String? {
@@ -139,6 +166,10 @@ struct PacketSourceListSnapshot: Equatable, Sendable {
     }
 
     private static func filtered(item: PacketSourceListItem, matching filterText: String) -> PacketSourceListItem? {
+        // Capture navigation stays available while the text field filters packet sources.
+        if item.id == PacketSourceListTreeBuilder.captureGroupID {
+            return item
+        }
         if item.title.localizedCaseInsensitiveContains(filterText) {
             return item
         }
@@ -158,6 +189,7 @@ struct PacketSourceListSnapshot: Equatable, Sendable {
             count: item.count,
             kind: item.kind,
             selection: item.selection,
+            workspaceMode: item.workspaceMode,
             children: filteredChildren
         )
     }
@@ -405,14 +437,25 @@ enum PacketSourceListClassifier {
     }
 
     static func domainIdentity(for packet: PacketSummary) -> PacketSourceDomainIdentity {
-        guard let domainName = trimmed(packet.domainName) else {
+        guard let domainName = canonicalDomainName(packet.domainName) else {
             return PacketSourceDomainIdentity(key: .ipAddresses, displayName: "IP Addresses")
         }
 
         return PacketSourceDomainIdentity(
-            key: PacketSourceDomainKey(rawValue: domainName.lowercased(), isMissingDomain: false),
+            key: PacketSourceDomainKey(rawValue: domainName, isMissingDomain: false),
             displayName: domainName
         )
+    }
+
+    static func canonicalDomainName(_ value: String?) -> String? {
+        let normalized = value?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            .lowercased()
+        guard let normalized, !normalized.isEmpty, normalized.utf8.count <= 253 else {
+            return nil
+        }
+        return normalized
     }
 
     static func ipAddressIdentities(for packet: PacketSummary) -> [PacketSourceIPAddressIdentity] {
@@ -1137,6 +1180,8 @@ enum PacketSourceListTreeBuilder {
     }
 
     static let favoritesGroupID = "group:favorites"
+    static let captureGroupID = "group:capture"
+    static let overviewItemID = "capture:overview"
     static let filesGroupID = "group:files"
     static let allGroupID = "group:all"
     static let pinnedFolderID = "favorite:pinned"
@@ -1144,6 +1189,7 @@ enum PacketSourceListTreeBuilder {
     static let domainsFolderID = "folder:domains"
 
     static let defaultExpandedItemIDs: Set<String> = [
+        captureGroupID,
         favoritesGroupID,
         filesGroupID,
         allGroupID,
@@ -1288,6 +1334,28 @@ enum PacketSourceListTreeBuilder {
         }
 
         var roots = [
+            PacketSourceListItem(
+                id: captureGroupID,
+                title: "Capture",
+                systemImageName: nil,
+                iconFilePath: nil,
+                count: nil,
+                kind: .group,
+                selection: nil,
+                children: [
+                    PacketSourceListItem(
+                        id: overviewItemID,
+                        title: "Overview",
+                        systemImageName: "chart.bar.xaxis",
+                        iconFilePath: nil,
+                        count: nil,
+                        kind: .favorite,
+                        selection: nil,
+                        workspaceMode: .overview,
+                        children: []
+                    ),
+                ]
+            ),
             PacketSourceListItem(
                 id: favoritesGroupID,
                 title: "Favorites",

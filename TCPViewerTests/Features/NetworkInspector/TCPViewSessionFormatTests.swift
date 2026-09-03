@@ -88,6 +88,7 @@ struct TCPViewSessionFormatTests {
             wiresharkExpression: "tls.handshake.extensions_server_name == \"example.com\"",
             selectedPacketID: packet.id,
             selectedSourceListSelection: selectedSource,
+            workspaceMode: .overview,
             tableColumnLayout: layout
         )
 
@@ -97,6 +98,7 @@ struct TCPViewSessionFormatTests {
         #expect(decoded.importedCaptureFiles == [importedFile])
         #expect(decoded.importedPacketReferenceByID[packet.id]?.originalPacketID == 1)
         #expect(decoded.selectedSourceListSelection?.selection() == selectedSource)
+        #expect(decoded.workspaceMode == NetworkInspectorWorkspaceMode.overview.rawValue)
         #expect(decoded.importedFileProvenance != nil)
         #expect(decoded.filterMode == .wireshark)
         #expect(decoded.wiresharkExpression == "tls.handshake.extensions_server_name == \"example.com\"")
@@ -657,6 +659,7 @@ struct TCPViewSessionFormatTests {
         wiresharkExpression: String? = nil,
         selectedPacketID: PacketSummary.ID? = nil,
         selectedSourceListSelection: PacketSourceListSelection = .allPackets,
+        workspaceMode: NetworkInspectorWorkspaceMode = .packets,
         tableColumnLayout: PacketTableColumnLayout? = nil
     ) -> TCPViewSessionExportSnapshot {
         TCPViewSessionExportSnapshot(
@@ -674,7 +677,7 @@ struct TCPViewSessionFormatTests {
             sourceListFilterText: "example",
             selectedPacketID: selectedPacketID,
             selectedSourceListSelection: selectedSourceListSelection,
-            workspaceMode: .packets,
+            workspaceMode: workspaceMode,
             inspectorTab: .detail,
             inspectorPlacement: .bottom,
             isInspectorVisible: true,

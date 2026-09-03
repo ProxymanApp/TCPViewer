@@ -21,7 +21,11 @@ final class SavedPacketService {
     private let userDataDirectory: TCPViewerUserDataDirectory
     private let usesUserDataDirectoryStorage: Bool
     private var cachedRecords: [SavedPacketRecord]
+    private var cachedPacketsByID: [PacketSummary.ID: PacketSummary]?
     private var isDocumentScoped = false
+    #if DEBUG
+    private(set) var packetLookupIndexBuildCount = 0
+    #endif
 
     init(
         storageURL: URL? = nil,
@@ -33,6 +37,7 @@ final class SavedPacketService {
         self.storageURL = storageURL ?? SavedPacketService.defaultStorageURL(userDataDirectory: userDataDirectory)
         self.fileManager = fileManager
         self.cachedRecords = (try? Self.loadRecords(from: self.storageURL, fileManager: fileManager)) ?? []
+        self.cachedPacketsByID = nil
     }
 
     func records() -> [SavedPacketRecord] {
@@ -42,15 +47,27 @@ final class SavedPacketService {
     func useDocumentRecords(_ records: [SavedPacketRecord]) {
         isDocumentScoped = true
         cachedRecords = records
+        cachedPacketsByID = nil
     }
 
     func reloadPersistentRecords() {
         isDocumentScoped = false
         cachedRecords = (try? Self.loadRecords(from: storageURL, fileManager: fileManager)) ?? []
+        cachedPacketsByID = nil
     }
 
     func packets() -> [PacketSummary] {
         cachedRecords.map(\.packet)
+    }
+
+    // Reuse one packet index across chunked consumers instead of rescanning every saved record per batch.
+    func packets(withIDs packetIDs: [PacketSummary.ID]) -> [PacketSummary] {
+        let packetsByID = packetLookupIndex()
+        return packetIDs.compactMap { packetsByID[$0] }
+    }
+
+    func packet(withID packetID: PacketSummary.ID) -> PacketSummary? {
+        packetLookupIndex()[packetID]
     }
 
     // Persist selected packet summaries without storing raw packet bytes.
@@ -60,6 +77,7 @@ final class SavedPacketService {
             return []
         }
 
+        cachedPacketsByID = nil
         var savedRecords: [SavedPacketRecord] = []
         for packet in packets {
             if let index = cachedRecords.firstIndex(where: { $0.packet.id == packet.id }) {
@@ -83,6 +101,7 @@ final class SavedPacketService {
             return
         }
 
+        cachedPacketsByID = nil
         cachedRecords.removeAll { packetIDs.contains($0.packet.id) }
         try persist()
     }
@@ -107,6 +126,7 @@ final class SavedPacketService {
         }
 
         if didChange {
+            cachedPacketsByID = nil
             do {
                 try persist()
             } catch {
@@ -138,6 +158,7 @@ final class SavedPacketService {
         }
 
         if didChange {
+            cachedPacketsByID = nil
             do {
                 try persist()
             } catch {
@@ -162,6 +183,21 @@ final class SavedPacketService {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(cachedRecords).write(to: storageURL, options: .atomic)
+    }
+
+    private func packetLookupIndex() -> [PacketSummary.ID: PacketSummary] {
+        if let cachedPacketsByID {
+            return cachedPacketsByID
+        }
+        let packetsByID = Dictionary(
+            cachedRecords.map { ($0.packet.id, $0.packet) },
+            uniquingKeysWith: { _, latest in latest }
+        )
+        cachedPacketsByID = packetsByID
+        #if DEBUG
+        packetLookupIndexBuildCount += 1
+        #endif
+        return packetsByID
     }
 
     private static func loadRecords(from url: URL, fileManager: FileManager) throws -> [SavedPacketRecord] {

@@ -9,6 +9,7 @@ import Foundation
 import PcapPlusPlusCore
 
 enum NetworkInspectorWorkspaceMode: String, CaseIterable, Identifiable, Sendable, Hashable {
+    case overview
     case packets
     case flows
     case timeline
@@ -19,6 +20,8 @@ enum NetworkInspectorWorkspaceMode: String, CaseIterable, Identifiable, Sendable
 
     var title: String {
         switch self {
+        case .overview:
+            "Overview"
         case .packets:
             "Packets"
         case .flows:
@@ -34,6 +37,8 @@ enum NetworkInspectorWorkspaceMode: String, CaseIterable, Identifiable, Sendable
 
     var systemImage: String {
         switch self {
+        case .overview:
+            "chart.bar.xaxis"
         case .packets:
             "list.bullet.rectangle"
         case .flows:
@@ -49,6 +54,8 @@ enum NetworkInspectorWorkspaceMode: String, CaseIterable, Identifiable, Sendable
 
     var preparedStateMessage: String {
         switch self {
+        case .overview:
+            "Capture overview is ready."
         case .packets:
             "Packet inspection is ready."
         case .flows:
@@ -90,6 +97,64 @@ private extension String {
     // valid — makes the row own its strings outright and removes the dangling-backing hazard.
     var tcpviewerNativeCopy: String {
         String(decoding: utf8, as: UTF8.self)
+    }
+}
+
+private enum PacketTableSummaryFormatter {
+    static func summary(for packet: PacketSummary) -> String {
+        guard packet.transportHint == .dns,
+              let dnsSummary = conciseDNS(
+                packet.infoSummary,
+                resolutions: packet.dnsResolutions
+              ) else {
+            return packet.infoSummary
+        }
+        return dnsSummary
+    }
+
+    // Wireshark's DNS sentence is useful in packet details but too long for a scannable table row.
+    private static func conciseDNS(
+        _ summary: String,
+        resolutions: [DNSResolutionObservation]?
+    ) -> String? {
+        let components = summary.split(whereSeparator: \Character.isWhitespace).map(String.init)
+        let words = components.map { $0.lowercased() }
+        let isResponse: Bool
+        var queryIndex: Int
+
+        if words.starts(with: ["standard", "query", "response"]) {
+            isResponse = true
+            queryIndex = 3
+        } else if words.starts(with: ["standard", "query"]) {
+            isResponse = false
+            queryIndex = 2
+        } else {
+            return nil
+        }
+
+        if components.indices.contains(queryIndex), components[queryIndex].hasPrefix("0x") {
+            queryIndex += 1
+        }
+        guard components.indices.contains(queryIndex + 1) else {
+            return nil
+        }
+
+        let queryType = components[queryIndex]
+        let queryName = components[queryIndex + 1].trimmingCharacters(in: CharacterSet(charactersIn: ","))
+        guard !queryType.isEmpty, !queryName.isEmpty else {
+            return nil
+        }
+
+        guard isResponse else {
+            return "\(queryType)? \(queryName)"
+        }
+        let matchingResolution = resolutions?.first {
+            $0.domainName.caseInsensitiveCompare(queryName) == .orderedSame
+        } ?? resolutions?.first
+        guard let matchingResolution else {
+            return "\(queryType) \(queryName)"
+        }
+        return "\(queryType) \(queryName) → \(matchingResolution.ipAddress)"
     }
 }
 
@@ -238,7 +303,7 @@ struct PacketTableRow: Identifiable, Sendable, Hashable {
         self.decodeStatusText = NetworkInspectorFormatters.decodeStatusLabel(packet.decodeStatus).tcpviewerNativeCopy
         self.interfaceText = (packet.captureMetadata.interfaceName ?? packet.interfaceID ?? "-").tcpviewerNativeCopy
         self.lengthText = NetworkInspectorFormatters.byteCount(packet.capturedLength)
-        self.summaryText = packet.infoSummary.tcpviewerNativeCopy
+        self.summaryText = PacketTableSummaryFormatter.summary(for: packet).tcpviewerNativeCopy
         self.comment = packet.resolvedComment?.tcpviewerNativeCopy
         self.commentText = (packet.resolvedComment ?? "")
             .components(separatedBy: .newlines)
@@ -543,6 +608,7 @@ struct NetworkInspectorSnapshot: Equatable {
     var displayFilter: PacketDisplayFilter
     var displayFilterChips: [PacketFilterChip]
     var structuredFilterGroup: PacketStructuredFilterGroup
+    var endpointStatisticsFilterLabel: String?
     var isPacketTableFiltering: Bool
     var packetTableRowStore: PacketTableRowStore
     var packetTableGeneration: UInt64
@@ -571,6 +637,7 @@ struct NetworkInspectorSnapshot: Equatable {
         wiresharkFilterState: PacketWiresharkFilterState = PacketWiresharkFilterState(),
         displayFilterText: String,
         structuredFilterGroup: PacketStructuredFilterGroup = .default,
+        endpointStatisticsFilterLabel: String? = nil,
         isPacketTableFiltering: Bool = false,
         packetTableContent: PacketTableContent
     ) -> NetworkInspectorSnapshot {
@@ -594,6 +661,7 @@ struct NetworkInspectorSnapshot: Equatable {
             displayFilter: packetTableContent.displayFilter,
             displayFilterChips: packetTableContent.displayFilterChips,
             structuredFilterGroup: structuredFilterGroup,
+            endpointStatisticsFilterLabel: endpointStatisticsFilterLabel,
             isPacketTableFiltering: isPacketTableFiltering,
             packetTableRowStore: packetTableContent.store,
             packetTableGeneration: packetTableContent.generation,
@@ -629,6 +697,7 @@ struct NetworkInspectorSnapshot: Equatable {
             lhs.displayFilter == rhs.displayFilter &&
             lhs.displayFilterChips == rhs.displayFilterChips &&
             lhs.structuredFilterGroup == rhs.structuredFilterGroup &&
+            lhs.endpointStatisticsFilterLabel == rhs.endpointStatisticsFilterLabel &&
             lhs.isPacketTableFiltering == rhs.isPacketTableFiltering &&
             lhs.packetTableGeneration == rhs.packetTableGeneration &&
             lhs.packetTableUpdatePlan == rhs.packetTableUpdatePlan &&
@@ -656,7 +725,7 @@ struct NetworkInspectorSnapshot: Equatable {
     var activeFilterBarLabels: [String] {
         quickFilterSelection.activeLabels + customFilterItems
             .filter(\.isSelected)
-            .map(\.title)
+            .map(\.title) + [endpointStatisticsFilterLabel].compactMap { $0 }
     }
 
     var isQuickFilterResetVisible: Bool {

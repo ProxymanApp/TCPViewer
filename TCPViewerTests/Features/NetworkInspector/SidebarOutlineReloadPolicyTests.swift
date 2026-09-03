@@ -150,6 +150,173 @@ struct SidebarOutlineReloadPolicyTests {
     }
 
     @MainActor
+    @Test func captureOverviewIsFirstInitiallyExpandedAndHasNoPacketContextActions() async throws {
+        let controller = SidebarViewController()
+        let selectionRecorder = SidebarSelectionRecorder()
+        controller.delegate = selectionRecorder
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: makeSnapshot(
+            sourceListSnapshot: PacketSourceListSnapshot.empty.filtered(matching: "no-match"),
+            selectedSelection: .allPackets,
+            packetMutation: .none,
+            filterText: "no-match",
+            workspaceMode: .overview
+        ))
+
+        let outlineView = try #require(findOutlineScrollView(in: controller.view)?.documentView as? NSOutlineView)
+        let captureRow = try #require(row(withItemID: PacketSourceListTreeBuilder.captureGroupID, in: outlineView))
+        let overviewRow = try #require(row(withItemID: PacketSourceListTreeBuilder.overviewItemID, in: outlineView))
+        let captureItem = try #require(outlineView.item(atRow: captureRow))
+        let menu = try #require(outlineView.menu)
+
+        #expect(captureRow == 0)
+        #expect(outlineView.isItemExpanded(captureItem))
+        #expect(outlineView.selectedRow == overviewRow)
+
+        await Task.yield()
+        controller.outlineViewSelectionDidChange(Notification(
+            name: NSOutlineView.selectionDidChangeNotification,
+            object: outlineView
+        ))
+        controller.menuNeedsUpdate(menu)
+
+        #expect(selectionRecorder.selectedWorkspaceModes == [.overview])
+        #expect(menu.items.isEmpty)
+    }
+
+    @MainActor
+    @Test func collapsedCaptureGroupStaysCollapsedAfterSidebarRefresh() throws {
+        let controller = SidebarViewController()
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: makeSnapshot(
+            sourceListSnapshot: .empty,
+            selectedSelection: .allPackets,
+            packetMutation: .none
+        ))
+
+        let outlineView = try #require(findOutlineScrollView(in: controller.view)?.documentView as? NSOutlineView)
+        let captureRow = try #require(row(withItemID: PacketSourceListTreeBuilder.captureGroupID, in: outlineView))
+        let captureItem = try #require(outlineView.item(atRow: captureRow))
+        outlineView.collapseItem(captureItem)
+        #expect(!outlineView.isItemExpanded(captureItem))
+
+        controller.render(snapshot: makeSnapshot(
+            sourceListSnapshot: snapshotWithApp(),
+            selectedSelection: .allPackets,
+            packetMutation: .replace
+        ))
+
+        let refreshedCaptureRow = try #require(row(withItemID: PacketSourceListTreeBuilder.captureGroupID, in: outlineView))
+        let refreshedCaptureItem = try #require(outlineView.item(atRow: refreshedCaptureRow))
+        #expect(!outlineView.isItemExpanded(refreshedCaptureItem))
+        #expect(row(withItemID: PacketSourceListTreeBuilder.overviewItemID, in: outlineView) == nil)
+    }
+
+    @MainActor
+    @Test func repeatedStartupRendersKeepDefaultGroupsExpanded() throws {
+        let controller = SidebarViewController()
+        controller.loadViewIfNeeded()
+        let startupSnapshot = makeSnapshot(
+            sourceListSnapshot: .empty,
+            selectedSelection: .allPackets,
+            packetMutation: .none
+        )
+
+        controller.render(snapshot: startupSnapshot)
+        controller.render(snapshot: makeSnapshot(
+            sourceListSnapshot: snapshotWithApp(),
+            selectedSelection: .allPackets,
+            packetMutation: .replace
+        ))
+
+        let outlineView = try #require(findOutlineScrollView(in: controller.view)?.documentView as? NSOutlineView)
+        for itemID in [
+            PacketSourceListTreeBuilder.captureGroupID,
+            PacketSourceListTreeBuilder.favoritesGroupID,
+            PacketSourceListTreeBuilder.allGroupID,
+            PacketSourceListTreeBuilder.pinnedFolderID,
+            PacketSourceListTreeBuilder.appsFolderID,
+            PacketSourceListTreeBuilder.domainsFolderID,
+        ] {
+            let itemRow = try #require(row(withItemID: itemID, in: outlineView))
+            let item = try #require(outlineView.item(atRow: itemRow))
+            #expect(outlineView.isItemExpanded(item))
+        }
+    }
+
+    @MainActor
+    @Test func firstWindowAppearanceRestoresDefaultGroupsAfterAppKitCollapsesThem() throws {
+        let controller = SidebarViewController()
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: makeSnapshot(
+            sourceListSnapshot: snapshotWithApp(),
+            selectedSelection: .allPackets,
+            packetMutation: .none
+        ))
+
+        let outlineView = try #require(findOutlineScrollView(in: controller.view)?.documentView as? NSOutlineView)
+        for itemID in [
+            PacketSourceListTreeBuilder.captureGroupID,
+            PacketSourceListTreeBuilder.favoritesGroupID,
+            PacketSourceListTreeBuilder.allGroupID,
+        ] {
+            let itemRow = try #require(row(withItemID: itemID, in: outlineView))
+            outlineView.collapseItem(outlineView.item(atRow: itemRow))
+        }
+
+        let window = NSWindow(contentViewController: controller)
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+        controller.viewDidAppear()
+
+        for itemID in [
+            PacketSourceListTreeBuilder.captureGroupID,
+            PacketSourceListTreeBuilder.favoritesGroupID,
+            PacketSourceListTreeBuilder.allGroupID,
+            PacketSourceListTreeBuilder.pinnedFolderID,
+            PacketSourceListTreeBuilder.appsFolderID,
+            PacketSourceListTreeBuilder.domainsFolderID,
+        ] {
+            let itemRow = try #require(row(withItemID: itemID, in: outlineView))
+            let item = try #require(outlineView.item(atRow: itemRow))
+            #expect(outlineView.isItemExpanded(item))
+        }
+    }
+
+    @MainActor
+    @Test func revealingEndpointAppExpandsAncestorsAndSelectsItsRow() throws {
+        let appKey = PacketSourceClientKey(rawValue: "bundleIdentifier:com.example.App")
+        let controller = SidebarViewController()
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: makeSnapshot(
+            sourceListSnapshot: snapshotWithApp(),
+            selectedSelection: .saved,
+            packetMutation: .none
+        ))
+
+        let outlineView = try #require(findOutlineScrollView(in: controller.view)?.documentView as? NSOutlineView)
+        let allRow = try #require(row(withItemID: PacketSourceListTreeBuilder.allGroupID, in: outlineView))
+        let allItem = try #require(outlineView.item(atRow: allRow))
+        outlineView.collapseItem(allItem)
+
+        controller.render(snapshot: makeSnapshot(
+            sourceListSnapshot: snapshotWithApp(),
+            selectedSelection: .app(appKey),
+            packetMutation: .replace
+        ))
+        controller.revealSourceListSelection(.app(appKey))
+
+        let appRow = try #require(row(withItemID: "app:\(appKey.rawValue)", in: outlineView))
+        let refreshedAllRow = try #require(row(withItemID: PacketSourceListTreeBuilder.allGroupID, in: outlineView))
+        let refreshedAllItem = try #require(outlineView.item(atRow: refreshedAllRow))
+        let appsRow = try #require(row(withItemID: PacketSourceListTreeBuilder.appsFolderID, in: outlineView))
+        let appsItem = try #require(outlineView.item(atRow: appsRow))
+        #expect(outlineView.isItemExpanded(refreshedAllItem))
+        #expect(outlineView.isItemExpanded(appsItem))
+        #expect(outlineView.selectedRow == appRow)
+    }
+
+    @MainActor
     @Test func sidebarContextMenuPlacesPinFirstAndShowInFinderAboveDelete() throws {
         let appKey = PacketSourceClientKey(rawValue: "bundleIdentifier:com.example.App")
         let controller = SidebarViewController()
@@ -509,7 +676,9 @@ struct SidebarOutlineReloadPolicyTests {
     private func makeSnapshot(
         sourceListSnapshot: PacketSourceListSnapshot,
         selectedSelection: PacketSourceListSelection,
-        packetMutation: PacketIngestMutation
+        packetMutation: PacketIngestMutation,
+        filterText: String = "",
+        workspaceMode: NetworkInspectorWorkspaceMode = .packets
     ) -> NetworkInspectorSnapshot {
         var base = TCPViewerWindowSnapshot.foundation
         base.packetIngestState.lastMutation = packetMutation
@@ -527,8 +696,8 @@ struct SidebarOutlineReloadPolicyTests {
             selectedSidebar: .liveCapture,
             selectedSourceListSelection: selectedSelection,
             sourceListSnapshot: sourceListSnapshot,
-            sourceListFilterText: "",
-            workspaceMode: .packets,
+            sourceListFilterText: filterText,
+            workspaceMode: workspaceMode,
             inspectorTab: .summary,
             isInspectorVisible: true,
             displayFilterText: "",
@@ -591,10 +760,18 @@ struct SidebarOutlineReloadPolicyTests {
 private final class SidebarSelectionRecorder: SidebarViewControllerDelegate {
     var selectedSelection: PacketSourceListSelection?
     var selectedSelections: [PacketSourceListSelection?] = []
+    var selectedWorkspaceModes: [NetworkInspectorWorkspaceMode] = []
 
     func sidebarViewController(_ controller: SidebarViewController, didSelect selection: PacketSourceListSelection?) {
         selectedSelection = selection
         selectedSelections.append(selection)
+    }
+
+    func sidebarViewController(
+        _ controller: SidebarViewController,
+        didSelectWorkspaceMode mode: NetworkInspectorWorkspaceMode
+    ) {
+        selectedWorkspaceModes.append(mode)
     }
 
     func sidebarViewController(_ controller: SidebarViewController, didUpdateFilterText text: String) {}

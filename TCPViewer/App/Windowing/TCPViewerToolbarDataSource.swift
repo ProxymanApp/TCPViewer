@@ -315,6 +315,10 @@ final class TCPViewerToolbarDataSource: NSObject {
     private func renderInspectorButton() {
         inspectorButton.state = viewModel.isTrailingInspectorVisible ? .on : .off
         inspectorBottomButton.state = viewModel.isBottomInspectorVisible ? .on : .off
+        inspectorButton.isEnabled = viewModel.canUseInspector
+        inspectorBottomButton.isEnabled = viewModel.canUseInspector
+        inspectorButton.alphaValue = viewModel.canUseInspector ? 1 : 0.45
+        inspectorBottomButton.alphaValue = viewModel.canUseInspector ? 1 : 0.45
     }
 
     private func syncTrialToolbarItem() {
@@ -492,6 +496,7 @@ private final class TCPViewerToolbarViewModel {
     private(set) var canSaveAs = false
     private(set) var canExport = false
     private(set) var isInspectorVisible = true
+    private(set) var canUseInspector = true
     private(set) var inspectorPlacement: NetworkInspectorPlacement = .trailing
     private(set) var statusText = "TCP Viewer | Idle"
     private(set) var emphasizedText: String?
@@ -519,6 +524,7 @@ private final class TCPViewerToolbarViewModel {
         canSaveAs = snapshot.base.documentState.canSaveAs
         canExport = snapshot.totalPacketCount > 0 && snapshot.base.loadState.progress.phase != .loading
         isInspectorVisible = snapshot.isInspectorVisible
+        canUseInspector = snapshot.workspaceMode != .overview
         inspectorPlacement = snapshot.inspectorPlacement
         bpfCaptureFilter = snapshot.base.filterState.normalizedCaptureFilter
         helperError = Self.helperError(for: viewModel.networkHelperToolSnapshot)

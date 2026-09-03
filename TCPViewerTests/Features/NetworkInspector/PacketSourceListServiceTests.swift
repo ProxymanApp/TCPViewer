@@ -17,10 +17,13 @@ struct PacketSourceListServiceTests {
         let service = PacketSourceListService()
         let snapshot = service.snapshot(for: .empty)
 
-        #expect(snapshot.roots.map(\.title) == ["Favorites", "All"])
-        #expect(snapshot.roots[0].children.map(\.title) == ["Pinned", "Saved"])
+        #expect(snapshot.roots.map(\.title) == ["Capture", "Favorites", "All"])
+        #expect(snapshot.roots[0].children.map(\.title) == ["Overview"])
+        #expect(snapshot.roots[0].children[0].workspaceMode == .overview)
+        #expect(snapshot.roots[0].children[0].count == nil)
+        #expect(snapshot.roots[1].children.map(\.title) == ["Pinned", "Saved"])
         #expect(snapshot.firstItem { $0.id == PacketSourceListTreeBuilder.filesGroupID } == nil)
-        #expect(snapshot.roots[1].children.map(\.title) == ["Apps", "Domains"])
+        #expect(snapshot.roots[2].children.map(\.title) == ["Apps", "Domains"])
         #expect(snapshot.item(for: .apps)?.children.isEmpty == true)
         #expect(snapshot.item(for: .domains)?.children.isEmpty == true)
     }
@@ -705,9 +708,10 @@ struct PacketSourceListServiceTests {
             .snapshot(for: state)
             .filtered(matching: "chrome")
 
-        #expect(filtered.roots.map(\.title) == ["All"])
-        #expect(filtered.roots.first?.children.map(\.title) == ["Apps"])
-        #expect(filtered.roots.first?.children.first?.children.map(\.title) == ["Google Chrome"])
+        #expect(filtered.roots.map(\.title) == ["Capture", "All"])
+        #expect(filtered.roots[0].children.map(\.title) == ["Overview"])
+        #expect(filtered.roots[1].children.map(\.title) == ["Apps"])
+        #expect(filtered.roots[1].children.first?.children.map(\.title) == ["Google Chrome"])
     }
 
     private func makePacket(

@@ -41,6 +41,7 @@ protocol PacketWorkspaceViewControllerDelegate: AnyObject {
         group: PacketStructuredFilterGroup
     )
     func packetWorkspaceViewControllerDidRequestResetQuickFilters(_ controller: PacketWorkspaceViewController)
+    func packetWorkspaceViewControllerDidRequestClearEndpointStatisticsFilter(_ controller: PacketWorkspaceViewController)
     func packetWorkspaceViewControllerCanAddStructuredFilter(_ controller: PacketWorkspaceViewController) -> Bool
     func packetWorkspaceViewControllerCanSaveCustomFilter(_ controller: PacketWorkspaceViewController) -> Bool
     func packetWorkspaceViewControllerDidRequestStructuredFilterPaywall(_ controller: PacketWorkspaceViewController)
@@ -68,6 +69,7 @@ final class PacketWorkspaceViewModel {
     private(set) var emptyImageName = "list.bullet.rectangle"
     private(set) var showsResetFiltersButton = false
     private(set) var activeFilterLabels: [String] = []
+    private(set) var endpointStatisticsFilterLabel: String?
 
     // Convert the root snapshot into packet-workspace-only render data.
     func render(snapshot: NetworkInspectorSnapshot) {
@@ -77,6 +79,7 @@ final class PacketWorkspaceViewModel {
         isEmpty = snapshot.packetRows.isEmpty
         showsResetFiltersButton = isEmpty && snapshot.isQuickFilterActive
         activeFilterLabels = isEmpty ? snapshot.activeFilterBarLabels : []
+        endpointStatisticsFilterLabel = snapshot.endpointStatisticsFilterLabel
 
         if snapshot.isPacketTableFiltering && isEmpty {
             showsResetFiltersButton = false
@@ -118,12 +121,16 @@ final class PacketWorkspaceViewController: NSViewController {
 
     private let viewModel = PacketWorkspaceViewModel()
     private let contentContainer = NSView()
+    private let contentBodyContainer = NSView()
+    private let endpointFilterBar = TCPViewerDynamicBackgroundView(backgroundColor: .controlBackgroundColor)
+    private let endpointFilterLabel = NSTextField(labelWithString: "")
     private let structuredFilterController = PacketStructuredFilterViewController()
     private let tableController: PacketTableViewController
     private var placeholderView: NSView?
     private var isStructuredFilterVisible = false
     private var contentTopToBuilderBottomConstraint: NSLayoutConstraint?
     private var contentTopToSafeAreaConstraint: NSLayoutConstraint?
+    private var endpointFilterBarHeightConstraint: NSLayoutConstraint?
 
     init(configuration: AppConfiguration) {
         self.tableController = PacketTableViewController(configuration: configuration)
@@ -155,6 +162,7 @@ final class PacketWorkspaceViewController: NSViewController {
             customFilterItems: snapshot.customFilterItems
         )
         applyFilterVisibility(snapshot.isStructuredFilterVisible)
+        renderEndpointFilterBar(label: viewModel.endpointStatisticsFilterLabel)
 
         if viewModel.isEmpty {
             showPlaceholder(
@@ -194,6 +202,10 @@ final class PacketWorkspaceViewController: NSViewController {
         contentContainer.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(contentContainer)
 
+        setupEndpointFilterBar()
+        contentBodyContainer.translatesAutoresizingMaskIntoConstraints = false
+        contentContainer.addSubview(contentBodyContainer)
+
         addChild(structuredFilterController)
         addChild(tableController)
         structuredFilterController.view.translatesAutoresizingMaskIntoConstraints = false
@@ -211,10 +223,71 @@ final class PacketWorkspaceViewController: NSViewController {
             contentTopToSafeAreaConstraint,
             contentContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
+            endpointFilterBar.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor),
+            endpointFilterBar.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
+            endpointFilterBar.topAnchor.constraint(equalTo: contentContainer.topAnchor),
+
+            contentBodyContainer.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor),
+            contentBodyContainer.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
+            contentBodyContainer.topAnchor.constraint(equalTo: endpointFilterBar.bottomAnchor),
+            contentBodyContainer.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor),
+
             structuredFilterController.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             structuredFilterController.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             structuredFilterController.view.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
         ])
+    }
+
+    private func setupEndpointFilterBar() {
+        endpointFilterBar.translatesAutoresizingMaskIntoConstraints = false
+        contentContainer.addSubview(endpointFilterBar)
+
+        let iconView = NSImageView(image: TCPViewerUI.image("line.3.horizontal.decrease.circle.fill") ?? NSImage())
+        iconView.contentTintColor = .controlAccentColor
+        iconView.setContentHuggingPriority(.required, for: .horizontal)
+
+        endpointFilterLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
+        endpointFilterLabel.lineBreakMode = .byTruncatingMiddle
+
+        let clearButton = NSButton(image: TCPViewerUI.image("xmark.circle.fill") ?? NSImage(), target: self, action: #selector(clearEndpointStatisticsFilter(_:)))
+        clearButton.isBordered = false
+        clearButton.contentTintColor = .secondaryLabelColor
+        clearButton.toolTip = "Clear endpoint filter"
+        clearButton.setAccessibilityLabel("Clear endpoint filter")
+        clearButton.setContentHuggingPriority(.required, for: .horizontal)
+
+        let stack = NSStackView(views: [iconView, endpointFilterLabel, clearButton])
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 7
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        endpointFilterBar.addSubview(stack)
+
+        let separator = NSBox()
+        separator.boxType = .separator
+        separator.translatesAutoresizingMaskIntoConstraints = false
+        endpointFilterBar.addSubview(separator)
+
+        let heightConstraint = endpointFilterBar.heightAnchor.constraint(equalToConstant: 0)
+        endpointFilterBarHeightConstraint = heightConstraint
+        NSLayoutConstraint.activate([
+            heightConstraint,
+            stack.leadingAnchor.constraint(equalTo: endpointFilterBar.leadingAnchor, constant: 10),
+            stack.trailingAnchor.constraint(equalTo: endpointFilterBar.trailingAnchor, constant: -8),
+            stack.centerYAnchor.constraint(equalTo: endpointFilterBar.centerYAnchor),
+            separator.leadingAnchor.constraint(equalTo: endpointFilterBar.leadingAnchor),
+            separator.trailingAnchor.constraint(equalTo: endpointFilterBar.trailingAnchor),
+            separator.bottomAnchor.constraint(equalTo: endpointFilterBar.bottomAnchor),
+        ])
+        endpointFilterBar.isHidden = true
+    }
+
+    private func renderEndpointFilterBar(label: String?) {
+        let normalizedLabel = label?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isVisible = normalizedLabel?.isEmpty == false
+        endpointFilterLabel.stringValue = normalizedLabel ?? ""
+        endpointFilterBar.isHidden = !isVisible
+        endpointFilterBarHeightConstraint?.constant = isVisible ? 32 : 0
     }
 
     private func applyFilterVisibility(_ isVisible: Bool) {
@@ -252,7 +325,7 @@ final class PacketWorkspaceViewController: NSViewController {
             showsResetFiltersButton: showsResetFiltersButton,
             activeFilterLabels: activeFilterLabels
         )
-        TCPViewerUI.pin(placeholder, to: contentContainer)
+        TCPViewerUI.pin(placeholder, to: contentBodyContainer)
         placeholderView = placeholder
     }
 
@@ -361,12 +434,16 @@ final class PacketWorkspaceViewController: NSViewController {
         placeholderView = nil
 
         if tableController.view.superview == nil {
-            TCPViewerUI.pin(tableController.view, to: contentContainer)
+            TCPViewerUI.pin(tableController.view, to: contentBodyContainer)
         }
     }
 
     @objc private func resetQuickFilters(_ sender: Any?) {
         delegate?.packetWorkspaceViewControllerDidRequestResetQuickFilters(self)
+    }
+
+    @objc private func clearEndpointStatisticsFilter(_ sender: Any?) {
+        delegate?.packetWorkspaceViewControllerDidRequestClearEndpointStatisticsFilter(self)
     }
 }
 

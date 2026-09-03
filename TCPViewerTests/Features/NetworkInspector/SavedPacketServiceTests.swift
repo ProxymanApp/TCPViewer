@@ -106,6 +106,34 @@ struct SavedPacketServiceTests {
         #expect(reloaded.records()[1].packet.customComment == nil)
     }
 
+    @Test func chunkedPacketLookupBuildsTheSavedIndexOnceUntilRecordsChange() {
+        let service = SavedPacketService(storageURL: temporaryDirectory().appendingPathComponent("Saved.json"))
+        let records = (1...4_097).map { value in
+            SavedPacketRecord(
+                id: "saved-\(value)",
+                savedAt: Date(timeIntervalSince1970: TimeInterval(value)),
+                backingIdentity: "capture",
+                packet: makePacket(packetNumber: UInt64(value))
+            )
+        }
+        service.useDocumentRecords(records)
+
+        let packetIDs = records.map { $0.packet.id }
+        let first = service.packets(withIDs: Array(packetIDs[0..<2_048]))
+        let second = service.packets(withIDs: Array(packetIDs[2_048..<4_096]))
+        let third = service.packets(withIDs: Array(packetIDs[4_096...]))
+
+        #expect(first.count == 2_048)
+        #expect(second.count == 2_048)
+        #expect(third.count == 1)
+        #expect(third.first?.id == packetIDs.last)
+        #expect(service.packetLookupIndexBuildCount == 1)
+
+        service.useDocumentRecords(Array(records.prefix(1)))
+        #expect(service.packet(withID: packetIDs[0])?.id == packetIDs[0])
+        #expect(service.packetLookupIndexBuildCount == 2)
+    }
+
     private func temporaryDirectory() -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)

@@ -135,6 +135,33 @@ struct PacketTableMenuLogicTests {
         #expect(row.text(for: .comment) == "First line Second line")
     }
 
+    @Test func dnsSummaryShowsOnlyTheQueryAndParsedAnswer() {
+        let query = PacketTableRow(packet: makePacket(
+            packetNumber: 1,
+            infoSummary: "Standard query 0x1234 A api.example.com",
+            transportHint: .dns
+        ))
+        let response = PacketTableRow(packet: makePacket(
+            packetNumber: 2,
+            infoSummary: "Standard query response 0x1234 A api.example.com A 203.0.113.8",
+            transportHint: .dns,
+            dnsResolutions: [DNSResolutionObservation(
+                domainName: "api.example.com",
+                ipAddress: "203.0.113.8",
+                timeToLive: 60
+            )]
+        ))
+        let uncommon = PacketTableRow(packet: makePacket(
+            packetNumber: 3,
+            infoSummary: "DNS retransmission",
+            transportHint: .dns
+        ))
+
+        #expect(query.summaryText == "A? api.example.com")
+        #expect(response.summaryText == "A api.example.com → 203.0.113.8")
+        #expect(uncommon.summaryText == "DNS retransmission")
+    }
+
     @Test func copyFormatterSupportsRowsAsFormatsForMultipleSelections() throws {
         let rows = [
             PacketTableRow(packet: makePacket(packetNumber: 1, infoSummary: "Hello, world | alpha")),
@@ -518,14 +545,16 @@ struct PacketTableMenuLogicTests {
         sniDomainName: String? = nil,
         client: PacketClient? = nil,
         customComment: String? = nil,
-        streamID: UInt32? = nil
+        streamID: UInt32? = nil,
+        transportHint: TransportProtocolHint = .tcp,
+        dnsResolutions: [DNSResolutionObservation]? = nil
     ) -> PacketSummary {
         PacketSummary(
             packetNumber: packetNumber,
             timestamp: Date(timeIntervalSince1970: TimeInterval(packetNumber)),
             source: .live,
             interfaceID: "en0",
-            transportHint: .tcp,
+            transportHint: transportHint,
             endpoints: PacketEndpoints(
                 source: PacketEndpoint(address: "10.0.0.1", port: 1234),
                 destination: PacketEndpoint(address: "10.0.0.2", port: 443)
@@ -539,6 +568,7 @@ struct PacketTableMenuLogicTests {
             decodeStatus: PacketDecodeStatus(kind: .complete),
             captureMetadata: PacketCaptureMetadata(linkType: .ethernet, isTruncated: false),
             sniDomainName: sniDomainName,
+            dnsResolutions: dnsResolutions,
             client: client,
             customComment: customComment
         )
