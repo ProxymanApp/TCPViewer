@@ -262,6 +262,20 @@
       "bugs": [
         "Fix CLI import results, recent packet export order, filter values, and TCP stream limits."
       ]
+    },
+        {
+      "version": "1.15.0",
+      "title": "TCP Viewer 1.15.0: Overview UI and Statistic Endpoint View ✅",
+      "features": [
+        "Introduce the Overview UI where you can see the summary of the capture, including the number of packets, protocols, and conversations.",
+        "Introduce the Statistic Endpoint View: View detailed statistics for each endpoint in the capture."
+      ],
+      "improvements": [
+        "Update the Homebrew cask during a production release."
+      ],
+      "bugs": [
+        "Fixed: About Us and Settings Windows doesn't align at center of the screen."
+      ]
     }
   ]
 }
