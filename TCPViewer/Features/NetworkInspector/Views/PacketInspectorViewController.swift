@@ -1401,7 +1401,7 @@ final class PacketInspectorViewController: NSViewController {
         case .message:
             return .secondaryLabelColor
         case .layer, .field:
-            return .labelColor
+            return item.byteRange == nil ? .secondaryLabelColor : .labelColor
         }
     }
 

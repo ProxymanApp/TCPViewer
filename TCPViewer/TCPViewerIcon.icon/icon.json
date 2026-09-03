@@ -1,0 +1,45 @@
+{
+  "fill" : {
+    "linear-gradient" : [
+      "display-p3:0.36667,0.58576,1.00000,1.00000",
+      "display-p3:0.20465,0.47096,0.96611,1.00000"
+    ]
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "glass" : false,
+          "image-name-specializations" : [
+            {
+              "value" : "Light.png"
+            },
+            {
+              "appearance" : "dark",
+              "value" : "Dark.png"
+            },
+            {
+              "appearance" : "tinted",
+              "value" : "Mono.png"
+            }
+          ],
+          "name" : "Dark"
+        }
+      ],
+      "shadow" : {
+        "kind" : "none",
+        "opacity" : 0.6
+      },
+      "specular" : false,
+      "translucency" : {
+        "enabled" : false,
+        "value" : 0.2
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "squares" : [
+      "macOS"
+    ]
+  }
+}

@@ -467,6 +467,53 @@ struct PacketInspectorTreeViewModelTests {
         #expect(delegate.filterRequest == nil)
     }
 
+    @MainActor
+    @Test func inspectorUsesPrimaryTextOnlyForRowsBackedByPacketBytes() throws {
+        let packet = makePacket()
+        let inspection = PacketInspection(
+            packetID: packet.id,
+            packetNumber: packet.packetNumber,
+            rawBytes: Data([0x01, 0x02]),
+            detailNodes: [
+                PacketDetailNode(
+                    id: "protocol",
+                    name: "Protocol",
+                    value: "Source: client.example.com, Destination: server.example.com",
+                    kind: .layer,
+                    byteRange: PacketByteRange(offset: 0, length: 2),
+                    children: [
+                        PacketDetailNode(
+                            id: "protocol.direct",
+                            name: "Direct Field",
+                            byteRange: PacketByteRange(offset: 0, length: 1)
+                        ),
+                        PacketDetailNode(id: "protocol.derived", name: "Derived Field"),
+                    ]
+                ),
+            ],
+            decodeStatus: PacketDecodeStatus(kind: .complete)
+        )
+        let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: makeSnapshot(
+            packet: packet,
+            inspectionState: loadedInspectionState(packet: packet, inspection: inspection)
+        ))
+
+        let outlineView = try #require(firstSubview(ofType: NSOutlineView.self, in: controller.view))
+        let rows = (0..<outlineView.numberOfRows).compactMap { outlineView.item(atRow: $0) as? PacketInspectorTreeItem }
+        let directItem = try #require(rows.first { $0.name == "Direct Field" })
+        let derivedItem = try #require(rows.first { $0.name == "Derived Field" })
+        let summaryItem = try #require(rows.first { $0.id.contains(".__summary.") })
+
+        let directCell = try #require(controller.outlineView(outlineView, viewFor: nil, item: directItem) as? NSTableCellView)
+        #expect(directCell.textField?.textColor == .labelColor)
+        let derivedCell = try #require(controller.outlineView(outlineView, viewFor: nil, item: derivedItem) as? NSTableCellView)
+        #expect(derivedCell.textField?.textColor == .secondaryLabelColor)
+        let summaryCell = try #require(controller.outlineView(outlineView, viewFor: nil, item: summaryItem) as? NSTableCellView)
+        #expect(summaryCell.textField?.textColor == .secondaryLabelColor)
+    }
+
     @Test func loadingStateShowsStatusMessage() {
         let packet = makePacket()
         let state = PacketInspectionState(
