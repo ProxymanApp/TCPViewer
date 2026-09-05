@@ -533,7 +533,7 @@ extension PacketSummary {
             originalLength: originalLength,
             capturedLength: capturedLength,
             streamID: streamID,
-            tcpFollowStreamID: tcpFollowStreamID,
+            followStreamID: followStreamID,
             direction: direction,
             tcpFlags: tcpFlags,
             tcpPayloadLength: tcpPayloadLength,

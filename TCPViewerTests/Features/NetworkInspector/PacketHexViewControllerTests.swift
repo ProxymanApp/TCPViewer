@@ -55,7 +55,7 @@ struct PacketHexViewControllerTests {
 
     @Test func followPayloadMatchPrefersReassembledSource() throws {
         let payload = Data([0xAA, 0xBB])
-        let range = try #require(TCPFollowPayloadMatcher.matchingRange(
+        let range = try #require(FollowStreamPayloadMatcher.matchingRange(
             for: payload,
             in: [
                 PacketByteView(id: "frame", label: "Frame", bytes: Data([0x00, 0xAA, 0xBB, 0x01])),
@@ -69,7 +69,7 @@ struct PacketHexViewControllerTests {
     @Test func followPayloadMatchRequiresOneUnambiguousLocation() {
         let payload = Data([0xAA, 0xBB])
 
-        #expect(TCPFollowPayloadMatcher.matchingRange(
+        #expect(FollowStreamPayloadMatcher.matchingRange(
             for: payload,
             in: [PacketByteView(
                 id: "reassembled-tcp",
@@ -77,7 +77,7 @@ struct PacketHexViewControllerTests {
                 bytes: Data([0xAA, 0xBB, 0x00, 0xAA, 0xBB])
             )]
         ) == nil)
-        #expect(TCPFollowPayloadMatcher.matchingRange(
+        #expect(FollowStreamPayloadMatcher.matchingRange(
             for: payload,
             in: [
                 PacketByteView(id: "reassembled-a", label: "Reassembled A", bytes: Data([0x00, 0xAA, 0xBB])),
@@ -117,7 +117,7 @@ struct PacketHexViewControllerTests {
         controller.loadViewIfNeeded()
         controller.render(snapshot: snapshot)
 
-        let didReveal = controller.revealTCPFollowPayload(TCPFollowRevealTarget(
+        let didReveal = controller.revealFollowStreamPayload(FollowStreamRevealTarget(
             packetID: packet.id,
             payload: Data([0xAA, 0x01])
         ))
@@ -132,18 +132,19 @@ struct PacketHexViewControllerTests {
     }
 
     @MainActor
-    @Test func followPayloadRevealExplainsWhenNoExactSourceExists() throws {
+    @Test(arguments: [false, true])
+    func followPayloadRevealExplainsWhenNoExactSourceExists(emptyPayload: Bool) throws {
         let packet = makePacket(packetNumber: 1)
         let controller = PacketHexViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
         controller.loadViewIfNeeded()
         controller.render(snapshot: makeSnapshot(packet: packet, inspection: makeInspection(for: packet)))
 
-        let didReveal = controller.revealTCPFollowPayload(TCPFollowRevealTarget(
+        let didReveal = controller.revealFollowStreamPayload(FollowStreamRevealTarget(
             packetID: packet.id,
-            payload: Data([0xFE, 0xED])
+            payload: emptyPayload ? Data() : Data([0xFE, 0xED])
         ))
         let statusLabel = try #require(allSubviews(ofType: NSTextField.self, in: controller.view).first {
-            $0.stringValue == "Reassembled from multiple packets"
+            $0.stringValue == (emptyPayload ? "Empty payload" : "Reassembled from multiple packets")
         })
 
         #expect(!didReveal)
@@ -158,13 +159,13 @@ struct PacketHexViewControllerTests {
         controller.render(snapshot: makeSnapshot(packet: packet, inspection: makeInspection(for: packet)))
         let hexTextView = try #require(firstSubview(ofType: HFTextView.self, in: controller.view))
 
-        #expect(controller.revealTCPFollowPayload(TCPFollowRevealTarget(
+        #expect(controller.revealFollowStreamPayload(FollowStreamRevealTarget(
             packetID: packet.id,
             payload: Data([0xAA, 0x01])
         )))
         #expect(!hexTextView.controller.selectedContentsRanges.isEmpty)
 
-        #expect(!controller.revealTCPFollowPayload(TCPFollowRevealTarget(
+        #expect(!controller.revealFollowStreamPayload(FollowStreamRevealTarget(
             packetID: packet.id,
             payload: Data([0xFE, 0xED])
         )))

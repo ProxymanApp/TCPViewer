@@ -7,9 +7,37 @@
 
 import Foundation
 import Testing
+import PcapPlusPlusCore
 @testable import TCPViewer
 
 struct TCPViewerCLIModelsTests {
+    @Test(arguments: [FollowStreamProtocol.tcp, .udp])
+    func followResponsePreservesProtocolAndOptionalSequenceNumbers(streamProtocol: FollowStreamProtocol) throws {
+        let stream = FollowStream(streamProtocol: streamProtocol,
+            client: PacketEndpoint(address: "192.0.2.1", port: 50000),
+            server: PacketEndpoint(address: "198.51.100.2", port: 8080),
+            records: [
+                FollowStreamRecord(direction: .clientToServer, packetID: 1, timestamp: .distantPast,
+                    sequenceNumber: streamProtocol == .tcp ? 123 : nil, data: Data("abc".utf8)),
+                FollowStreamRecord(direction: .clientToServer, packetID: 2, timestamp: .distantPast,
+                    sequenceNumber: streamProtocol == .tcp ? 126 : nil, data: Data()),
+                FollowStreamRecord(direction: .serverToClient, packetID: 3, timestamp: .distantPast,
+                    sequenceNumber: streamProtocol == .tcp ? 456 : nil, data: Data("reply".utf8)),
+            ], clientByteCount: 3, serverByteCount: 5, capturedThroughPacketID: 3, capturedAt: .distantPast, isTruncated: false)
+        let data = TCPViewerCLICommandRouter.followData(stream, direction: "client-to-server", encoding: "hex", maximumBytes: 3, maximumRecords: 2)
+        #expect(data["protocol"] == .string(streamProtocol.rawValue))
+        #expect(data["returned_record_count"] == .int(2))
+        #expect(data["returned_byte_count"] == .int(3))
+        #expect(data["truncated"] == .bool(false))
+        guard case .array(let records) = data["records"], case .object(let first) = records.first else {
+            Issue.record("Missing follow records")
+            return
+        }
+        #expect(first["sequence_number"] == (streamProtocol == .tcp ? .string("123") : .null))
+        #expect(first["packet_id"] == .string("1"))
+        #expect(first["data"] == .string("616263"))
+    }
+
     @Test func encodesStableEnvelopePacketIDsAndBinaryAsStrings() throws {
         let response = TCPViewerCLIResponse.success(
             requestID: "d733d28a-2c43-4d61-917c-32388fa7c052",

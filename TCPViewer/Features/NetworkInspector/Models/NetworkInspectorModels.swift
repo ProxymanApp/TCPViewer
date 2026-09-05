@@ -222,7 +222,8 @@ struct PacketTableRow: Identifiable, Sendable, Hashable {
     let domainName: String?
     let clientIconFilePath: String?
     let hasClient: Bool
-    let canFollowTCPStream: Bool
+    let followStreamProtocol: FollowStreamProtocol?
+    var canFollowStream: Bool { followStreamProtocol != nil }
     let timestamp: Date
     let streamID: UInt32?
     let numberText: String
@@ -274,7 +275,7 @@ struct PacketTableRow: Identifiable, Sendable, Hashable {
         self.domainName = packet.domainName?.tcpviewerNativeCopy
         self.clientIconFilePath = (clientIconFilePath ?? PacketClientIconPathResolver.iconFilePath(for: packet.client))?.tcpviewerNativeCopy
         self.hasClient = packet.client != nil
-        self.canFollowTCPStream = packet.tcpFollowStreamID != nil
+        self.followStreamProtocol = packet.followStreamID?.streamProtocol
         self.timestamp = packet.timestamp
         self.streamID = packet.streamID
         self.numberText = "\(packet.packetNumber)"

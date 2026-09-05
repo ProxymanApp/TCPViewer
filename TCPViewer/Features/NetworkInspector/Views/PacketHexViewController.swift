@@ -42,7 +42,7 @@ struct PacketHexHighlight: Equatable {
     }
 }
 
-enum TCPFollowPayloadMatcher {
+enum FollowStreamPayloadMatcher {
     // Prefer the smallest reassembled source, then fall back to a unique match in the frame.
     static func matchingRange(for payload: Data, in byteViews: [PacketByteView]) -> PacketByteRange? {
         guard !payload.isEmpty else {
@@ -191,13 +191,13 @@ final class PacketHexViewController: NSViewController {
         updateRenderedHighlight(highlight, force: contentChanged)
     }
 
-    // Select the exact byte source and range represented by a Follow TCP transcript record.
+    // Select the exact byte source and range represented by a Follow Stream transcript record.
     @discardableResult
-    func revealTCPFollowPayload(_ target: TCPFollowRevealTarget) -> Bool {
+    func revealFollowStreamPayload(_ target: FollowStreamRevealTarget) -> Bool {
         guard renderedPacketID == target.packetID else {
             return false
         }
-        guard let range = TCPFollowPayloadMatcher.matchingRange(for: target.payload, in: renderedByteViews),
+        guard let range = FollowStreamPayloadMatcher.matchingRange(for: target.payload, in: renderedByteViews),
               let byteView = renderedByteViews.first(where: { $0.id == range.sourceID }),
               let highlight = PacketHexHighlight.make(from: range, byteCount: byteView.bytes.count) else {
             clearManualReveal()
@@ -207,7 +207,7 @@ final class PacketHexViewController: NSViewController {
                 updateRenderedHighlight(nil, force: true)
             }
             manualRevealPacketID = target.packetID
-            showRevealStatus("Reassembled from multiple packets")
+            showRevealStatus(target.payload.isEmpty ? "Empty payload" : "Reassembled from multiple packets")
             return false
         }
 

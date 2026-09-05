@@ -10,7 +10,7 @@ import PcapPlusPlusCore
 import Sparkle
 
 @main
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let networkHelperToolManager = TCPViewerNetworkHelperToolManager()
     let appConfiguration = AppConfiguration()
 
@@ -51,6 +51,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         checkForAvailableUpdatesAtLaunch()
         wireClearAllPacketsMenu()
         wireFilterMenu()
+        if let toolsMenu = NSApp.mainMenu?.items.first(where: { $0.title == "Tools" })?.submenu {
+            toolsMenu.autoenablesItems = false
+            toolsMenu.delegate = self
+        }
         wireHelpMenu()
         verifyLicenseAtLaunch()
         updateMCPServerAvailability()
@@ -58,6 +62,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         #if DEBUG
         openUntitledDocumentAfterIgnoringDebugLaunchFilesIfNeeded()
         #endif
+    }
+
+    // Resolve the active capture explicitly so the menu uses its current table selection.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        updateFollowStreamMenu(menu, window: NSApp.mainWindow)
+    }
+
+    // Keep menu validation independent of the application focus used to choose the window.
+    func updateFollowStreamMenu(_ menu: NSMenu, window: NSWindow?) {
+        guard menu.title == "Tools",
+              let item = menu.items.first(where: { $0.action == #selector(TCPViewerWindowController.followSelectedStream(_:)) }) else { return }
+        let controller = window?.windowController as? TCPViewerWindowController
+        item.target = controller
+        item.title = "Follow TCP Stream"
+        item.isEnabled = controller?.validateMenuItem(item) ?? false
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {

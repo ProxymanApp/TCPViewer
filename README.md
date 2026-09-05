@@ -26,7 +26,7 @@ TCP Viewer captures and reads network packets on macOS. It uses system `libpcap`
 - Filter TCP, UDP, DNS, HTTP, TLS, WebSocket, and more.
 - Read protocol fields and raw bytes.
 - Open PCAP and PCAPNG files.
-- Follow a full TCP stream.
+- Follow TCP and UDP streams.
 - Export packets as PCAP or PCAPNG.
 - Ask an AI agent about your capture with TCP Viewer MCP.
 - Automate capture, packet queries, files, licenses, and settings with [`tcpviewer-cli`](CLI.md).
@@ -64,9 +64,10 @@ TCP Viewer captures and reads network packets on macOS. It uses system `libpcap`
 
 [Watch the file preview video](https://tcpviewer.proxyman.com/demo/open-pcap.mp4)
 
-### Follow TCP Stream
+### Follow TCP and UDP Streams
 
-- Rebuild one full TCP conversation.
+- Rebuild a TCP conversation or view UDP datagrams in capture order.
+- Open a stream from the packet menu or the Tools menu.
 - Show both directions together.
 - Show only client or server data.
 - Switch between text and hex.

@@ -24,8 +24,8 @@ fileprivate struct NativeLivePacketDiskEntry {
     let pcapNGTimestampResolution: UInt8?
     let pcapNGTimestampOffsetSeconds: Int64
     let pcapNGTimestampRawValue: UInt64?
-    var tcpStreamIdentifier: UInt32?
-    var previousSameTCPStreamEntryIndex: Int?
+    var streamIdentifier: FollowStreamID?
+    var previousSameStreamEntryIndex: Int?
 }
 
 final class NativeLivePacketDiskSnapshot: @unchecked Sendable {
@@ -46,17 +46,17 @@ final class NativeLivePacketDiskSnapshot: @unchecked Sendable {
     // Rehydrate a bounded immutable snapshot without holding the live capture lock.
     func records(
         maximumBytes: Int,
-        shouldCancel: TCPFollowCancellationCheck? = nil
+        shouldCancel: FollowStreamCancellationCheck? = nil
     ) throws -> [NativePacketRecord] {
         var remainingBytes = max(maximumBytes, 1)
         var records: [NativePacketRecord] = []
         records.reserveCapacity(entries.count)
         for entry in entries {
             if shouldCancel?() == true {
-                throw NativeNSError(.operationCancelled, "TCP stream reassembly was cancelled.")
+                throw NativeNSError(.operationCancelled, "Stream following was cancelled.")
             }
             guard entry.capturedLength <= remainingBytes else {
-                throw NativeNSError(.unavailableFeature, "The TCP stream snapshot exceeds the \(maximumBytes)-byte input limit.")
+                throw NativeNSError(.unavailableFeature, "The stream snapshot exceeds the \(maximumBytes)-byte input limit.")
             }
             remainingBytes -= entry.capturedLength
             let bytes = try readBytes(for: entry)
@@ -115,7 +115,7 @@ final class NativeLivePacketDiskStore {
     private var reader: FileHandle?
     private var entries: [NativeLivePacketDiskEntry] = []
     private var entryIndexByID: [UInt64: Int] = [:]
-    private var latestEntryIndexByTCPStreamID: [UInt32: Int] = [:]
+    private var latestEntryIndexByStreamID: [FollowStreamID: Int] = [:]
     private(set) var backingFileSize: UInt64 = 0
 
     init(fileManager: FileManager = .default, temporaryDirectory: URL? = nil) {
@@ -141,7 +141,7 @@ final class NativeLivePacketDiskStore {
     }
 
     // Append packet bytes at EOF while retaining only compact metadata in memory.
-    func append(_ record: NativePacketRecord, tcpStreamIdentifier: UInt32? = nil) throws {
+    func append(_ record: NativePacketRecord, streamIdentifier: FollowStreamID? = nil) throws {
         try openHandlesIfNeeded()
         guard let writer else {
             throw NativeNSError(.fileWriteFailed, "The live packet backing store could not be opened for writing.")
@@ -169,30 +169,30 @@ final class NativeLivePacketDiskStore {
             pcapNGTimestampResolution: record.pcapNGTimestampResolution,
             pcapNGTimestampOffsetSeconds: record.pcapNGTimestampOffsetSeconds,
             pcapNGTimestampRawValue: record.pcapNGTimestampRawValue,
-            tcpStreamIdentifier: nil,
-            previousSameTCPStreamEntryIndex: nil
+            streamIdentifier: nil,
+            previousSameStreamEntryIndex: nil
         )
         entryIndexByID[record.identifier] = entries.count
         entries.append(entry)
-        if let tcpStreamIdentifier {
-            markTCPStreamReady(identifier: record.identifier, streamIdentifier: tcpStreamIdentifier)
+        if let streamIdentifier {
+            markStreamReady(identifier: record.identifier, streamIdentifier: streamIdentifier)
         }
         backingFileSize += UInt64(record.rawBytes.count)
     }
 
     // Publish the stream link only after Wireshark has accepted this packet into its first pass.
-    func markTCPStreamReady(identifier: UInt64, streamIdentifier: UInt32) {
-        guard let index = entryIndexByID[identifier], entries[index].tcpStreamIdentifier == nil else {
+    func markStreamReady(identifier: UInt64, streamIdentifier: FollowStreamID) {
+        guard let index = entryIndexByID[identifier], entries[index].streamIdentifier == nil else {
             return
         }
-        entries[index].tcpStreamIdentifier = streamIdentifier
-        entries[index].previousSameTCPStreamEntryIndex = latestEntryIndexByTCPStreamID[streamIdentifier]
-        latestEntryIndexByTCPStreamID[streamIdentifier] = index
+        entries[index].streamIdentifier = streamIdentifier
+        entries[index].previousSameStreamEntryIndex = latestEntryIndexByStreamID[streamIdentifier]
+        latestEntryIndexByStreamID[streamIdentifier] = index
     }
 
     // Apply Wireshark's per-packet stream delta in capture order so dependency frames keep a valid chain.
-    func markTCPStreamsReady(_ updates: [WiresharkTCPStreamIndexEntry]) {
-        let orderedUpdates = updates.compactMap { update -> (index: Int, update: WiresharkTCPStreamIndexEntry)? in
+    func markStreamsReady(_ updates: [WiresharkStreamIndexEntry]) {
+        let orderedUpdates = updates.compactMap { update -> (index: Int, update: WiresharkStreamIndexEntry)? in
             guard let index = entryIndexByID[update.packetIdentifier] else {
                 return nil
             }
@@ -200,7 +200,7 @@ final class NativeLivePacketDiskStore {
         }.sorted { $0.index < $1.index }
 
         for item in orderedUpdates {
-            markTCPStreamReady(
+            markStreamReady(
                 identifier: item.update.packetIdentifier,
                 streamIdentifier: item.update.streamIdentifier
             )
@@ -208,30 +208,30 @@ final class NativeLivePacketDiskStore {
     }
 
     // Duplicate the anonymous backing file and copy only this stream's compact index chain.
-    func snapshotForTCPStream(
+    func snapshotForStream(
         containing identifier: UInt64,
         maximumPacketCount: Int,
-        shouldCancel: TCPFollowCancellationCheck? = nil
+        shouldCancel: FollowStreamCancellationCheck? = nil
     ) throws -> NativeLivePacketDiskSnapshot {
         guard let selectedIndex = entryIndexByID[identifier],
-              let streamIdentifier = entries[selectedIndex].tcpStreamIdentifier,
-              var index = latestEntryIndexByTCPStreamID[streamIdentifier] else {
-            throw NativeNSError(.unavailableFeature, "Select a TCP packet to follow its stream.")
+              let streamIdentifier = entries[selectedIndex].streamIdentifier,
+              var index = latestEntryIndexByStreamID[streamIdentifier] else {
+            throw NativeNSError(.unavailableFeature, "Select a TCP or UDP packet to follow its stream.")
         }
 
         var selectedEntries: [NativeLivePacketDiskEntry] = []
         while true {
             if shouldCancel?() == true {
-                throw NativeNSError(.operationCancelled, "TCP stream reassembly was cancelled.")
+                throw NativeNSError(.operationCancelled, "Stream following was cancelled.")
             }
             selectedEntries.append(entries[index])
             if selectedEntries.count > maximumPacketCount {
                 throw NativeNSError(
                     .unavailableFeature,
-                    "This TCP stream has more than \(maximumPacketCount) packets."
+                    "This stream has more than \(maximumPacketCount) packets."
                 )
             }
-            guard let previousIndex = entries[index].previousSameTCPStreamEntryIndex else {
+            guard let previousIndex = entries[index].previousSameStreamEntryIndex else {
                 break
             }
             index = previousIndex
@@ -311,7 +311,7 @@ final class NativeLivePacketDiskStore {
         reader = nil
         entries.removeAll(keepingCapacity: false)
         entryIndexByID.removeAll(keepingCapacity: false)
-        latestEntryIndexByTCPStreamID.removeAll(keepingCapacity: false)
+        latestEntryIndexByStreamID.removeAll(keepingCapacity: false)
         backingFileSize = 0
         try? fileManager.removeItem(at: backingFileURL)
     }

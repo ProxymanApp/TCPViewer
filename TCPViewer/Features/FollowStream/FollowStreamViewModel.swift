@@ -1,5 +1,5 @@
 //
-//  TCPFollowStreamViewModel.swift
+//  FollowStreamViewModel.swift
 //  TCPViewer
 //
 //  Created by Proxyman LLC on 10/8/26.
@@ -8,36 +8,36 @@
 import AppKit
 import PcapPlusPlusCore
 
-enum TCPFollowDirectionFilter: Int, CaseIterable {
+enum FollowStreamDirectionFilter: Int, CaseIterable {
     case both
     case clientToServer
     case serverToClient
 }
 
-enum TCPFollowRepresentation: Int, CaseIterable {
+enum FollowStreamRepresentation: Int, CaseIterable {
     case text
     case hex
 }
 
-struct TCPFollowPacketRange {
+struct FollowStreamPacketRange {
     let range: NSRange
-    let revealTarget: TCPFollowRevealTarget
+    let revealTarget: FollowStreamRevealTarget
 }
 
-struct TCPFollowRevealTarget: Equatable {
+struct FollowStreamRevealTarget: Equatable {
     let packetID: PacketSummary.ID
     let payload: Data
 }
 
-struct TCPFollowRenderedContent {
+struct FollowStreamRenderedContent {
     let attributedText: NSAttributedString
     let plainText: String
-    let packetRanges: [TCPFollowPacketRange]
+    let packetRanges: [FollowStreamPacketRange]
     let displayedByteCount: Int
     let statusText: String
 }
 
-final class TCPFollowStreamViewModel {
+final class FollowStreamViewModel {
     private static let defaultMaximumDisplayedPayloadBytes = 4 * 1_024 * 1_024
     private static let defaultMaximumDisplayedRecordCount = 10_000
     private static let minimumHexBytesPerLine = 16
@@ -50,33 +50,33 @@ final class TCPFollowStreamViewModel {
         return style
     }()
 
-    private(set) var stream: TCPFollowStream?
-    private(set) var directionFilter: TCPFollowDirectionFilter = .both
-    private(set) var representation: TCPFollowRepresentation = .text
-    private(set) var hexBytesPerLine = TCPFollowStreamViewModel.minimumHexBytesPerLine
+    private(set) var stream: FollowStream?
+    private(set) var directionFilter: FollowStreamDirectionFilter = .both
+    private(set) var representation: FollowStreamRepresentation = .text
+    private(set) var hexBytesPerLine = FollowStreamViewModel.minimumHexBytesPerLine
     private let maximumDisplayedPayloadBytes: Int
     private let maximumDisplayedRecordCount: Int
 
     init(
-        maximumDisplayedPayloadBytes: Int = TCPFollowStreamViewModel.defaultMaximumDisplayedPayloadBytes,
-        maximumDisplayedRecordCount: Int = TCPFollowStreamViewModel.defaultMaximumDisplayedRecordCount
+        maximumDisplayedPayloadBytes: Int = FollowStreamViewModel.defaultMaximumDisplayedPayloadBytes,
+        maximumDisplayedRecordCount: Int = FollowStreamViewModel.defaultMaximumDisplayedRecordCount
     ) {
         self.maximumDisplayedPayloadBytes = max(maximumDisplayedPayloadBytes, 1)
         self.maximumDisplayedRecordCount = max(maximumDisplayedRecordCount, 1)
     }
 
     // Replace the current immutable stream snapshot.
-    func setStream(_ stream: TCPFollowStream) {
+    func setStream(_ stream: FollowStream) {
         self.stream = stream
     }
 
     // Change which side of the conversation is displayed.
-    func setDirectionFilter(_ filter: TCPFollowDirectionFilter) {
+    func setDirectionFilter(_ filter: FollowStreamDirectionFilter) {
         directionFilter = filter
     }
 
     // Change payload rendering without repeating reassembly.
-    func setRepresentation(_ representation: TCPFollowRepresentation) {
+    func setRepresentation(_ representation: FollowStreamRepresentation) {
         self.representation = representation
     }
 
@@ -101,9 +101,9 @@ final class TCPFollowStreamViewModel {
     }
 
     // Build one attributed transcript and packet-character index for the text view.
-    func renderedContent() -> TCPFollowRenderedContent {
+    func renderedContent() -> FollowStreamRenderedContent {
         guard let stream else {
-            return TCPFollowRenderedContent(
+            return FollowStreamRenderedContent(
                 attributedText: NSAttributedString(string: ""),
                 plainText: "",
                 packetRanges: [],
@@ -113,12 +113,12 @@ final class TCPFollowStreamViewModel {
         }
 
         let output = NSMutableAttributedString()
-        var ranges: [TCPFollowPacketRange] = []
+        var ranges: [FollowStreamPacketRange] = []
         var displayedByteCount = 0
         var displayIsLimited = false
         for record in stream.records where includes(record.direction) {
             guard ranges.count < maximumDisplayedRecordCount,
-                  displayedByteCount < maximumDisplayedPayloadBytes else {
+                  displayedByteCount < maximumDisplayedPayloadBytes || record.data.isEmpty else {
                 displayIsLimited = true
                 break
             }
@@ -126,9 +126,9 @@ final class TCPFollowStreamViewModel {
             let displayedData = Data(record.data.prefix(remainingByteCount))
             let start = output.length
             append(record: record, data: displayedData, to: output)
-            ranges.append(TCPFollowPacketRange(
+            ranges.append(FollowStreamPacketRange(
                 range: NSRange(location: start, length: output.length - start),
-                revealTarget: TCPFollowRevealTarget(packetID: record.packetID, payload: record.data)
+                revealTarget: FollowStreamRevealTarget(packetID: record.packetID, payload: record.data)
             ))
             displayedByteCount += displayedData.count
             if displayedData.count < record.data.count {
@@ -143,7 +143,7 @@ final class TCPFollowStreamViewModel {
             : "\(displayedByteCount.formatted()) bytes"
         let truncation = stream.isTruncated ? " · truncated at safety limit" : ""
         let status = "\(byteStatus) · snapshot through packet \(stream.capturedThroughPacketID)\(truncation)"
-        return TCPFollowRenderedContent(
+        return FollowStreamRenderedContent(
             attributedText: output,
             plainText: output.string,
             packetRanges: ranges,
@@ -153,7 +153,7 @@ final class TCPFollowStreamViewModel {
     }
 
     // Concatenate reassembled bytes for raw export in the selected direction.
-    func rawData(for direction: TCPFollowDirection) -> Data {
+    func rawData(for direction: FollowStreamDirection) -> Data {
         guard let stream else {
             return Data()
         }
@@ -161,13 +161,13 @@ final class TCPFollowStreamViewModel {
     }
 
     // Keep raw export independent from the bounded on-screen representation.
-    static func rawData(in stream: TCPFollowStream, for direction: TCPFollowDirection) -> Data {
+    static func rawData(in stream: FollowStream, for direction: FollowStreamDirection) -> Data {
         stream.records
             .filter { $0.direction == direction }
             .reduce(into: Data()) { $0.append($1.data) }
     }
 
-    private func includes(_ direction: TCPFollowDirection) -> Bool {
+    private func includes(_ direction: FollowStreamDirection) -> Bool {
         switch directionFilter {
         case .both:
             true
@@ -179,7 +179,7 @@ final class TCPFollowStreamViewModel {
     }
 
     // Format each reassembled record as an easily scannable conversation turn.
-    private func append(record: TCPFollowRecord, data: Data, to output: NSMutableAttributedString) {
+    private func append(record: FollowStreamRecord, data: Data, to output: NSMutableAttributedString) {
         let isClient = record.direction == .clientToServer
         let title = isClient ? "→ Client to Server" : "← Server to Client"
         let color: NSColor = isClient ? .systemBlue : .systemOrange
@@ -209,7 +209,7 @@ final class TCPFollowStreamViewModel {
     }
 
     // Resolve the selected side's full reassembled count without overflowing Int.
-    private func selectedByteCount(in stream: TCPFollowStream) -> Int {
+    private func selectedByteCount(in stream: FollowStream) -> Int {
         switch directionFilter {
         case .both:
             let (total, overflow) = stream.clientByteCount.addingReportingOverflow(stream.serverByteCount)

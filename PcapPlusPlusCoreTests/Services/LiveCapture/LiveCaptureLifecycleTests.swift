@@ -13,7 +13,7 @@ import Testing
 @Suite(.serialized)
 struct LiveCaptureLifecycleTests {
     @Test func lifecycleTransitionCancelsAndDrainsRegisteredFollowOperations() {
-        let coordinator = LiveTCPFollowOperationCoordinator()
+        let coordinator = LiveFollowStreamOperationCoordinator()
         #expect(coordinator.beginFollow())
         #expect(coordinator.beginFollow())
 
@@ -130,8 +130,9 @@ struct LiveCaptureLifecycleTests {
         try session.stop()
 
         #expect(throws: NSError.self) {
-            try session.followTCPStream(
+            try session.followStream(
                 containing: 1,
+                streamProtocol: nil,
                 limits: .default,
                 progress: nil,
                 shouldCancel: nil
@@ -273,8 +274,9 @@ struct LiveCaptureLifecycleTests {
         let inspection = try session.inspectPacket(withIdentifier: 3)
         #expect(inspection.detailNodes.contains { $0.fieldName == "tcpviewer.wireshark.fallback" } == false)
 
-        let stream = try session.followTCPStream(
+        let stream = try session.followStream(
             containing: 3,
+            streamProtocol: nil,
             limits: .default,
             progress: nil,
             shouldCancel: nil
@@ -285,6 +287,39 @@ struct LiveCaptureLifecycleTests {
             .reduce(into: Data()) { $0.append($1.data) }
         #expect(clientBytes == Data("hello after stop".utf8))
         #expect(stream.capturedThroughPacketID == 3)
+        #expect(backend.closeCount == 1)
+    }
+
+    @Test func runningAndStoppedLiveCaptureFollowUDPWithoutLosingNewPackets() throws {
+        // A controllable backend proves following does not consume or finish the active first pass.
+        func read(_ number: Int, response: Bool, payload: String) -> LibpcapPacketReadResult {
+            var packet = makeUDPPacketRecord().rawBytes
+            if response {
+                packet.replaceSubrange(26..<34, with: [192, 168, 0, 2, 192, 168, 0, 1])
+                packet.replaceSubrange(34..<38, with: [0, 53, 0x14, 0xe9])
+            }
+            packet.replaceSubrange(16..<18, with: bytes(UInt16(28 + payload.utf8.count)))
+            packet.replaceSubrange(38..<40, with: bytes(UInt16(8 + payload.utf8.count)))
+            packet.append(Data(payload.utf8))
+            return .packet(header: pcap_pkthdr(ts: timeval(tv_sec: number, tv_usec: 0), caplen: UInt32(packet.count), len: UInt32(packet.count)), bytes: packet)
+        }
+        let backend = TestLiveCaptureBackend(queuedReads: [read(1, response: false, payload: "request"), read(2, response: true, payload: "response")])
+        let session = PCPPNativeLiveSession(interfaceIdentifier: "test0", options: makeOptions(),
+            captureBackend: backend, dissectionSessionFactory: { try WiresharkEpanSession(purpose: .live) })
+        let delivered = DispatchSemaphore(value: 0)
+        session.packetHandler = { _ in delivered.signal() }
+        try session.start()
+        defer { try? session.stop() }
+        for _ in 0..<2 { #expect(delivered.wait(timeout: .now() + 2) == .success) }
+        let running = try session.followStream(containing: 2, streamProtocol: .udp, limits: .default, progress: nil, shouldCancel: nil)
+        #expect(running.records.map(\.data) == [Data("request".utf8), Data("response".utf8)])
+        backend.enqueue(read(3, response: false, payload: "later"))
+        #expect(delivered.wait(timeout: .now() + 2) == .success)
+        try session.stop()
+        let stopped = try session.followStream(containing: 2, streamProtocol: .udp, limits: .default, progress: nil, shouldCancel: nil)
+        #expect(stopped.streamProtocol == .udp)
+        #expect(stopped.records.map(\.data) == [Data("request".utf8), Data("response".utf8), Data("later".utf8)])
+        #expect(stopped.capturedThroughPacketID == 3)
         #expect(backend.closeCount == 1)
     }
 
@@ -437,15 +472,19 @@ private final class TestLiveCaptureBackend: PCPPNativeLiveCaptureBackend {
         }
     }
 
+    // Wake a blocked fake capture read when a test delivers another packet.
+    func enqueue(_ read: LibpcapPacketReadResult) {
+        condition.withLock {
+            queuedReads.append(read)
+            condition.signal()
+        }
+    }
+
     func read(from handle: OpaquePointer) -> LibpcapPacketReadResult {
         condition.lock()
         defer { condition.unlock() }
-        if !queuedReads.isEmpty {
-            return queuedReads.removeFirst()
-        }
-        while !didBreak {
-            condition.wait()
-        }
+        while !didBreak && queuedReads.isEmpty { condition.wait() }
+        if !queuedReads.isEmpty { return queuedReads.removeFirst() }
         return .stopped
     }
 

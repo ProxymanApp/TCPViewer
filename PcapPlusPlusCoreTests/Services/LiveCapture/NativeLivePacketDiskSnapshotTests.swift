@@ -12,11 +12,11 @@ import Testing
 struct NativeLivePacketDiskSnapshotTests {
     @Test func snapshotKeepsOnlyTheIndexedStreamAndSurvivesStoreReset() throws {
         let store = NativeLivePacketDiskStore()
-        try store.append(makeRecord(identifier: 1, byte: 0x11), tcpStreamIdentifier: 7)
-        try store.append(makeRecord(identifier: 2, byte: 0x22), tcpStreamIdentifier: 8)
-        try store.append(makeRecord(identifier: 3, byte: 0x33), tcpStreamIdentifier: 7)
+        try store.append(makeRecord(identifier: 1, byte: 0x11), streamIdentifier: FollowStreamID(streamProtocol: .tcp, streamID: 7))
+        try store.append(makeRecord(identifier: 2, byte: 0x22), streamIdentifier: FollowStreamID(streamProtocol: .tcp, streamID: 8))
+        try store.append(makeRecord(identifier: 3, byte: 0x33), streamIdentifier: FollowStreamID(streamProtocol: .tcp, streamID: 7))
 
-        let snapshot = try store.snapshotForTCPStream(containing: 1, maximumPacketCount: 2)
+        let snapshot = try store.snapshotForStream(containing: 1, maximumPacketCount: 2)
         store.reset()
         let records = try snapshot.records(maximumBytes: 2)
 
@@ -27,13 +27,13 @@ struct NativeLivePacketDiskSnapshotTests {
 
     @Test func snapshotEnforcesPacketAndByteBounds() throws {
         let store = NativeLivePacketDiskStore()
-        try store.append(makeRecord(identifier: 1, byte: 0x11), tcpStreamIdentifier: 7)
-        try store.append(makeRecord(identifier: 2, byte: 0x22), tcpStreamIdentifier: 7)
+        try store.append(makeRecord(identifier: 1, byte: 0x11), streamIdentifier: FollowStreamID(streamProtocol: .tcp, streamID: 7))
+        try store.append(makeRecord(identifier: 2, byte: 0x22), streamIdentifier: FollowStreamID(streamProtocol: .tcp, streamID: 7))
 
         #expect(throws: NSError.self) {
-            try store.snapshotForTCPStream(containing: 1, maximumPacketCount: 1)
+            try store.snapshotForStream(containing: 1, maximumPacketCount: 1)
         }
-        let snapshot = try store.snapshotForTCPStream(containing: 1, maximumPacketCount: 2)
+        let snapshot = try store.snapshotForStream(containing: 1, maximumPacketCount: 2)
         #expect(throws: NSError.self) {
             try snapshot.records(maximumBytes: 1)
         }
@@ -41,7 +41,7 @@ struct NativeLivePacketDiskSnapshotTests {
             try snapshot.records(maximumBytes: 2, shouldCancel: { true })
         }
         #expect(throws: NSError.self) {
-            try store.snapshotForTCPStream(
+            try store.snapshotForStream(
                 containing: 1,
                 maximumPacketCount: 2,
                 shouldCancel: { true }
@@ -54,11 +54,11 @@ struct NativeLivePacketDiskSnapshotTests {
         try store.append(makeRecord(identifier: 1, byte: 0x11))
 
         #expect(throws: NSError.self) {
-            try store.snapshotForTCPStream(containing: 1, maximumPacketCount: 1)
+            try store.snapshotForStream(containing: 1, maximumPacketCount: 1)
         }
 
-        store.markTCPStreamReady(identifier: 1, streamIdentifier: 7)
-        let snapshot = try store.snapshotForTCPStream(containing: 1, maximumPacketCount: 1)
+        store.markStreamReady(identifier: 1, streamIdentifier: FollowStreamID(streamProtocol: .tcp, streamID: 7))
+        let snapshot = try store.snapshotForStream(containing: 1, maximumPacketCount: 1)
         #expect(try snapshot.records(maximumBytes: 1).map(\.identifier) == [1])
     }
 
@@ -68,13 +68,13 @@ struct NativeLivePacketDiskSnapshotTests {
         try store.append(makeRecord(identifier: 2, byte: 0x22))
         try store.append(makeRecord(identifier: 3, byte: 0x33))
 
-        store.markTCPStreamsReady([
-            WiresharkTCPStreamIndexEntry(packetIdentifier: 3, streamIdentifier: 7),
-            WiresharkTCPStreamIndexEntry(packetIdentifier: 1, streamIdentifier: 7),
-            WiresharkTCPStreamIndexEntry(packetIdentifier: 2, streamIdentifier: 7),
+        store.markStreamsReady([
+            WiresharkStreamIndexEntry(packetIdentifier: 3, streamIdentifier: FollowStreamID(streamProtocol: .tcp, streamID: 7)),
+            WiresharkStreamIndexEntry(packetIdentifier: 1, streamIdentifier: FollowStreamID(streamProtocol: .tcp, streamID: 7)),
+            WiresharkStreamIndexEntry(packetIdentifier: 2, streamIdentifier: FollowStreamID(streamProtocol: .tcp, streamID: 7)),
         ])
 
-        let snapshot = try store.snapshotForTCPStream(containing: 2, maximumPacketCount: 3)
+        let snapshot = try store.snapshotForStream(containing: 2, maximumPacketCount: 3)
         #expect(try snapshot.records(maximumBytes: 3).map(\.identifier) == [1, 2, 3])
     }
 
@@ -91,6 +91,15 @@ struct NativeLivePacketDiskSnapshotTests {
 
         #expect(visited.map(\.0) == [1, 2, 3])
         #expect(visited.map(\.1) == [Data([0x11]), Data([0x22]), Data([0x33])])
+    }
+
+    @Test func snapshotsSeparateTCPAndUDPWithTheSameStreamNumber() throws {
+        let store = NativeLivePacketDiskStore()
+        try store.append(makeRecord(identifier: 1, byte: 1), streamIdentifier: FollowStreamID(streamProtocol: .tcp, streamID: 0))
+        try store.append(makeRecord(identifier: 2, byte: 2), streamIdentifier: FollowStreamID(streamProtocol: .udp, streamID: 0))
+        try store.append(makeRecord(identifier: 3, byte: 3), streamIdentifier: FollowStreamID(streamProtocol: .udp, streamID: 0))
+        let snapshot = try store.snapshotForStream(containing: 2, maximumPacketCount: 10)
+        #expect(try snapshot.records(maximumBytes: 100).map(\.identifier) == [2, 3])
     }
 
     private func makeRecord(identifier: UInt64, byte: UInt8) -> NativePacketRecord {

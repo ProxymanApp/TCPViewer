@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import PcapPlusPlusCore
 
 enum PacketTableColumnRole: String, Equatable, Sendable {
     case number
@@ -53,12 +54,15 @@ struct PacketTableMenuState: Equatable {
     let clickedColumnIdentifier: String?
     let copyRowEnabled: Bool
     let copyCellEnabled: Bool
-    let followTCPStreamEnabled: Bool
+    let followStreamEnabled: Bool
     let pinEnabled: Bool
     let saveEnabled: Bool
     let styleEnabled: Bool
     let exportEnabled: Bool
     let deleteEnabled: Bool
+    var followStreamProtocol: FollowStreamProtocol? = nil
+
+    var followStreamTitle: String { (followStreamProtocol ?? .tcp).menuTitle }
 
     var commentEnabled: Bool {
         !targetRows.isEmpty
@@ -70,7 +74,7 @@ struct PacketTableMenuState: Equatable {
         clickedColumnIdentifier: nil,
         copyRowEnabled: false,
         copyCellEnabled: false,
-        followTCPStreamEnabled: false,
+        followStreamEnabled: false,
         pinEnabled: false,
         saveEnabled: false,
         styleEnabled: false,
@@ -108,12 +112,13 @@ enum PacketTableMenuLogic {
             clickedColumnIdentifier: clickedColumnIdentifier,
             copyRowEnabled: !targetRows.isEmpty,
             copyCellEnabled: !targetRows.isEmpty && clickedColumnIdentifier != nil,
-            followTCPStreamEnabled: targetRows.count == 1 && targetRows[0].canFollowTCPStream,
+            followStreamEnabled: targetRows.count == 1 && targetRows[0].canFollowStream,
             pinEnabled: targetRows.contains { $0.canPinClient },
             saveEnabled: !targetRows.isEmpty,
             styleEnabled: !targetRows.isEmpty,
             exportEnabled: !targetRows.isEmpty,
-            deleteEnabled: !targetRows.isEmpty
+            deleteEnabled: !targetRows.isEmpty,
+            followStreamProtocol: targetRows.count == 1 ? targetRows[0].followStreamProtocol : nil
         )
     }
 

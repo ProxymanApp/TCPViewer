@@ -141,9 +141,9 @@ enum StreamFollowEncoding: String, ExpressibleByArgument {
 }
 
 struct StreamFollowCommand: ParsableCommand, TCPViewerCLIRequestCommand {
-    static let configuration = CommandConfiguration(commandName: "follow", abstract: "Reconstruct the TCP stream containing one packet.")
+    static let configuration = CommandConfiguration(commandName: "follow", abstract: "Follow the TCP or UDP stream containing one packet.")
     @OptionGroup var global: TCPViewerCLIGlobalOptions
-    @Argument(help: "Packet ID in the TCP stream.") var packetID: String
+    @Argument(help: "Packet ID in the TCP or UDP stream.") var packetID: String
     @Option(name: .long) var direction: StreamFollowDirection = .both
     @Option(name: .long) var encoding: StreamFollowEncoding = .text
     @Option(name: .customLong("max-bytes")) var maxBytes = 4 * 1_024 * 1_024

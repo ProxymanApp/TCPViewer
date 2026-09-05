@@ -116,7 +116,7 @@ public extension DisplayFilterEvaluating {
     }
 }
 
-public protocol LiveCaptureSessionProviding: TCPStreamFollowing, DisplayFilterEvaluating {
+public protocol LiveCaptureSessionProviding: StreamFollowing, DisplayFilterEvaluating {
     var eventHandler: PacketIngestEventHandler? { get set }
 
     func start(completion: @escaping TCPViewerVoidCompletion)
@@ -156,7 +156,7 @@ public extension LiveCaptureSessionProviding {
 }
 #endif
 
-public protocol OfflineCaptureDocumentProviding: TCPStreamFollowing, DisplayFilterEvaluating {
+public protocol OfflineCaptureDocumentProviding: StreamFollowing, DisplayFilterEvaluating {
     var eventHandler: PacketIngestEventHandler? { get set }
 
     func open(completion: @escaping TCPViewerCompletion<[PacketSummary]>)

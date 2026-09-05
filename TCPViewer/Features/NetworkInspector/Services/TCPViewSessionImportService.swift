@@ -626,12 +626,13 @@ final class TCPViewSessionOfflineDocument: OfflineCaptureDocumentProviding {
     }
 
     // Translate inner capture packet IDs back to their stable session IDs.
-    func followTCPStream(
+    func followStream(
         containing packetID: PacketSummary.ID,
-        limits: TCPFollowLimits,
-        progress: TCPFollowProgressHandler?,
-        shouldCancel: TCPFollowCancellationCheck?,
-        completion: @escaping TCPViewerCompletion<TCPFollowStream>
+        streamProtocol: FollowStreamProtocol? = nil,
+        limits: FollowStreamLimits,
+        progress: FollowStreamProgressHandler?,
+        shouldCancel: FollowStreamCancellationCheck?,
+        completion: @escaping TCPViewerCompletion<FollowStream>
     ) {
         guard let innerDocument,
               let innerID = innerPacketIDBySessionID[packetID] else {
@@ -639,8 +640,9 @@ final class TCPViewSessionOfflineDocument: OfflineCaptureDocumentProviding {
             return
         }
         let packetIDMapping = innerPacketIDBySessionID
-        innerDocument.followTCPStream(
+        innerDocument.followStream(
             containing: innerID,
+            streamProtocol: streamProtocol,
             limits: limits,
             progress: progress,
             shouldCancel: shouldCancel
@@ -814,7 +816,7 @@ final class TCPViewSessionOfflineDocument: OfflineCaptureDocumentProviding {
             let innerPacket = innerPackets[record.captureOrdinal]
             innerPacketIDBySessionID[sessionPacket.id] = innerPacket.id
             let mappedPacket = sessionPacket.tcpviewerApplying(
-                tcpFollowStreamID: innerPacket.tcpFollowStreamID
+                followStreamID: innerPacket.followStreamID
             )
             sessionPacketByID[sessionPacket.id] = mappedPacket
             mappedPackets.append(mappedPacket)

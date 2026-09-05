@@ -324,7 +324,7 @@ public struct PacketSummary: Identifiable, Sendable, Codable, Hashable {
     public let originalLength: Int
     public let capturedLength: Int
     public let streamID: UInt32?
-    public let tcpFollowStreamID: UInt32?
+    public let followStreamID: FollowStreamID?
     public let direction: PacketDirection?
     public let tcpFlags: String?
     public let tcpPayloadLength: Int?
@@ -351,7 +351,7 @@ public struct PacketSummary: Identifiable, Sendable, Codable, Hashable {
         originalLength: Int,
         capturedLength: Int,
         streamID: UInt32? = nil,
-        tcpFollowStreamID: UInt32? = nil,
+        followStreamID: FollowStreamID? = nil,
         direction: PacketDirection? = nil,
         tcpFlags: String? = nil,
         tcpPayloadLength: Int? = nil,
@@ -377,7 +377,7 @@ public struct PacketSummary: Identifiable, Sendable, Codable, Hashable {
         self.originalLength = originalLength
         self.capturedLength = capturedLength
         self.streamID = streamID
-        self.tcpFollowStreamID = tcpFollowStreamID
+        self.followStreamID = followStreamID
         self.direction = direction
         self.tcpFlags = tcpFlags
         self.tcpPayloadLength = tcpPayloadLength

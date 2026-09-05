@@ -491,12 +491,13 @@ struct PacketIngestState: Sendable, Equatable {
     }
 }
 
-struct TCPFollowStreamNavigation: Equatable {
+struct FollowStreamNavigation: Equatable {
     struct Entry: Equatable {
         let streamID: UInt32
         let packetID: PacketSummary.ID
     }
 
+    let streamProtocol: FollowStreamProtocol
     let entries: [Entry]
     let selectedIndex: Int
 
@@ -507,16 +508,19 @@ struct TCPFollowStreamNavigation: Equatable {
     // Build a sorted stream list without crossing imported capture-file boundaries.
     init?(ingestState: PacketIngestState, selectedPacketID: PacketSummary.ID) {
         guard let selectedPacket = ingestState.packet(withID: selectedPacketID),
-              let selectedStreamID = selectedPacket.tcpFollowStreamID else {
+              let selectedIdentity = selectedPacket.followStreamID else {
             return nil
         }
 
+        let selectedStreamID = selectedIdentity.streamID
+        self.streamProtocol = selectedIdentity.streamProtocol
         let selectedReference = ingestState.importedPacketReference(for: selectedPacketID)
         var packetIDByStreamID: [UInt32: PacketSummary.ID] = [:]
         for packet in ingestState.packets {
-            guard let streamID = packet.tcpFollowStreamID else {
+            guard let identity = packet.followStreamID, identity.streamProtocol == streamProtocol else {
                 continue
             }
+            let streamID = identity.streamID
             let candidateReference = ingestState.importedPacketReference(for: packet.id)
             let belongsToSelectedCapture = selectedReference.map { selected in
                 candidateReference?.fileID == selected.fileID
@@ -538,21 +542,22 @@ struct TCPFollowStreamNavigation: Equatable {
         self.selectedIndex = selectedIndex
     }
 
-    private init(entries: [Entry], selectedIndex: Int) {
+    private init(streamProtocol: FollowStreamProtocol, entries: [Entry], selectedIndex: Int) {
+        self.streamProtocol = streamProtocol
         self.entries = entries
         self.selectedIndex = selectedIndex
     }
 
     // Return the same capture-scoped list focused on another available stream.
-    func selecting(index: Int) -> TCPFollowStreamNavigation? {
+    func selecting(index: Int) -> FollowStreamNavigation? {
         guard entries.indices.contains(index) else {
             return nil
         }
-        return TCPFollowStreamNavigation(entries: entries, selectedIndex: index)
+        return FollowStreamNavigation(streamProtocol: streamProtocol, entries: entries, selectedIndex: index)
     }
 }
 
-struct TCPFollowCaptureIdentity: Sendable, Equatable {
+struct FollowStreamCaptureIdentity: Sendable, Equatable {
     let backingIdentity: String?
     let packetLineageRevision: UInt64
 
@@ -3095,20 +3100,20 @@ final class TCPViewerWorkspaceController {
         scheduleInspection(for: identifier)
     }
 
-    var tcpFollowCaptureIdentity: TCPFollowCaptureIdentity {
-        TCPFollowCaptureIdentity(ingestState: snapshot.packetIngestState)
+    var followStreamCaptureIdentity: FollowStreamCaptureIdentity {
+        FollowStreamCaptureIdentity(ingestState: snapshot.packetIngestState)
     }
 
-    // List the TCP streams that belong to the selected packet's capture source.
-    func tcpFollowStreamNavigation(containing identifier: PacketSummary.ID) -> TCPFollowStreamNavigation? {
-        TCPFollowStreamNavigation(
+    // List streams with the same protocol and capture source as the selected packet.
+    func followStreamNavigation(containing identifier: PacketSummary.ID) -> FollowStreamNavigation? {
+        FollowStreamNavigation(
             ingestState: snapshot.packetIngestState,
             selectedPacketID: identifier
         )
     }
 
     // Check both lineage and membership before navigating from a detached follow window.
-    func canRevealTCPFollowPacket(_ identifier: PacketSummary.ID, from identity: TCPFollowCaptureIdentity) -> Bool {
+    func canRevealFollowStreamPacket(_ identifier: PacketSummary.ID, from identity: FollowStreamCaptureIdentity) -> Bool {
         identity.canReveal(packetID: identifier, in: snapshot.packetIngestState)
     }
 
@@ -3324,12 +3329,13 @@ final class TCPViewerWorkspaceController {
         inspectPacket(packet, identifier: identifier, completion: completion)
     }
 
-    func followTCPStream(
+    func followStream(
         containing identifier: PacketSummary.ID,
-        limits: TCPFollowLimits = .default,
-        progress: TCPFollowProgressHandler? = nil,
-        shouldCancel: TCPFollowCancellationCheck? = nil,
-        completion: @escaping TCPViewerCompletion<TCPFollowStream>
+        streamProtocol: FollowStreamProtocol? = nil,
+        limits: FollowStreamLimits = .default,
+        progress: FollowStreamProgressHandler? = nil,
+        shouldCancel: FollowStreamCancellationCheck? = nil,
+        completion: @escaping TCPViewerCompletion<FollowStream>
     ) {
         guard let packet = snapshot.packetIngestState.packet(withID: identifier) else {
             completion(.failure(TCPViewerCoreError(
@@ -3338,9 +3344,10 @@ final class TCPViewerWorkspaceController {
             )))
             return
         }
-        followTCPStream(
+        followStream(
             packet,
             identifier: identifier,
+            streamProtocol: streamProtocol,
             limits: limits,
             progress: progress,
             shouldCancel: shouldCancel,
@@ -4342,13 +4349,14 @@ final class TCPViewerWorkspaceController {
     }
 
     // Route follow requests to the packet's backing source and preserve workspace packet IDs.
-    private func followTCPStream(
+    private func followStream(
         _ packet: PacketSummary,
         identifier: PacketSummary.ID,
-        limits: TCPFollowLimits,
-        progress: TCPFollowProgressHandler?,
-        shouldCancel: TCPFollowCancellationCheck?,
-        completion: @escaping TCPViewerCompletion<TCPFollowStream>
+        streamProtocol: FollowStreamProtocol?,
+        limits: FollowStreamLimits,
+        progress: FollowStreamProgressHandler?,
+        shouldCancel: FollowStreamCancellationCheck?,
+        completion: @escaping TCPViewerCompletion<FollowStream>
     ) {
         switch packet.source {
         case .live:
@@ -4359,8 +4367,9 @@ final class TCPViewerWorkspaceController {
                 )))
                 return
             }
-            liveSession.followTCPStream(
+            liveSession.followStream(
                 containing: identifier,
+                streamProtocol: streamProtocol,
                 limits: limits,
                 progress: progress,
                 shouldCancel: shouldCancel,
@@ -4370,8 +4379,9 @@ final class TCPViewerWorkspaceController {
             if let reference = snapshot.packetIngestState.importedPacketReference(for: identifier),
                let importedDocument = importedDocumentsByFileID[reference.fileID] {
                 let importedReferences = snapshot.packetIngestState.importedPacketReferenceByID
-                importedDocument.followTCPStream(
+                importedDocument.followStream(
                     containing: reference.originalPacketID,
+                    streamProtocol: streamProtocol,
                     limits: limits,
                     progress: progress,
                     shouldCancel: shouldCancel
@@ -4399,8 +4409,9 @@ final class TCPViewerWorkspaceController {
                     )))
                     return
                 }
-                document.followTCPStream(
+                document.followStream(
                     containing: identifier,
+                    streamProtocol: streamProtocol,
                     limits: limits,
                     progress: progress,
                     shouldCancel: shouldCancel,
@@ -4519,16 +4530,17 @@ final class TCPViewerWorkspaceController {
     }
 }
 
-extension TCPFollowStream {
+extension FollowStream {
     func tcpviewerRemapping(
         packetIDByOriginalID: [PacketSummary.ID: PacketSummary.ID],
         fallbackPacketID: PacketSummary.ID
-    ) -> TCPFollowStream {
-        TCPFollowStream(
+    ) -> FollowStream {
+        FollowStream(
+            streamProtocol: streamProtocol,
             client: client,
             server: server,
             records: records.map { record in
-                TCPFollowRecord(
+                FollowStreamRecord(
                     direction: record.direction,
                     packetID: packetIDByOriginalID[record.packetID] ?? fallbackPacketID,
                     timestamp: record.timestamp,
