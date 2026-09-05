@@ -5,6 +5,7 @@
 //  Created by Proxyman LLC on 24/4/26.
 //
 
+import CoreServices
 import Darwin
 import Foundation
 import Security
@@ -137,6 +138,7 @@ protocol TCPViewerNetworkHelperAuthorizationProviding {
 }
 
 protocol TCPViewerNetworkHelperServiceManagementControlling {
+    func registerApplication(at url: URL) throws
     func blessJob(label: String, authorization: AuthorizationRef) throws
     func removeJob(label: String, authorization: AuthorizationRef, wait: Bool) throws
 }
@@ -565,6 +567,7 @@ struct TCPViewerNetworkHelperSMJobBlessController: TCPViewerNetworkHelperService
 
     func register() throws {
         try validateBundledPayload()
+        try serviceManagementController.registerApplication(at: bundleURL)
         let authorization = try authorizationProvider.makeAuthorization(for: [.named(kSMRightBlessPrivilegedHelper)])
         defer { authorizationProvider.free(authorization) }
 
@@ -789,6 +792,14 @@ struct TCPViewerNetworkHelperAuthorizationProvider: TCPViewerNetworkHelperAuthor
 }
 
 struct TCPViewerNetworkHelperServiceManagementController: TCPViewerNetworkHelperServiceManagementControlling {
+    // Login Items can use the app name only after Launch Services knows the owning bundle identifier.
+    func registerApplication(at url: URL) throws {
+        let status = LSRegisterURL(url as CFURL, true)
+        guard status == noErr else {
+            throw TCPViewerNetworkHelperSMJobBlessError.launchServicesRegistrationFailure(status)
+        }
+    }
+
     func blessJob(label: String, authorization: AuthorizationRef) throws {
         var blessError: Unmanaged<CFError>?
         guard SMJobBless(kSMDomainSystemLaunchd, label as CFString, authorization, &blessError) else {
@@ -888,6 +899,7 @@ struct TCPViewerNetworkHelperPrivilegedInstalledItemRemover: TCPViewerNetworkHel
 private enum TCPViewerNetworkHelperSMJobBlessError: LocalizedError {
     case missingBundledHelper(URL)
     case missingLaunchDaemonPlist(URL)
+    case launchServicesRegistrationFailure(OSStatus)
     case authorizationFailure(OSStatus)
     case serviceManagementFailure(CFError?, fallbackMessage: String)
     case installedItemsRemain([URL], underlyingError: Error?)
@@ -899,6 +911,8 @@ private enum TCPViewerNetworkHelperSMJobBlessError: LocalizedError {
             return "TCP Viewer could not find the bundled helper at \(url.path)."
         case .missingLaunchDaemonPlist(let url):
             return "TCP Viewer could not find the bundled helper launchd plist at \(url.path)."
+        case .launchServicesRegistrationFailure(let status):
+            return "TCP Viewer could not register the app with Launch Services: \(Self.message(for: status))."
         case .authorizationFailure(let status):
             return "macOS authorization failed: \(Self.message(for: status))."
         case .serviceManagementFailure(let error, let fallbackMessage):
