@@ -18,6 +18,7 @@ enum PacketQuickFilterID: String, CaseIterable, Codable, Identifiable, Sendable,
     case websocket
     case clientHello
     case serverHello
+    // Keep the stored identifier so existing capture sessions retain their decode-issue selection.
     case errors
 
     var id: String { rawValue }
@@ -43,14 +44,14 @@ enum PacketQuickFilterID: String, CaseIterable, Codable, Identifiable, Sendable,
         case .serverHello:
             "Server Hello"
         case .errors:
-            "Errors"
+            "Decode issues"
         }
     }
 
     var toolTip: String {
         switch self {
         case .all:
-            "Show all packets"
+            "Show all protocols, keeping the troubleshooting selection"
         case .tcp:
             "Show packets that include TCP, including HTTP, TLS, and WebSocket over TCP"
         case .udp:
@@ -112,6 +113,10 @@ struct PacketQuickFilterSelection: Codable, Equatable, Sendable, Hashable {
         PacketQuickFilterID.allCases.filter { $0 != .all && selectedIDs.contains($0) }
     }
 
+    var activeProtocolIDs: [PacketQuickFilterID] {
+        activeIDs.filter { $0 != .errors }
+    }
+
     var activeLabels: [String] {
         activeIDs.map(\.title)
     }
@@ -121,12 +126,13 @@ struct PacketQuickFilterSelection: Codable, Equatable, Sendable, Hashable {
     }
 
     func contains(_ id: PacketQuickFilterID) -> Bool {
-        selectedIDs.contains(id)
+        id == .all ? activeProtocolIDs.isEmpty : selectedIDs.contains(id)
     }
 
+    // All clears only the protocol group; troubleshooting stays active until explicitly cleared.
     func toggled(_ id: PacketQuickFilterID) -> PacketQuickFilterSelection {
         guard id != .all else {
-            return .all
+            return PacketQuickFilterSelection(selectedIDs: selectedIDs.intersection([.errors]))
         }
 
         var nextIDs = Set(activeIDs)
@@ -169,14 +175,15 @@ final class PacketQuickFilterService {
         self.selection = selection
     }
 
+    // Match any selected protocol, then require the independent troubleshooting condition.
     func matches(_ packet: PacketSummary, selection: PacketQuickFilterSelection? = nil) -> Bool {
         let selection = selection ?? self.selection
-        guard selection.isActive else {
-            return true
+        if selection.contains(.errors), !matches(packet, filterID: .errors) {
+            return false
         }
 
-        // Quick filters are OR-ed, so a packet can match any active filter chip.
-        return selection.activeIDs.contains { matches(packet, filterID: $0) }
+        let protocolIDs = selection.activeProtocolIDs
+        return protocolIDs.isEmpty || protocolIDs.contains { matches(packet, filterID: $0) }
     }
 
     private func matches(_ packet: PacketSummary, filterID: PacketQuickFilterID) -> Bool {

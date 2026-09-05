@@ -76,6 +76,8 @@ final class PacketQuickFilterViewController: NSTitlebarAccessoryViewController {
     weak var delegate: PacketQuickFilterViewControllerDelegate?
 
     private let stackView = NSStackView()
+    private let troubleshootingSeparator = NSBox()
+    private let troubleshootingButton = NSPopUpButton(frame: .zero, pullsDown: true)
     private let customSeparator = NSBox()
     private let resetSeparator = NSBox()
     private let bottomSeparator = NSBox()
@@ -86,6 +88,7 @@ final class PacketQuickFilterViewController: NSTitlebarAccessoryViewController {
     private var customItemsByID: [PacketCustomFilter.ID: PacketCustomFilterItem] = [:]
     private var renderedQuickFilterIDs: [PacketQuickFilterID] = []
     private var renderedCustomFilterSignatures: [PacketCustomFilterButtonSignature] = []
+    private var isDecodeIssuesEnabled = false
 
     override init(nibName nibNameOrNil: NSNib.Name?, bundle nibBundleOrNil: Bundle?) {
         super.init(nibName: nibNameOrNil, bundle: nibBundleOrNil)
@@ -124,6 +127,7 @@ final class PacketQuickFilterViewController: NSTitlebarAccessoryViewController {
             }
             render(button: button, title: item.title, toolTip: item.id.toolTip, isSelected: item.isSelected)
         }
+        renderTroubleshooting(isEnabled: snapshot.quickFilterSelection.contains(.errors))
         for item in snapshot.customFilterItems {
             guard let button = customButtons[item.id] else {
                 continue
@@ -159,6 +163,10 @@ final class PacketQuickFilterViewController: NSTitlebarAccessoryViewController {
         customSeparator.boxType = .separator
         customSeparator.translatesAutoresizingMaskIntoConstraints = false
 
+        troubleshootingSeparator.boxType = .separator
+        troubleshootingSeparator.translatesAutoresizingMaskIntoConstraints = false
+        configureTroubleshooting()
+
         bottomSeparator.boxType = .separator
         bottomSeparator.translatesAutoresizingMaskIntoConstraints = false
 
@@ -181,6 +189,8 @@ final class PacketQuickFilterViewController: NSTitlebarAccessoryViewController {
             stackView.topAnchor.constraint(equalTo: view.topAnchor),
             stackView.bottomAnchor.constraint(equalTo: bottomSeparator.topAnchor),
             customSeparator.heightAnchor.constraint(equalToConstant: 18),
+            troubleshootingSeparator.heightAnchor.constraint(equalToConstant: 18),
+            troubleshootingButton.heightAnchor.constraint(equalToConstant: Metrics.buttonHeight),
             resetSeparator.heightAnchor.constraint(equalToConstant: 18),
             resetButton.heightAnchor.constraint(equalToConstant: Metrics.buttonHeight),
             bottomSeparator.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -209,7 +219,7 @@ final class PacketQuickFilterViewController: NSTitlebarAccessoryViewController {
         renderedQuickFilterIDs = nextQuickFilterIDs
         renderedCustomFilterSignatures = nextCustomFilterSignatures
 
-        for item in items {
+        for item in items where item.id != .errors {
             let button = PacketQuickFilterButton(filterID: item.id, target: self, action: #selector(toggleFilter(_:)))
             configure(button: button, isToggle: true)
             buttons[item.id] = button
@@ -217,6 +227,9 @@ final class PacketQuickFilterViewController: NSTitlebarAccessoryViewController {
             button.heightAnchor.constraint(equalToConstant: Metrics.buttonHeight).isActive = true
             button.widthAnchor.constraint(greaterThanOrEqualToConstant: measuredWidth(for: item.title)).isActive = true
         }
+
+        stackView.addArrangedSubview(troubleshootingSeparator)
+        stackView.addArrangedSubview(troubleshootingButton)
 
         if !customItems.isEmpty {
             stackView.addArrangedSubview(customSeparator)
@@ -240,6 +253,53 @@ final class PacketQuickFilterViewController: NSTitlebarAccessoryViewController {
 
         stackView.addArrangedSubview(resetSeparator)
         stackView.addArrangedSubview(resetButton)
+    }
+
+    // Keep troubleshooting in a separate menu so it narrows the protocol chips instead of joining them.
+    private func configureTroubleshooting() {
+        configure(button: troubleshootingButton, isToggle: false)
+        troubleshootingButton.addItem(withTitle: "Troubleshooting")
+        let menu = troubleshootingButton.menu
+        menu?.autoenablesItems = false
+        for (index, title) in ["Off", PacketQuickFilterID.errors.title].enumerated() {
+            let item = NSMenuItem(title: title, action: #selector(selectTroubleshooting(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = index
+            item.toolTip = index == 0
+                ? "Show selected protocols without troubleshooting restrictions"
+                : PacketQuickFilterID.errors.toolTip
+            menu?.addItem(item)
+        }
+        troubleshootingButton.setAccessibilityLabel("Troubleshooting")
+        troubleshootingButton.widthAnchor.constraint(
+            greaterThanOrEqualToConstant: measuredWidth(for: "Troubleshooting") + 16
+        ).isActive = true
+    }
+
+    // Show the active condition on the control and expose its checked state in the menu.
+    private func renderTroubleshooting(isEnabled: Bool) {
+        isDecodeIssuesEnabled = isEnabled
+        let title = isEnabled ? PacketQuickFilterID.errors.title : "Troubleshooting"
+        troubleshootingButton.item(at: 0)?.title = title
+        troubleshootingButton.item(at: 1)?.state = isEnabled ? .off : .on
+        troubleshootingButton.item(at: 2)?.state = isEnabled ? .on : .off
+        render(
+            button: troubleshootingButton,
+            title: title,
+            toolTip: isEnabled
+                ? "Show only partial, malformed, unsupported, or truncated packets within the selected protocols"
+                : "Narrow the selected protocols to packets with decode issues",
+            isSelected: isEnabled
+        )
+        troubleshootingButton.setAccessibilityValue(isEnabled ? PacketQuickFilterID.errors.title : "Off")
+    }
+
+    // Selecting the already checked item leaves the current filter unchanged.
+    @objc private func selectTroubleshooting(_ sender: NSMenuItem) {
+        guard (sender.tag == 1) != isDecodeIssuesEnabled else {
+            return
+        }
+        delegate?.packetQuickFilterViewController(self, didToggle: .errors)
     }
 
     private func configure(button: NSButton, isToggle: Bool) {

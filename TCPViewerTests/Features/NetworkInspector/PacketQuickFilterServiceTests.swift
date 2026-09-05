@@ -45,6 +45,66 @@ struct PacketQuickFilterServiceTests {
         #expect(!service.matches(arpPacket))
     }
 
+    // Decode issues narrow the protocol union instead of admitting unrelated or healthy packets.
+    @Test func decodeIssuesIntersectSelectedProtocols() {
+        let service = PacketQuickFilterService(selection: PacketQuickFilterSelection(selectedIDs: [.tcp, .udp, .errors]))
+        let packets = [
+            makePacket(packetNumber: 1, transportHint: .tcp, layers: ["TCP"]),
+            makePacket(packetNumber: 2, transportHint: .udp, layers: ["UDP"]),
+            makePacket(packetNumber: 3, transportHint: .tcp, layers: ["TCP"], decodeStatus: PacketDecodeStatus(kind: .partial)),
+            makePacket(packetNumber: 4, transportHint: .udp, layers: ["UDP"], decodeStatus: PacketDecodeStatus(kind: .malformed)),
+            makePacket(packetNumber: 5, transportHint: .arp, layers: ["ARP"], decodeStatus: PacketDecodeStatus(kind: .unsupported)),
+            makePacket(packetNumber: 6, transportHint: .tcp, layers: ["TCP"], isTruncated: true),
+        ]
+
+        #expect(packets.filter { service.matches($0) }.map(\.packetNumber) == [3, 4, 6])
+
+        service.toggle(.udp)
+        #expect(packets.filter { service.matches($0) }.map(\.packetNumber) == [3, 6])
+
+        service.toggle(.errors)
+        #expect(packets.filter { service.matches($0) }.map(\.packetNumber) == [1, 3, 6])
+    }
+
+    // All changes only protocols, while Reset Filters clears both independent selections.
+    @Test func allProtocolsPreservesDecodeIssuesUntilReset() {
+        let service = PacketQuickFilterService(selection: PacketQuickFilterSelection(selectedIDs: [.tcp, .errors]))
+        let issue = makePacket(packetNumber: 1, transportHint: .arp, layers: ["ARP"], decodeStatus: PacketDecodeStatus(kind: .unsupported))
+        let healthy = makePacket(packetNumber: 2, transportHint: .tcp, layers: ["TCP"])
+
+        service.toggle(.all)
+
+        #expect(service.selection.contains(.errors))
+        #expect(service.items().first { $0.id == .all }?.isSelected == true)
+        #expect(service.selection.isActive)
+        #expect(service.matches(issue))
+        #expect(!service.matches(healthy))
+
+        service.toggle(.tcp)
+        #expect(!service.selection.contains(.all))
+        service.toggle(.tcp)
+        #expect(service.selection.contains(.all))
+        #expect(service.selection.contains(.errors))
+
+        service.reset()
+        #expect(service.selection == .all)
+        #expect(!service.selection.isActive)
+        #expect(service.matches(healthy))
+    }
+
+    // Existing session files retain their saved troubleshooting selection after the label changes.
+    @Test func legacyErrorsSelectionSurvivesCodingAndUsesIntersection() throws {
+        let data = Data(#"{"selectedIDs":["tcp","errors"]}"#.utf8)
+        let selection = try JSONDecoder().decode(PacketQuickFilterSelection.self, from: data)
+        let restored = try JSONDecoder().decode(PacketQuickFilterSelection.self, from: JSONEncoder().encode(selection))
+        let service = PacketQuickFilterService(selection: restored)
+
+        #expect(restored == selection)
+        #expect(restored.activeLabels == ["TCP", "Decode issues"])
+        #expect(!service.matches(makePacket(packetNumber: 1, transportHint: .tcp, layers: ["TCP"])))
+        #expect(service.matches(makePacket(packetNumber: 2, transportHint: .tcp, layers: ["TCP"], isTruncated: true)))
+    }
+
     @Test func quickFilterPredicatesMatchRepresentativePackets() {
         let service = PacketQuickFilterService()
         let httpOverTCP = makePacket(packetNumber: 1, transportHint: .http1, layers: ["Ethernet", "TCP", "HTTP Request"])

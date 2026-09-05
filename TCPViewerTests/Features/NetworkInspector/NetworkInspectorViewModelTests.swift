@@ -3727,6 +3727,79 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.quickFilterSelection.selectedIDs == [.all])
     }
 
+    // Troubleshooting remains an intersection with protocol, app, and structured filters.
+    @Test func decodeIssuesCombineWithProtocolAndSourceFilters() async {
+        let client = makeClient(displayName: "Example", bundleIdentifier: "com.example.app")
+        let packets = [
+            makePacket(packetNumber: 1, source: .offline, transportHint: .tcp, destinationPort: 443, streamID: nil, client: client),
+            makePacket(packetNumber: 2, source: .offline, transportHint: .tcp, destinationPort: 443, streamID: nil,
+                       decodeStatus: PacketDecodeStatus(kind: .partial), client: client),
+            makePacket(packetNumber: 3, source: .offline, transportHint: .udp, destinationPort: 443, streamID: nil,
+                       decodeStatus: PacketDecodeStatus(kind: .malformed), client: client),
+            makePacket(packetNumber: 4, source: .offline, transportHint: .tcp, destinationPort: 443, streamID: nil,
+                       decodeStatus: PacketDecodeStatus(kind: .partial)),
+            makePacket(packetNumber: 5, source: .offline, transportHint: .tcp, destinationPort: 80, streamID: nil,
+                       decodeStatus: PacketDecodeStatus(kind: .partial), client: client),
+        ]
+        let viewModel = makeOfflineViewModel(packets: packets)
+
+        await viewModel.openDocument(at: URL(fileURLWithPath: "/tmp/decode-issues-combined.pcapng"))
+        await waitUntil { viewModel.snapshot.packetRows.count == packets.count }
+
+        viewModel.selectSourceList(.apps)
+        viewModel.updateDisplayFilterText("port:443")
+        viewModel.toggleQuickFilter(.tcp)
+        viewModel.toggleQuickFilter(.errors)
+
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[1].id])
+        #expect(viewModel.snapshot.activeFilterBarLabels == ["TCP", "Decode issues"])
+        #expect(viewModel.snapshot.selectedPacket?.id == packets[1].id)
+
+        viewModel.toggleQuickFilter(.all)
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[1].id, packets[2].id])
+        #expect(viewModel.snapshot.quickFilterItems.first { $0.id == .all }?.isSelected == true)
+        #expect(viewModel.snapshot.quickFilterSelection.contains(.errors))
+
+        viewModel.resetQuickFilters()
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[0].id, packets[1].id, packets[2].id])
+        #expect(!viewModel.snapshot.isQuickFilterResetVisible)
+    }
+
+    // Live appends must use the same protocol-and-issue predicate as the initial table build.
+    @Test func decodeIssuesFilterLiveAppendsWithinSelectedProtocols() async {
+        let healthyTCP = makePacket(packetNumber: 1, source: .live, transportHint: .tcp, streamID: nil)
+        let partialTCP = makePacket(packetNumber: 2, source: .live, transportHint: .tcp, streamID: nil,
+                                    decodeStatus: PacketDecodeStatus(kind: .partial))
+        let malformedUDP = makePacket(packetNumber: 3, source: .live, transportHint: .udp, streamID: nil,
+                                      decodeStatus: PacketDecodeStatus(kind: .malformed))
+        let laterTCP = makePacket(packetNumber: 4, source: .live, transportHint: .tcp, streamID: nil,
+                                  decodeStatus: PacketDecodeStatus(kind: .malformed))
+        let liveSession = InspectorFakeLiveSession()
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                liveSession: liveSession
+            )),
+            userDefaults: isolatedDefaults()
+        )
+
+        await viewModel.performInitialLoadIfNeeded()
+        viewModel.toggleQuickFilter(.tcp)
+        viewModel.toggleQuickFilter(.errors)
+        await viewModel.toggleLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        liveSession.send(.packetBatch([healthyTCP, partialTCP, malformedUDP], disposition: .append))
+        await waitUntil { viewModel.snapshot.totalPacketCount == 3 }
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [partialTCP.id])
+
+        liveSession.send(.packetBatch([laterTCP], disposition: .append))
+        await waitUntil { viewModel.snapshot.totalPacketCount == 4 }
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [partialTCP.id, laterTCP.id])
+
+        viewModel.toggleQuickFilter(.errors)
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [healthyTCP.id, partialTCP.id, laterTCP.id])
+    }
+
     @Test func quickFilterResetRestoresAllRowsWhenOnlyQuickFiltersAreActive() async {
         let packets = [
             makePacket(packetNumber: 1, source: .offline, transportHint: .tcp, streamID: nil, layerNames: ["Ethernet", "TCP"]),

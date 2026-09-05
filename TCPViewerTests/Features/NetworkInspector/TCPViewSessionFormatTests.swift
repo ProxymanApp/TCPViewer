@@ -82,7 +82,7 @@ struct TCPViewSessionFormatTests {
             pins: [pin],
             savedPackets: [savedRecord],
             customFilters: [customFilter],
-            quickFilterSelection: PacketQuickFilterSelection(selectedIDs: [.tcp, .dns]),
+            quickFilterSelection: PacketQuickFilterSelection(selectedIDs: [.tcp, .dns, .errors]),
             structuredFilterGroup: structuredGroup,
             filterMode: .wireshark,
             wiresharkExpression: "tls.handshake.extensions_server_name == \"example.com\"",
