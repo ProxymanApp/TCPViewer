@@ -298,20 +298,21 @@ final class PCPPNativeOfflineDocument {
     }
 
     // Copy the selected conversation before retapping the document's loaded Wireshark session.
-    func followTCPStream(
+    func followStream(
         containing identifier: UInt64,
-        limits: TCPFollowLimits,
-        progress: TCPFollowProgressHandler?,
-        shouldCancel: TCPFollowCancellationCheck?
-    ) throws -> WiresharkTCPFollowFields {
+        streamProtocol: FollowStreamProtocol? = nil,
+        limits: FollowStreamLimits,
+        progress: FollowStreamProgressHandler?,
+        shouldCancel: FollowStreamCancellationCheck?
+    ) throws -> WiresharkFollowStreamFields {
         let snapshot = try state.read { state -> (NativePacketRecord, [NativePacketRecord], WiresharkEpanSession, [UInt64]) in
             guard let selected = state.file.records.first(where: { $0.identifier == identifier }) else {
                 throw NativeNSError(.fileReadFailed, "Packet \(identifier) is not available in the backing store.")
             }
             guard let session = state.dissectionSession else {
-                throw NativeNSError(.unavailableFeature, "Wireshark TCP stream reassembly is unavailable for this capture.")
+                throw NativeNSError(.unavailableFeature, "Wireshark Stream following is unavailable for this capture.")
             }
-            let candidateIdentifiers = try session.tcpFollowCandidatePacketIdentifiers(
+            let candidateIdentifiers = try session.followStreamCandidatePacketIdentifiers(
                 containing: identifier,
                 maximumPacketCount: limits.maximumCandidatePacketCount
             )
@@ -320,7 +321,7 @@ final class PCPPNativeOfflineDocument {
             records.reserveCapacity(candidateIdentifiers.count)
             for record in state.file.records {
                 if shouldCancel?() == true {
-                    throw NativeNSError(.operationCancelled, "TCP stream reassembly was cancelled.")
+                    throw NativeNSError(.operationCancelled, "Stream following was cancelled.")
                 }
                 if identifierSet.contains(record.identifier) {
                     records.append(record)
@@ -329,16 +330,18 @@ final class PCPPNativeOfflineDocument {
             return (selected, records, session, candidateIdentifiers)
         }
         if snapshot.2.canFollowObservedPackets(withIdentifiers: snapshot.3) {
-            return try snapshot.2.followObservedTCPStream(
+            return try snapshot.2.followObservedStream(
                 containing: snapshot.0,
+                streamProtocol: streamProtocol,
                 records: snapshot.1,
                 limits: limits,
                 progress: progress,
                 shouldCancel: shouldCancel
             )
         }
-        return try WiresharkEpanSession.followTCPStreamInTemporarySession(
+        return try WiresharkEpanSession.followStreamInTemporarySession(
             containing: snapshot.0,
+            streamProtocol: streamProtocol,
             records: snapshot.1,
             limits: limits,
             progress: progress,
@@ -550,7 +553,7 @@ final class PCPPNativeOfflineDocument {
                 record: record,
                 analyzed: analyzed,
                 wireshark: wiresharkSummary,
-                tcpFollowStreamID: session.tcpStreamIdentifier(for: record.identifier)
+                followStreamID: session.streamIdentifier(for: record.identifier)
             )
         } catch {
             if NativeErrorIsCriticalWiresharkException(error) {
@@ -915,18 +918,19 @@ final class PCPPNativeLiveSession {
     }
 
     // Follow a duplicated disk snapshot without blocking live packet storage during the retap.
-    func followTCPStream(
+    func followStream(
         containing identifier: UInt64,
-        limits: TCPFollowLimits,
-        progress: TCPFollowProgressHandler?,
-        shouldCancel: TCPFollowCancellationCheck?
-    ) throws -> TCPFollowStream {
+        streamProtocol: FollowStreamProtocol? = nil,
+        limits: FollowStreamLimits,
+        progress: FollowStreamProgressHandler?,
+        shouldCancel: FollowStreamCancellationCheck?
+    ) throws -> FollowStream {
         let resources = try state.read { state -> (snapshot: NativeLivePacketDiskSnapshot, session: WiresharkEpanSession?) in
             guard state.dissectionSession != nil
                     || (state.phase == .stopped && state.hadWorkingDissectionSession) else {
-                throw NativeNSError(.unavailableFeature, "Wireshark TCP stream reassembly is unavailable for this capture.")
+                throw NativeNSError(.unavailableFeature, "Wireshark Stream following is unavailable for this capture.")
             }
-            let snapshot = try state.packetStore.snapshotForTCPStream(
+            let snapshot = try state.packetStore.snapshotForStream(
                 containing: identifier,
                 maximumPacketCount: limits.maximumCandidatePacketCount,
                 shouldCancel: shouldCancel
@@ -941,28 +945,31 @@ final class PCPPNativeLiveSession {
             shouldCancel: shouldCancel
         )
         guard let selected = records.first(where: { $0.identifier == identifier }) else {
-            throw NativeNSError(.fileReadFailed, "The selected TCP packet is no longer in the live snapshot.")
+            throw NativeNSError(.fileReadFailed, "The selected packet is no longer in the live snapshot.")
         }
         // Stop releases live EPAN ownership, so rebuild a bounded session from the retained disk snapshot.
-        let fields: WiresharkTCPFollowFields
+        let fields: WiresharkFollowStreamFields
         if let session = resources.session {
-            fields = try session.followObservedTCPStream(
+            fields = try session.followObservedStream(
                 containing: selected,
+                streamProtocol: streamProtocol,
                 records: records,
                 limits: limits,
                 progress: progress,
                 shouldCancel: shouldCancel
             )
         } else {
-            fields = try WiresharkEpanSession.followTCPStreamInTemporarySession(
+            fields = try WiresharkEpanSession.followStreamInTemporarySession(
                 containing: selected,
+                streamProtocol: streamProtocol,
                 records: records,
                 limits: limits,
                 progress: progress,
                 shouldCancel: shouldCancel
             )
         }
-        return TCPFollowStream(
+        return FollowStream(
+            streamProtocol: fields.streamProtocol,
             client: fields.client,
             server: fields.server,
             records: fields.records,
@@ -1014,7 +1021,7 @@ final class PCPPNativeLiveSession {
                             record: record,
                             analyzed: analyzer,
                             wireshark: wiresharkSummary,
-                            tcpFollowStreamID: session.tcpStreamIdentifier(for: record.identifier)
+                            followStreamID: session.streamIdentifier(for: record.identifier)
                         )
                     } catch {
                         disableWiresharkAfterFailure(error, state: &state)
@@ -1119,13 +1126,13 @@ final class PCPPNativeLiveSession {
 
                     do {
                         let streamIndexUpdates = try session.observe(record)
-                        $0.packetStore.markTCPStreamsReady(streamIndexUpdates)
+                        $0.packetStore.markStreamsReady(streamIndexUpdates)
                         let wiresharkSummary = try session.summarize(record)
                         return (makePacketSummaryDescriptor(
                             record: record,
                             analyzed: analyzed,
                             wireshark: wiresharkSummary,
-                            tcpFollowStreamID: session.tcpStreamIdentifier(for: record.identifier)
+                            followStreamID: session.streamIdentifier(for: record.identifier)
                         ), false)
                     } catch {
                         disableWiresharkAfterFailure(error, state: &$0)
@@ -1238,7 +1245,7 @@ private func makePacketSummaryDescriptor(
     record: NativePacketRecord,
     analyzed: AnalyzedPacket,
     wireshark: WiresharkPacketSummaryFields,
-    tcpFollowStreamID: UInt32? = nil
+    followStreamID: FollowStreamID? = nil
 ) -> PCPPNativePacketSummaryDescriptor {
     PCPPNativePacketSummaryDescriptor(
         identifier: record.identifier,
@@ -1258,7 +1265,7 @@ private func makePacketSummaryDescriptor(
         originalLength: record.originalLength,
         capturedLength: record.rawBytes.count,
         streamIdentifier: analyzed.streamID.map { NSNumber(value: $0) },
-        tcpFollowStreamIdentifier: tcpFollowStreamID.map { NSNumber(value: $0) },
+        followStreamIdentifier: followStreamID,
         tcpFlags: analyzed.tcpFlags,
         tcpPayloadLength: analyzed.tcpPayloadLength.map { NSNumber(value: $0) },
         infoSummary: wireshark.infoSummary,
@@ -1408,7 +1415,7 @@ final class PCPPNativeLivePacketStoreTestProbe {
                         record: record,
                         analyzed: analyzer,
                         wireshark: wiresharkSummary,
-                        tcpFollowStreamID: session.tcpStreamIdentifier(for: record.identifier)
+                        followStreamID: session.streamIdentifier(for: record.identifier)
                     )
                 }
             }

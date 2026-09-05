@@ -1,5 +1,5 @@
 //
-//  TCPFollowStream.swift
+//  FollowStream.swift
 //  TCPViewer
 //
 //  Created by Proxyman LLC on 10/8/26.
@@ -7,23 +7,48 @@
 
 import Foundation
 
-public enum TCPFollowDirection: String, Sendable, Codable, Hashable {
+public enum FollowStreamProtocol: String, Sendable, Codable, Hashable {
+    case tcp
+    case udp
+
+    public var displayName: String { rawValue.uppercased() }
+    public var menuTitle: String { "Follow \(displayName) Stream" }
+}
+
+// Wireshark numbers TCP and UDP independently, so every follow index includes the protocol.
+public struct FollowStreamID: Sendable, Codable, Hashable {
+    public let streamProtocol: FollowStreamProtocol
+    public let streamID: UInt32
+
+    public init(streamProtocol: FollowStreamProtocol, streamID: UInt32) {
+        self.streamProtocol = streamProtocol
+        self.streamID = streamID
+    }
+
+    // The C bridge packs the protocol above the 32-bit Wireshark stream number.
+    init(wiresharkValue: UInt64) {
+        streamProtocol = wiresharkValue >> 32 == 0 ? .tcp : .udp
+        streamID = UInt32(truncatingIfNeeded: wiresharkValue)
+    }
+}
+
+public enum FollowStreamDirection: String, Sendable, Codable, Hashable {
     case clientToServer
     case serverToClient
 }
 
-public struct TCPFollowRecord: Sendable, Codable, Hashable {
-    public let direction: TCPFollowDirection
+public struct FollowStreamRecord: Sendable, Codable, Hashable {
+    public let direction: FollowStreamDirection
     public let packetID: PacketSummary.ID
     public let timestamp: Date
-    public let sequenceNumber: UInt32
+    public let sequenceNumber: UInt32?
     public let data: Data
 
     public init(
-        direction: TCPFollowDirection,
+        direction: FollowStreamDirection,
         packetID: PacketSummary.ID,
         timestamp: Date,
-        sequenceNumber: UInt32,
+        sequenceNumber: UInt32?,
         data: Data
     ) {
         self.direction = direction
@@ -34,10 +59,11 @@ public struct TCPFollowRecord: Sendable, Codable, Hashable {
     }
 }
 
-public struct TCPFollowStream: Sendable, Codable, Hashable {
+public struct FollowStream: Sendable, Codable, Hashable {
+    public let streamProtocol: FollowStreamProtocol
     public let client: PacketEndpoint
     public let server: PacketEndpoint
-    public let records: [TCPFollowRecord]
+    public let records: [FollowStreamRecord]
     public let clientByteCount: Int
     public let serverByteCount: Int
     public let capturedThroughPacketID: PacketSummary.ID
@@ -45,15 +71,17 @@ public struct TCPFollowStream: Sendable, Codable, Hashable {
     public let isTruncated: Bool
 
     public init(
+        streamProtocol: FollowStreamProtocol = .tcp,
         client: PacketEndpoint,
         server: PacketEndpoint,
-        records: [TCPFollowRecord],
+        records: [FollowStreamRecord],
         clientByteCount: Int,
         serverByteCount: Int,
         capturedThroughPacketID: PacketSummary.ID,
         capturedAt: Date,
         isTruncated: Bool
     ) {
+        self.streamProtocol = streamProtocol
         self.client = client
         self.server = server
         self.records = records
@@ -65,17 +93,17 @@ public struct TCPFollowStream: Sendable, Codable, Hashable {
     }
 }
 
-public struct TCPFollowLimits: Sendable, Equatable, Hashable {
+public struct FollowStreamLimits: Sendable, Equatable, Hashable {
     public let maximumCandidatePacketCount: Int
     public let maximumPayloadBytes: Int
     public let maximumRecordCount: Int
-    public let includedDirection: TCPFollowDirection?
+    public let includedDirection: FollowStreamDirection?
 
     public init(
         maximumCandidatePacketCount: Int = 250_000,
         maximumPayloadBytes: Int = 64 * 1_024 * 1_024,
         maximumRecordCount: Int = 100_000,
-        includedDirection: TCPFollowDirection? = nil
+        includedDirection: FollowStreamDirection? = nil
     ) {
         self.maximumCandidatePacketCount = max(maximumCandidatePacketCount, 1)
         self.maximumPayloadBytes = max(maximumPayloadBytes, 1)
@@ -83,10 +111,10 @@ public struct TCPFollowLimits: Sendable, Equatable, Hashable {
         self.includedDirection = includedDirection
     }
 
-    public static let `default` = TCPFollowLimits()
+    public static let `default` = FollowStreamLimits()
 }
 
-public struct TCPFollowProgress: Sendable, Equatable {
+public struct FollowStreamProgress: Sendable, Equatable {
     public let processedPacketCount: Int
     public let totalPacketCount: Int
 
@@ -103,39 +131,43 @@ public struct TCPFollowProgress: Sendable, Equatable {
     }
 }
 
-public typealias TCPFollowProgressHandler = (TCPFollowProgress) -> Void
-public typealias TCPFollowCancellationCheck = () -> Bool
+public typealias FollowStreamProgressHandler = (FollowStreamProgress) -> Void
+public typealias FollowStreamCancellationCheck = () -> Bool
 
-public protocol TCPStreamFollowing: AnyObject {
-    func followTCPStream(
+public protocol StreamFollowing: AnyObject {
+    func followStream(
         containing packetID: PacketSummary.ID,
-        limits: TCPFollowLimits,
-        progress: TCPFollowProgressHandler?,
-        shouldCancel: TCPFollowCancellationCheck?,
-        completion: @escaping TCPViewerCompletion<TCPFollowStream>
+        streamProtocol: FollowStreamProtocol?,
+        limits: FollowStreamLimits,
+        progress: FollowStreamProgressHandler?,
+        shouldCancel: FollowStreamCancellationCheck?,
+        completion: @escaping TCPViewerCompletion<FollowStream>
     )
 }
 
-public extension TCPStreamFollowing {
-    func followTCPStream(
+public extension StreamFollowing {
+    func followStream(
         containing packetID: PacketSummary.ID,
-        limits: TCPFollowLimits,
-        progress: TCPFollowProgressHandler?,
-        shouldCancel: TCPFollowCancellationCheck?,
-        completion: @escaping TCPViewerCompletion<TCPFollowStream>
+        streamProtocol: FollowStreamProtocol? = nil,
+        limits: FollowStreamLimits,
+        progress: FollowStreamProgressHandler?,
+        shouldCancel: FollowStreamCancellationCheck?,
+        completion: @escaping TCPViewerCompletion<FollowStream>
     ) {
         completion(.failure(TCPViewerCoreError(
             code: .unavailableFeature,
-            message: "Follow TCP Stream is unavailable for this capture source."
+            message: "Follow Stream is unavailable for this capture source."
         )))
     }
 
-    func followTCPStream(
+    func followStream(
         containing packetID: PacketSummary.ID,
-        completion: @escaping TCPViewerCompletion<TCPFollowStream>
+        streamProtocol: FollowStreamProtocol? = nil,
+        completion: @escaping TCPViewerCompletion<FollowStream>
     ) {
-        followTCPStream(
+        followStream(
             containing: packetID,
+            streamProtocol: streamProtocol,
             limits: .default,
             progress: nil,
             shouldCancel: nil,

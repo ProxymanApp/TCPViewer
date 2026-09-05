@@ -85,6 +85,7 @@ typedef struct TCPViewerWiresharkFollowRecord {
 } TCPViewerWiresharkFollowRecord;
 
 typedef struct TCPViewerWiresharkFollowResult {
+    uint32_t streamProtocol; // 0 = TCP, 1 = UDP.
     bool succeeded;
     bool isTruncated;
     const char *errorMessage;
@@ -98,15 +99,15 @@ typedef struct TCPViewerWiresharkFollowResult {
     size_t recordCount;
 } TCPViewerWiresharkFollowResult;
 
-typedef struct TCPViewerWiresharkTCPStreamIndexEntry {
+typedef struct TCPViewerWiresharkStreamIndexEntry {
     uint64_t packetIdentifier;
-    uint32_t streamIdentifier;
-} TCPViewerWiresharkTCPStreamIndexEntry;
+    uint64_t streamIdentifier; // Protocol in the upper 32 bits, Wireshark stream number below.
+} TCPViewerWiresharkStreamIndexEntry;
 
-typedef struct TCPViewerWiresharkTCPStreamIndexResult {
-    TCPViewerWiresharkTCPStreamIndexEntry *entries;
+typedef struct TCPViewerWiresharkStreamIndexResult {
+    TCPViewerWiresharkStreamIndexEntry *entries;
     size_t entryCount;
-} TCPViewerWiresharkTCPStreamIndexResult;
+} TCPViewerWiresharkStreamIndexResult;
 
 typedef struct TCPViewerWiresharkFollowCandidateResult {
     bool succeeded;
@@ -176,7 +177,7 @@ void TCPViewerWiresharkSessionReleaseResources(TCPViewerWiresharkSession *sessio
 bool TCPViewerWiresharkSessionIsAvailable(TCPViewerWiresharkSession *session);
 const char *TCPViewerWiresharkSessionUnavailableReason(TCPViewerWiresharkSession *session);
 bool TCPViewerWiresharkSessionObservePacket(TCPViewerWiresharkSession *session, const TCPViewerWiresharkPacketContext *context);
-TCPViewerWiresharkTCPStreamIndexResult *TCPViewerWiresharkSessionCopyPendingTCPStreamIndexUpdates(TCPViewerWiresharkSession *session);
+TCPViewerWiresharkStreamIndexResult *TCPViewerWiresharkSessionCopyPendingStreamIndexUpdates(TCPViewerWiresharkSession *session);
 bool TCPViewerWiresharkSessionFinishFirstPass(TCPViewerWiresharkSession *session);
 bool TCPViewerWiresharkSessionCanFollowObservedPacket(TCPViewerWiresharkSession *session, uint64_t packetIdentifier);
 bool TCPViewerWiresharkSessionCanFollowObservedPackets(
@@ -184,19 +185,19 @@ bool TCPViewerWiresharkSessionCanFollowObservedPackets(
     const uint64_t *packetIdentifiers,
     size_t packetIdentifierCount
 );
-TCPViewerWiresharkFollowCandidateResult *TCPViewerWiresharkSessionCopyTCPFollowCandidates(
+TCPViewerWiresharkFollowCandidateResult *TCPViewerWiresharkSessionCopyFollowStreamCandidates(
     TCPViewerWiresharkSession *session,
     uint64_t packetIdentifier,
     size_t maximumPacketCount
 );
-bool TCPViewerWiresharkSessionTCPStreamIdentifier(
+bool TCPViewerWiresharkSessionStreamIdentifier(
     TCPViewerWiresharkSession *session,
     uint64_t packetIdentifier,
-    uint32_t *streamIdentifier
+    uint64_t *streamIdentifier
 );
 TCPViewerWiresharkSummaryResult *TCPViewerWiresharkSessionSummarizePacket(TCPViewerWiresharkSession *session, const TCPViewerWiresharkPacketContext *context);
 TCPViewerWiresharkInspectionResult *TCPViewerWiresharkSessionInspectPacket(TCPViewerWiresharkSession *session, const TCPViewerWiresharkPacketContext *context);
-bool TCPViewerWiresharkSessionBeginFollowTCPStream(
+bool TCPViewerWiresharkSessionBeginFollowStream(
     TCPViewerWiresharkSession *session,
     const TCPViewerWiresharkPacketContext *selectedContext,
     TCPViewerWiresharkFollowDirection direction
@@ -205,15 +206,16 @@ TCPViewerWiresharkFollowPacketStatus TCPViewerWiresharkSessionProcessFollowPacke
     TCPViewerWiresharkSession *session,
     const TCPViewerWiresharkPacketContext *context,
     size_t maximumPayloadBytes,
+    size_t maximumRecordCount,
     TCPViewerWiresharkFollowDirection direction
 );
-TCPViewerWiresharkFollowResult *TCPViewerWiresharkSessionFinishFollowTCPStream(
+TCPViewerWiresharkFollowResult *TCPViewerWiresharkSessionFinishFollowStream(
     TCPViewerWiresharkSession *session,
     size_t maximumPayloadBytes,
     size_t maximumRecordCount,
     TCPViewerWiresharkFollowDirection direction
 );
-void TCPViewerWiresharkSessionCancelFollowTCPStream(TCPViewerWiresharkSession *session);
+void TCPViewerWiresharkSessionCancelFollowStream(TCPViewerWiresharkSession *session);
 TCPViewerWiresharkExceptionReport *TCPViewerWiresharkSessionCopyLastCriticalException(TCPViewerWiresharkSession *session);
 TCPViewerWiresharkExceptionReport *TCPViewerWiresharkSessionCopyNextCriticalException(TCPViewerWiresharkSession *session);
 TCPViewerDisplayFilterValidationResult *TCPViewerWiresharkValidateDisplayFilter(
@@ -233,7 +235,7 @@ TCPViewerDisplayFilterMatchResult *TCPViewerWiresharkSessionEvaluateDisplayFilte
 void TCPViewerWiresharkSessionClearDisplayFilter(TCPViewerWiresharkSession *session);
 void TCPViewerWiresharkSummaryResultDestroy(TCPViewerWiresharkSummaryResult *result);
 void TCPViewerWiresharkInspectionResultDestroy(TCPViewerWiresharkInspectionResult *result);
-void TCPViewerWiresharkTCPStreamIndexResultDestroy(TCPViewerWiresharkTCPStreamIndexResult *result);
+void TCPViewerWiresharkStreamIndexResultDestroy(TCPViewerWiresharkStreamIndexResult *result);
 void TCPViewerWiresharkFollowCandidateResultDestroy(TCPViewerWiresharkFollowCandidateResult *result);
 void TCPViewerWiresharkFollowResultDestroy(TCPViewerWiresharkFollowResult *result);
 void TCPViewerWiresharkExceptionReportDestroy(TCPViewerWiresharkExceptionReport *report);

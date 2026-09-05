@@ -73,15 +73,17 @@ public final class NativeLiveCaptureSession: LiveCaptureSessionProviding, @unche
         state.clearDisplayFilter(completion: completion)
     }
 
-    public func followTCPStream(
+    public func followStream(
         containing packetID: PacketSummary.ID,
-        limits: TCPFollowLimits,
-        progress: TCPFollowProgressHandler?,
-        shouldCancel: TCPFollowCancellationCheck?,
-        completion: @escaping TCPViewerCompletion<TCPFollowStream>
+        streamProtocol: FollowStreamProtocol? = nil,
+        limits: FollowStreamLimits,
+        progress: FollowStreamProgressHandler?,
+        shouldCancel: FollowStreamCancellationCheck?,
+        completion: @escaping TCPViewerCompletion<FollowStream>
     ) {
-        state.followTCPStream(
+        state.followStream(
             containing: packetID,
+            streamProtocol: streamProtocol,
             limits: limits,
             progress: progress,
             shouldCancel: shouldCancel,
@@ -295,7 +297,7 @@ private struct LivePacketSummaryText: Equatable {
     }
 }
 
-final class LiveTCPFollowOperationCoordinator: @unchecked Sendable {
+final class LiveFollowStreamOperationCoordinator: @unchecked Sendable {
     private let condition = NSCondition()
     private var activeOperationCount = 0
     private var acceptsOperations = true
@@ -361,7 +363,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     private let nativeSession: PCPPNativeLiveSession
     private let eventBox: EventCallbackBox<PacketIngestEvent>
     private let stopCondition: CaptureStopCondition
-    private let followOperationCoordinator = LiveTCPFollowOperationCoordinator()
+    private let followOperationCoordinator = LiveFollowStreamOperationCoordinator()
 
     private var phase: LiveCaptureSessionPhase = .ready
     private var health: CaptureHealthSnapshot = .empty
@@ -551,25 +553,27 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
         }
     }
 
-    func followTCPStream(
+    func followStream(
         containing packetID: PacketSummary.ID,
-        limits: TCPFollowLimits,
-        progress: TCPFollowProgressHandler?,
-        shouldCancel: TCPFollowCancellationCheck?,
-        completion: @escaping TCPViewerCompletion<TCPFollowStream>
+        streamProtocol: FollowStreamProtocol? = nil,
+        limits: FollowStreamLimits,
+        progress: FollowStreamProgressHandler?,
+        shouldCancel: FollowStreamCancellationCheck?,
+        completion: @escaping TCPViewerCompletion<FollowStream>
     ) {
         guard followOperationCoordinator.beginFollow() else {
             completion(.failure(TCPViewerCoreError(
                 code: .operationCancelled,
-                message: "TCP stream reassembly was cancelled for a capture lifecycle change."
+                message: "Stream following was cancelled for a capture lifecycle change."
             )))
             return
         }
         followQueue.async {
             let result = Result {
                 do {
-                    return try self.nativeSession.followTCPStream(
+                    return try self.nativeSession.followStream(
                         containing: packetID,
+                        streamProtocol: streamProtocol,
                         limits: limits,
                         progress: progress,
                         shouldCancel: {

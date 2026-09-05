@@ -1,5 +1,5 @@
 //
-//  TCPFollowStreamViewController.swift
+//  FollowStreamViewController.swift
 //  TCPViewer
 //
 //  Created by Proxyman LLC on 10/8/26.
@@ -8,15 +8,15 @@
 import AppKit
 import PcapPlusPlusCore
 
-private final class TCPFollowTextView: NSTextView {
-    var packetRanges: [TCPFollowPacketRange] = [] {
+private final class FollowStreamTextView: NSTextView {
+    var packetRanges: [FollowStreamPacketRange] = [] {
         didSet {
             hideRevealButton()
         }
     }
-    var revealPacket: ((TCPFollowRevealTarget) -> Void)?
+    var revealPacket: ((FollowStreamRevealTarget) -> Void)?
     private let revealButton = NSButton()
-    private var hoveredRevealTarget: TCPFollowRevealTarget?
+    private var hoveredRevealTarget: FollowStreamRevealTarget?
     private var hoverTrackingArea: NSTrackingArea?
 
     override init(frame frameRect: NSRect) {
@@ -89,7 +89,7 @@ private final class TCPFollowTextView: NSTextView {
     }
 
     // Resolve a record from viewport-only layout so hover never typesets the full transcript.
-    private func packetRange(at point: NSPoint) -> TCPFollowPacketRange? {
+    private func packetRange(at point: NSPoint) -> FollowStreamPacketRange? {
         guard visibleRect.contains(point),
               let layoutManager,
               let textContainer,
@@ -133,7 +133,7 @@ private final class TCPFollowTextView: NSTextView {
     }
 
     // Binary-search the sorted character ranges instead of scanning every stream record on mouse move.
-    private func packetRange(containing characterIndex: Int) -> TCPFollowPacketRange? {
+    private func packetRange(containing characterIndex: Int) -> FollowStreamPacketRange? {
         var lowerBound = 0
         var upperBound = packetRanges.count
         while lowerBound < upperBound {
@@ -151,7 +151,7 @@ private final class TCPFollowTextView: NSTextView {
     }
 
     // Position the action after the packet header without changing transcript text or selection.
-    private func revealButtonFrame(for packetRange: TCPFollowPacketRange) -> NSRect? {
+    private func revealButtonFrame(for packetRange: FollowStreamPacketRange) -> NSRect? {
         guard let layoutManager, let textContainer, packetRange.range.location < textStorage?.length ?? 0 else {
             return nil
         }
@@ -191,11 +191,12 @@ private final class TCPFollowTextView: NSTextView {
     }
 }
 
-final class TCPFollowStreamViewController: NSViewController, NSSearchFieldDelegate {
-    var revealPacket: ((TCPFollowRevealTarget) -> Void)?
-    var requestStream: ((TCPFollowStreamNavigation.Entry) -> Void)?
+final class FollowStreamViewController: NSViewController, NSSearchFieldDelegate {
+    var revealPacket: ((FollowStreamRevealTarget) -> Void)?
+    var requestStream: ((FollowStreamNavigation.Entry) -> Void)?
 
-    private let viewModel = TCPFollowStreamViewModel()
+    private let viewModel = FollowStreamViewModel()
+    private(set) var streamProtocol: FollowStreamProtocol = .tcp
     private let settingsLabel = NSTextField(labelWithString: "Settings:")
     private let directionControl = NSSegmentedControl(
         labels: ["Both", "Client → Server", "Server → Client"],
@@ -217,12 +218,12 @@ final class TCPFollowStreamViewController: NSViewController, NSSearchFieldDelega
     private let streamStack = NSStackView()
     private let summaryLabel = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(labelWithString: "")
-    private let placeholderLabel = NSTextField(labelWithString: "Reassembling TCP stream…")
+    private let placeholderLabel = NSTextField(labelWithString: "Loading TCP stream…")
     private let progressIndicator = NSProgressIndicator()
-    private let scrollView = TCPFollowTextView.scrollableTextView()
-    private lazy var textView: TCPFollowTextView = {
-        guard let textView = scrollView.documentView as? TCPFollowTextView else {
-            preconditionFailure("The follow stream scroll view must contain TCPFollowTextView.")
+    private let scrollView = FollowStreamTextView.scrollableTextView()
+    private lazy var textView: FollowStreamTextView = {
+        guard let textView = scrollView.documentView as? FollowStreamTextView else {
+            preconditionFailure("The follow stream scroll view must contain FollowStreamTextView.")
         }
         return textView
     }()
@@ -234,21 +235,21 @@ final class TCPFollowStreamViewController: NSViewController, NSSearchFieldDelega
     private let nextMatchButton = NSButton()
     private let searchStack = NSStackView()
     private let placeholderStack = NSStackView()
-    private let searchQueue = DispatchQueue(label: "com.proxyman.tcpviewer.TCPFollowStream.search", qos: .userInitiated)
-    private var latestRenderedContent: TCPFollowRenderedContent?
-    private var streamNavigation: TCPFollowStreamNavigation?
+    private let searchQueue = DispatchQueue(label: "com.proxyman.tcpviewer.FollowStream.search", qos: .userInitiated)
+    private var latestRenderedContent: FollowStreamRenderedContent?
+    private var streamNavigation: FollowStreamNavigation?
     private var searchGeneration = 0
     private var searchQuery = ""
     private var searchMatchCount = 0
     private var currentMatchNumber = 0
     private var currentMatchRange: NSRange?
-    private var searchCancellationFlag: TCPFollowCancellationFlag?
+    private var searchCancellationFlag: FollowStreamCancellationFlag?
 
-    var stream: TCPFollowStream? {
+    var stream: FollowStream? {
         viewModel.stream
     }
 
-    var renderedContent: TCPFollowRenderedContent {
+    var renderedContent: FollowStreamRenderedContent {
         latestRenderedContent ?? viewModel.renderedContent()
     }
 
@@ -269,7 +270,7 @@ final class TCPFollowStreamViewController: NSViewController, NSSearchFieldDelega
     // Display an indeterminate loading state before the core reports packet counts.
     func showLoading() {
         summaryLabel.stringValue = "Preparing packet snapshot"
-        placeholderLabel.stringValue = "Reassembling TCP stream…"
+        placeholderLabel.stringValue = "Loading \(streamProtocol.displayName) stream…"
         progressIndicator.isHidden = false
         progressIndicator.isIndeterminate = true
         progressIndicator.startAnimation(nil)
@@ -279,16 +280,17 @@ final class TCPFollowStreamViewController: NSViewController, NSSearchFieldDelega
     }
 
     // Update bounded reassembly progress without exposing payload data.
-    func updateProgress(_ progress: TCPFollowProgress) {
+    func updateProgress(_ progress: FollowStreamProgress) {
         progressIndicator.isIndeterminate = false
         progressIndicator.minValue = 0
         progressIndicator.maxValue = Double(max(progress.totalPacketCount, 1))
         progressIndicator.doubleValue = Double(progress.processedPacketCount)
-        placeholderLabel.stringValue = "Reassembling packet \(progress.processedPacketCount.formatted()) of \(progress.totalPacketCount.formatted())…"
+        placeholderLabel.stringValue = "Following packet \(progress.processedPacketCount.formatted()) of \(progress.totalPacketCount.formatted())…"
     }
 
     // Render the completed immutable stream snapshot.
-    func show(stream: TCPFollowStream) {
+    func show(stream: FollowStream) {
+        configureProtocol(stream.streamProtocol)
         viewModel.setStream(stream)
         let client = endpointLabel(stream.client)
         let server = endpointLabel(stream.server)
@@ -307,21 +309,21 @@ final class TCPFollowStreamViewController: NSViewController, NSSearchFieldDelega
         progressIndicator.stopAnimation(nil)
         progressIndicator.isHidden = true
         placeholderLabel.stringValue = error.localizedDescription
-        summaryLabel.stringValue = "Follow TCP Stream"
+        summaryLabel.stringValue = streamProtocol.menuTitle
         placeholderStack.isHidden = false
         scrollView.isHidden = true
         suspendSearch()
     }
 
     // Apply the direction control to the already-reassembled snapshot.
-    func setDirectionFilter(_ filter: TCPFollowDirectionFilter) {
+    func setDirectionFilter(_ filter: FollowStreamDirectionFilter) {
         directionControl.selectedSegment = filter.rawValue
         viewModel.setDirectionFilter(filter)
         render()
     }
 
     // Apply the text/hex control to the already-reassembled snapshot.
-    func setRepresentation(_ representation: TCPFollowRepresentation) {
+    func setRepresentation(_ representation: FollowStreamRepresentation) {
         representationControl.selectedSegment = representation.rawValue
         viewModel.setRepresentation(representation)
         updateHexBytesPerLineIfNeeded()
@@ -329,9 +331,21 @@ final class TCPFollowStreamViewController: NSViewController, NSSearchFieldDelega
     }
 
     // Update the displayed stream ID and the stepper's available range.
-    func setStreamNavigation(_ navigation: TCPFollowStreamNavigation, isEnabled: Bool) {
+    func setStreamNavigation(_ navigation: FollowStreamNavigation, isEnabled: Bool) {
+        configureProtocol(navigation.streamProtocol)
         streamNavigation = navigation
         updateStreamNavigationControls(isEnabled: isEnabled)
+    }
+
+    // Keep all protocol-specific copy in the existing screen synchronized with its mode.
+    private func configureProtocol(_ streamProtocol: FollowStreamProtocol) {
+        self.streamProtocol = streamProtocol
+        streamStepper.toolTip = "Previous or next \(streamProtocol.displayName) stream"
+        streamStepper.setAccessibilityLabel("\(streamProtocol.displayName) stream")
+        searchField.setAccessibilityLabel("Search \(streamProtocol.displayName) stream")
+        if viewModel.stream == nil {
+            placeholderLabel.stringValue = "Loading \(streamProtocol.displayName) stream…"
+        }
     }
 
     // Prevent another navigation request while the selected stream is loading.
@@ -359,11 +373,11 @@ final class TCPFollowStreamViewController: NSViewController, NSSearchFieldDelega
     private func setupView() {
         // Keep display controls together at the leading edge of the settings row.
         settingsLabel.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
-        directionControl.selectedSegment = TCPFollowDirectionFilter.both.rawValue
+        directionControl.selectedSegment = FollowStreamDirectionFilter.both.rawValue
         directionControl.target = self
         directionControl.action = #selector(directionChanged(_:))
         directionControl.setAccessibilityLabel("Stream direction")
-        representationControl.selectedSegment = TCPFollowRepresentation.text.rawValue
+        representationControl.selectedSegment = FollowStreamRepresentation.text.rawValue
         representationControl.target = self
         representationControl.action = #selector(representationChanged(_:))
         representationControl.setAccessibilityLabel("Payload representation")
@@ -384,8 +398,8 @@ final class TCPFollowStreamViewController: NSViewController, NSSearchFieldDelega
         streamStepper.valueWraps = false
         streamStepper.target = self
         streamStepper.action = #selector(streamChanged(_:))
-        streamStepper.toolTip = "Previous or next TCP stream"
-        streamStepper.setAccessibilityLabel("TCP stream")
+        streamStepper.toolTip = "Previous or next \(streamProtocol.displayName) stream"
+        streamStepper.setAccessibilityLabel("\(streamProtocol.displayName) stream")
         streamStepper.isEnabled = false
         streamStack.orientation = .horizontal
         streamStack.alignment = .centerY
@@ -429,7 +443,7 @@ final class TCPFollowStreamViewController: NSViewController, NSSearchFieldDelega
         searchField.delegate = self
         searchField.target = self
         searchField.action = #selector(searchSubmitted(_:))
-        searchField.setAccessibilityLabel("Search TCP stream")
+        searchField.setAccessibilityLabel("Search \(streamProtocol.displayName) stream")
         searchField.isEnabled = false
         searchMatchLabel.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
         searchMatchLabel.textColor = .secondaryLabelColor
@@ -519,14 +533,14 @@ final class TCPFollowStreamViewController: NSViewController, NSSearchFieldDelega
     }
 
     @objc private func directionChanged(_ sender: NSSegmentedControl) {
-        guard let filter = TCPFollowDirectionFilter(rawValue: sender.selectedSegment) else {
+        guard let filter = FollowStreamDirectionFilter(rawValue: sender.selectedSegment) else {
             return
         }
         setDirectionFilter(filter)
     }
 
     @objc private func representationChanged(_ sender: NSSegmentedControl) {
-        guard let representation = TCPFollowRepresentation(rawValue: sender.selectedSegment) else {
+        guard let representation = FollowStreamRepresentation(rawValue: sender.selectedSegment) else {
             return
         }
         setRepresentation(representation)
@@ -616,7 +630,7 @@ final class TCPFollowStreamViewController: NSViewController, NSSearchFieldDelega
 
         searchMatchLabel.stringValue = "Searching…"
         let searchableText = textView.string
-        let cancellationFlag = TCPFollowCancellationFlag()
+        let cancellationFlag = FollowStreamCancellationFlag()
         searchCancellationFlag = cancellationFlag
         searchQueue.async {
             guard let summary = Self.searchSummary(
@@ -751,7 +765,7 @@ final class TCPFollowStreamViewController: NSViewController, NSSearchFieldDelega
         let textInsets = textView.textContainerInset.width * 2
         let fragmentPadding = (textView.textContainer?.lineFragmentPadding ?? 0) * 2
         let availableWidth = max(scrollView.contentSize.width - textInsets - fragmentPadding, 0)
-        let byteCount = TCPFollowStreamViewModel.preferredHexBytesPerLine(for: availableWidth)
+        let byteCount = FollowStreamViewModel.preferredHexBytesPerLine(for: availableWidth)
         guard byteCount != viewModel.hexBytesPerLine else {
             return false
         }

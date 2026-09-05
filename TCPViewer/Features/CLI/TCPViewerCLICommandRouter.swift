@@ -226,20 +226,21 @@ final class TCPViewerCLICommandRouter: TCPViewerCLICommandRouting {
             guard ["text", "hex", "base64"].contains(encoding) else {
                 throw CLIError(code: "invalid_parameter", message: "encoding is invalid.")
             }
-            let includedDirection: TCPFollowDirection? = switch direction {
+            let includedDirection: FollowStreamDirection? = switch direction {
             case "client-to-server": .clientToServer
             case "server-to-client": .serverToClient
             default: nil
             }
             let viewModel = try appDelegate.cliWorkspaceViewModel()
-            let limits = TCPFollowLimits(
+            let limits = FollowStreamLimits(
                 maximumCandidatePacketCount: Limit.maximumFollowCandidates,
                 maximumPayloadBytes: maximumBytes,
                 maximumRecordCount: maximumRecords,
                 includedDirection: includedDirection
             )
-            viewModel.followTCPStream(
+            viewModel.followStream(
                 containing: packetID,
+                streamProtocol: nil,
                 limits: limits,
                 progress: nil,
                 shouldCancel: nil
@@ -247,7 +248,7 @@ final class TCPViewerCLICommandRouter: TCPViewerCLICommandRouting {
                 DispatchQueue.main.async {
                     switch result {
                     case .success(let stream):
-                        completion(self.success(request, data: self.followData(
+                        completion(self.success(request, data: Self.followData(
                             stream,
                             direction: direction,
                             encoding: encoding,
@@ -266,8 +267,9 @@ final class TCPViewerCLICommandRouter: TCPViewerCLICommandRouting {
         }
     }
 
-    private func followData(
-        _ stream: TCPFollowStream,
+    // Serialize the shared snapshot without inventing TCP sequence numbers for UDP datagrams.
+    static func followData(
+        _ stream: FollowStream,
         direction: String,
         encoding: String,
         maximumBytes: Int,
@@ -277,7 +279,7 @@ final class TCPViewerCLICommandRouter: TCPViewerCLICommandRouting {
         var records: [TCPViewerCLIValue] = []
         var wasLimited = stream.isTruncated
         for record in stream.records where includes(record.direction, selection: direction) {
-            guard records.count < maximumRecords, returnedBytes < maximumBytes else {
+            guard records.count < maximumRecords, returnedBytes < maximumBytes || record.data.isEmpty else {
                 wasLimited = true
                 break
             }
@@ -288,13 +290,14 @@ final class TCPViewerCLICommandRouter: TCPViewerCLICommandRouting {
                 "direction": .string(record.direction == .clientToServer ? "client_to_server" : "server_to_client"),
                 "packet_id": .string(String(record.packetID)),
                 "timestamp": .string(Self.iso8601.string(from: record.timestamp)),
-                "sequence_number": .string(String(record.sequenceNumber)),
+                "sequence_number": record.sequenceNumber.map { .string(String($0)) } ?? .null,
                 "data": .string(encoded(data, as: encoding)),
                 "byte_count": .int(data.count),
             ]))
             if data.count < record.data.count { break }
         }
         return [
+            "protocol": .string(stream.streamProtocol.rawValue),
             "client": endpointValue(stream.client),
             "server": endpointValue(stream.server),
             "encoding": .string(encoding),
@@ -515,13 +518,13 @@ final class TCPViewerCLICommandRouter: TCPViewerCLICommandRouting {
         return value
     }
 
-    private func includes(_ direction: TCPFollowDirection, selection: String) -> Bool {
+    private static func includes(_ direction: FollowStreamDirection, selection: String) -> Bool {
         selection == "both" ||
             (selection == "client-to-server" && direction == .clientToServer) ||
             (selection == "server-to-client" && direction == .serverToClient)
     }
 
-    private func encoded(_ data: Data, as encoding: String) -> String {
+    private static func encoded(_ data: Data, as encoding: String) -> String {
         switch encoding {
         case "base64": data.base64EncodedString()
         case "hex": data.map { String(format: "%02x", $0) }.joined()
@@ -529,7 +532,7 @@ final class TCPViewerCLICommandRouter: TCPViewerCLICommandRouting {
         }
     }
 
-    private func endpointValue(_ endpoint: PacketEndpoint) -> TCPViewerCLIValue {
+    private static func endpointValue(_ endpoint: PacketEndpoint) -> TCPViewerCLIValue {
         var value: [String: TCPViewerCLIValue] = [:]
         if let address = endpoint.address { value["address"] = .string(address) }
         if let port = endpoint.port { value["port"] = .int(Int(port)) }

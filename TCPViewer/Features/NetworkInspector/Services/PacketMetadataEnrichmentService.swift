@@ -826,7 +826,7 @@ extension PacketSummary {
             originalLength: originalLength,
             capturedLength: capturedLength,
             streamID: streamID,
-            tcpFollowStreamID: tcpFollowStreamID,
+            followStreamID: followStreamID,
             direction: direction,
             tcpFlags: tcpFlags,
             tcpPayloadLength: tcpPayloadLength,
@@ -861,7 +861,7 @@ extension PacketSummary {
             originalLength: originalLength,
             capturedLength: capturedLength,
             streamID: streamID,
-            tcpFollowStreamID: tcpFollowStreamID,
+            followStreamID: followStreamID,
             direction: direction ?? self.direction,
             tcpFlags: tcpFlags,
             tcpPayloadLength: tcpPayloadLength,
@@ -891,7 +891,7 @@ extension PacketSummary {
             originalLength: originalLength,
             capturedLength: capturedLength,
             streamID: streamID,
-            tcpFollowStreamID: tcpFollowStreamID,
+            followStreamID: followStreamID,
             direction: direction,
             tcpFlags: tcpFlags,
             tcpPayloadLength: tcpPayloadLength,
@@ -909,7 +909,7 @@ extension PacketSummary {
     }
 
     // Return a packet copy with Wireshark's connection-specific follow stream ID.
-    func tcpviewerApplying(tcpFollowStreamID: UInt32?) -> PacketSummary {
+    func tcpviewerApplying(followStreamID: FollowStreamID?) -> PacketSummary {
         PacketSummary(
             id: id,
             packetNumber: packetNumber,
@@ -922,7 +922,7 @@ extension PacketSummary {
             originalLength: originalLength,
             capturedLength: capturedLength,
             streamID: streamID,
-            tcpFollowStreamID: tcpFollowStreamID,
+            followStreamID: followStreamID,
             direction: direction,
             tcpFlags: tcpFlags,
             tcpPayloadLength: tcpPayloadLength,

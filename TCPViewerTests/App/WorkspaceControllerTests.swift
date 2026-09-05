@@ -1864,7 +1864,7 @@ struct PacketIngestStateMutationTests {
         var state = PacketIngestState.empty
         let packet = makePacket(packetNumber: 1)
         state.append([packet], source: .live)
-        let identity = TCPFollowCaptureIdentity(ingestState: state)
+        let identity = FollowStreamCaptureIdentity(ingestState: state)
 
         #expect(identity.canReveal(packetID: packet.id, in: state))
         #expect(!identity.canReveal(packetID: 99, in: state))

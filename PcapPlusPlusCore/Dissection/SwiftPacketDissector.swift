@@ -164,7 +164,7 @@ enum SwiftPacketDissector {
             originalLength: record.originalLength,
             capturedLength: record.rawBytes.count,
             streamIdentifier: packet.streamID.map { NSNumber(value: $0) },
-            tcpFollowStreamIdentifier: nil,
+            followStreamIdentifier: nil,
             tcpFlags: packet.tcpFlags,
             tcpPayloadLength: packet.tcpPayloadLength.map { NSNumber(value: $0) },
             infoSummary: packet.infoSummary,

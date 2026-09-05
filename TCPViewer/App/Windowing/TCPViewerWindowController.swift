@@ -106,6 +106,11 @@ final class TCPViewerWindowController: NSWindowController {
         rootViewController.clearAllPackets()
     }
 
+    // Route the Tools action through the same root controller used by the packet context menu.
+    @IBAction func followSelectedStream(_ sender: Any?) {
+        rootViewController.followSelectedStream()
+    }
+
     @IBAction func showEndpointStatistics(_ sender: Any?) {
         rootViewController.showEndpointStatistics()
     }
@@ -315,6 +320,11 @@ extension TCPViewerWindowController: PacketQuickFilterViewControllerDelegate {
 
 extension TCPViewerWindowController: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(followSelectedStream(_:)) {
+            let row = rootViewController.selectedFollowRow
+            menuItem.title = (row?.followStreamProtocol ?? .tcp).menuTitle
+            return row != nil
+        }
         guard menuItem.action == #selector(clearAllPackets(_:)) else {
             return true
         }

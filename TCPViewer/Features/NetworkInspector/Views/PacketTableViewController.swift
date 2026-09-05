@@ -16,7 +16,7 @@ protocol PacketTableViewControllerDelegate: AnyObject {
         didRequestPinPackets identifiers: [PacketSummary.ID]
     )
     func packetTableViewController(_ controller: PacketTableViewController, didRequestSavePackets identifiers: [PacketSummary.ID])
-    func packetTableViewController(_ controller: PacketTableViewController, didRequestFollowTCPStream packetID: PacketSummary.ID)
+    func packetTableViewController(_ controller: PacketTableViewController, didRequestFollowStream packetID: PacketSummary.ID)
     func packetTableViewController(
         _ controller: PacketTableViewController,
         didRequestSetComment comment: String,
@@ -1062,12 +1062,22 @@ final class PacketTableViewController: NSViewController {
         delegate?.packetTableViewController(self, didRequestSavePackets: identifiers)
     }
 
-    @objc func followTCPStreamFromMenu(_ sender: Any?) {
+    // Resolve the menu-bar target from the table, even before the selection snapshot catches up.
+    var selectedFollowRow: PacketTableRow? {
+        guard tableView.selectedRowIndexes.count == 1,
+              let index = tableView.selectedRowIndexes.first,
+              rows.indices.contains(index), rows[index].canFollowStream else {
+            return nil
+        }
+        return rows[index]
+    }
+
+    @objc func followStreamFromMenu(_ sender: Any?) {
         let packetIDs = targetPacketIDs()
         guard packetIDs.count == 1, let packetID = packetIDs.first else {
             return
         }
-        delegate?.packetTableViewController(self, didRequestFollowTCPStream: packetID)
+        delegate?.packetTableViewController(self, didRequestFollowStream: packetID)
     }
 
     @objc func addPacketCommentFromMenu(_ sender: Any?) {

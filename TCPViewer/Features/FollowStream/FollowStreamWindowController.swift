@@ -1,5 +1,5 @@
 //
-//  TCPFollowStreamWindowController.swift
+//  FollowStreamWindowController.swift
 //  TCPViewer
 //
 //  Created by Proxyman LLC on 10/8/26.
@@ -9,7 +9,7 @@ import AppKit
 import PcapPlusPlusCore
 import UniformTypeIdentifiers
 
-final class TCPFollowCancellationFlag: @unchecked Sendable {
+final class FollowStreamCancellationFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var value = false
 
@@ -28,29 +28,31 @@ final class TCPFollowCancellationFlag: @unchecked Sendable {
     }
 }
 
-final class TCPFollowStreamWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate {
+final class FollowStreamWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate {
     private enum ToolbarItem {
         static let flexibleSpace = NSToolbarItem.Identifier.flexibleSpace
-        static let save = NSToolbarItem.Identifier("TCPFollowStream.save")
+        static let save = NSToolbarItem.Identifier("FollowStream.save")
     }
 
-    let cancellationFlag = TCPFollowCancellationFlag()
+    let streamProtocol: FollowStreamProtocol
+    let cancellationFlag = FollowStreamCancellationFlag()
     var closeHandler: (() -> Void)?
-    var revealPacket: ((TCPFollowRevealTarget) -> Void)?
-    var streamSelectionHandler: ((TCPFollowStreamNavigation.Entry) -> Void)?
+    var revealPacket: ((FollowStreamRevealTarget) -> Void)?
+    var streamSelectionHandler: ((FollowStreamNavigation.Entry) -> Void)?
 
-    private let streamViewController = TCPFollowStreamViewController()
+    private let streamViewController = FollowStreamViewController()
     private let saveMenuButton = NSPopUpButton(frame: .zero, pullsDown: true)
-    private let exportQueue = DispatchQueue(label: "com.proxyman.tcpviewer.TCPFollowStream.export", qos: .userInitiated)
+    private let exportQueue = DispatchQueue(label: "com.proxyman.tcpviewer.FollowStream.export", qos: .userInitiated)
 
-    init(navigation: TCPFollowStreamNavigation) {
+    init(navigation: FollowStreamNavigation) {
+        streamProtocol = navigation.streamProtocol
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1_200, height: 760),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
-        window.title = "Follow TCP Stream · Stream \(navigation.selectedEntry.streamID)"
+        window.title = "\(streamProtocol.menuTitle) · Stream \(navigation.selectedEntry.streamID)"
         window.minSize = NSSize(width: 1_100, height: 560)
         window.center()
         super.init(window: window)
@@ -91,20 +93,20 @@ final class TCPFollowStreamWindowController: NSWindowController, NSWindowDelegat
     }
 
     // Forward bounded core progress onto the native progress bar.
-    func updateProgress(_ progress: TCPFollowProgress) {
+    func updateProgress(_ progress: FollowStreamProgress) {
         streamViewController.updateProgress(progress)
     }
 
     // Reset the workspace while another stream is reassembled in the background.
-    func beginLoading(entry: TCPFollowStreamNavigation.Entry) {
-        window?.title = "Follow TCP Stream · Stream \(entry.streamID)"
+    func beginLoading(entry: FollowStreamNavigation.Entry) {
+        window?.title = "\(streamProtocol.menuTitle) · Stream \(entry.streamID)"
         saveMenuButton.isEnabled = false
         streamViewController.setStreamNavigationEnabled(false)
         streamViewController.showLoading()
     }
 
     // Finish loading and enable transcript/raw export actions.
-    func show(stream: TCPFollowStream) {
+    func show(stream: FollowStream) {
         streamViewController.show(stream: stream)
         streamViewController.setStreamNavigationEnabled(true)
         saveMenuButton.isEnabled = true
@@ -158,11 +160,11 @@ final class TCPFollowStreamWindowController: NSWindowController, NSWindowDelegat
         saveMenuButton.menu?.addItem(withTitle: "Export Server Bytes…", action: #selector(exportServerBytes(_:)), keyEquivalent: "")
         saveMenuButton.menu?.items.forEach { $0.target = self }
         saveMenuButton.imagePosition = .imageOnly
-        saveMenuButton.toolTip = "Export TCP stream"
-        saveMenuButton.setAccessibilityLabel("Export TCP stream")
+        saveMenuButton.toolTip = "Export \(streamProtocol.displayName) stream"
+        saveMenuButton.setAccessibilityLabel("Export \(streamProtocol.displayName) stream")
         saveMenuButton.isEnabled = false
 
-        let toolbar = NSToolbar(identifier: "TCPFollowStream.toolbar")
+        let toolbar = NSToolbar(identifier: "FollowStream.toolbar")
         toolbar.delegate = self
         toolbar.displayMode = .iconAndLabel
         toolbar.allowsUserCustomization = false
@@ -172,12 +174,12 @@ final class TCPFollowStreamWindowController: NSWindowController, NSWindowDelegat
 
     @objc private func saveTranscript(_ sender: Any?) {
         let data = Data(streamViewController.renderedContent.plainText.utf8)
-        presentSavePanel(suggestedName: "tcp-stream.txt", contentType: .plainText, data: data)
+        presentSavePanel(suggestedName: "\(streamProtocol.rawValue)-stream.txt", contentType: .plainText, data: data)
     }
 
     @objc private func exportClientBytes(_ sender: Any?) {
         presentRawSavePanel(
-            suggestedName: "tcp-stream-client.bin",
+            suggestedName: "\(streamProtocol.rawValue)-stream-client.bin",
             contentType: .data,
             direction: .clientToServer
         )
@@ -185,14 +187,14 @@ final class TCPFollowStreamWindowController: NSWindowController, NSWindowDelegat
 
     @objc private func exportServerBytes(_ sender: Any?) {
         presentRawSavePanel(
-            suggestedName: "tcp-stream-server.bin",
+            suggestedName: "\(streamProtocol.rawValue)-stream-server.bin",
             contentType: .data,
             direction: .serverToClient
         )
     }
 
     // Build and write a potentially large raw side of the stream away from the main queue.
-    private func presentRawSavePanel(suggestedName: String, contentType: UTType, direction: TCPFollowDirection) {
+    private func presentRawSavePanel(suggestedName: String, contentType: UTType, direction: FollowStreamDirection) {
         guard let window, let stream = streamViewController.stream else {
             return
         }
@@ -205,7 +207,7 @@ final class TCPFollowStreamWindowController: NSWindowController, NSWindowDelegat
             }
             self.exportQueue.async { [weak self] in
                 do {
-                    let data = TCPFollowStreamViewModel.rawData(in: stream, for: direction)
+                    let data = FollowStreamViewModel.rawData(in: stream, for: direction)
                     try data.write(to: url, options: .atomic)
                 } catch {
                     DispatchQueue.main.async {

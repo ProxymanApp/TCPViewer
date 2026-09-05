@@ -75,7 +75,7 @@ struct PacketTableMenuLogicTests {
         #expect(state.copyCellEnabled)
     }
 
-    @Test func followTCPStreamRequiresOneTCPRowWithAStreamIdentifier() {
+    @Test func followStreamRequiresOneTCPRowWithAStreamIdentifier() {
         let tcpRow = PacketTableRow(packet: makePacket(packetNumber: 1, streamID: 7))
         let unavailableRow = PacketTableRow(packet: makePacket(packetNumber: 2))
 
@@ -98,9 +98,100 @@ struct PacketTableMenuLogicTests {
             clickedColumnIdentifier: "protocol"
         )
 
-        #expect(oneTCP.followTCPStreamEnabled)
-        #expect(!multiple.followTCPStreamEnabled)
-        #expect(!unavailable.followTCPStreamEnabled)
+        #expect(oneTCP.followStreamEnabled)
+        #expect(!multiple.followStreamEnabled)
+        #expect(!unavailable.followStreamEnabled)
+    }
+
+    @MainActor
+    @Test func followMenusUseUDPMetadataAndTheCurrentTableSelection() throws {
+        let tcp = makePacket(packetNumber: 1, streamID: 0, transportHint: .tls)
+        let udp = makePacket(packetNumber: 2, streamID: 0, transportHint: .dns, followProtocol: .udp)
+        let rows = [tcp, udp].map(PacketTableRow.init(packet:))
+        let contextState = PacketTableMenuLogic.state(rows: rows, selectedRowIndexes: IndexSet(integer: 0),
+            clickedRowIndex: 1, clickedColumnIdentifier: nil)
+        #expect(contextState.followStreamEnabled)
+        #expect(contextState.followStreamTitle == "Follow UDP Stream")
+        let menuController = PacketTableContextMenuController()
+        let stateProvider = MenuStateProvider(state: contextState)
+        let actionHandler = MenuActionHandler()
+        menuController.stateProvider = stateProvider
+        menuController.actionHandler = actionHandler
+        let contextMenu = menuController.makeMenu()
+        menuController.menuNeedsUpdate(contextMenu)
+        let followItem = try #require(contextMenu.items.first { $0.title == "Follow UDP Stream" })
+        #expect(followItem.isEnabled)
+        #expect(followItem.action == #selector(PacketTableContextMenuActionHandling.followStreamFromMenu(_:)))
+
+        let tableState = PacketTableMenuLogic.state(rows: rows, selectedRowIndexes: IndexSet(integer: 0),
+            clickedRowIndex: nil, clickedColumnIdentifier: nil)
+        #expect(tableState.followStreamTitle == "Follow TCP Stream")
+        let multiple = PacketTableMenuLogic.state(rows: rows, selectedRowIndexes: IndexSet([0, 1]),
+            clickedRowIndex: nil, clickedColumnIdentifier: nil)
+        #expect(!multiple.followStreamEnabled)
+        #expect(multiple.followStreamTitle == "Follow TCP Stream")
+
+        let controller = PacketTableViewController(configuration: AppConfiguration(defaults: Self.makeUserDefaults()))
+        controller.render(snapshot: makeSnapshot(packets: [tcp, udp], selectedPacketID: tcp.id))
+        let table = try Self.tableView(in: controller)
+        table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        #expect(controller.selectedFollowRow?.id == udp.id)
+        #expect(controller.selectedFollowRow?.followStreamProtocol == .udp)
+        table.selectRowIndexes(IndexSet([0, 1]), byExtendingSelection: false)
+        #expect(controller.selectedFollowRow == nil)
+        table.deselectAll(nil)
+        #expect(controller.selectedFollowRow == nil)
+    }
+
+    @MainActor
+    @Test(arguments: [false, true])
+    // Exercise the same loaded packet rows and menu validation used by both capture entry points.
+    func toolsFollowValidatesTheLoadedCaptureTableSelection(importCapture: Bool) async throws {
+        let controller = TCPViewerWindowController(
+            services: TCPViewerServiceRegistry(core: NativeTCPViewerCore()),
+            configuration: AppConfiguration(defaults: Self.makeUserDefaults())
+        )
+        defer { controller.close() }
+        let root = controller.rootViewController
+        root.loadViewIfNeeded()
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Vendor/Wireshark/test/captures/dns_port.pcap")
+        await withCheckedContinuation { continuation in
+            if importCapture {
+                root.viewModel.importDocuments(at: [fixture]) { continuation.resume() }
+            } else {
+                root.viewModel.openDocument(at: fixture) { continuation.resume() }
+            }
+        }
+        func findTable(in controller: NSViewController) -> PacketTableViewController? {
+            if let table = controller as? PacketTableViewController { return table }
+            return controller.children.lazy.compactMap { findTable(in: $0) }.first
+        }
+        let tableController = try #require(findTable(in: root))
+        let table = try Self.tableView(in: tableController)
+        let udpIndex = try #require(root.viewModel.snapshot.packetRows.firstIndex { $0.followStreamProtocol == .udp })
+        table.selectRowIndexes(IndexSet(integer: udpIndex), byExtendingSelection: false)
+        let item = NSMenuItem(title: "Follow TCP Stream", action: #selector(TCPViewerWindowController.followSelectedStream(_:)), keyEquivalent: "")
+        #expect(controller.validateMenuItem(item))
+        #expect(item.title == "Follow UDP Stream")
+        #expect(root.selectedFollowRow?.followStreamProtocol == .udp)
+        let menu = NSMenu(title: "Tools")
+        menu.autoenablesItems = false
+        menu.addItem(item)
+        let delegate = AppDelegate()
+        menu.delegate = delegate
+        delegate.updateFollowStreamMenu(menu, window: controller.window)
+        #expect(item.target as? TCPViewerWindowController === controller)
+        #expect(item.isEnabled)
+        #expect(item.title == "Follow UDP Stream")
+        table.deselectAll(nil)
+        delegate.updateFollowStreamMenu(menu, window: controller.window)
+        #expect(!item.isEnabled)
+        #expect(item.title == "Follow TCP Stream")
+        delegate.updateFollowStreamMenu(menu, window: nil)
+        #expect(!item.isEnabled)
+        #expect(item.target == nil)
     }
 
     @Test func copyFormatterUsesCSVRowsAndClickedColumnCells() {
@@ -336,7 +427,7 @@ struct PacketTableMenuLogicTests {
             clickedColumnIdentifier: "source",
             copyRowEnabled: true,
             copyCellEnabled: true,
-            followTCPStreamEnabled: true,
+            followStreamEnabled: true,
             pinEnabled: true,
             saveEnabled: true,
             styleEnabled: true,
@@ -547,6 +638,7 @@ struct PacketTableMenuLogicTests {
         customComment: String? = nil,
         streamID: UInt32? = nil,
         transportHint: TransportProtocolHint = .tcp,
+        followProtocol: FollowStreamProtocol = .tcp,
         dnsResolutions: [DNSResolutionObservation]? = nil
     ) -> PacketSummary {
         PacketSummary(
@@ -562,7 +654,7 @@ struct PacketTableMenuLogicTests {
             originalLength: 128,
             capturedLength: 128,
             streamID: streamID,
-            tcpFollowStreamID: streamID,
+            followStreamID: streamID.map { FollowStreamID(streamProtocol: followProtocol, streamID: $0) },
             infoSummary: infoSummary ?? "Packet \(packetNumber)",
             layers: [PacketLayer(name: "Ethernet"), PacketLayer(name: "TCP")],
             decodeStatus: PacketDecodeStatus(kind: .complete),
@@ -689,7 +781,7 @@ private final class MenuActionHandler: NSObject, PacketTableContextMenuActionHan
     func copyRowsAsCSVFromMenu(_ sender: Any?) {}
     func copyRowsAsCSVWithHeaderFromMenu(_ sender: Any?) {}
     func copyCellFromMenu(_ sender: Any?) {}
-    func followTCPStreamFromMenu(_ sender: Any?) {}
+    func followStreamFromMenu(_ sender: Any?) {}
     func pinRowsFromMenu(_ sender: Any?) {}
     func saveRowsFromMenu(_ sender: Any?) {}
     func addPacketCommentFromMenu(_ sender: Any?) {}

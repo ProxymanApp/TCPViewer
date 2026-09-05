@@ -60,15 +60,17 @@ public final class NativeOfflineCaptureDocument: OfflineCaptureDocumentProviding
         state.clearDisplayFilter(completion: completion)
     }
 
-    public func followTCPStream(
+    public func followStream(
         containing packetID: PacketSummary.ID,
-        limits: TCPFollowLimits,
-        progress: TCPFollowProgressHandler?,
-        shouldCancel: TCPFollowCancellationCheck?,
-        completion: @escaping TCPViewerCompletion<TCPFollowStream>
+        streamProtocol: FollowStreamProtocol? = nil,
+        limits: FollowStreamLimits,
+        progress: FollowStreamProgressHandler?,
+        shouldCancel: FollowStreamCancellationCheck?,
+        completion: @escaping TCPViewerCompletion<FollowStream>
     ) {
-        state.followTCPStream(
+        state.followStream(
             containing: packetID,
+            streamProtocol: streamProtocol,
             limits: limits,
             progress: progress,
             shouldCancel: shouldCancel,
@@ -328,12 +330,13 @@ private final class NativeOfflineCaptureDocumentState: @unchecked Sendable {
     }
 
     // Validate the selected summary before the native Wireshark index resolves its stream frames.
-    func followTCPStream(
+    func followStream(
         containing packetID: PacketSummary.ID,
-        limits: TCPFollowLimits,
-        progress: TCPFollowProgressHandler?,
-        shouldCancel: TCPFollowCancellationCheck?,
-        completion: @escaping TCPViewerCompletion<TCPFollowStream>
+        streamProtocol: FollowStreamProtocol? = nil,
+        limits: FollowStreamLimits,
+        progress: FollowStreamProgressHandler?,
+        shouldCancel: FollowStreamCancellationCheck?,
+        completion: @escaping TCPViewerCompletion<FollowStream>
     ) {
         let packets = packetCache.get()
         followQueue.async {
@@ -352,13 +355,15 @@ private final class NativeOfflineCaptureDocumentState: @unchecked Sendable {
                     throw TCPViewerCoreError(code: .offlineFileOpenFailed, message: "Packet \(packetID) is not available.")
                 }
                 do {
-                    let fields = try self.nativeDocument.followTCPStream(
+                    let fields = try self.nativeDocument.followStream(
                         containing: packetID,
+                        streamProtocol: streamProtocol,
                         limits: limits,
                         progress: progress,
                         shouldCancel: shouldCancel
                     )
-                    return TCPFollowStream(
+                    return FollowStream(
+                        streamProtocol: fields.streamProtocol,
                         client: fields.client,
                         server: fields.server,
                         records: fields.records,

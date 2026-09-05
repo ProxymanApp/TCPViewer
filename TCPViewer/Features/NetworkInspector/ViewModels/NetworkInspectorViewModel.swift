@@ -3099,29 +3099,31 @@ final class NetworkInspectorViewModel {
         controller.inspectPacket(id: identifier, completion: completion)
     }
 
-    var tcpFollowCaptureIdentity: TCPFollowCaptureIdentity {
-        controller.tcpFollowCaptureIdentity
+    var followStreamCaptureIdentity: FollowStreamCaptureIdentity {
+        controller.followStreamCaptureIdentity
     }
 
     // Provide capture-scoped stream IDs and representative packets for follow-window navigation.
-    func tcpFollowStreamNavigation(containing identifier: PacketSummary.ID) -> TCPFollowStreamNavigation? {
-        controller.tcpFollowStreamNavigation(containing: identifier)
+    func followStreamNavigation(containing identifier: PacketSummary.ID) -> FollowStreamNavigation? {
+        controller.followStreamNavigation(containing: identifier)
     }
 
     // Keep detached follow-window navigation scoped to its original capture lineage.
-    func canRevealTCPFollowPacket(_ identifier: PacketSummary.ID, from identity: TCPFollowCaptureIdentity) -> Bool {
-        controller.canRevealTCPFollowPacket(identifier, from: identity)
+    func canRevealFollowStreamPacket(_ identifier: PacketSummary.ID, from identity: FollowStreamCaptureIdentity) -> Bool {
+        controller.canRevealFollowStreamPacket(identifier, from: identity)
     }
 
-    func followTCPStream(
+    func followStream(
         containing identifier: PacketSummary.ID,
-        limits: TCPFollowLimits = .default,
-        progress: TCPFollowProgressHandler?,
-        shouldCancel: TCPFollowCancellationCheck?,
-        completion: @escaping TCPViewerCompletion<TCPFollowStream>
+        streamProtocol: FollowStreamProtocol? = nil,
+        limits: FollowStreamLimits = .default,
+        progress: FollowStreamProgressHandler?,
+        shouldCancel: FollowStreamCancellationCheck?,
+        completion: @escaping TCPViewerCompletion<FollowStream>
     ) {
-        controller.followTCPStream(
+        controller.followStream(
             containing: identifier,
+            streamProtocol: streamProtocol,
             limits: limits,
             progress: progress,
             shouldCancel: shouldCancel,

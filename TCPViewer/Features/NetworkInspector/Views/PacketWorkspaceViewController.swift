@@ -15,7 +15,7 @@ protocol PacketWorkspaceViewControllerDelegate: AnyObject {
         didRequestPinPackets identifiers: [PacketSummary.ID]
     )
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestSavePackets identifiers: [PacketSummary.ID])
-    func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestFollowTCPStream packetID: PacketSummary.ID)
+    func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestFollowStream packetID: PacketSummary.ID)
     func packetWorkspaceViewController(
         _ controller: PacketWorkspaceViewController,
         didRequestSetComment comment: String,
@@ -125,6 +125,8 @@ final class PacketWorkspaceViewController: NSViewController {
     private let endpointFilterBar = TCPViewerDynamicBackgroundView(backgroundColor: .controlBackgroundColor)
     private let endpointFilterLabel = NSTextField(labelWithString: "")
     private let structuredFilterController = PacketStructuredFilterViewController()
+    var selectedFollowRow: PacketTableRow? { tableController.selectedFollowRow }
+
     private let tableController: PacketTableViewController
     private var placeholderView: NSView?
     private var isStructuredFilterVisible = false
@@ -481,8 +483,8 @@ extension PacketWorkspaceViewController: PacketTableViewControllerDelegate {
         delegate?.packetWorkspaceViewController(self, didRequestSavePackets: identifiers)
     }
 
-    func packetTableViewController(_ controller: PacketTableViewController, didRequestFollowTCPStream packetID: PacketSummary.ID) {
-        delegate?.packetWorkspaceViewController(self, didRequestFollowTCPStream: packetID)
+    func packetTableViewController(_ controller: PacketTableViewController, didRequestFollowStream packetID: PacketSummary.ID) {
+        delegate?.packetWorkspaceViewController(self, didRequestFollowStream: packetID)
     }
 
     func packetTableViewController(

@@ -506,6 +506,7 @@ struct TCPViewSessionFormatTests {
         let sessionPacket = Self.makePacket(id: 1, packetNumber: 1, client: nil)
         let innerFirstPacket = Self.makePacket(id: 100, packetNumber: 100, client: nil)
         let innerSecondPacket = Self.makePacket(id: 101, packetNumber: 101, client: nil)
+            .tcpviewerApplying(followStreamID: FollowStreamID(streamProtocol: .udp, streamID: 0))
         let record = TCPViewSessionPacketRecord(
             packetID: sessionPacket.id,
             captureOrdinal: 1,
@@ -558,6 +559,20 @@ struct TCPViewSessionFormatTests {
         #expect(openedPackets.map(\.id) == [sessionPacket.id])
         #expect(document.packetSummaries().map(\.id) == [sessionPacket.id])
         #expect(inspection.packetID == sessionPacket.id)
+        #expect(openedPackets.first?.followStreamID?.streamProtocol == .udp)
+        innerDocument.followResult = FollowStream(streamProtocol: .udp,
+            client: innerSecondPacket.endpoints.source, server: innerSecondPacket.endpoints.destination,
+            records: [FollowStreamRecord(direction: .clientToServer, packetID: innerSecondPacket.id,
+                timestamp: Self.fixedDate, sequenceNumber: nil, data: Data("udp".utf8))],
+            clientByteCount: 3, serverByteCount: 0, capturedThroughPacketID: innerSecondPacket.id,
+            capturedAt: Self.fixedDate, isTruncated: false)
+        let followed = try Self.waitForResult { completion in
+            document.followStream(containing: sessionPacket.id, streamProtocol: .udp, completion: completion)
+        }
+        #expect(followed.streamProtocol == .udp)
+        #expect(followed.records.map(\.packetID) == [sessionPacket.id])
+        #expect(followed.capturedThroughPacketID == sessionPacket.id)
+
         #expect(inspection.rawBytes == Data(repeating: UInt8(innerSecondPacket.packetNumber), count: 64))
         #expect(innerDocument.exportRequests.first?.0 == [innerSecondPacket.id])
         #expect(document.importReport == TCPViewSessionImportReport(importedFlowCount: 1, failedFlowCount: 1))
@@ -937,6 +952,7 @@ private final class SessionImportFakeCore: TCPViewerCoreProviding, @unchecked Se
 
 private final class SessionImportFakeOfflineDocument: OfflineCaptureDocumentProviding, @unchecked Sendable {
     var eventHandler: PacketIngestEventHandler?
+    var followResult: FollowStream?
 
     private let url: URL
     private let packets: [PacketSummary]
@@ -963,6 +979,14 @@ private final class SessionImportFakeOfflineDocument: OfflineCaptureDocumentProv
 
     func cancelLoading(completion: (() -> Void)?) {
         completion?()
+    }
+
+    // Supply a known inner snapshot so import tests can verify packet-ID and protocol remapping.
+    func followStream(containing packetID: PacketSummary.ID, streamProtocol: FollowStreamProtocol?,
+        limits: FollowStreamLimits, progress: FollowStreamProgressHandler?, shouldCancel: FollowStreamCancellationCheck?,
+        completion: @escaping TCPViewerCompletion<FollowStream>) {
+        if let followResult { completion(.success(followResult)) }
+        else { completion(.failure(TCPViewerCoreError(code: .unavailableFeature, message: "No test stream"))) }
     }
 
     func inspectPacket(id: PacketSummary.ID, completion: @escaping TCPViewerCompletion<PacketInspection>) {

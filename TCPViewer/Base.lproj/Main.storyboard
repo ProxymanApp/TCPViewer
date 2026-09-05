@@ -371,6 +371,19 @@
                                     </items>
                                 </menu>
                             </menuItem>
+                            <menuItem title="Tools" id="FLS-TL-top">
+                                <modifierMask key="keyEquivalentModifierMask"/>
+                                <menu key="submenu" title="Tools" id="FLS-TL-menu">
+                                    <items>
+                                        <menuItem title="Follow TCP Stream" id="FLS-TL-follow">
+                                            <modifierMask key="keyEquivalentModifierMask"/>
+                                            <connections>
+                                                <action selector="followSelectedStream:" target="Ady-hI-5gd" id="FLS-TL-action"/>
+                                            </connections>
+                                        </menuItem>
+                                    </items>
+                                </menu>
+                            </menuItem>
                             <menuItem title="Statistics" id="Z7s-Ep-t0p">
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <menu key="submenu" title="Statistics" id="Z7s-Ep-m3n">

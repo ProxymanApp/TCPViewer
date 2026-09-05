@@ -28,7 +28,7 @@ enum PacketCommentShortcut {
     func copyRowsAsCSVFromMenu(_ sender: Any?)
     func copyRowsAsCSVWithHeaderFromMenu(_ sender: Any?)
     func copyCellFromMenu(_ sender: Any?)
-    func followTCPStreamFromMenu(_ sender: Any?)
+    func followStreamFromMenu(_ sender: Any?)
     func pinRowsFromMenu(_ sender: Any?)
     func saveRowsFromMenu(_ sender: Any?)
     func addPacketCommentFromMenu(_ sender: Any?)
@@ -78,10 +78,10 @@ final class PacketTableContextMenuController: NSObject {
 
         menu.addItem(.separator())
         menu.addItem(item(
-            title: "Follow TCP Stream",
-            action: #selector(PacketTableContextMenuActionHandling.followTCPStreamFromMenu(_:)),
-            isEnabled: state.followTCPStreamEnabled,
-            toolTip: "Reassemble the selected TCP conversation in both directions.",
+            title: state.followStreamTitle,
+            action: #selector(PacketTableContextMenuActionHandling.followStreamFromMenu(_:)),
+            isEnabled: state.followStreamEnabled,
+            toolTip: "Follow the selected \((state.followStreamProtocol ?? .tcp).displayName) conversation in both directions.",
             systemSymbolName: "arrow.left.arrow.right"
         ))
 

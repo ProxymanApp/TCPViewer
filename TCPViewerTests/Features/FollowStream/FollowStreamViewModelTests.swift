@@ -1,5 +1,5 @@
 //
-//  TCPFollowStreamViewModelTests.swift
+//  FollowStreamViewModelTests.swift
 //  TCPViewer
 //
 //  Created by Proxyman LLC on 10/8/26.
@@ -11,10 +11,10 @@ import Testing
 @testable import TCPViewer
 
 @Suite(.serialized)
-struct TCPFollowStreamViewModelTests {
+struct FollowStreamViewModelTests {
     @MainActor
     @Test func rendersDirectionsPacketRangesAndTextControls() throws {
-        let viewModel = TCPFollowStreamViewModel()
+        let viewModel = FollowStreamViewModel()
         viewModel.setStream(makeStream())
 
         let content = viewModel.renderedContent()
@@ -41,7 +41,7 @@ struct TCPFollowStreamViewModelTests {
 
     @MainActor
     @Test func switchesDirectionAndHexWithoutChangingRawExports() {
-        let viewModel = TCPFollowStreamViewModel()
+        let viewModel = FollowStreamViewModel()
         viewModel.setStream(makeStream())
         viewModel.setDirectionFilter(.serverToClient)
         viewModel.setRepresentation(.hex)
@@ -59,13 +59,13 @@ struct TCPFollowStreamViewModelTests {
     @MainActor
     @Test func hexLayoutUsesAdditionalViewportWidthInAlignedGroups() {
         let characterWidth = ("0" as NSString).size(withAttributes: [
-            .font: TCPFollowStreamViewModel.payloadFont,
+            .font: FollowStreamViewModel.payloadFont,
         ]).width
 
-        let narrowByteCount = TCPFollowStreamViewModel.preferredHexBytesPerLine(
+        let narrowByteCount = FollowStreamViewModel.preferredHexBytesPerLine(
             for: characterWidth * 76 + 0.5
         )
-        let wideByteCount = TCPFollowStreamViewModel.preferredHexBytesPerLine(
+        let wideByteCount = FollowStreamViewModel.preferredHexBytesPerLine(
             for: characterWidth * 204 + 0.5
         )
 
@@ -77,7 +77,7 @@ struct TCPFollowStreamViewModelTests {
     @MainActor
     @Test func hexRenderingAdvancesOffsetsByTheConfiguredRowWidth() {
         let clientData = Data((0..<40).map(UInt8.init))
-        let viewModel = TCPFollowStreamViewModel()
+        let viewModel = FollowStreamViewModel()
         viewModel.setStream(makeStream(clientData: clientData, serverData: Data()))
         viewModel.setDirectionFilter(.clientToServer)
         viewModel.setRepresentation(.hex)
@@ -92,7 +92,7 @@ struct TCPFollowStreamViewModelTests {
 
     @MainActor
     @Test func boundsDisplayedPayloadWithoutLimitingRawExport() {
-        let viewModel = TCPFollowStreamViewModel(
+        let viewModel = FollowStreamViewModel(
             maximumDisplayedPayloadBytes: 4,
             maximumDisplayedRecordCount: 10
         )
@@ -129,7 +129,7 @@ struct TCPFollowStreamViewModelTests {
             21: ImportedPacketReference(fileID: secondFileID, originalPacketID: 2),
         ]
 
-        let navigation = try #require(TCPFollowStreamNavigation(
+        let navigation = try #require(FollowStreamNavigation(
             ingestState: ingestState,
             selectedPacketID: 11
         ))
@@ -145,11 +145,11 @@ struct TCPFollowStreamViewModelTests {
     @Test func streamNavigationSeparatesReusedEndpointTuples() throws {
         var ingestState = PacketIngestState.empty
         ingestState.append([
-            makeNavigationPacket(packetNumber: 10, streamID: 55, tcpFollowStreamID: 0),
-            makeNavigationPacket(packetNumber: 20, streamID: 55, tcpFollowStreamID: 1),
+            makeNavigationPacket(packetNumber: 10, streamID: 55, followStreamID: 0),
+            makeNavigationPacket(packetNumber: 20, streamID: 55, followStreamID: 1),
         ], source: .offline)
 
-        let navigation = try #require(TCPFollowStreamNavigation(
+        let navigation = try #require(FollowStreamNavigation(
             ingestState: ingestState,
             selectedPacketID: 10
         ))
@@ -159,8 +159,52 @@ struct TCPFollowStreamViewModelTests {
     }
 
     @MainActor
+    @Test func udpNavigationWindowAndExportsUseTheSameScreen() throws {
+        var state = PacketIngestState.empty
+        state.append([
+            makeNavigationPacket(packetNumber: 1, streamID: 0),
+            makeNavigationPacket(packetNumber: 2, streamID: 0, followStreamID: 0, transportHint: .dns, followProtocol: .udp, layerName: "UDP"),
+            makeNavigationPacket(packetNumber: 3, streamID: 1, followStreamID: 1, transportHint: .udp, followProtocol: .udp, layerName: "UDP"),
+            makeNavigationPacket(packetNumber: 4, streamID: 0, followStreamID: 0, transportHint: .udp, followProtocol: .udp, layerName: "UDP"),
+        ], source: .offline)
+        let firstFile = ImportedCaptureFileID(rawValue: "first")
+        let secondFile = ImportedCaptureFileID(rawValue: "second")
+        state.importedPacketReferenceByID = [
+            1: ImportedPacketReference(fileID: firstFile, originalPacketID: 1),
+            2: ImportedPacketReference(fileID: firstFile, originalPacketID: 2),
+            3: ImportedPacketReference(fileID: firstFile, originalPacketID: 3),
+            4: ImportedPacketReference(fileID: secondFile, originalPacketID: 1),
+        ]
+        let navigation = try #require(FollowStreamNavigation(ingestState: state, selectedPacketID: 2))
+        #expect(navigation.streamProtocol == .udp)
+        #expect(navigation.entries.map(\.packetID) == [2, 3])
+        #expect(navigation.selecting(index: 1)?.streamProtocol == .udp)
+        let controller = FollowStreamWindowController(navigation: navigation)
+        #expect(controller.window?.title == "Follow UDP Stream · Stream 0")
+        let button = try #require(controller.window?.toolbar?.items.compactMap { $0.view as? NSPopUpButton }.first)
+        #expect(button.toolTip == "Export UDP stream")
+
+        let stream = FollowStream(streamProtocol: .udp,
+            client: PacketEndpoint(address: "192.0.2.1", port: 50000),
+            server: PacketEndpoint(address: "198.51.100.2", port: 8080),
+            records: [
+                FollowStreamRecord(direction: .clientToServer, packetID: 2, timestamp: .distantPast, sequenceNumber: nil, data: Data("data".utf8)),
+                FollowStreamRecord(direction: .clientToServer, packetID: 3, timestamp: .distantPast, sequenceNumber: nil, data: Data()),
+            ], clientByteCount: 4, serverByteCount: 0, capturedThroughPacketID: 3, capturedAt: .distantPast, isTruncated: false)
+        let model = FollowStreamViewModel(maximumDisplayedPayloadBytes: 4)
+        model.setStream(stream)
+        #expect(model.renderedContent().packetRanges.map(\.revealTarget.packetID) == [2, 3])
+        #expect(model.rawData(for: .clientToServer) == Data("data".utf8))
+        let remapped = stream.tcpviewerRemapping(packetIDByOriginalID: [2: 20, 3: 30], fallbackPacketID: 20)
+        #expect(remapped.streamProtocol == .udp)
+        #expect(remapped.records.map(\.packetID) == [20, 30])
+        #expect(remapped.capturedThroughPacketID == 30)
+        #expect(remapped.records.allSatisfy { $0.sequenceNumber == nil })
+    }
+
+    @MainActor
     @Test func renderedTranscriptFillsTheScrollViewport() throws {
-        let controller = TCPFollowStreamViewController()
+        let controller = FollowStreamViewController()
         controller.view.frame = NSRect(x: 0, y: 0, width: 900, height: 640)
         controller.view.layoutSubtreeIfNeeded()
 
@@ -180,7 +224,7 @@ struct TCPFollowStreamViewModelTests {
     @MainActor
     @Test func packetRevealButtonAppearsOnlyForHoveredRecord() throws {
         let navigation = try #require(makeStreamNavigation())
-        let windowController = TCPFollowStreamWindowController(navigation: navigation)
+        let windowController = FollowStreamWindowController(navigation: navigation)
         let window = try #require(windowController.window)
         let contentView = try #require(window.contentView)
         let scrollView = try #require(firstSubview(ofType: NSScrollView.self, in: contentView))
@@ -189,7 +233,7 @@ struct TCPFollowStreamViewModelTests {
         let revealButton = try #require(allSubviews(ofType: NSButton.self, in: textView).first {
             $0.toolTip == "Show this packet in the packet list"
         })
-        var revealedTarget: TCPFollowRevealTarget?
+        var revealedTarget: FollowStreamRevealTarget?
         windowController.revealPacket = { revealedTarget = $0 }
 
         windowController.show(stream: makeStream())
@@ -230,7 +274,7 @@ struct TCPFollowStreamViewModelTests {
 
     @MainActor
     @Test func wideHexTranscriptUsesMoreThanSixteenBytesPerRow() {
-        let controller = TCPFollowStreamViewController()
+        let controller = FollowStreamViewController()
         controller.view.frame = NSRect(x: 0, y: 0, width: 1_200, height: 760)
         controller.view.layoutSubtreeIfNeeded()
         let clientData = Data((0..<64).map(UInt8.init))
@@ -246,7 +290,7 @@ struct TCPFollowStreamViewModelTests {
 
     @MainActor
     @Test func followWindowPlacesSettingsControlsAboveTheTranscript() throws {
-        let controller = TCPFollowStreamViewController()
+        let controller = FollowStreamViewController()
         controller.view.frame = NSRect(x: 0, y: 0, width: 1_200, height: 760)
         controller.view.layoutSubtreeIfNeeded()
         let labels = allSubviews(ofType: NSTextField.self, in: controller.view)
@@ -267,9 +311,9 @@ struct TCPFollowStreamViewModelTests {
         #expect(representationFrame.minY > scrollView.frame.maxY)
 
         controller.show(stream: makeStream())
-        directionControl.selectedSegment = TCPFollowDirectionFilter.serverToClient.rawValue
+        directionControl.selectedSegment = FollowStreamDirectionFilter.serverToClient.rawValue
         directionControl.sendAction(directionControl.action, to: directionControl.target)
-        representationControl.selectedSegment = TCPFollowRepresentation.hex.rawValue
+        representationControl.selectedSegment = FollowStreamRepresentation.hex.rawValue
         representationControl.sendAction(representationControl.action, to: representationControl.target)
         #expect(!controller.renderedContent.plainText.contains("Client to Server"))
         #expect(controller.renderedContent.plainText.contains("77 6f 72 6c 64"))
@@ -278,11 +322,11 @@ struct TCPFollowStreamViewModelTests {
     @MainActor
     @Test func followWindowToolbarUsesAnExportIconMenu() throws {
         let navigation = try #require(makeStreamNavigation())
-        let controller = TCPFollowStreamWindowController(navigation: navigation)
+        let controller = FollowStreamWindowController(navigation: navigation)
         let window = try #require(controller.window)
         let toolbar = try #require(controller.window?.toolbar)
         let exportItem = try #require(toolbar.items.first {
-            $0.itemIdentifier.rawValue == "TCPFollowStream.save"
+            $0.itemIdentifier.rawValue == "FollowStream.save"
         })
         let exportButton = try #require(exportItem.view as? NSPopUpButton)
 
@@ -302,11 +346,11 @@ struct TCPFollowStreamViewModelTests {
     @MainActor
     @Test func followWindowStepperLoadsTheSelectedStream() throws {
         let navigation = try #require(makeStreamNavigation())
-        let controller = TCPFollowStreamWindowController(navigation: navigation)
+        let controller = FollowStreamWindowController(navigation: navigation)
         let window = try #require(controller.window)
         let contentView = try #require(window.contentView)
         let stepper = try #require(firstSubview(ofType: NSStepper.self, in: contentView))
-        var requestedEntry: TCPFollowStreamNavigation.Entry?
+        var requestedEntry: FollowStreamNavigation.Entry?
         controller.streamSelectionHandler = { requestedEntry = $0 }
 
         controller.show(stream: makeStream())
@@ -338,9 +382,9 @@ struct TCPFollowStreamViewModelTests {
     @MainActor
     @Test func followWindowSearchFocusesCountsAndWrapsMatches() async throws {
         let navigation = try #require(makeStreamNavigation())
-        let windowController = TCPFollowStreamWindowController(navigation: navigation)
+        let windowController = FollowStreamWindowController(navigation: navigation)
         let window = try #require(windowController.window)
-        let contentController = try #require(window.contentViewController as? TCPFollowStreamViewController)
+        let contentController = try #require(window.contentViewController as? FollowStreamViewController)
         let contentView = contentController.view
         let searchField = try #require(allSubviews(ofType: NSSearchField.self, in: contentView).first {
             $0.placeholderString == "Search transcript ⌘F"
@@ -403,19 +447,19 @@ struct TCPFollowStreamViewModelTests {
     private func makeStream(
         clientData: Data = Data([0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x00]),
         serverData: Data = Data("world".utf8)
-    ) -> TCPFollowStream {
-        TCPFollowStream(
+    ) -> FollowStream {
+        FollowStream(
             client: PacketEndpoint(address: "192.0.2.1", port: 50_000),
             server: PacketEndpoint(address: "198.51.100.2", port: 443),
             records: [
-                TCPFollowRecord(
+                FollowStreamRecord(
                     direction: .clientToServer,
                     packetID: 10,
                     timestamp: Date(timeIntervalSince1970: 10),
                     sequenceNumber: 100,
                     data: clientData
                 ),
-                TCPFollowRecord(
+                FollowStreamRecord(
                     direction: .serverToClient,
                     packetID: 11,
                     timestamp: Date(timeIntervalSince1970: 11),
@@ -431,20 +475,21 @@ struct TCPFollowStreamViewModelTests {
         )
     }
 
-    private func makeStreamNavigation() -> TCPFollowStreamNavigation? {
+    private func makeStreamNavigation() -> FollowStreamNavigation? {
         var ingestState = PacketIngestState.empty
         ingestState.append([
             makeNavigationPacket(packetNumber: 10, streamID: 3),
             makeNavigationPacket(packetNumber: 20, streamID: 9),
         ], source: .offline)
-        return TCPFollowStreamNavigation(ingestState: ingestState, selectedPacketID: 10)
+        return FollowStreamNavigation(ingestState: ingestState, selectedPacketID: 10)
     }
 
     private func makeNavigationPacket(
         packetNumber: UInt64,
         streamID: UInt32,
-        tcpFollowStreamID: UInt32? = nil,
+        followStreamID: UInt32? = nil,
         transportHint: TransportProtocolHint = .tcp,
+        followProtocol: FollowStreamProtocol = .tcp,
         layerName: String = "TCP"
     ) -> PacketSummary {
         PacketSummary(
@@ -459,7 +504,7 @@ struct TCPFollowStreamViewModelTests {
             originalLength: 64,
             capturedLength: 64,
             streamID: streamID,
-            tcpFollowStreamID: tcpFollowStreamID ?? (layerName == "TCP" ? streamID : nil),
+            followStreamID: (followStreamID ?? (layerName == "TCP" ? streamID : nil)).map { FollowStreamID(streamProtocol: followProtocol, streamID: $0) },
             infoSummary: "Packet \(packetNumber)",
             layers: [PacketLayer(name: layerName)],
             decodeStatus: PacketDecodeStatus(kind: .complete),
