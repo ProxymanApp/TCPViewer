@@ -237,6 +237,22 @@ struct TCPViewerNetworkHelperToolManagerTests {
         #expect(controller.status == .enabled)
     }
 
+    @Test func smJobBlessRegistersOwningApplicationBeforeBlessingHelper() throws {
+        let fixture = try makeBlessFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.rootURL) }
+        try createBundledBlessPayload(in: fixture.bundleURL)
+        let serviceManagement = FakeNetworkHelperServiceManagementController()
+        let controller = makeBlessController(
+            fixture: fixture,
+            serviceManagementController: serviceManagement
+        )
+
+        try controller.register()
+
+        #expect(serviceManagement.registeredApplicationURLs == [fixture.bundleURL])
+        #expect(serviceManagement.blessJobCallCount == 1)
+    }
+
     @Test func smJobBlessUnregisterDeletesInstalledHelperFilesWhenLaunchdRemoveSucceeds() throws {
         let fixture = try makeBlessFixture()
         defer { try? FileManager.default.removeItem(at: fixture.rootURL) }
@@ -623,10 +639,15 @@ private final class FakeNetworkHelperServiceManagementController: TCPViewerNetwo
     private let removeError: Error?
     private(set) var blessJobCallCount = 0
     private(set) var removeJobCallCount = 0
+    private(set) var registeredApplicationURLs: [URL] = []
 
     init(blessError: Error? = nil, removeError: Error? = nil) {
         self.blessError = blessError
         self.removeError = removeError
+    }
+
+    func registerApplication(at url: URL) throws {
+        registeredApplicationURLs.append(url)
     }
 
     func blessJob(label: String, authorization: AuthorizationRef) throws {
