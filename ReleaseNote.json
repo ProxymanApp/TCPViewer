@@ -120,10 +120,8 @@
       "features": [
         "TCP Viewer can open pcap and pcapng file by double clicking on the file in Finder or Drag and Drop the file into the app."
       ],
-      "improvements": [
-      ],
-      "bugs": [
-      ]
+      "improvements": [],
+      "bugs": []
     },
     {
       "version": "1.6.0",
@@ -134,21 +132,17 @@
         "Regenerate macOS app icons with Icon Composer assets.",
         "Support TCPViewer session export and import."
       ],
-      "improvements": [
-      ],
-      "bugs": [
-      ]
+      "improvements": [],
+      "bugs": []
     },
     {
       "version": "1.6.1",
       "title": "TCP Viewer 1.6.1 Sentry Debug Symbol Verification",
-      "features": [
-      ],
+      "features": [],
       "improvements": [
         "Verify Sentry dSYM debug UUIDs before upload so production crash reports match the notarized build."
       ],
-      "bugs": [
-      ]
+      "bugs": []
     },
     {
       "version": "1.7.0",
@@ -185,8 +179,7 @@
     {
       "version": "1.8.1",
       "title": "TCP Viewer 1.8.1: Improve helper tool connection and error handling",
-      "features": [
-      ],
+      "features": [],
       "improvements": [
         "Improve how TCPViewer connects to the helper tool and handle errors better"
       ],
@@ -211,16 +204,14 @@
         "Fix capture and packet detail edge cases."
       ]
     },
-        {
+    {
       "version": "1.10.0",
       "title": "TCP Viewer 1.10.0: Introduce the MCP for Codex and Claude Code",
       "features": [
         "Introduce the MCP for Codex and Claude Code: Faster to use and more efficient"
       ],
-      "improvements": [
-      ],
-      "bugs": [
-      ]
+      "improvements": [],
+      "bugs": []
     },
     {
       "version": "1.11.0",
@@ -233,19 +224,16 @@
       "improvements": [
         "Explain how MCP capture filters use BPF syntax."
       ],
-      "bugs": [
-      ]
+      "bugs": []
     },
-        {
+    {
       "version": "1.12.0",
       "title": "TCP Viewer 1.12.0: Follow TCP Stream",
       "features": [
         "Introduce the Follow TCP Stream feature to view the entire conversation between two endpoints in a separate window."
       ],
-      "improvements": [
-      ],
-      "bugs": [
-      ]
+      "improvements": [],
+      "bugs": []
     },
     {
       "version": "1.14.0",
@@ -263,7 +251,7 @@
         "Fix CLI import results, recent packet export order, filter values, and TCP stream limits."
       ]
     },
-        {
+    {
       "version": "1.15.0",
       "title": "TCP Viewer 1.15.0: Overview UI and Statistic Endpoint View ✅",
       "features": [
@@ -275,6 +263,20 @@
       ],
       "bugs": [
         "Fixed: About Us and Settings Windows doesn't align at center of the screen."
+      ]
+    },
+    {
+      "version": "1.16.0",
+      "title": "TCP Viewer 1.16.0: Follow DNS Stream and New App Icon 🎨",
+      "features": [
+        "Introduce the Follow DNS Stream feature to view the the server/client DNS conversation in a separate window.",
+        "New handcrafted AppIcon, not AI-generated."
+      ],
+      "improvements": [
+        "In the packet detailed view, unnecessary data row will be used a secondary text color to make it less distracting."
+      ],
+      "bugs": [
+        "Fixed: Some internal crashes."
       ]
     }
   ]
