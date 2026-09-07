@@ -21,16 +21,19 @@ final class TCPViewerLicenseStorage: TCPViewerLicenseStoring {
     private let fileURL: URL
     private let fileManager: FileManager
     private let cipher: TCPViewerLicenseCipher
+    private let secrets: any TCPViewerLicenseSecretStoring
     private let fileAccess = Protected(())
 
     init(
         fileURL: URL = TCPViewerUserDataDirectory.shared.settingsFileURL(named: TCPViewerLicenseStorage.defaultFileName),
         fileManager: FileManager = .default,
-        cipher: TCPViewerLicenseCipher = TCPViewerLicenseCipher()
+        cipher: TCPViewerLicenseCipher = TCPViewerLicenseCipher(),
+        secrets: any TCPViewerLicenseSecretStoring = TCPViewerLicenseKeychain()
     ) {
         self.fileURL = fileURL
         self.fileManager = fileManager
         self.cipher = cipher
+        self.secrets = secrets
     }
 
     func readLicense() -> TCPViewerLicense? {
@@ -41,7 +44,13 @@ final class TCPViewerLicenseStorage: TCPViewerLicenseStoring {
 
             do {
                 let data = try cipher.decrypt(encryptedData)
-                return try JSONDecoder().decode(TCPViewerLicense.self, from: data)
+                var license = try JSONDecoder().decode(TCPViewerLicense.self, from: data)
+                if let activationId = license.activationId, license.receipt != nil {
+                    guard let credential = secrets.read(activationId),
+                          let token = String(data: credential, encoding: .utf8) else { return nil }
+                    license.signature = token
+                }
+                return license
             } catch {
                 return nil
             }
@@ -51,14 +60,27 @@ final class TCPViewerLicenseStorage: TCPViewerLicenseStoring {
     func writeLicense(_ license: TCPViewerLicense) throws {
         try fileAccess.write { _ in
             try fileManager.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let data = try JSONEncoder().encode(license)
+            let oldActivationId = (try? Data(contentsOf: fileURL))
+                .flatMap { try? cipher.decrypt($0) }
+                .flatMap { try? JSONDecoder().decode(TCPViewerLicense.self, from: $0) }?.activationId
+            var stored = license
+            if let activationId = license.activationId, license.receipt != nil {
+                // Keep the old file and credential until the signed replacement is written successfully.
+                try secrets.write(Data(license.signature.utf8), account: activationId)
+                stored.signature = ""
+            }
+            let data = try JSONEncoder().encode(stored)
             let encryptedData = try cipher.encrypt(data)
             try encryptedData.write(to: fileURL, options: .atomic)
+            if let oldActivationId, oldActivationId != license.activationId { secrets.remove(oldActivationId) }
         }
     }
 
     func removeLicense() {
         fileAccess.write { _ in
+            if let encrypted = try? Data(contentsOf: fileURL), let data = try? cipher.decrypt(encrypted),
+               let license = try? JSONDecoder().decode(TCPViewerLicense.self, from: data),
+               let activationId = license.activationId { secrets.remove(activationId) }
             try? fileManager.removeItem(at: fileURL)
         }
     }

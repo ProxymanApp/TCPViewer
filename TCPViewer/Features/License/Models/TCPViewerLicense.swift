@@ -11,11 +11,10 @@ enum TCPViewerLicenseType: String, Codable {
     case standardLicense = "standard_license"
     case comboLicense = "combo_license"
     case lifetimeLicense = "lifetime_license"
+    case teamLicense = "team_license"
 }
 
 struct TCPViewerLicense: Codable, Equatable {
-    private static let maximumOneYearUpdateWindowDays = 366
-
     private enum CodingKeys: String, CodingKey {
         case signature
         case deviceUUID = "device_uuid"
@@ -23,14 +22,19 @@ struct TCPViewerLicense: Codable, Equatable {
         case purchaseAt
         case expiryDate = "expiryAt"
         case licenseType
+        case receipt, activationId, numberOfSeats, usedSeats
     }
 
-    let signature: String
+    var signature: String
     let deviceUUID: String
     let email: String
     let purchaseAt: String
     var expiryDate: String
     let licenseType: TCPViewerLicenseType
+    var receipt: TCPViewerLicenseReceipt?
+    var activationId: String?
+    var numberOfSeats: Int?
+    var usedSeats: Int?
 
     init(
         signature: String,
@@ -38,7 +42,11 @@ struct TCPViewerLicense: Codable, Equatable {
         email: String,
         purchaseAt: String,
         expiryDate: String,
-        licenseType: TCPViewerLicenseType = .standardLicense
+        licenseType: TCPViewerLicenseType = .standardLicense,
+        receipt: TCPViewerLicenseReceipt? = nil,
+        activationId: String? = nil,
+        numberOfSeats: Int? = nil,
+        usedSeats: Int? = nil
     ) {
         self.signature = signature
         self.deviceUUID = deviceUUID
@@ -46,6 +54,10 @@ struct TCPViewerLicense: Codable, Equatable {
         self.purchaseAt = purchaseAt
         self.expiryDate = expiryDate
         self.licenseType = licenseType
+        self.receipt = receipt
+        self.activationId = activationId
+        self.numberOfSeats = numberOfSeats
+        self.usedSeats = usedSeats
     }
 
     init(from decoder: Decoder) throws {
@@ -56,6 +68,10 @@ struct TCPViewerLicense: Codable, Equatable {
         purchaseAt = try container.decode(String.self, forKey: .purchaseAt)
         expiryDate = try container.decode(String.self, forKey: .expiryDate)
         licenseType = try container.decodeIfPresent(TCPViewerLicenseType.self, forKey: .licenseType) ?? .standardLicense
+        receipt = try container.decodeIfPresent(TCPViewerLicenseReceipt.self, forKey: .receipt)
+        activationId = try container.decodeIfPresent(String.self, forKey: .activationId)
+        numberOfSeats = try container.decodeIfPresent(Int.self, forKey: .numberOfSeats)
+        usedSeats = try container.decodeIfPresent(Int.self, forKey: .usedSeats)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -66,6 +82,10 @@ struct TCPViewerLicense: Codable, Equatable {
         try container.encode(purchaseAt, forKey: .purchaseAt)
         try container.encode(expiryDate, forKey: .expiryDate)
         try container.encode(licenseType, forKey: .licenseType)
+        try container.encodeIfPresent(receipt, forKey: .receipt)
+        try container.encodeIfPresent(activationId, forKey: .activationId)
+        try container.encodeIfPresent(numberOfSeats, forKey: .numberOfSeats)
+        try container.encodeIfPresent(usedSeats, forKey: .usedSeats)
     }
 
     var remainingDays: Int? {
@@ -84,20 +104,8 @@ struct TCPViewerLicense: Codable, Equatable {
         return remainingDays < 0
     }
 
-    var hasOneYearUpdateWindow: Bool {
-        guard let updateWindowDays else {
-            return false
-        }
-
-        return (0...Self.maximumOneYearUpdateWindowDays).contains(updateWindowDays)
-    }
-
     var hasLifetimeUpdates: Bool {
         licenseType == .lifetimeLicense
-    }
-
-    var hasValidUpdateEntitlement: Bool {
-        hasLifetimeUpdates || hasOneYearUpdateWindow
     }
 
     var formattedExpiryDate: String {
@@ -120,7 +128,7 @@ struct TCPViewerLicense: Codable, Equatable {
         }
 
         if remainingDays < 0 {
-            return "Updates expired \(abs(remainingDays)) days ago"
+            return "Updates available until \(formattedExpiryDate). Covered releases remain usable."
         }
         if remainingDays == 0 {
             return "Updates available until today"
@@ -133,14 +141,7 @@ struct TCPViewerLicense: Codable, Equatable {
         return "Updates available until \(formattedExpiryDate) (\(months + 1) months from now)"
     }
 
-    private var updateWindowDays: Int? {
-        guard let purchaseDate = TCPViewerLicenseDateParser.date(from: purchaseAt),
-              let expiryDate = TCPViewerLicenseDateParser.date(from: self.expiryDate) else {
-            return nil
-        }
 
-        return purchaseDate.tcpViewerLicenseDifferenceInDays(with: expiryDate)
-    }
 }
 
 enum TCPViewerLicenseDateParser {

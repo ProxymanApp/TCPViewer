@@ -134,19 +134,45 @@ struct TCPViewerLicenseView: View {
         switch status {
         case .authorized(let license):
             LicenseInfoPanel(license: license)
-        case .unauthorized:
+        case .unauthorized(let error):
             VStack(alignment: .leading, spacing: 5) {
-                Text(unauthorizedTitle)
+                Text(error == .invalidLicense ? unauthorizedTitle : "License needs attention")
                     .font(.headline)
                     .foregroundStyle(.orange)
-                Text(unauthorizedMessage)
+                Text(error == .invalidLicense ? unauthorizedMessage : (error.errorDescription ?? unauthorizedMessage))
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
+                recoveryActions(for: error)
+                    .padding(.top, 6)
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color.orange.opacity(0.12))
             .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    @ViewBuilder
+    private func recoveryActions(for error: TCPViewerLicenseError) -> some View {
+        switch error {
+        case .outOfSeats:
+            HStack {
+                Button("License Manager") { TCPViewerLicenseWebsiteService.open(.licenseManager) }
+                Button("Add Seats") { TCPViewerLicenseWebsiteService.open(.addSeats) }
+            }
+        case .renewalRequired, .expired:
+            HStack {
+                Button("Renew License") { TCPViewerLicenseWebsiteService.open(.renewLicense) }
+                Button("Retry Verification") { licenseService.refreshLicense() }
+            }
+        case .deviceRevoked:
+            Button("Activate License") { showActivationAlert() }
+        case .licenseDisabled, .invalidLicense:
+            Button("Contact Support") { TCPViewerLicenseWebsiteService.open(.support) }
+        case .appUpdateRequired:
+            Button("Update TCP Viewer") { TCPViewerLicenseWebsiteService.open(.updateApp) }
+        default:
+            Button("Retry Verification") { licenseService.refreshLicense() }
         }
     }
 
@@ -200,6 +226,12 @@ struct TCPViewerLicenseView: View {
                     }
                 }
 
+                if let license = status.license, license.licenseType == .teamLicense {
+                    HStack {
+                        Button("Renew License") { TCPViewerLicenseWebsiteService.open(.renewLicense) }
+                        Button("Add Seats") { TCPViewerLicenseWebsiteService.open(.addSeats) }
+                    }
+                }
                 Text("Find, transfer, or revoke devices from License Manager.")
                     .font(.system(size: 12))
                     .foregroundStyle(.tertiary)
@@ -304,6 +336,7 @@ struct TCPViewerLicenseView: View {
                 case .authorized:
                     showSuccessAlert()
                 case .unauthorized(let error):
+                    status = .unauthorized(error)
                     handleActivationError(error)
                 }
             }
@@ -331,13 +364,14 @@ struct TCPViewerLicenseView: View {
         case .outOfSeats:
             let alert = NSAlert()
             alert.messageText = "No seats available"
-            alert.informativeText = "Your license is already used on the maximum number of devices. Open License Manager to revoke an old device, then try again."
+            alert.informativeText = error.errorDescription ?? "All seats are occupied."
             alert.alertStyle = .warning
             alert.addButton(withTitle: "License Manager")
+            alert.addButton(withTitle: "Add Seats")
             alert.addButton(withTitle: "Later")
-            if alert.runModal() == .alertFirstButtonReturn {
-                TCPViewerLicenseWebsiteService.open(.licenseManager)
-            }
+            let response = alert.runModal()
+            if response == .alertFirstButtonReturn { TCPViewerLicenseWebsiteService.open(.licenseManager) }
+            if response == .alertSecondButtonReturn { TCPViewerLicenseWebsiteService.open(.addSeats) }
         case .expired, .renewalRequired:
             let alert = NSAlert()
             alert.messageText = "This Build Is Not Covered"
@@ -412,6 +446,13 @@ private struct LicenseInfoPanel: View {
                     .font(.headline)
             }
 
+            if license.licenseType == .teamLicense {
+                Text("Team License · \(license.usedSeats ?? 0) of \(license.numberOfSeats ?? 0) seats used")
+                    .font(.system(size: 13, weight: .medium))
+                Text("Connect at least once every seven days to verify your Team license.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
             Text(expiryText)
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
