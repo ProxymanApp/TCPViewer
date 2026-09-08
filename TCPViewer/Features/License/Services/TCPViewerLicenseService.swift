@@ -1,3 +1,11 @@
+//
+//  TCPViewerLicenseService.swift
+//  TCPViewer
+//
+//  Created by Proxyman LLC on 4/5/26.
+//
+
+import CryptoKit
 import Foundation
 import PcapPlusPlusCore
 
@@ -215,10 +223,9 @@ final class TCPViewerLicenseService {
                         self.refreshLocalAuthorization()
                     } else {
                         // Keep renewal credentials, but never restore an explicitly denied receipt offline.
-                        if let id = license.activationId {
-                            let denial = TCPViewerLicenseDenial(activationId: id, renewalRequired: error == .renewalRequired || error == .expired)
-                            if let data = try? JSONEncoder().encode(denial) { try? self.secrets.write(data, account: Self.denialAccount) }
-                        }
+                        let denial = TCPViewerLicenseDenial(licenseIdentity: self.verificationIdentity(for: license),
+                            renewalRequired: error == .renewalRequired || error == .expired)
+                        if let data = try? JSONEncoder().encode(denial) { try? self.secrets.write(data, account: Self.denialAccount) }
                         if error == .deviceRevoked || error == .licenseDisabled || error == .invalidLicense { self.storage.removeLicense() }
                         self.setStatus(.unauthorized(error))
                     }
@@ -251,6 +258,16 @@ final class TCPViewerLicenseService {
             if status.isAuthorized { setStatus(.unauthorized(.invalidReceipt)) }
             return
         }
+        if let data = secrets.read(Self.denialAccount),
+           let denial = try? JSONDecoder().decode(TCPViewerLicenseDenial.self, from: data),
+           denial.licenseIdentity == verificationIdentity(for: license) {
+            setStatus(.unauthorized(denial.renewalRequired ? .renewalRequired : .verificationRequired))
+            return
+        }
+        if license.receipt == nil {
+            setStatus(locallyValidateLegacyLicense(license) ? .authorized(license) : .unauthorized(.verificationRequired))
+            return
+        }
         let wallTime = now().timeIntervalSince1970
         let monotonicTime = clockAnchor.timeIntervalSince1970 + max(0, uptime() - uptimeAnchor)
         let previousClockFailure = clock.requiresVerification
@@ -263,17 +280,29 @@ final class TCPViewerLicenseService {
             } catch { clock.requiresVerification = true }
         }
         guard !clock.requiresVerification else { setStatus(.unauthorized(.clockChanged)); return }
-        if let id = license.activationId, let data = secrets.read(Self.denialAccount),
-           let denial = try? JSONDecoder().decode(TCPViewerLicenseDenial.self, from: data), denial.activationId == id {
-            setStatus(.unauthorized(denial.renewalRequired ? .renewalRequired : .verificationRequired))
-            return
-        }
         do {
             let (authenticated, _) = try verifier.verify(license, deviceMatches: deviceProvider.isSameDeviceUUID,
                 buildNumber: buildNumberProvider(), now: Date(timeIntervalSince1970: clock.maximumTime))
             setStatus(.authorized(authenticated))
         } catch let error as TCPViewerLicenseError { setStatus(.unauthorized(error)) }
         catch { setStatus(.unauthorized(.invalidReceipt)) }
+    }
+
+    // Preserve access for previously verified individual licenses while the backend migrates them to signed receipts.
+    private func locallyValidateLegacyLicense(_ license: TCPViewerLicense) -> Bool {
+        guard license.licenseType != .teamLicense,
+              deviceProvider.isSameDeviceUUID(license.deviceUUID),
+              license.signature.count >= 20,
+              license.hasValidLegacyUpdateEntitlement else {
+            return false
+        }
+        return license.hasLifetimeUpdates || (license.remainingDays.map { $0 < 3000 } ?? false)
+    }
+
+    private func verificationIdentity(for license: TCPViewerLicense) -> String {
+        if let activationId = license.activationId { return activationId }
+        let digest = SHA256.hash(data: Data(license.signature.utf8))
+        return "legacy:" + digest.map { String(format: "%02x", $0) }.joined()
     }
 
     private func finishCallbacks() {
@@ -301,6 +330,6 @@ final class TCPViewerLicenseService {
 }
 
 private struct TCPViewerLicenseDenial: Codable {
-    let activationId: String
+    let licenseIdentity: String
     let renewalRequired: Bool
 }

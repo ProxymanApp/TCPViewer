@@ -15,6 +15,8 @@ enum TCPViewerLicenseType: String, Codable {
 }
 
 struct TCPViewerLicense: Codable, Equatable {
+    private static let maximumLegacyUpdateWindowDays = 366
+
     private enum CodingKeys: String, CodingKey {
         case signature
         case deviceUUID = "device_uuid"
@@ -108,6 +110,15 @@ struct TCPViewerLicense: Codable, Equatable {
         licenseType == .lifetimeLicense
     }
 
+    var hasValidLegacyUpdateEntitlement: Bool {
+        guard licenseType == .standardLicense || licenseType == .comboLicense,
+              let updateWindowDays else {
+            return hasLifetimeUpdates
+        }
+
+        return (0...Self.maximumLegacyUpdateWindowDays).contains(updateWindowDays)
+    }
+
     var formattedExpiryDate: String {
         guard let date = TCPViewerLicenseDateParser.date(from: expiryDate) else {
             return expiryDate
@@ -128,7 +139,7 @@ struct TCPViewerLicense: Codable, Equatable {
         }
 
         if remainingDays < 0 {
-            return "Updates available until \(formattedExpiryDate). Covered releases remain usable."
+            return "Updates expired \(abs(remainingDays)) days ago"
         }
         if remainingDays == 0 {
             return "Updates available until today"
@@ -141,7 +152,14 @@ struct TCPViewerLicense: Codable, Equatable {
         return "Updates available until \(formattedExpiryDate) (\(months + 1) months from now)"
     }
 
+    private var updateWindowDays: Int? {
+        guard let purchaseDate = TCPViewerLicenseDateParser.date(from: purchaseAt),
+              let expiryDate = TCPViewerLicenseDateParser.date(from: self.expiryDate) else {
+            return nil
+        }
 
+        return purchaseDate.tcpViewerLicenseDifferenceInDays(with: expiryDate)
+    }
 }
 
 enum TCPViewerLicenseDateParser {

@@ -33,18 +33,39 @@ struct TCPViewerLicenseServiceTests {
         #expect(rig.storage.license == nil)
     }
 
-    @Test func legacyMigrationRequiresOnlineAndKeepsCredentialUntilSuccess() throws {
-        let rig = LicenseTestRig(); let legacy = rig.legacy(); rig.storage.license = legacy
+    @Test func legacyStandardAndComboStayAuthorizedOfflineUntilMigrationSucceeds() throws {
+        for type in [TCPViewerLicenseType.standardLicense, .comboLicense] {
+            let rig = LicenseTestRig(); let legacy = rig.legacy(type: type); rig.storage.license = legacy
+            rig.network.verifyResult = .failure(.noInternetConnection)
+            let service = rig.service()
+            #expect(service.isLicenseAuthorized)
+            #expect(waitForLicenseStatus { service.verifyAtLaunch(completion: $0) } == .authorized(legacy))
+            #expect(rig.storage.license == legacy)
+            let migrated = try rig.signed(type: type, token: "new-credential")
+            rig.network.verifyResult = .success(migrated)
+            #expect(waitForLicenseStatus { service.refreshLicense(completion: $0) } == .authorized(migrated))
+            #expect(rig.network.verifiedSignature == legacy.signature)
+            #expect(rig.storage.license?.signature == "new-credential")
+        }
+    }
+
+    @Test func invalidLegacyFileCannotAuthorize() {
+        let rig = LicenseTestRig(); var legacy = rig.legacy(); legacy.signature = "short"; rig.storage.license = legacy
         rig.network.verifyResult = .failure(.noInternetConnection)
         let service = rig.service()
         #expect(!service.isLicenseAuthorized)
         #expect(waitForLicenseStatus { service.verifyAtLaunch(completion: $0) } == .unauthorized(.verificationRequired))
         #expect(rig.storage.license == legacy)
-        let migrated = try rig.signed(token: "new-credential")
-        rig.network.verifyResult = .success(migrated)
-        #expect(waitForLicenseStatus { service.refreshLicense(completion: $0) } == .authorized(migrated))
-        #expect(rig.network.verifiedSignature == legacy.signature)
-        #expect(rig.storage.license?.signature == "new-credential")
+    }
+
+    @Test func legacyRenewalDenialPersistsWithoutDeletingCredential() {
+        let rig = LicenseTestRig(); let legacy = rig.legacy(); rig.storage.license = legacy
+        rig.network.verifyResult = .failure(.renewalRequired)
+        let service = rig.service()
+        #expect(service.isLicenseAuthorized)
+        #expect(waitForLicenseStatus { service.refreshLicense(completion: $0) } == .unauthorized(.renewalRequired))
+        #expect(rig.storage.license == legacy)
+        #expect(rig.service().status == .unauthorized(.renewalRequired))
     }
 
     @Test func renewalsBeyondOneYearRemainAuthorizedAndExpiredCoverageDoesNotExpireCoveredBuild() throws {
@@ -241,9 +262,9 @@ final class LicenseTestRig {
     }
     func advance(_ seconds: TimeInterval) { queue.sync { date = date.addingTimeInterval(seconds); elapsed += seconds } }
     func drain() { queue.sync {} }
-    func legacy() -> TCPViewerLicense {
-        TCPViewerLicense(signature: "legacy-credential", deviceUUID: "device-1", email: "owner@example.com",
-            purchaseAt: "2024-01-01T00:00:00.000Z", expiryDate: "2025-01-01T23:59:59.999Z")
+    func legacy(type: TCPViewerLicenseType = .standardLicense) -> TCPViewerLicense {
+        TCPViewerLicense(signature: "legacy-activation-credential", deviceUUID: "device-1", email: "owner@example.com",
+            purchaseAt: "2024-01-01T00:00:00.000Z", expiryDate: "2025-01-01T00:00:00.000Z", licenseType: type)
     }
     func signed(type: TCPViewerLicenseType = .teamLicense, token: String = "credential", build: String = "999",
                 device: String = "device-1", activationId: String = "activation", expiry: String = "2028-01-01T23:59:59.999Z") throws -> TCPViewerLicense {
