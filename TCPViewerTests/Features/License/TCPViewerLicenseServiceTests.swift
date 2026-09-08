@@ -1,3 +1,10 @@
+//
+//  TCPViewerLicenseServiceTests.swift
+//  TCPViewer
+//
+//  Created by Proxyman LLC on 4/5/26.
+//
+
 import CryptoKit
 import Foundation
 import Testing
@@ -32,6 +39,19 @@ struct TCPViewerLicenseServiceTests {
             let service = rig.service()
             #expect(waitForLicenseStatus { service.activate(licenseKey: "TCPV-KEY", completion: $0) } == .authorized(license))
             #expect(rig.storage.license == license)
+        }
+    }
+
+    @Test func renewedIndividualActivationsKeepTheirExtendedUpdateWindow() {
+        for type in [TCPViewerLicenseType.standardLicense, .comboLicense] {
+            let rig = LicenseTestRig()
+            rig.storage.license = rig.legacy(type: type)
+            let renewed = rig.legacy(type: type, expiry: "2027-01-01T00:00:00.000Z")
+            rig.network.verifyResult = .success(renewed)
+            let service = rig.service()
+
+            #expect(waitForLicenseStatus { service.refreshLicense(completion: $0) } == .authorized(renewed))
+            #expect(rig.service().status == .authorized(renewed))
         }
     }
 
@@ -71,6 +91,18 @@ struct TCPViewerLicenseServiceTests {
         rig.network.verifyResult = .failure(.renewalRequired)
         let service = rig.service()
         #expect(service.isLicenseAuthorized)
+        #expect(waitForLicenseStatus { service.refreshLicense(completion: $0) } == .unauthorized(.renewalRequired))
+        #expect(rig.storage.license == legacy)
+        #expect(rig.service().status == .unauthorized(.renewalRequired))
+    }
+
+    @Test func legacyRenewalDenialFallsBackWhenKeychainWriteFails() {
+        let rig = LicenseTestRig(); let legacy = rig.legacy(); rig.storage.license = legacy
+        rig.network.verifyResult = .failure(.renewalRequired)
+        rig.secrets.data["verification-denial"] = Data("stale-keychain-value".utf8)
+        rig.secrets.failingWriteAccounts.insert("verification-denial")
+        let service = rig.service()
+
         #expect(waitForLicenseStatus { service.refreshLicense(completion: $0) } == .unauthorized(.renewalRequired))
         #expect(rig.storage.license == legacy)
         #expect(rig.service().status == .unauthorized(.renewalRequired))
@@ -136,11 +168,24 @@ struct TCPViewerLicenseServiceTests {
 
     @Test func timerEnforcesDeadlineWhileAppRemainsOpen() throws {
         let rig = LicenseTestRig(); rig.storage.license = try rig.signed(); rig.network.verifyResult = .failure(.noInternetConnection)
+        rig.advance(7 * 86400 - 1)
         let service = rig.service(timer: true)
-        rig.advance(7 * 86400)
+        #expect(waitForLicenseStatus { service.refreshLicense(completion: $0) }.isAuthorized)
+        rig.advance(1)
         let deadline = Date().addingTimeInterval(3)
         while service.isLicenseAuthorized && Date() < deadline { Thread.sleep(forTimeInterval: 0.01) }
         #expect(service.status == .unauthorized(.offlineVerificationRequired))
+    }
+
+    @Test func timerDoesNotPollStoredLicenseBeforeNextDeadline() throws {
+        let rig = LicenseTestRig(); rig.storage.license = try rig.signed()
+        let service = rig.service(timer: true)
+        let readCount = rig.storage.readCount
+
+        Thread.sleep(forTimeInterval: 1.2)
+
+        #expect(service.isLicenseAuthorized)
+        #expect(rig.storage.readCount == readCount)
     }
 
     @Test func individualPlansKeepOfflineAccessAfterSevenDays() throws {
@@ -240,14 +285,21 @@ struct TCPViewerLicenseServiceTests {
 
 final class LicenseTestSecrets: TCPViewerLicenseSecretStoring {
     var data: [String: Data] = [:]
+    var failingWriteAccounts = Set<String>()
     func read(_ account: String) -> Data? { data[account] }
-    func write(_ value: Data, account: String) throws { data[account] = value }
+    func write(_ value: Data, account: String) throws {
+        if failingWriteAccounts.contains(account) {
+            throw NSError(domain: "LicenseTestSecrets", code: 1)
+        }
+        data[account] = value
+    }
     func remove(_ account: String) { data.removeValue(forKey: account) }
 }
 
 final class LicenseTestStorage: TCPViewerLicenseStoring {
     var license: TCPViewerLicense?
-    func readLicense() -> TCPViewerLicense? { license }
+    private(set) var readCount = 0
+    func readLicense() -> TCPViewerLicense? { readCount += 1; return license }
     func writeLicense(_ license: TCPViewerLicense) throws { self.license = license }
     func removeLicense() { license = nil }
 }
@@ -271,9 +323,12 @@ final class LicenseTestRig {
     }
     func advance(_ seconds: TimeInterval) { queue.sync { date = date.addingTimeInterval(seconds); elapsed += seconds } }
     func drain() { queue.sync {} }
-    func legacy(type: TCPViewerLicenseType = .standardLicense) -> TCPViewerLicense {
+    func legacy(
+        type: TCPViewerLicenseType = .standardLicense,
+        expiry: String = "2025-01-01T00:00:00.000Z"
+    ) -> TCPViewerLicense {
         TCPViewerLicense(signature: "legacy-activation-credential", deviceUUID: "device-1", email: "owner@example.com",
-            purchaseAt: "2024-01-01T00:00:00.000Z", expiryDate: "2025-01-01T00:00:00.000Z", licenseType: type)
+            purchaseAt: "2024-01-01T00:00:00.000Z", expiryDate: expiry, licenseType: type)
     }
     func signed(type: TCPViewerLicenseType = .teamLicense, token: String = "credential", build: String = "999",
                 device: String = "device-1", activationId: String = "activation", expiry: String = "2028-01-01T23:59:59.999Z") throws -> TCPViewerLicense {

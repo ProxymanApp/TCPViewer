@@ -37,9 +37,14 @@ final class TCPViewerLicenseService {
     private var callbacks: [(TCPViewerLicenseStatus) -> Void] = []
     private var timer: DispatchSourceTimer?
     private var nextAttempt: TimeInterval = 0
+    private var sessionDenial: TCPViewerLicenseDenial?
     private static let clockAccount = "verification-clock"
     private static let denialAccount = "verification-denial"
+    private static let legacyProofAccount = "legacy-entitlement-proof"
+    private static let denialFallbackKey = "TCPViewer.license.verificationDenial"
     private static let lastVerifyKey = "TCPViewer.license.lastVerifyTime"
+    private static let verificationInterval: TimeInterval = 12 * 3600
+    private static let retryInterval: TimeInterval = 60
 
     init(
         storage: any TCPViewerLicenseStoring = TCPViewerLicenseStorage(),
@@ -74,14 +79,13 @@ final class TCPViewerLicenseService {
             ?? TCPViewerLicenseClockState(maximumTime: now().timeIntervalSince1970, requiresVerification: false)
         self.storedStatus = Protected(.unauthorized(.invalidLicense))
         workerQueue.setSpecific(key: queueKey, value: true)
-        workerQueue.sync { refreshLocalAuthorization() }
+        workerQueue.sync { refreshLocalAuthorization(storage.readLicense()) }
         if startTimer {
             let timer = DispatchSource.makeTimerSource(queue: workerQueue)
-            // Check the signed deadline while the app stays open, even if no window gains focus.
-            timer.schedule(deadline: .now() + 1, repeating: 1)
             timer.setEventHandler { [weak self] in self?.tick() }
-            timer.resume()
             self.timer = timer
+            workerQueue.sync { scheduleNextTimer() }
+            timer.resume()
         }
     }
 
@@ -115,6 +119,7 @@ final class TCPViewerLicenseService {
                     case .success(let license): resultStatus = self.accept(license)
                     case .failure(let error): resultStatus = .unauthorized(error)
                     }
+                    self.scheduleNextTimer()
                     self.completeOnMain(resultStatus, completion)
                 }
             }
@@ -130,8 +135,13 @@ final class TCPViewerLicenseService {
 
     func verifyIfNeeded(completion: ((TCPViewerLicenseStatus) -> Void)? = nil) {
         workerQueue.async {
-            self.refreshLocalAuthorization()
-            if self.verificationIsDue { self.verifyStoredLicense(completion: completion) }
+            guard let license = self.storage.readLicense() else {
+                self.refreshLocalAuthorization(nil)
+                self.completeOnMain(self.status, completion)
+                return
+            }
+            self.refreshLocalAuthorization(license)
+            if self.verificationIsDue(for: license) { self.verifyStoredLicense(completion: completion, storedLicense: license) }
             else { self.completeOnMain(self.status, completion) }
         }
     }
@@ -154,7 +164,9 @@ final class TCPViewerLicenseService {
                     case .success, .failure(.invalidLicense), .failure(.deviceRevoked):
                         self.clearOnQueue()
                         self.completeOnMain(.success(()), completion)
-                    case .failure(let error): self.completeOnMain(.failure(error), completion)
+                    case .failure(let error):
+                        self.scheduleNextTimer()
+                        self.completeOnMain(.failure(error), completion)
                     }
                 }
             }
@@ -170,9 +182,11 @@ final class TCPViewerLicenseService {
         invalidateRequests()
         mutating = false
         storage.removeLicense()
-        secrets.remove(Self.denialAccount)
+        removeDenial()
+        secrets.remove(Self.legacyProofAccount)
         defaults.removeObject(forKey: Self.lastVerifyKey)
         setStatus(.unauthorized(.invalidLicense))
+        scheduleNextTimer()
     }
 
     private func invalidateRequests() {
@@ -181,40 +195,50 @@ final class TCPViewerLicenseService {
         finishCallbacks()
     }
 
-    private var verificationIsDue: Bool {
-        guard let license = storage.readLicense() else { return true }
-        guard let receipt = license.receipt else {
+    // Decide whether this license needs an online check at the current wall-clock time.
+    private func verificationIsDue(for license: TCPViewerLicense) -> Bool {
+        guard license.receipt != nil else {
             let lastVerifyTime = defaults.double(forKey: Self.lastVerifyKey)
-            return !status.isAuthorized || lastVerifyTime <= 0 || now().timeIntervalSince1970 >= lastVerifyTime + 12 * 3600
+            return !status.isAuthorized || lastVerifyTime <= 0
+                || now().timeIntervalSince1970 >= lastVerifyTime + Self.verificationInterval
         }
-        guard
-              let data = TCPViewerLicenseReceiptVerifier.decodeBase64URL(receipt.payload),
-              let claims = try? JSONDecoder().decode(TCPViewerLicenseReceiptClaims.self, from: data) else { return true }
+        guard let claims = receiptClaims(for: license) else { return true }
         // The date here only schedules a request; authorization always verifies the signature separately.
-        return clock.requiresVerification || !status.isAuthorized || now().timeIntervalSince1970 >= claims.issuedAt + 12 * 3600
+        return clock.requiresVerification || !status.isAuthorized
+            || now().timeIntervalSince1970 >= claims.issuedAt + Self.verificationInterval
     }
 
+    // Process only the next verification or offline deadline instead of polling stored credentials.
     private func tick() {
-        guard storage.readLicense() != nil else {
+        guard let license = storage.readLicense() else {
             if status.isAuthorized { setStatus(.unauthorized(.invalidReceipt)) }
+            scheduleNextTimer()
             return
         }
-        refreshLocalAuthorization()
-        if verificationIsDue, uptime() >= nextAttempt { verifyStoredLicense(completion: nil) }
+        if verificationIsDue(for: license), uptime() >= nextAttempt {
+            verifyStoredLicense(completion: nil, storedLicense: license)
+        } else {
+            refreshLocalAuthorization(license)
+            scheduleNextTimer(for: license)
+        }
     }
 
     // Coalesce simultaneous launch, foreground, and paywall checks; generations reject obsolete callbacks.
-    private func verifyStoredLicense(completion: ((TCPViewerLicenseStatus) -> Void)?) {
-        refreshLocalAuthorization()
+    private func verifyStoredLicense(
+        completion: ((TCPViewerLicenseStatus) -> Void)?,
+        storedLicense: TCPViewerLicense? = nil
+    ) {
+        let license = storedLicense ?? storage.readLicense()
+        refreshLocalAuthorization(license)
         guard !mutating else { completeOnMain(status, completion); return }
         if let completion { callbacks.append(completion) }
         guard !verifying else { return }
-        guard let license = storage.readLicense() else { finishCallbacks(); return }
+        guard let license else { finishCallbacks(); scheduleNextTimer(); return }
         guard deviceProvider.isSameDeviceUUID(license.deviceUUID) else {
-            setStatus(.unauthorized(.invalidReceipt)); finishCallbacks(); return
+            setStatus(.unauthorized(.invalidReceipt)); finishCallbacks(); scheduleNextTimer(for: license); return
         }
         verifying = true
-        nextAttempt = uptime() + 60
+        nextAttempt = uptime() + Self.retryInterval
         let generation = generation
         networkClient.verifyLicense(license: license, deviceUUID: license.deviceUUID,
             buildNumber: buildNumberProvider(), appVersion: appVersionProvider(), osVersion: osVersionProvider()) { result in
@@ -225,17 +249,21 @@ final class TCPViewerLicenseService {
                 case .success(let updated): self.setStatus(self.accept(updated))
                 case .failure(let error):
                     if error.isTemporary {
-                        self.refreshLocalAuthorization()
+                        self.refreshLocalAuthorization(license)
                     } else {
                         // Keep renewal credentials, but never restore an explicitly denied receipt offline.
                         let denial = TCPViewerLicenseDenial(licenseIdentity: self.verificationIdentity(for: license),
                             renewalRequired: error == .renewalRequired || error == .expired)
-                        if let data = try? JSONEncoder().encode(denial) { try? self.secrets.write(data, account: Self.denialAccount) }
-                        if error == .deviceRevoked || error == .licenseDisabled || error == .invalidLicense { self.storage.removeLicense() }
+                        self.saveDenial(denial)
+                        if error == .deviceRevoked || error == .licenseDisabled || error == .invalidLicense {
+                            self.storage.removeLicense()
+                            self.secrets.remove(Self.legacyProofAccount)
+                        }
                         self.setStatus(.unauthorized(error))
                     }
                 }
                 self.finishCallbacks()
+                self.scheduleNextTimer()
             }
         }
     }
@@ -249,13 +277,23 @@ final class TCPViewerLicenseService {
                 (authenticated, _) = try verifier.verify(license, deviceMatches: deviceProvider.isSameDeviceUUID,
                     buildNumber: buildNumberProvider(), now: now())
             } else {
-                guard locallyValidateLegacyLicense(license) else { throw TCPViewerLicenseError.verificationRequired }
+                guard hasValidLegacyLicenseShape(license) else { throw TCPViewerLicenseError.verificationRequired }
                 authenticated = license
             }
             try storage.writeLicense(authenticated)
+            if requiresSignedReceipt {
+                secrets.remove(Self.legacyProofAccount)
+            } else {
+                do {
+                    try saveLegacyProof(for: authenticated)
+                } catch {
+                    // Older one-year and lifetime licenses remain usable if Keychain is temporarily unavailable.
+                    guard canUseOriginalLegacyValidation(authenticated) else { throw error }
+                }
+            }
             clock = TCPViewerLicenseClockState(maximumTime: now().timeIntervalSince1970, requiresVerification: false)
             try secrets.write(JSONEncoder().encode(clock), account: Self.clockAccount)
-            secrets.remove(Self.denialAccount)
+            removeDenial()
             clockAnchor = now()
             uptimeAnchor = uptime()
             defaults.set(now().timeIntervalSince1970, forKey: Self.lastVerifyKey)
@@ -266,14 +304,12 @@ final class TCPViewerLicenseService {
         catch { return .unauthorized(.error("Could not save the verified license. Please retry.")) }
     }
 
-    private func refreshLocalAuthorization() {
-        guard let license = storage.readLicense() else {
+    private func refreshLocalAuthorization(_ license: TCPViewerLicense?) {
+        guard let license else {
             if status.isAuthorized { setStatus(.unauthorized(.invalidReceipt)) }
             return
         }
-        if let data = secrets.read(Self.denialAccount),
-           let denial = try? JSONDecoder().decode(TCPViewerLicenseDenial.self, from: data),
-           denial.licenseIdentity == verificationIdentity(for: license) {
+        if let denial = currentDenial(), denial.licenseIdentity == verificationIdentity(for: license) {
             setStatus(.unauthorized(denial.renewalRequired ? .renewalRequired : .verificationRequired))
             return
         }
@@ -301,22 +337,148 @@ final class TCPViewerLicenseService {
         catch { setStatus(.unauthorized(.invalidReceipt)) }
     }
 
-    // Keep the existing local validation for individual licenses; Team always requires a signed receipt.
+    // Keep old licenses offline, and use a Keychain proof for legitimate multi-year renewals.
     private func locallyValidateLegacyLicense(_ license: TCPViewerLicense) -> Bool {
-        guard license.licenseType != .teamLicense,
+        guard hasValidLegacyLicenseShape(license) else { return false }
+        return canUseOriginalLegacyValidation(license) || storedLegacyProofMatches(license)
+    }
+
+    // Reject malformed individual payloads before accepting a trusted legacy server response.
+    private func hasValidLegacyLicenseShape(_ license: TCPViewerLicense) -> Bool {
+        guard license.receipt == nil,
+              license.licenseType != .teamLicense,
               !license.signature.hasPrefix("TCPVA-"),
               deviceProvider.isSameDeviceUUID(license.deviceUUID),
               license.signature.count >= 20,
-              license.hasValidLegacyUpdateEntitlement else {
+              let purchaseDate = TCPViewerLicenseDateParser.date(from: license.purchaseAt),
+              let expiryDate = TCPViewerLicenseDateParser.date(from: license.expiryDate) else {
             return false
         }
+        return expiryDate >= purchaseDate
+    }
+
+    // Preserve the validation available to individual licenses stored by older app versions.
+    private func canUseOriginalLegacyValidation(_ license: TCPViewerLicense) -> Bool {
+        guard license.hasValidLegacyUpdateEntitlement else { return false }
         return license.hasLifetimeUpdates || (license.remainingDays.map { $0 < 3000 } ?? false)
     }
 
+    // Bind a server-verified multi-year entitlement to its exact local license fields.
+    private func saveLegacyProof(for license: TCPViewerLicense) throws {
+        try secrets.write(JSONEncoder().encode(legacyProof(for: license)), account: Self.legacyProofAccount)
+    }
+
+    // Require every locally loaded field to match the proof saved after online verification.
+    private func storedLegacyProofMatches(_ license: TCPViewerLicense) -> Bool {
+        guard let data = secrets.read(Self.legacyProofAccount),
+              let proof = try? JSONDecoder().decode(TCPViewerLegacyLicenseProof.self, from: data) else {
+            return false
+        }
+        return proof == legacyProof(for: license)
+    }
+
+    // Hash the credential before putting the legacy entitlement proof in Keychain.
+    private func legacyProof(for license: TCPViewerLicense) -> TCPViewerLegacyLicenseProof {
+        TCPViewerLegacyLicenseProof(
+            credentialHash: sha256(license.signature),
+            deviceUUID: license.deviceUUID,
+            purchaseAt: license.purchaseAt,
+            expiryDate: license.expiryDate,
+            licenseType: license.licenseType,
+            activationId: license.activationId
+        )
+    }
+
+    // Use the server identity when available and a credential digest for older receipts.
     private func verificationIdentity(for license: TCPViewerLicense) -> String {
         if let activationId = license.activationId { return activationId }
-        let digest = SHA256.hash(data: Data(license.signature.utf8))
-        return "legacy:" + digest.map { String(format: "%02x", $0) }.joined()
+        return "legacy:" + sha256(license.signature)
+    }
+
+    // Return a stable lowercase digest for local identity comparisons.
+    private func sha256(_ value: String) -> String {
+        SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    // Keep a non-secret fallback so a transient Keychain error cannot undo a server denial.
+    private func saveDenial(_ denial: TCPViewerLicenseDenial) {
+        sessionDenial = denial
+        guard let data = try? JSONEncoder().encode(denial) else { return }
+        do {
+            try secrets.write(data, account: Self.denialAccount)
+            defaults.removeObject(forKey: Self.denialFallbackKey)
+        } catch {
+            defaults.set(data, forKey: Self.denialFallbackKey)
+        }
+    }
+
+    // Prefer the fallback written after a failed Keychain update over any stale Keychain value.
+    private func currentDenial() -> TCPViewerLicenseDenial? {
+        if let sessionDenial { return sessionDenial }
+        if let data = defaults.data(forKey: Self.denialFallbackKey),
+           let denial = try? JSONDecoder().decode(TCPViewerLicenseDenial.self, from: data) {
+            return denial
+        }
+        guard let data = secrets.read(Self.denialAccount) else { return nil }
+        return try? JSONDecoder().decode(TCPViewerLicenseDenial.self, from: data)
+    }
+
+    // Clear every persisted form of denial after removal or successful verification.
+    private func removeDenial() {
+        sessionDenial = nil
+        secrets.remove(Self.denialAccount)
+        defaults.removeObject(forKey: Self.denialFallbackKey)
+    }
+
+    // Arm one timer for the next online check, retry, or signed offline deadline.
+    private func scheduleNextTimer(for storedLicense: TCPViewerLicense? = nil) {
+        guard let timer else { return }
+        guard !verifying, !mutating else {
+            timer.schedule(deadline: .distantFuture)
+            return
+        }
+        guard let license = storedLicense ?? storage.readLicense() else {
+            timer.schedule(deadline: .distantFuture)
+            return
+        }
+
+        let delay: TimeInterval
+        if verificationIsDue(for: license) {
+            let retryDelay = max(1, nextAttempt - uptime())
+            if let deadline = signedOfflineDeadline(for: license) {
+                delay = max(1, min(retryDelay, deadline.timeIntervalSince(now())))
+            } else {
+                delay = retryDelay
+            }
+        } else {
+            delay = max(1, nextScheduledDate(for: license).timeIntervalSince(now()))
+        }
+        timer.schedule(deadline: .now() + delay, leeway: .milliseconds(500))
+    }
+
+    // Return the next event encoded by the current legacy or signed receipt.
+    private func nextScheduledDate(for license: TCPViewerLicense) -> Date {
+        guard let claims = receiptClaims(for: license) else {
+            let lastVerifyTime = defaults.double(forKey: Self.lastVerifyKey)
+            return Date(timeIntervalSince1970: lastVerifyTime + Self.verificationInterval)
+        }
+
+        let verificationDate = Date(timeIntervalSince1970: claims.issuedAt + Self.verificationInterval)
+        guard let offlineUntil = claims.offlineUntil else { return verificationDate }
+        return min(verificationDate, Date(timeIntervalSince1970: offlineUntil))
+    }
+
+    // Return the signed cutoff that must preempt a later network retry.
+    private func signedOfflineDeadline(for license: TCPViewerLicense) -> Date? {
+        guard let offlineUntil = receiptClaims(for: license)?.offlineUntil else { return nil }
+        return Date(timeIntervalSince1970: offlineUntil)
+    }
+
+    // Decode untrusted claims only for scheduling; authorization verifies their signature separately.
+    private func receiptClaims(for license: TCPViewerLicense) -> TCPViewerLicenseReceiptClaims? {
+        guard let receipt = license.receipt,
+              let data = TCPViewerLicenseReceiptVerifier.decodeBase64URL(receipt.payload) else { return nil }
+        return try? JSONDecoder().decode(TCPViewerLicenseReceiptClaims.self, from: data)
     }
 
     private func finishCallbacks() {
@@ -346,4 +508,13 @@ final class TCPViewerLicenseService {
 private struct TCPViewerLicenseDenial: Codable {
     let licenseIdentity: String
     let renewalRequired: Bool
+}
+
+private struct TCPViewerLegacyLicenseProof: Codable, Equatable {
+    let credentialHash: String
+    let deviceUUID: String
+    let purchaseAt: String
+    let expiryDate: String
+    let licenseType: TCPViewerLicenseType
+    let activationId: String?
 }
