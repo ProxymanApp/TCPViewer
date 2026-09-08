@@ -78,6 +78,8 @@ struct TCPViewerLicenseReceiptTests {
         #expect(stored.signature.isEmpty)
         #expect(rig.secrets.read("activation") == Data(license.signature.utf8))
         #expect(storage.readLicense() == license)
+        try storage.writeLicense(rig.legacy())
+        #expect(rig.secrets.read("activation") == nil)
         storage.removeLicense()
         #expect(rig.secrets.read("activation") == nil); #expect(storage.readLicense() == nil)
     }

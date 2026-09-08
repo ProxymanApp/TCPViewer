@@ -182,7 +182,12 @@ final class TCPViewerLicenseService {
     }
 
     private var verificationIsDue: Bool {
-        guard let license = storage.readLicense(), let receipt = license.receipt,
+        guard let license = storage.readLicense() else { return true }
+        guard let receipt = license.receipt else {
+            let lastVerifyTime = defaults.double(forKey: Self.lastVerifyKey)
+            return !status.isAuthorized || lastVerifyTime <= 0 || now().timeIntervalSince1970 >= lastVerifyTime + 12 * 3600
+        }
+        guard
               let data = TCPViewerLicenseReceiptVerifier.decodeBase64URL(receipt.payload),
               let claims = try? JSONDecoder().decode(TCPViewerLicenseReceiptClaims.self, from: data) else { return true }
         // The date here only schedules a request; authorization always verifies the signature separately.
@@ -237,8 +242,16 @@ final class TCPViewerLicenseService {
 
     private func accept(_ license: TCPViewerLicense) -> TCPViewerLicenseStatus {
         do {
-            let (authenticated, _) = try verifier.verify(license, deviceMatches: deviceProvider.isSameDeviceUUID,
-                buildNumber: buildNumberProvider(), now: now())
+            let authenticated: TCPViewerLicense
+            let requiresSignedReceipt = license.receipt != nil || license.licenseType == .teamLicense
+                || license.signature.hasPrefix("TCPVA-")
+            if requiresSignedReceipt {
+                (authenticated, _) = try verifier.verify(license, deviceMatches: deviceProvider.isSameDeviceUUID,
+                    buildNumber: buildNumberProvider(), now: now())
+            } else {
+                guard locallyValidateLegacyLicense(license) else { throw TCPViewerLicenseError.verificationRequired }
+                authenticated = license
+            }
             try storage.writeLicense(authenticated)
             clock = TCPViewerLicenseClockState(maximumTime: now().timeIntervalSince1970, requiresVerification: false)
             try secrets.write(JSONEncoder().encode(clock), account: Self.clockAccount)
@@ -288,9 +301,10 @@ final class TCPViewerLicenseService {
         catch { setStatus(.unauthorized(.invalidReceipt)) }
     }
 
-    // Preserve access for previously verified individual licenses while the backend migrates them to signed receipts.
+    // Keep the existing local validation for individual licenses; Team always requires a signed receipt.
     private func locallyValidateLegacyLicense(_ license: TCPViewerLicense) -> Bool {
         guard license.licenseType != .teamLicense,
+              !license.signature.hasPrefix("TCPVA-"),
               deviceProvider.isSameDeviceUUID(license.deviceUUID),
               license.signature.count >= 20,
               license.hasValidLegacyUpdateEntitlement else {

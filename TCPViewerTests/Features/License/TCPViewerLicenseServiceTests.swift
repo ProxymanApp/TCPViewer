@@ -26,26 +26,34 @@ struct TCPViewerLicenseServiceTests {
         #expect(rig.network.registeredKey == nil)
     }
 
-    @Test func unsignedActivationsCannotAuthorize() {
-        let rig = LicenseTestRig(); rig.network.registerResult = .success(rig.legacy())
+    @Test func individualActivationsUseTheExistingUnsignedFlow() {
+        for type in [TCPViewerLicenseType.standardLicense, .comboLicense, .lifetimeLicense] {
+            let rig = LicenseTestRig(); let license = rig.legacy(type: type); rig.network.registerResult = .success(license)
+            let service = rig.service()
+            #expect(waitForLicenseStatus { service.activate(licenseKey: "TCPV-KEY", completion: $0) } == .authorized(license))
+            #expect(rig.storage.license == license)
+        }
+    }
+
+    @Test func unsignedTeamActivationsCannotAuthorize() {
+        let rig = LicenseTestRig(); rig.network.registerResult = .success(rig.legacy(type: .teamLicense))
         let service = rig.service()
         #expect(waitForLicenseStatus { service.activate(licenseKey: "TCPV-KEY", completion: $0) } == .unauthorized(.verificationRequired))
         #expect(rig.storage.license == nil)
     }
 
-    @Test func legacyStandardAndComboStayAuthorizedOfflineUntilMigrationSucceeds() throws {
-        for type in [TCPViewerLicenseType.standardLicense, .comboLicense] {
+    @Test func existingIndividualActivationsStayOnTheUnsignedFlow() {
+        for type in [TCPViewerLicenseType.standardLicense, .comboLicense, .lifetimeLicense] {
             let rig = LicenseTestRig(); let legacy = rig.legacy(type: type); rig.storage.license = legacy
             rig.network.verifyResult = .failure(.noInternetConnection)
             let service = rig.service()
             #expect(service.isLicenseAuthorized)
             #expect(waitForLicenseStatus { service.verifyAtLaunch(completion: $0) } == .authorized(legacy))
             #expect(rig.storage.license == legacy)
-            let migrated = try rig.signed(type: type, token: "new-credential")
-            rig.network.verifyResult = .success(migrated)
-            #expect(waitForLicenseStatus { service.refreshLicense(completion: $0) } == .authorized(migrated))
+            rig.network.verifyResult = .success(legacy)
+            #expect(waitForLicenseStatus { service.refreshLicense(completion: $0) } == .authorized(legacy))
             #expect(rig.network.verifiedSignature == legacy.signature)
-            #expect(rig.storage.license?.signature == "new-credential")
+            #expect(rig.storage.license?.receipt == nil)
         }
     }
 
@@ -250,12 +258,13 @@ final class LicenseTestRig {
     let secrets = LicenseTestSecrets()
     let network = LicenseTestNetwork()
     let queue = DispatchQueue(label: "LicenseTestRig.\(UUID().uuidString)")
+    let defaults = UserDefaults(suiteName: "LicenseTests.\(UUID().uuidString)")!
     var date = Date(timeIntervalSince1970: 1788775200)
     var elapsed: TimeInterval = 100
 
     func service(timer: Bool = false) -> TCPViewerLicenseService {
         TCPViewerLicenseService(storage: storage, networkClient: network, deviceProvider: LicenseTestDevice(),
-            defaults: UserDefaults(suiteName: "LicenseTests.\(UUID().uuidString)")!, buildNumberProvider: { "999" },
+            defaults: defaults, buildNumberProvider: { "999" },
             appVersionProvider: { "1.0" }, osVersionProvider: { "26.0" }, workerQueue: queue,
             verifier: TCPViewerLicenseReceiptVerifier(publicKeys: ["test": key.publicKey.rawRepresentation]),
             secrets: secrets, now: { self.date }, uptime: { self.elapsed }, startTimer: timer)

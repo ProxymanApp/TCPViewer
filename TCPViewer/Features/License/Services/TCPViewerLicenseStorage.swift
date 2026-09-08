@@ -72,7 +72,9 @@ final class TCPViewerLicenseStorage: TCPViewerLicenseStoring {
             let data = try JSONEncoder().encode(stored)
             let encryptedData = try cipher.encrypt(data)
             try encryptedData.write(to: fileURL, options: .atomic)
-            if let oldActivationId, oldActivationId != license.activationId { secrets.remove(oldActivationId) }
+            if let oldActivationId, oldActivationId != license.activationId || license.receipt == nil {
+                secrets.remove(oldActivationId)
+            }
         }
     }
 
