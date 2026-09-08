@@ -30,12 +30,14 @@ struct TCPViewerLicenseView: View {
         Feature(systemImage: "list.bullet.rectangle.portrait", title: "Packet Inspection", detail: "Browse decoded packet details, bytes, and protocol fields."),
         Feature(systemImage: "magnifyingglass.circle", title: "libwireshark Protocol Details", detail: "Packet dissection is built on libwireshark, providing detailed fields across supported protocols."),
         Feature(systemImage: "line.3.horizontal.decrease.circle", title: "Focused Filtering", detail: "Use capture and packet workflows built for TCP/UDP investigation."),
+        Feature(systemImage: "sparkles", title: "TCP Viewer MCP", detail: "Connect Codex or another MCP client to query packets and control captures."),
     ]
 
     @State private var status: TCPViewerLicenseStatus
     @State private var statusObserver: NSObjectProtocol?
     @State private var isActivating = false
     @State private var isRevoking = false
+    @State private var isShowingRemoveLicenseConfirmation = false
 
     init(
         licenseService: TCPViewerLicenseService,
@@ -76,6 +78,14 @@ struct TCPViewerLicenseView: View {
         .background(.regularMaterial)
         .onAppear(perform: startObservingStatus)
         .onDisappear(perform: stopObservingStatus)
+        .alert("Remove License?", isPresented: $isShowingRemoveLicenseConfirmation) {
+            Button("Remove License", role: .destructive) {
+                revokeLicense()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("TCP Viewer PRO will be deactivated on this Mac, and its seat will become available for another device.")
+        }
     }
 
     private func content(minColumnHeight: CGFloat) -> some View {
@@ -83,7 +93,9 @@ struct TCPViewerLicenseView: View {
             VStack(alignment: .leading, spacing: 28) {
                 header
                 licenseState
-                primaryActionArea
+                if !status.isAuthorized {
+                    primaryActionArea
+                }
                 Spacer(minLength: 0)
                 licenseManagementArea
             }
@@ -213,7 +225,7 @@ struct TCPViewerLicenseView: View {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
                     Button {
-                        revokeLicense()
+                        isShowingRemoveLicenseConfirmation = true
                     } label: {
                         Label("Remove License", systemImage: "trash")
                     }
@@ -288,12 +300,12 @@ struct TCPViewerLicenseView: View {
 
     private var featureChecklist: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ChecklistRow(title: "Simple perpetual license with 1 year of updates")
-            ChecklistRow(title: "Transfer seats through License Manager")
-            ChecklistRow(title: "Native macOS packet analyzer by Proxyman LLC")
+            ChecklistRow(title: "Perpetual licenses for individuals and teams")
+            ChecklistRow(title: "One year or lifetime updates, depending on your plan")
+            ChecklistRow(title: "Manage active Macs through License Manager")
             ChecklistLinkRow(
-                title: "Open source on GitHub: ProxymanApp/Packetry",
-                destination: URL(string: "https://github.com/ProxymanApp/Packetry")!
+                title: "Open source on GitHub: ProxymanApp/TCPViewer",
+                destination: URL(string: "https://github.com/ProxymanApp/TCPViewer")!
             )
         }
         .font(.system(size: 13, weight: .medium))
@@ -449,9 +461,6 @@ private struct LicenseInfoPanel: View {
             if license.licenseType == .teamLicense {
                 Text("Team License · \(license.usedSeats ?? 0) of \(license.numberOfSeats ?? 0) seats used")
                     .font(.system(size: 13, weight: .medium))
-                Text("Connect at least once every seven days to verify your Team license.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
             }
             Text(expiryText)
                 .font(.system(size: 13))
