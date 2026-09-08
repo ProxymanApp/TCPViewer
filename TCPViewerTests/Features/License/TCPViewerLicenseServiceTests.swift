@@ -96,18 +96,6 @@ struct TCPViewerLicenseServiceTests {
         #expect(rig.service().status == .unauthorized(.renewalRequired))
     }
 
-    @Test func legacyRenewalDenialFallsBackWhenKeychainWriteFails() {
-        let rig = LicenseTestRig(); let legacy = rig.legacy(); rig.storage.license = legacy
-        rig.network.verifyResult = .failure(.renewalRequired)
-        rig.secrets.data["verification-denial"] = Data("stale-keychain-value".utf8)
-        rig.secrets.failingWriteAccounts.insert("verification-denial")
-        let service = rig.service()
-
-        #expect(waitForLicenseStatus { service.refreshLicense(completion: $0) } == .unauthorized(.renewalRequired))
-        #expect(rig.storage.license == legacy)
-        #expect(rig.service().status == .unauthorized(.renewalRequired))
-    }
-
     @Test func renewalsBeyondOneYearRemainAuthorizedAndExpiredCoverageDoesNotExpireCoveredBuild() throws {
         let rig = LicenseTestRig(); let license = try rig.signed(type: .standardLicense, expiry: "2025-12-31T23:59:59.999Z")
         rig.storage.license = license
@@ -283,19 +271,6 @@ struct TCPViewerLicenseServiceTests {
     }
 }
 
-final class LicenseTestSecrets: TCPViewerLicenseSecretStoring {
-    var data: [String: Data] = [:]
-    var failingWriteAccounts = Set<String>()
-    func read(_ account: String) -> Data? { data[account] }
-    func write(_ value: Data, account: String) throws {
-        if failingWriteAccounts.contains(account) {
-            throw NSError(domain: "LicenseTestSecrets", code: 1)
-        }
-        data[account] = value
-    }
-    func remove(_ account: String) { data.removeValue(forKey: account) }
-}
-
 final class LicenseTestStorage: TCPViewerLicenseStoring {
     var license: TCPViewerLicense?
     private(set) var readCount = 0
@@ -307,7 +282,6 @@ final class LicenseTestStorage: TCPViewerLicenseStoring {
 final class LicenseTestRig {
     let key = Curve25519.Signing.PrivateKey()
     let storage = LicenseTestStorage()
-    let secrets = LicenseTestSecrets()
     let network = LicenseTestNetwork()
     let queue = DispatchQueue(label: "LicenseTestRig.\(UUID().uuidString)")
     let defaults = UserDefaults(suiteName: "LicenseTests.\(UUID().uuidString)")!
@@ -319,7 +293,7 @@ final class LicenseTestRig {
             defaults: defaults, buildNumberProvider: { "999" },
             appVersionProvider: { "1.0" }, osVersionProvider: { "26.0" }, workerQueue: queue,
             verifier: TCPViewerLicenseReceiptVerifier(publicKeys: ["test": key.publicKey.rawRepresentation]),
-            secrets: secrets, now: { self.date }, uptime: { self.elapsed }, startTimer: timer)
+            now: { self.date }, uptime: { self.elapsed }, startTimer: timer)
     }
     func advance(_ seconds: TimeInterval) { queue.sync { date = date.addingTimeInterval(seconds); elapsed += seconds } }
     func drain() { queue.sync {} }

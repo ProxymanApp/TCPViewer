@@ -22,7 +22,6 @@ final class TCPViewerLicenseService {
     private let osVersionProvider: () -> String
     private let workerQueue: DispatchQueue
     private let verifier: TCPViewerLicenseReceiptVerifier
-    private let secrets: any TCPViewerLicenseSecretStoring
     private let now: () -> Date
     private let uptime: () -> TimeInterval
     private let storedStatus: Protected<TCPViewerLicenseStatus>
@@ -38,10 +37,9 @@ final class TCPViewerLicenseService {
     private var timer: DispatchSourceTimer?
     private var nextAttempt: TimeInterval = 0
     private var sessionDenial: TCPViewerLicenseDenial?
-    private static let clockAccount = "verification-clock"
-    private static let denialAccount = "verification-denial"
-    private static let legacyProofAccount = "legacy-entitlement-proof"
-    private static let denialFallbackKey = "TCPViewer.license.verificationDenial"
+    private static let clockKey = "TCPViewer.license.verificationClock"
+    private static let denialKey = "TCPViewer.license.verificationDenial"
+    private static let legacyProofKey = "TCPViewer.license.legacyEntitlementProof"
     private static let lastVerifyKey = "TCPViewer.license.lastVerifyTime"
     private static let verificationInterval: TimeInterval = 12 * 3600
     private static let retryInterval: TimeInterval = 60
@@ -56,7 +54,6 @@ final class TCPViewerLicenseService {
         osVersionProvider: @escaping () -> String = { TCPViewerLicenseAppVersion.current.osVersion },
         workerQueue: DispatchQueue = DispatchQueue(label: "com.proxyman.tcpviewer.LicenseService", qos: .utility),
         verifier: TCPViewerLicenseReceiptVerifier = TCPViewerLicenseReceiptVerifier(),
-        secrets: any TCPViewerLicenseSecretStoring = TCPViewerLicenseKeychain(),
         now: @escaping () -> Date = Date.init,
         uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
         startTimer: Bool = true
@@ -70,12 +67,11 @@ final class TCPViewerLicenseService {
         self.osVersionProvider = osVersionProvider
         self.workerQueue = workerQueue
         self.verifier = verifier
-        self.secrets = secrets
         self.now = now
         self.uptime = uptime
         self.clockAnchor = now()
         self.uptimeAnchor = uptime()
-        self.clock = secrets.read(Self.clockAccount).flatMap { try? JSONDecoder().decode(TCPViewerLicenseClockState.self, from: $0) }
+        self.clock = defaults.data(forKey: Self.clockKey).flatMap { try? JSONDecoder().decode(TCPViewerLicenseClockState.self, from: $0) }
             ?? TCPViewerLicenseClockState(maximumTime: now().timeIntervalSince1970, requiresVerification: false)
         self.storedStatus = Protected(.unauthorized(.invalidLicense))
         workerQueue.setSpecific(key: queueKey, value: true)
@@ -183,7 +179,8 @@ final class TCPViewerLicenseService {
         mutating = false
         storage.removeLicense()
         removeDenial()
-        secrets.remove(Self.legacyProofAccount)
+        defaults.removeObject(forKey: Self.legacyProofKey)
+        defaults.removeObject(forKey: Self.clockKey)
         defaults.removeObject(forKey: Self.lastVerifyKey)
         setStatus(.unauthorized(.invalidLicense))
         scheduleNextTimer()
@@ -257,7 +254,7 @@ final class TCPViewerLicenseService {
                         self.saveDenial(denial)
                         if error == .deviceRevoked || error == .licenseDisabled || error == .invalidLicense {
                             self.storage.removeLicense()
-                            self.secrets.remove(Self.legacyProofAccount)
+                            self.defaults.removeObject(forKey: Self.legacyProofKey)
                         }
                         self.setStatus(.unauthorized(error))
                     }
@@ -282,17 +279,12 @@ final class TCPViewerLicenseService {
             }
             try storage.writeLicense(authenticated)
             if requiresSignedReceipt {
-                secrets.remove(Self.legacyProofAccount)
+                defaults.removeObject(forKey: Self.legacyProofKey)
             } else {
-                do {
-                    try saveLegacyProof(for: authenticated)
-                } catch {
-                    // Older one-year and lifetime licenses remain usable if Keychain is temporarily unavailable.
-                    guard canUseOriginalLegacyValidation(authenticated) else { throw error }
-                }
+                saveLegacyProof(for: authenticated)
             }
             clock = TCPViewerLicenseClockState(maximumTime: now().timeIntervalSince1970, requiresVerification: false)
-            try secrets.write(JSONEncoder().encode(clock), account: Self.clockAccount)
+            saveClock()
             removeDenial()
             clockAnchor = now()
             uptimeAnchor = uptime()
@@ -323,10 +315,8 @@ final class TCPViewerLicenseService {
         if wallTime + 5 < max(clock.maximumTime, monotonicTime) { clock.requiresVerification = true }
         clock.maximumTime = max(clock.maximumTime, wallTime, monotonicTime)
         if clock.requiresVerification != previousClockFailure || uptime() >= lastClockSave + 60 {
-            do {
-                try secrets.write(JSONEncoder().encode(clock), account: Self.clockAccount)
-                lastClockSave = uptime()
-            } catch { clock.requiresVerification = true }
+            saveClock()
+            lastClockSave = uptime()
         }
         guard !clock.requiresVerification else { setStatus(.unauthorized(.clockChanged)); return }
         do {
@@ -337,7 +327,7 @@ final class TCPViewerLicenseService {
         catch { setStatus(.unauthorized(.invalidReceipt)) }
     }
 
-    // Keep old licenses offline, and use a Keychain proof for legitimate multi-year renewals.
+    // Keep old licenses offline, and use a local proof for legitimate multi-year renewals.
     private func locallyValidateLegacyLicense(_ license: TCPViewerLicense) -> Bool {
         guard hasValidLegacyLicenseShape(license) else { return false }
         return canUseOriginalLegacyValidation(license) || storedLegacyProofMatches(license)
@@ -364,20 +354,21 @@ final class TCPViewerLicenseService {
     }
 
     // Bind a server-verified multi-year entitlement to its exact local license fields.
-    private func saveLegacyProof(for license: TCPViewerLicense) throws {
-        try secrets.write(JSONEncoder().encode(legacyProof(for: license)), account: Self.legacyProofAccount)
+    private func saveLegacyProof(for license: TCPViewerLicense) {
+        guard let data = try? JSONEncoder().encode(legacyProof(for: license)) else { return }
+        defaults.set(data, forKey: Self.legacyProofKey)
     }
 
     // Require every locally loaded field to match the proof saved after online verification.
     private func storedLegacyProofMatches(_ license: TCPViewerLicense) -> Bool {
-        guard let data = secrets.read(Self.legacyProofAccount),
+        guard let data = defaults.data(forKey: Self.legacyProofKey),
               let proof = try? JSONDecoder().decode(TCPViewerLegacyLicenseProof.self, from: data) else {
             return false
         }
         return proof == legacyProof(for: license)
     }
 
-    // Hash the credential before putting the legacy entitlement proof in Keychain.
+    // Hash the credential before putting the legacy entitlement proof in app preferences.
     private func legacyProof(for license: TCPViewerLicense) -> TCPViewerLegacyLicenseProof {
         TCPViewerLegacyLicenseProof(
             credentialHash: sha256(license.signature),
@@ -400,34 +391,30 @@ final class TCPViewerLicenseService {
         SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
-    // Keep a non-secret fallback so a transient Keychain error cannot undo a server denial.
+    // Persist server denials so restarting offline cannot restore rejected authorization.
     private func saveDenial(_ denial: TCPViewerLicenseDenial) {
         sessionDenial = denial
         guard let data = try? JSONEncoder().encode(denial) else { return }
-        do {
-            try secrets.write(data, account: Self.denialAccount)
-            defaults.removeObject(forKey: Self.denialFallbackKey)
-        } catch {
-            defaults.set(data, forKey: Self.denialFallbackKey)
-        }
+        defaults.set(data, forKey: Self.denialKey)
     }
 
-    // Prefer the fallback written after a failed Keychain update over any stale Keychain value.
+    // Prefer the current session denial before reading the persisted value.
     private func currentDenial() -> TCPViewerLicenseDenial? {
         if let sessionDenial { return sessionDenial }
-        if let data = defaults.data(forKey: Self.denialFallbackKey),
-           let denial = try? JSONDecoder().decode(TCPViewerLicenseDenial.self, from: data) {
-            return denial
-        }
-        guard let data = secrets.read(Self.denialAccount) else { return nil }
+        guard let data = defaults.data(forKey: Self.denialKey) else { return nil }
         return try? JSONDecoder().decode(TCPViewerLicenseDenial.self, from: data)
     }
 
     // Clear every persisted form of denial after removal or successful verification.
     private func removeDenial() {
         sessionDenial = nil
-        secrets.remove(Self.denialAccount)
-        defaults.removeObject(forKey: Self.denialFallbackKey)
+        defaults.removeObject(forKey: Self.denialKey)
+    }
+
+    // Save the clock state without invoking system credential UI.
+    private func saveClock() {
+        guard let data = try? JSONEncoder().encode(clock) else { return }
+        defaults.set(data, forKey: Self.clockKey)
     }
 
     // Arm one timer for the next online check, retry, or signed offline deadline.
@@ -508,6 +495,11 @@ final class TCPViewerLicenseService {
 private struct TCPViewerLicenseDenial: Codable {
     let licenseIdentity: String
     let renewalRequired: Bool
+}
+
+private struct TCPViewerLicenseClockState: Codable {
+    var maximumTime: TimeInterval
+    var requiresVerification: Bool
 }
 
 private struct TCPViewerLegacyLicenseProof: Codable, Equatable {

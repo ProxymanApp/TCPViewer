@@ -67,21 +67,22 @@ struct TCPViewerLicenseReceiptTests {
         }
     }
 
-    @Test func signedStorageKeepsCredentialOutOfReceiptFileAndRemovesItFromSecretStore() throws {
+    @Test func signedStorageKeepsCredentialInsideEncryptedReceiptFile() throws {
         let rig = LicenseTestRig(); let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
         let url = directory.appendingPathComponent("receipt.bin")
         let cipher = TCPViewerLicenseCipher(secret: "test-only")
-        let storage = TCPViewerLicenseStorage(fileURL: url, cipher: cipher, secrets: rig.secrets)
+        let storage = TCPViewerLicenseStorage(fileURL: url, cipher: cipher)
         let license = try rig.signed(); try storage.writeLicense(license)
-        let stored = try JSONDecoder().decode(TCPViewerLicense.self, from: cipher.decrypt(Data(contentsOf: url)))
-        #expect(stored.signature.isEmpty)
-        #expect(rig.secrets.read("activation") == Data(license.signature.utf8))
+        let encrypted = try Data(contentsOf: url)
+        let stored = try JSONDecoder().decode(TCPViewerLicense.self, from: cipher.decrypt(encrypted))
+        #expect(stored.signature == license.signature)
+        #expect(!String(decoding: encrypted, as: UTF8.self).contains(license.signature))
         #expect(storage.readLicense() == license)
         try storage.writeLicense(rig.legacy())
-        #expect(rig.secrets.read("activation") == nil)
+        #expect(storage.readLicense() == rig.legacy())
         storage.removeLicense()
-        #expect(rig.secrets.read("activation") == nil); #expect(storage.readLicense() == nil)
+        #expect(storage.readLicense() == nil)
     }
 
     private func verifier(_ rig: LicenseTestRig) -> TCPViewerLicenseReceiptVerifier {
