@@ -278,6 +278,18 @@
       "bugs": [
         "Fixed: Some internal crashes."
       ]
+    },
+    {
+      "version": "1.17.0",
+      "title": "TCP Viewer 1.17.0: Team License 🎉",
+      "features": [
+        "Introduce the Team License for teams/companies"
+      ],
+      "improvements": [
+      ],
+      "bugs": [
+        "Fixed: TCPViewer app doesn't show the correct app name in the System Settings -> General -> Login Item & Extension"
+      ]
     }
   ]
 }
