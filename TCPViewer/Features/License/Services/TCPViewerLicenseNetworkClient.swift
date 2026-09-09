@@ -121,6 +121,7 @@ final class TCPViewerLicenseNetworkClient: TCPViewerLicenseNetworkClienting {
             "deviceUuid": deviceUUID,
             "licenseKey": licenseKey,
             "platform": "macos",
+            "receiptVersion": 1,
             "buildNumber": buildNumber,
             "appVersion": appVersion,
             "osVersion": osVersion,
@@ -145,6 +146,7 @@ final class TCPViewerLicenseNetworkClient: TCPViewerLicenseNetworkClienting {
             "buildNumber": buildNumber,
             "signature": license.signature,
             "platform": "macos",
+            "receiptVersion": 1,
             "deviceUuid": deviceUUID,
             "appVersion": appVersion,
             "osVersion": osVersion,
@@ -214,6 +216,8 @@ final class TCPViewerLicenseNetworkClient: TCPViewerLicenseNetworkClienting {
                     } catch {
                         completion(.failure(.error(error.localizedDescription)))
                     }
+                case 429, 500...599:
+                    completion(.failure(.temporaryFailure))
                 default:
                     completion(.failure(Self.mapServerError(from: data)))
                 }
@@ -231,6 +235,8 @@ final class TCPViewerLicenseNetworkClient: TCPViewerLicenseNetworkClienting {
         }
         var request = URLRequest(url: url)
         request.httpMethod = method
+        request.timeoutInterval = 30
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
         return request
@@ -255,6 +261,19 @@ final class TCPViewerLicenseNetworkClient: TCPViewerLicenseNetworkClienting {
     }
 
     private static func mapServerError(from data: Data?) -> TCPViewerLicenseError {
+        if let data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let code = json["code"] as? String {
+            switch code {
+            case "out_of_seats": return .outOfSeats
+            case "renewal_required": return .renewalRequired
+            case "device_revoked": return .deviceRevoked
+            case "license_disabled": return .licenseDisabled
+            case "invalid_license", "invalid_activation": return .invalidLicense
+            case "app_update_required": return .appUpdateRequired
+            case "rate_limited", "temporary_failure", "release_unavailable": return .temporaryFailure
+            default: break
+            }
+        }
         guard let message = serverErrorMessage(from: data) else {
             return .error("Unknown license server error.")
         }

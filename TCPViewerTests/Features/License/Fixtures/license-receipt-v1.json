@@ -1,0 +1,21 @@
+{
+  "publicKey": "9VIxkVOWyCVl0DyCvOBIjjQHPfUs8+52kkVIyl6euPs=",
+  "now": 1788775200,
+  "license": {
+    "signature": "TCPVA-public-fixture-credential-not-valid-on-any-server",
+    "device_uuid": "fixture-mac",
+    "email": "fixture@example.com",
+    "purchaseAt": "2026-01-01T00:00:00.000Z",
+    "expiryAt": "2028-01-01T23:59:59.999Z",
+    "licenseType": "team_license",
+    "receipt": {
+      "version": 1,
+      "keyId": "cross-language-fixture",
+      "payload": "eyJhY3RpdmF0aW9uSWQiOiIzYzFjY2ZkMy03Yzg2LTQzMmYtYmFmYy0yOWZlZmI4NWM5OTciLCJhY3RpdmF0aW9uVG9rZW5IYXNoIjoiN2QyNTAwZWMxNjkzOTJjMDU4MjQ3OTBmYzg2OGE2MWIzNmQ4NTJiNjdlOTQ1MTYzNTQzNTQwZTA1ZjA2OWFmYiIsInByb2R1Y3RJRCI6ImNvbS5wcm94eW1hbi5UQ1BWaWV3ZXIiLCJkZXZpY2VfdXVpZCI6ImZpeHR1cmUtbWFjIiwibGljZW5zZVR5cGUiOiJ0ZWFtX2xpY2Vuc2UiLCJlbWFpbCI6ImZpeHR1cmVAZXhhbXBsZS5jb20iLCJwdXJjaGFzZUF0IjoiMjAyNi0wMS0wMVQwMDowMDowMC4wMDBaIiwiZXhwaXJ5QXQiOiIyMDI4LTAxLTAxVDIzOjU5OjU5Ljk5OVoiLCJudW1iZXJPZlNlYXRzIjo1LCJ1c2VkU2VhdHMiOjIsImJ1aWxkTnVtYmVyIjoiOTk5IiwiaXNzdWVkQXQiOjE3ODg3NzUyMDAsIm9mZmxpbmVVbnRpbCI6MTc4OTM4MDAwMH0",
+      "signature": "Cn-lE2ePMgNL2WiKCO5_XSYqIMy4aKcYmGhr7VkdhkwhLbHEEMvOX6Yx34VSKBdjtz3iJYIb7HV0UDP9o3zZAA"
+    },
+    "activationId": "3c1ccfd3-7c86-432f-bafc-29fefb85c997",
+    "numberOfSeats": 5,
+    "usedSeats": 2
+  }
+}

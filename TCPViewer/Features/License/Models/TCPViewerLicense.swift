@@ -11,10 +11,11 @@ enum TCPViewerLicenseType: String, Codable {
     case standardLicense = "standard_license"
     case comboLicense = "combo_license"
     case lifetimeLicense = "lifetime_license"
+    case teamLicense = "team_license"
 }
 
 struct TCPViewerLicense: Codable, Equatable {
-    private static let maximumOneYearUpdateWindowDays = 366
+    private static let maximumLegacyUpdateWindowDays = 366
 
     private enum CodingKeys: String, CodingKey {
         case signature
@@ -23,14 +24,19 @@ struct TCPViewerLicense: Codable, Equatable {
         case purchaseAt
         case expiryDate = "expiryAt"
         case licenseType
+        case receipt, activationId, numberOfSeats, usedSeats
     }
 
-    let signature: String
+    var signature: String
     let deviceUUID: String
     let email: String
     let purchaseAt: String
     var expiryDate: String
     let licenseType: TCPViewerLicenseType
+    var receipt: TCPViewerLicenseReceipt?
+    var activationId: String?
+    var numberOfSeats: Int?
+    var usedSeats: Int?
 
     init(
         signature: String,
@@ -38,7 +44,11 @@ struct TCPViewerLicense: Codable, Equatable {
         email: String,
         purchaseAt: String,
         expiryDate: String,
-        licenseType: TCPViewerLicenseType = .standardLicense
+        licenseType: TCPViewerLicenseType = .standardLicense,
+        receipt: TCPViewerLicenseReceipt? = nil,
+        activationId: String? = nil,
+        numberOfSeats: Int? = nil,
+        usedSeats: Int? = nil
     ) {
         self.signature = signature
         self.deviceUUID = deviceUUID
@@ -46,6 +56,10 @@ struct TCPViewerLicense: Codable, Equatable {
         self.purchaseAt = purchaseAt
         self.expiryDate = expiryDate
         self.licenseType = licenseType
+        self.receipt = receipt
+        self.activationId = activationId
+        self.numberOfSeats = numberOfSeats
+        self.usedSeats = usedSeats
     }
 
     init(from decoder: Decoder) throws {
@@ -56,6 +70,10 @@ struct TCPViewerLicense: Codable, Equatable {
         purchaseAt = try container.decode(String.self, forKey: .purchaseAt)
         expiryDate = try container.decode(String.self, forKey: .expiryDate)
         licenseType = try container.decodeIfPresent(TCPViewerLicenseType.self, forKey: .licenseType) ?? .standardLicense
+        receipt = try container.decodeIfPresent(TCPViewerLicenseReceipt.self, forKey: .receipt)
+        activationId = try container.decodeIfPresent(String.self, forKey: .activationId)
+        numberOfSeats = try container.decodeIfPresent(Int.self, forKey: .numberOfSeats)
+        usedSeats = try container.decodeIfPresent(Int.self, forKey: .usedSeats)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -66,6 +84,10 @@ struct TCPViewerLicense: Codable, Equatable {
         try container.encode(purchaseAt, forKey: .purchaseAt)
         try container.encode(expiryDate, forKey: .expiryDate)
         try container.encode(licenseType, forKey: .licenseType)
+        try container.encodeIfPresent(receipt, forKey: .receipt)
+        try container.encodeIfPresent(activationId, forKey: .activationId)
+        try container.encodeIfPresent(numberOfSeats, forKey: .numberOfSeats)
+        try container.encodeIfPresent(usedSeats, forKey: .usedSeats)
     }
 
     var remainingDays: Int? {
@@ -84,20 +106,17 @@ struct TCPViewerLicense: Codable, Equatable {
         return remainingDays < 0
     }
 
-    var hasOneYearUpdateWindow: Bool {
-        guard let updateWindowDays else {
-            return false
-        }
-
-        return (0...Self.maximumOneYearUpdateWindowDays).contains(updateWindowDays)
-    }
-
     var hasLifetimeUpdates: Bool {
         licenseType == .lifetimeLicense
     }
 
-    var hasValidUpdateEntitlement: Bool {
-        hasLifetimeUpdates || hasOneYearUpdateWindow
+    var hasValidLegacyUpdateEntitlement: Bool {
+        guard licenseType == .standardLicense || licenseType == .comboLicense,
+              let updateWindowDays else {
+            return hasLifetimeUpdates
+        }
+
+        return (0...Self.maximumLegacyUpdateWindowDays).contains(updateWindowDays)
     }
 
     var formattedExpiryDate: String {

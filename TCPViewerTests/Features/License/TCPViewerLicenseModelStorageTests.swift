@@ -30,7 +30,6 @@ struct TCPViewerLicenseModelStorageTests {
         #expect(license.expiryDate == "2027-05-01T10:20:30.123Z")
         #expect(license.licenseType == .standardLicense)
         #expect(license.formattedExpiryDate.contains("2027"))
-        #expect(license.hasOneYearUpdateWindow)
     }
 
     @Test func decodesOldPayloadWithoutLicenseTypeAsStandard() throws {
@@ -49,18 +48,6 @@ struct TCPViewerLicenseModelStorageTests {
         #expect(license.licenseType == .standardLicense)
     }
 
-    @Test func updateWindowRejectsReceiptsLongerThanOneYear() {
-        let license = TCPViewerLicense(
-            signature: "abcdefghijklmnopqrstuvwxyz",
-            deviceUUID: "device-1",
-            email: "ada@example.com",
-            purchaseAt: "2026-05-01T10:20:30.123Z",
-            expiryDate: "2028-05-01T10:20:30.123Z"
-        )
-
-        #expect(!license.hasOneYearUpdateWindow)
-    }
-
     @Test func lifetimeLicenseAllowsUnlimitedUpdateWindow() {
         let license = TCPViewerLicense(
             signature: "abcdefghijklmnopqrstuvwxyz",
@@ -71,8 +58,6 @@ struct TCPViewerLicenseModelStorageTests {
             licenseType: .lifetimeLicense
         )
 
-        #expect(!license.hasOneYearUpdateWindow)
-        #expect(license.hasValidUpdateEntitlement)
         #expect(license.updateAvailabilityDescription == "Lifetime updates included")
     }
 

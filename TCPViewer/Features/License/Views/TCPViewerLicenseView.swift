@@ -30,12 +30,14 @@ struct TCPViewerLicenseView: View {
         Feature(systemImage: "list.bullet.rectangle.portrait", title: "Packet Inspection", detail: "Browse decoded packet details, bytes, and protocol fields."),
         Feature(systemImage: "magnifyingglass.circle", title: "libwireshark Protocol Details", detail: "Packet dissection is built on libwireshark, providing detailed fields across supported protocols."),
         Feature(systemImage: "line.3.horizontal.decrease.circle", title: "Focused Filtering", detail: "Use capture and packet workflows built for TCP/UDP investigation."),
+        Feature(systemImage: "sparkles", title: "TCP Viewer MCP", detail: "Connect Codex or another MCP client to query packets and control captures."),
     ]
 
     @State private var status: TCPViewerLicenseStatus
     @State private var statusObserver: NSObjectProtocol?
     @State private var isActivating = false
     @State private var isRevoking = false
+    @State private var isShowingRemoveLicenseConfirmation = false
 
     init(
         licenseService: TCPViewerLicenseService,
@@ -76,6 +78,14 @@ struct TCPViewerLicenseView: View {
         .background(.regularMaterial)
         .onAppear(perform: startObservingStatus)
         .onDisappear(perform: stopObservingStatus)
+        .alert("Remove License?", isPresented: $isShowingRemoveLicenseConfirmation) {
+            Button("Remove License", role: .destructive) {
+                revokeLicense()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("TCP Viewer PRO will be deactivated on this Mac, and its seat will become available for another device.")
+        }
     }
 
     private func content(minColumnHeight: CGFloat) -> some View {
@@ -83,7 +93,9 @@ struct TCPViewerLicenseView: View {
             VStack(alignment: .leading, spacing: 28) {
                 header
                 licenseState
-                primaryActionArea
+                if !status.isAuthorized {
+                    primaryActionArea
+                }
                 Spacer(minLength: 0)
                 licenseManagementArea
             }
@@ -134,19 +146,45 @@ struct TCPViewerLicenseView: View {
         switch status {
         case .authorized(let license):
             LicenseInfoPanel(license: license)
-        case .unauthorized:
+        case .unauthorized(let error):
             VStack(alignment: .leading, spacing: 5) {
-                Text(unauthorizedTitle)
+                Text(error == .invalidLicense ? unauthorizedTitle : "License needs attention")
                     .font(.headline)
                     .foregroundStyle(.orange)
-                Text(unauthorizedMessage)
+                Text(error == .invalidLicense ? unauthorizedMessage : (error.errorDescription ?? unauthorizedMessage))
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
+                recoveryActions(for: error)
+                    .padding(.top, 6)
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color.orange.opacity(0.12))
             .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    @ViewBuilder
+    private func recoveryActions(for error: TCPViewerLicenseError) -> some View {
+        switch error {
+        case .outOfSeats:
+            HStack {
+                Button("License Manager") { TCPViewerLicenseWebsiteService.open(.licenseManager) }
+                Button("Add Seats") { TCPViewerLicenseWebsiteService.open(.addSeats) }
+            }
+        case .renewalRequired, .expired:
+            HStack {
+                Button("Renew License") { TCPViewerLicenseWebsiteService.open(.renewLicense) }
+                Button("Retry Verification") { licenseService.refreshLicense() }
+            }
+        case .deviceRevoked:
+            Button("Activate License") { showActivationAlert() }
+        case .licenseDisabled, .invalidLicense:
+            Button("Contact Support") { TCPViewerLicenseWebsiteService.open(.support) }
+        case .appUpdateRequired:
+            Button("Update TCP Viewer") { TCPViewerLicenseWebsiteService.open(.updateApp) }
+        default:
+            Button("Retry Verification") { licenseService.refreshLicense() }
         }
     }
 
@@ -187,7 +225,7 @@ struct TCPViewerLicenseView: View {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
                     Button {
-                        revokeLicense()
+                        isShowingRemoveLicenseConfirmation = true
                     } label: {
                         Label("Remove License", systemImage: "trash")
                     }
@@ -200,6 +238,12 @@ struct TCPViewerLicenseView: View {
                     }
                 }
 
+                if let license = status.license, license.licenseType == .teamLicense {
+                    HStack {
+                        Button("Renew License") { TCPViewerLicenseWebsiteService.open(.renewLicense) }
+                        Button("Add Seats") { TCPViewerLicenseWebsiteService.open(.addSeats) }
+                    }
+                }
                 Text("Find, transfer, or revoke devices from License Manager.")
                     .font(.system(size: 12))
                     .foregroundStyle(.tertiary)
@@ -256,12 +300,12 @@ struct TCPViewerLicenseView: View {
 
     private var featureChecklist: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ChecklistRow(title: "Simple perpetual license with 1 year of updates")
-            ChecklistRow(title: "Transfer seats through License Manager")
-            ChecklistRow(title: "Native macOS packet analyzer by Proxyman LLC")
+            ChecklistRow(title: "Perpetual licenses for individuals and teams")
+            ChecklistRow(title: "One year or lifetime updates, depending on your plan")
+            ChecklistRow(title: "Manage active Macs through License Manager")
             ChecklistLinkRow(
-                title: "Open source on GitHub: ProxymanApp/Packetry",
-                destination: URL(string: "https://github.com/ProxymanApp/Packetry")!
+                title: "Open source on GitHub: ProxymanApp/TCPViewer",
+                destination: URL(string: "https://github.com/ProxymanApp/TCPViewer")!
             )
         }
         .font(.system(size: 13, weight: .medium))
@@ -304,6 +348,7 @@ struct TCPViewerLicenseView: View {
                 case .authorized:
                     showSuccessAlert()
                 case .unauthorized(let error):
+                    status = .unauthorized(error)
                     handleActivationError(error)
                 }
             }
@@ -331,13 +376,14 @@ struct TCPViewerLicenseView: View {
         case .outOfSeats:
             let alert = NSAlert()
             alert.messageText = "No seats available"
-            alert.informativeText = "Your license is already used on the maximum number of devices. Open License Manager to revoke an old device, then try again."
+            alert.informativeText = error.errorDescription ?? "All seats are occupied."
             alert.alertStyle = .warning
             alert.addButton(withTitle: "License Manager")
+            alert.addButton(withTitle: "Add Seats")
             alert.addButton(withTitle: "Later")
-            if alert.runModal() == .alertFirstButtonReturn {
-                TCPViewerLicenseWebsiteService.open(.licenseManager)
-            }
+            let response = alert.runModal()
+            if response == .alertFirstButtonReturn { TCPViewerLicenseWebsiteService.open(.licenseManager) }
+            if response == .alertSecondButtonReturn { TCPViewerLicenseWebsiteService.open(.addSeats) }
         case .expired, .renewalRequired:
             let alert = NSAlert()
             alert.messageText = "This Build Is Not Covered"
@@ -412,6 +458,10 @@ private struct LicenseInfoPanel: View {
                     .font(.headline)
             }
 
+            if license.licenseType == .teamLicense {
+                Text("Team License · \(license.usedSeats ?? 0) of \(license.numberOfSeats ?? 0) seats used")
+                    .font(.system(size: 13, weight: .medium))
+            }
             Text(expiryText)
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)

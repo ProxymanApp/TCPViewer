@@ -102,6 +102,7 @@ struct TCPViewerLicenseNetworkClientTests {
         #expect(body["deviceName"] as? String == "Ada's Mac")
         #expect(body["deviceUuid"] as? String == "device-1")
         #expect(body["platform"] as? String == "macos")
+        #expect(body["receiptVersion"] as? Int == 1)
         #expect(body["buildNumber"] as? String == "123")
         #expect(body["appVersion"] as? String == "1.2.3")
         #expect(body["osVersion"] as? String == "macOS 15.6")
@@ -131,6 +132,7 @@ struct TCPViewerLicenseNetworkClientTests {
         #expect(body["signature"] as? String == makeLicense().signature)
         #expect(body["deviceUuid"] as? String == "device-1")
         #expect(body["platform"] as? String == "macos")
+        #expect(body["receiptVersion"] as? Int == 1)
         #expect(body["buildNumber"] as? String == "456")
         #expect(body["appVersion"] as? String == "1.2.3")
         #expect(body["osVersion"] as? String == "macOS 15.6")
@@ -222,6 +224,25 @@ struct TCPViewerLicenseNetworkClientTests {
             }
 
             #expect(result == .failure(testCase.expectedError))
+        }
+    }
+
+    @Test func mapsStableCodesAndTreats429AndServerFailuresAsTemporary() throws {
+        let cases: [(Int, String, TCPViewerLicenseError)] = [
+            (409, "out_of_seats", .outOfSeats), (403, "renewal_required", .renewalRequired),
+            (403, "device_revoked", .deviceRevoked), (403, "license_disabled", .licenseDisabled),
+            (400, "app_update_required", .appUpdateRequired), (400, "invalid_license", .invalidLicense),
+            (429, "rate_limited", .temporaryFailure), (503, "unknown", .temporaryFailure),
+        ]
+        for (status, code, expected) in cases {
+            let transport = StubLicenseTransport()
+            let data = try JSONSerialization.data(withJSONObject: ["code": code, "message": "Server wording may change"])
+            transport.nextResult = .success((data, makeResponse(statusCode: status)))
+            let client = TCPViewerLicenseNetworkClient(baseURL: URL(string: "https://example.com")!, transport: transport)
+            let result = waitForLicenseResult {
+                client.verifyLicense(license: makeLicense(), deviceUUID: "device-1", buildNumber: "999", appVersion: "1", osVersion: "26", completion: $0)
+            }
+            #expect(result == .failure(expected))
         }
     }
 

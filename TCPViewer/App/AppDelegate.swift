@@ -428,6 +428,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func presentLicenseSheet(presentationMode: TCPViewerLicensePresentationMode, sender: Any?) {
+        TCPViewerLicenseService.shared.refreshLicense()
         // Reuse one sheet owner while allowing Trial and menu actions to open different license modes.
         guard let parentWindow = licenseSheetParentWindow() ?? createLicenseSheetParentWindow() else {
             NSApp.activate(ignoringOtherApps: true)
