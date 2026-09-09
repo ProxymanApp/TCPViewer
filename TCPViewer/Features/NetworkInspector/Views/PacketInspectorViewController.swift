@@ -688,7 +688,7 @@ final class PacketInspectorViewController: NSViewController {
     private let viewModel = PacketInspectorTreeViewModel()
     private let byteCopyService = PacketInspectorByteCopyService()
     private let expansionState = PacketInspectorOutlineExpansionState()
-    private let hexViewController: PacketHexViewController
+    private var hexViewController: PacketHexViewController?
     private let detailSplitViewController = NSSplitViewController()
     private let outlineViewController = NSViewController()
     private let stackView = NSStackView()
@@ -711,7 +711,6 @@ final class PacketInspectorViewController: NSViewController {
 
     init(configuration: AppConfiguration) {
         self.configuration = configuration
-        self.hexViewController = PacketHexViewController(configuration: configuration)
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -723,7 +722,6 @@ final class PacketInspectorViewController: NSViewController {
     override func loadView() {
         view = TCPViewerDynamicBackgroundView(backgroundColor: .controlBackgroundColor)
         setupFilterBar()
-        setupOutlineView()
         setupLayout()
     }
 
@@ -736,6 +734,7 @@ final class PacketInspectorViewController: NSViewController {
     func render(snapshot: NetworkInspectorSnapshot) {
         let inspectionState = snapshot.base.inspectionState
         latestInspectionState = inspectionState
+        if inspectionState.selectedPacketID != nil { setupDetailContentIfNeeded() }
         let didRevealPacketDetail = updateContentVisibility(for: inspectionState)
         applyPlacement(
             snapshot.inspectorPlacement,
@@ -743,14 +742,14 @@ final class PacketInspectorViewController: NSViewController {
             forcesDefaultDivider: didRevealPacketDetail
         )
         let renderChange = viewModel.render(inspectionState: inspectionState, filterText: filterSearchField.stringValue)
-        hexViewController.render(inspectionState: inspectionState)
+        hexViewController?.render(inspectionState: inspectionState)
 
         applyTreeRenderChange(renderChange, inspectionState: inspectionState)
     }
 
     // Forward a Follow TCP record to the Hex pane after its packet inspection finishes loading.
     func revealFollowStreamPayload(_ target: FollowStreamRevealTarget) {
-        hexViewController.revealFollowStreamPayload(target)
+        hexViewController?.revealFollowStreamPayload(target)
     }
 
     // Switch the outline/hex split to match the outer inspector placement.
@@ -934,7 +933,12 @@ final class PacketInspectorViewController: NSViewController {
         scrollView.documentView = outlineView
     }
 
-    private func setupLayout() {
+    // The empty inspector needs no HexFiend view or outline until a packet is selected.
+    private func setupDetailContentIfNeeded() {
+        guard hexViewController == nil else { return }
+        setupOutlineView()
+        let hexViewController = PacketHexViewController(configuration: configuration)
+        self.hexViewController = hexViewController
         outlineViewController.view = scrollView
         let outlineItem = NSSplitViewItem(viewController: outlineViewController)
         outlineItem.minimumThickness = 160
@@ -943,6 +947,9 @@ final class PacketInspectorViewController: NSViewController {
         self.outlineItem = outlineItem
         self.hexItem = hexItem
 
+    }
+
+    private func setupLayout() {
         addChild(detailSplitViewController)
         // Keep the split layout slot stable while the empty state hides the inspector content.
         detailContainerView.translatesAutoresizingMaskIntoConstraints = false
@@ -989,7 +996,7 @@ final class PacketInspectorViewController: NSViewController {
         detailSplitViewController.view.isHidden = shouldShowEmptyState
         scrollView.isHidden = shouldShowEmptyState
         outlineView.isHidden = shouldShowEmptyState
-        hexViewController.view.isHidden = shouldShowEmptyState
+        hexViewController?.view.isHidden = shouldShowEmptyState
 
         if shouldShowEmptyState {
             showEmptyState(message: inspectionState.statusMessage)

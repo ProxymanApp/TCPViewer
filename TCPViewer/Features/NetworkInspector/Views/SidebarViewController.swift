@@ -304,6 +304,24 @@ final class SidebarViewController: NSViewController {
         syncSelection()
     }
 
+    private var pendingNavigationScrollOrigin: NSPoint?
+
+    struct NavigationState {
+        let expandedIDs: Set<String>
+        let scrollOrigin: NSPoint
+    }
+
+    func saveNavigationState() -> NavigationState {
+        NavigationState(expandedIDs: expandedItemIDs, scrollOrigin: scrollView.contentView.bounds.origin)
+    }
+
+    func restoreNavigationState(_ state: NavigationState?) {
+        cancelPendingReload()
+        expandedItemIDs = state?.expandedIDs ?? PacketSourceListTreeBuilder.defaultExpandedItemIDs
+        appliedReloadState = nil
+        pendingNavigationScrollOrigin = state?.scrollOrigin ?? .zero
+    }
+
     func render(snapshot: NetworkInspectorSnapshot) {
         let nextReloadState = SidebarOutlineReloadState(snapshot: snapshot)
         switch SidebarOutlineReloadPolicy.timing(previous: appliedReloadState, next: nextReloadState) {
@@ -360,6 +378,8 @@ final class SidebarViewController: NSViewController {
     private func apply(state: SidebarOutlineReloadState) {
         outlineReloadGeneration += 1
         let reloadGeneration = outlineReloadGeneration
+        let navigationScrollOrigin = pendingNavigationScrollOrigin
+        pendingNavigationScrollOrigin = nil
         let shouldRevealSelectedImportedFile = state.selectedSelection.isImportedFileSelection &&
             appliedReloadState?.selectedSelection != state.selectedSelection
         normalizeOutlineScrollOriginIfNeeded()
@@ -390,6 +410,10 @@ final class SidebarViewController: NSViewController {
                 self.restoreOutlineState(preservedOutlineState)
             } else {
                 self.syncSelection()
+            }
+            if let navigationScrollOrigin {
+                self.scrollView.contentView.scroll(to: navigationScrollOrigin)
+                self.scrollView.reflectScrolledClipView(self.scrollView.contentView)
             }
             self.isSyncingSelection = false
         }

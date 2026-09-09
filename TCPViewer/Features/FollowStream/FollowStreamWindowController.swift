@@ -122,7 +122,12 @@ final class FollowStreamWindowController: NSWindowController, NSWindowDelegate, 
     // Cooperatively cancel reassembly when the user closes the workspace.
     func windowWillClose(_ notification: Notification) {
         cancellationFlag.cancel()
-        closeHandler?()
+        let completion = closeHandler
+        closeHandler = nil
+        revealPacket = nil
+        streamSelectionHandler = nil
+        window?.sheets.forEach { window?.endSheet($0) }
+        completion?()
     }
 
     // Keep export at the trailing edge while settings remain in the content view.
@@ -205,9 +210,11 @@ final class FollowStreamWindowController: NSWindowController, NSWindowDelegate, 
             guard response == .OK, let url = panel.url, let self else {
                 return
             }
-            self.exportQueue.async { [weak self] in
+            self.exportQueue.async { [weak self, cancellationFlag] in
+                guard !cancellationFlag.isCancelled else { return }
                 do {
                     let data = FollowStreamViewModel.rawData(in: stream, for: direction)
+                    guard !cancellationFlag.isCancelled else { return }
                     try data.write(to: url, options: .atomic)
                 } catch {
                     DispatchQueue.main.async {

@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import Carbon
 import Foundation
 import Testing
 import PcapPlusPlusCore
@@ -14,6 +15,423 @@ import PcapPlusPlusCore
 @Suite(.serialized)
 @MainActor
 struct WindowControllerTests {
+
+    @Test func workspaceTabLazilyCreatesAndReleasesItsPaneAcrossFiftyCycles() async {
+        let core = FakeTCPViewerCore(interfaceInventories: [[]])
+        let source = TCPViewerCaptureWorkspace(services: .init(core: core))
+        let defaults = UserDefaults(suiteName: "tabs-lifetime-\(UUID())")!
+        let configuration = AppConfiguration(defaults: defaults)
+        var factoryCount = 0
+        for _ in 0..<50 {
+            weak var releasedPane: TCPViewerRootViewController?
+            weak var releasedModel: NetworkInspectorViewModel?
+            var releasedChildren: [WeakTabTestObject] = []
+            autoreleasepool {
+                let tab = TCPViewerWorkspaceTab(source: source)
+                #expect(tab.pane == nil)
+                _ = tab.displayTitle
+                #expect(tab.pane == nil)
+                let factory: (TCPViewerCaptureWorkspace) -> TCPViewerRootViewController = { source in
+                    factoryCount += 1
+                    let model = NetworkInspectorViewModel(services: source.controller.services, captureWorkspace: source, userDefaults: defaults)
+                    return TCPViewerRootViewController(viewModel: model, configuration: configuration)
+                }
+                let first = tab.openPane(using: factory)
+                #expect(tab.openPane(using: factory) === first)
+                first?.loadViewIfNeeded()
+                if let first { releasedChildren = weakDescendants(of: first) }
+                releasedPane = first
+                releasedModel = first?.viewModel
+                tab.close()
+                tab.close()
+                #expect(tab.source == nil)
+                #expect(tab.pane == nil)
+            }
+            await waitUntil { releasedPane == nil && releasedModel == nil }
+            #expect(releasedPane == nil)
+            #expect(releasedModel == nil)
+            await waitUntil { releasedChildren.allSatisfy { $0.object == nil } }
+            #expect(releasedChildren.allSatisfy { $0.object == nil })
+            #expect(source.subscriberCountForTesting == 0)
+        }
+        #expect(factoryCount == 50)
+        #expect(core.liveSessionRequests.isEmpty)
+        let closed = await withCheckedContinuation { continuation in source.close { continuation.resume(returning: $0) } }
+        #expect(closed)
+        #expect(!source.statusMetricsService.isSampling)
+    }
+
+    @Test func livePanesShareCaptureButKeepSelectionAndFiltersIndependent() async {
+        let first = makePacket(packetNumber: 1, source: .live, transportHint: .tcp)
+        let second = makePacket(packetNumber: 2, source: .live, transportHint: .udp)
+        let live = FakeLiveSession()
+        live.inspections = [first.id: makeInspection(for: first), second.id: makeInspection(for: second)]
+        let core = FakeTCPViewerCore(interfaceInventories: [[makeInterface(id: "en0", displayName: "Test")]], liveSession: live)
+        let source = TCPViewerCaptureWorkspace(services: .init(core: core))
+        let defaults = UserDefaults(suiteName: "tabs-selection-\(UUID())")!
+        let left = NetworkInspectorViewModel(services: source.controller.services, captureWorkspace: source, userDefaults: defaults)
+        let right = NetworkInspectorViewModel(services: source.controller.services, captureWorkspace: source, userDefaults: defaults)
+        await left.performInitialLoadIfNeeded()
+        await right.performInitialLoadIfNeeded()
+        await source.controller.startLiveCapture()
+        live.send(.liveStateChanged(phase: .running, message: "Running"))
+        live.send(.packetBatch([first, second], disposition: .append))
+        await waitUntil { left.snapshot.totalPacketCount == 2 && right.snapshot.totalPacketCount == 2 }
+        left.selectPacket(first.id)
+        right.selectPacket(second.id)
+        left.updateDisplayFilterText("protocol:tcp")
+        right.updateDisplayFilterText("protocol:udp")
+        await waitUntil { left.snapshot.base.inspectionState.inspection != nil && right.snapshot.base.inspectionState.inspection != nil }
+        #expect(left.snapshot.selectedPacketID == first.id)
+        #expect(right.snapshot.selectedPacketID == second.id)
+        #expect(left.snapshot.packetRows.map(\.id) == [first.id])
+        #expect(right.snapshot.packetRows.map(\.id) == [second.id])
+        #expect(core.liveSessionRequests.count == 1)
+        #expect(live.startCount == 1)
+        left.deactivate()
+        #expect(left.snapshot.packetRows.isEmpty)
+        #expect(left.snapshot.base.packetIngestState.packets.isEmpty)
+        #expect(!left.hasPendingCoalescedRebuildForTesting)
+        // A capture burst updates the shared source while the hidden pane retains no packet render data.
+        let burst = (3...10_002).map { makePacket(packetNumber: $0, source: .live, transportHint: .tcp) }
+        live.send(.packetBatch(burst, disposition: .append))
+        await waitUntil { source.controller.snapshot.packetIngestState.totalPacketCount == 10_002 }
+        await waitUntil { right.snapshot.totalPacketCount == 10_002 }
+        #expect(core.liveSessionRequests.count == 1)
+        #expect(!left.hasPendingCoalescedRebuildForTesting)
+        #expect(left.snapshot.packetRows.isEmpty)
+        #expect(left.snapshot.base.packetIngestState.packets.isEmpty)
+        left.activate()
+        await waitUntil { left.snapshot.packetRows.count == 10_001 }
+        #expect(left.snapshot.selectedPacketID == first.id)
+        right.clearPackets()
+        await waitUntil { left.snapshot.totalPacketCount == 0 }
+        #expect(left.snapshot.selectedPacketID == nil)
+        #expect(live.clearCapturedPacketsCount == 1)
+        left.close()
+        right.close()
+        #expect(live.stopCount == 0)
+        _ = await withCheckedContinuation { continuation in source.close { continuation.resume(returning: $0) } }
+        #expect(live.stopCount == 1)
+    }
+
+    @Test func closingOfflineTabReleasesSourceAndDocumentAfterCallbacksDrain() async {
+        weak var releasedDocument: FakeOfflineDocument?
+        let core = FakeTCPViewerCore(interfaceInventories: [[]], documentFactory: { url in
+            let document = FakeOfflineDocument(url: url, metadata: .init(format: .pcapng), openPlan: .completed([]))
+            releasedDocument = document
+            return document
+        })
+        var source: TCPViewerCaptureWorkspace? = TCPViewerCaptureWorkspace(services: .init(core: core), kind: .offline)
+        weak var releasedSource = source
+        let result = await source!.controller.importDocumentsWithResult(at: [URL(fileURLWithPath: "/tmp/tab-lifetime.pcapng")])
+        #expect(result.error == nil)
+        #expect(releasedDocument != nil)
+        let tab = TCPViewerWorkspaceTab(source: source!)
+        source = nil
+        tab.close()
+        await waitUntil { releasedSource == nil && releasedDocument == nil }
+        #expect(releasedSource == nil)
+        #expect(releasedDocument == nil)
+    }
+
+    @Test func cancelledMultiFileImportDoesNotAppendLatePacketsOrOpenRemainingFiles() async {
+        let gate = AsyncGate()
+        let packet = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp)
+        let document = FakeOfflineDocument(url: URL(fileURLWithPath: "/tmp/tab-cancel.pcapng"), metadata: .init(format: .pcapng),
+                                          openPlan: .init(batches: [[packet]], progress: [], error: nil, gate: gate))
+        let core = FakeTCPViewerCore(interfaceInventories: [[]], documentFactory: { _ in document })
+        let source = TCPViewerCaptureWorkspace(services: .init(core: core), kind: .offline)
+        var completions = 0
+        source.controller.importDocumentsWithResult(at: [document.url, URL(fileURLWithPath: "/tmp/tab-never-open.pcap")]) { result in
+            completions += 1
+            #expect((result.error as? TCPViewerCoreError)?.code == .operationCancelled)
+        }
+        await waitUntil { core.openedDocumentURLs.count == 1 }
+        source.close()
+        await gate.open()
+        await waitUntil { completions == 1 }
+        #expect(completions == 1)
+        #expect(core.openedDocumentURLs.count == 1)
+        #expect(source.controller.snapshot.packetIngestState.packets.isEmpty)
+        #expect(document.cancelLoadingCount > 0)
+    }
+
+    @Test func workspaceTabOrderAndHistoryPreserveNeighborsWithoutRetainingTabs() {
+        let ids = [UUID(), UUID(), UUID()]
+        #expect(TCPViewerWorkspaceTabOrder.selectionAfterClosing(ids[1], selectedID: ids[1], ids: ids) == ids[2])
+        #expect(TCPViewerWorkspaceTabOrder.selectionAfterClosing(ids[2], selectedID: ids[2], ids: ids) == ids[1])
+        #expect(TCPViewerWorkspaceTabOrder.tabsToClose(toRightOf: ids[0], ids: ids) == Array(ids.dropFirst()))
+        #expect(TCPViewerWorkspaceTabOrder.destinationIndex(from: 0, insertionIndex: 3, count: 3) == 2)
+        var history = TCPViewerWorkspaceTabHistory()
+        ids.forEach { history.visit($0) }
+        history.remove(ids[1])
+        #expect(history.goBack(validIDs: Set([ids[0], ids[2]])) == ids[0])
+        #expect(history.goForward(validIDs: Set([ids[0], ids[2]])) == ids[2])
+    }
+
+    @Test func windowTabsShareSidebarReusePanesAndCollapseTheWholeTabBar() async throws {
+        let core = FakeTCPViewerCore(interfaceInventories: [[]])
+        let defaults = UserDefaults(suiteName: "tabs-window-\(UUID())")!
+        let owner = TCPViewerWindowController(services: .init(core: core), configuration: AppConfiguration(defaults: defaults))
+        let first = try #require(owner.selectedTab)
+        weak var firstPane = first.pane
+        let sidebar = owner.workspaceViewController.sidebar
+        #expect(owner.tabs.count == 1)
+        #expect(owner.workspaceViewController.tabBarHeightForTesting == 0)
+        #expect(owner.window?.tabbingMode == .disallowed)
+        #expect(owner.rootViewController.children.flatMap(\.children).allSatisfy { !($0 is CaptureOverviewViewController) })
+        owner.newWorkspaceTab(nil)
+        let second = try #require(owner.selectedTab)
+        weak var secondPane = second.pane
+        #expect(owner.tabs.count == 2)
+        #expect(owner.workspaceViewController.tabBarHeightForTesting == 34)
+        #expect(first.source === second.source)
+        #expect(first.contentController?.view.superview == nil)
+        #expect(first.pane?.viewModel.isActive == false)
+        owner.selectTab(first.id)
+        #expect(owner.rootViewController === firstPane)
+        #expect(owner.workspaceViewController.sidebar === sidebar)
+        owner.closeTab(first.id)
+        #expect(owner.selectedTabID == second.id)
+        #expect(owner.workspaceViewController.tabBarHeightForTesting == 0)
+        await waitUntil { firstPane == nil }
+        #expect(firstPane == nil)
+        owner.closeSelectedTab(nil)
+        await waitUntil { owner.tabs.isEmpty }
+        #expect(owner.tabs.isEmpty)
+        #expect(owner.liveWorkspace.isClosed)
+        await waitUntil { secondPane == nil }
+        #expect(secondPane == nil)
+        let reopened = TCPViewerWindowController(services: .init(core: core), configuration: AppConfiguration(defaults: defaults))
+        #expect(reopened.tabs.count == 1)
+        #expect(reopened.selectedTab?.isOffline == false)
+        reopened.closeSelectedTab(nil)
+        await waitUntil { reopened.tabs.isEmpty }
+    }
+
+    @Test func importerGroupsFilesInOfflineTabWithoutChangingSharedLiveSource() async throws {
+        let core = FakeTCPViewerCore(interfaceInventories: [[]], documentFactory: { url in
+            FakeOfflineDocument(url: url, metadata: .init(format: .pcapng), openPlan: .completed([]))
+        })
+        let defaults = UserDefaults(suiteName: "tabs-import-\(UUID())")!
+        let owner = TCPViewerWindowController(services: .init(core: core), configuration: AppConfiguration(defaults: defaults))
+        let liveTab = try #require(owner.selectedTab)
+        let urls = [URL(fileURLWithPath: "/tmp/tab-group-a.pcap"), URL(fileURLWithPath: "/tmp/tab-group-b.pcapng")]
+        let result = await withCheckedContinuation { continuation in
+            owner.importCaptureURLs(urls, automaticNewTab: true) { continuation.resume(returning: $0) }
+        }
+        #expect(result.error == nil)
+        #expect(result.importedURLs == urls)
+        #expect(result.packetCount == 0)
+        #expect(owner.tabs.count == 2)
+        let offline = try #require(owner.selectedTab)
+        #expect(offline.displayTitle == "2 Capture Files")
+        #expect(offline.isOffline)
+        #expect(offline.source !== liveTab.source)
+        #expect(offline.pane?.viewModel.isOffline == true)
+        let emptyWorkspace = PacketWorkspaceViewModel()
+        emptyWorkspace.render(snapshot: offline.pane!.viewModel.snapshot)
+        #expect(emptyWorkspace.emptyMessage == "This capture contains no packets.")
+        #expect(liveTab.source === owner.liveWorkspace)
+        #expect(core.liveSessionRequests.isEmpty)
+        let replacement = owner.makeOfflineWorkspace()
+        weak var oldPane = offline.pane
+        #expect(owner.placeImportedWorkspace(replacement, title: "Replacement", replacing: offline.id))
+        #expect(owner.tabs.map(\.id) == [liveTab.id, offline.id])
+        await waitUntil { oldPane == nil }
+        #expect(oldPane == nil)
+        #expect(offline.isClosed)
+        #expect(!owner.placeImportedWorkspace(owner.makeOfflineWorkspace(), title: "Gone", replacing: UUID()))
+        owner.window?.close()
+    }
+
+    @Test func closingPaneCompletesInspectionAndExportOnceAndIgnoresLateResults() async {
+        let packet = makePacket(packetNumber: 1, source: .live, transportHint: .tcp)
+        let live = FakeLiveSession()
+        live.inspections[packet.id] = makeInspection(for: packet)
+        let inspectionGate = AsyncGate()
+        let exportGate = AsyncGate()
+        live.inspectionGate = inspectionGate
+        live.exportGate = exportGate
+        let core = FakeTCPViewerCore(interfaceInventories: [[makeInterface(id: "en0", displayName: "Test")]], liveSession: live)
+        let source = TCPViewerCaptureWorkspace(services: .init(core: core))
+        var pane: NetworkInspectorViewModel? = NetworkInspectorViewModel(services: source.controller.services, captureWorkspace: source)
+        weak var releasedPane = pane
+        await source.controller.performInitialLoadIfNeeded()
+        await source.controller.startLiveCapture()
+        live.send(.packetBatch([packet], disposition: .append))
+        await waitUntil { source.controller.snapshot.packetIngestState.totalPacketCount == 1 }
+        var inspectionCompletions = 0
+        var exportCompletions = 0
+        pane?.inspectPacket(packet.id) { result in
+            inspectionCompletions += 1
+            if case .failure(let error) = result { #expect((error as? TCPViewerCoreError)?.code == .operationCancelled) }
+            else { Issue.record("Closed inspection succeeded") }
+        }
+        pane?.exportPackets([packet.id], to: URL(fileURLWithPath: "/tmp/tab-cancel-export.pcapng"), format: .pcapng) { result in
+            exportCompletions += 1
+            if case .failure(let error) = result { #expect((error as? TCPViewerCoreError)?.code == .operationCancelled) }
+            else { Issue.record("Closed export succeeded") }
+        }
+        await waitUntil { live.exportRequests.count == 1 }
+        pane?.close()
+        pane = nil
+        #expect(inspectionCompletions == 1)
+        #expect(exportCompletions == 1)
+        #expect(releasedPane == nil)
+        await inspectionGate.open()
+        await exportGate.open()
+        await waitUntil { source.subscriberCountForTesting == 0 }
+        #expect(inspectionCompletions == 1)
+        #expect(exportCompletions == 1)
+        source.close()
+    }
+
+    @Test func sourceSerializesFilterGenerationsAndCancellationDoesNotClearAnotherPane() async {
+        let packets = [makePacket(packetNumber: 1, source: .offline, transportHint: .tcp), makePacket(packetNumber: 2, source: .offline, transportHint: .udp)]
+        let gate = AsyncGate()
+        let document = FakeOfflineDocument(url: URL(fileURLWithPath: "/tmp/tab-filter.pcapng"), metadata: .init(format: .pcapng),
+                                           openPlan: .completed(packets), displayFilterMatchesByExpression: ["tcp": [1], "udp": [2]])
+        document.filterEvaluationGate = gate
+        let core = FakeTCPViewerCore(interfaceInventories: [[]], documentFactory: { _ in document })
+        let source = TCPViewerCaptureWorkspace(services: .init(core: core), kind: .offline)
+        _ = await source.controller.importDocumentsWithResult(at: [document.url])
+        let firstToken = DisplayFilterEvaluationCancellationToken()
+        let secondToken = DisplayFilterEvaluationCancellationToken()
+        var firstResult: Result<DisplayFilterMatchBatch, Error>?
+        var secondResult: Result<DisplayFilterMatchBatch, Error>?
+        source.controller.evaluateDisplayFilter("tcp", generation: 1, packetIDs: [1, 2], cancellationToken: firstToken) { firstResult = $0 }
+        source.controller.evaluateDisplayFilter("udp", generation: 1, packetIDs: [1, 2], cancellationToken: secondToken) { secondResult = $0 }
+        await waitUntil { document.displayFilterEvaluationRequests.count == 1 }
+        #expect(document.displayFilterActivationGenerations.count == 1)
+        firstToken.cancel()
+        await gate.open()
+        await waitUntil { firstResult != nil && secondResult != nil }
+        if case .failure(let error) = firstResult { #expect((error as? TCPViewerCoreError)?.code == .operationCancelled) }
+        else { Issue.record("The first pane's filter was not cancelled") }
+        #expect((try? secondResult?.get().matchingPacketIDs) == [2])
+        #expect((try? secondResult?.get().generation) == 1)
+        #expect(Set(document.displayFilterActivationGenerations).count == 2)
+        source.close()
+    }
+
+    @Test func workspaceAutomationKeepsCaptureLiveAndBindsPacketCommandsToOriginalPane() async throws {
+        let live = FakeLiveSession()
+        let packet = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp)
+        let core = FakeTCPViewerCore(interfaceInventories: [[makeInterface(id: "en0", displayName: "Test")]], liveSession: live,
+                                     documentFactory: { url in FakeOfflineDocument(url: url, metadata: .init(format: .pcapng), openPlan: .completed([packet])) })
+        let defaults = UserDefaults(suiteName: "tabs-automation-\(UUID())")!
+        let owner = TCPViewerWindowController(services: .init(core: core), configuration: AppConfiguration(defaults: defaults))
+        let liveID = try #require(owner.selectedTabID)
+        _ = await withCheckedContinuation { continuation in
+            owner.importCaptureURLs([URL(fileURLWithPath: "/tmp/tab-command.pcapng")], automaticNewTab: true) { continuation.resume(returning: $0) }
+        }
+        let offlineID = try #require(owner.selectedTabID)
+        let source = TCPViewerWorkspaceAutomationSource(windowController: owner)
+        let command = source.sourceForCommand()
+        owner.selectTab(liveID)
+        #expect(command.mcpWorkspaceSnapshot().totalPacketCount == 1)
+        #expect(source.mcpWorkspaceSnapshot().totalPacketCount == 0)
+        let inspection = await withCheckedContinuation { continuation in command.mcpInspectPacket(id: 1) { continuation.resume(returning: $0) } }
+        #expect((try? inspection.get().packetID) == 1)
+        owner.selectTab(offlineID)
+        var started: Result<Void, Error>?
+        source.mcpStartCapture(interfaceID: "en0", captureFilter: nil) { started = $0 }
+        await waitUntil { live.startCount == 1 }
+        live.send(.liveStateChanged(phase: .running, message: "Running"))
+        await waitUntil { started != nil }
+        #expect((try? started?.get()) != nil)
+        #expect(owner.selectedTabID == offlineID)
+        #expect(core.liveSessionRequests.count == 1)
+        owner.closeTab(offlineID)
+        let unavailable = await withCheckedContinuation { continuation in command.mcpInspectPacket(id: 1) { continuation.resume(returning: $0) } }
+        if case .success = unavailable { Issue.record("A closed command target was reused") }
+        #expect(live.stopCount == 0)
+        owner.window?.close()
+    }
+
+    @Test func importPlacementPolicyUsesTabCountAndSkipsAlertsForCLI() {
+        #expect(!TCPViewerWorkspaceImporter.shouldAskForPlacement(tabCount: 0, automaticNewTab: false))
+        #expect(!TCPViewerWorkspaceImporter.shouldAskForPlacement(tabCount: 1, automaticNewTab: false))
+        #expect(TCPViewerWorkspaceImporter.shouldAskForPlacement(tabCount: 2, automaticNewTab: false))
+        #expect(TCPViewerWorkspaceImporter.shouldAskForPlacement(tabCount: 8, automaticNewTab: false))
+        #expect(!TCPViewerWorkspaceImporter.shouldAskForPlacement(tabCount: 8, automaticNewTab: true))
+    }
+
+    @Test func windowShortcutsAndTabContextMenusTargetTheIntendedTab() async throws {
+        let defaults = UserDefaults(suiteName: "tabs-keys-\(UUID())")!
+        let owner = TCPViewerWindowController(services: .init(core: FakeTCPViewerCore(interfaceInventories: [[]])),
+                                               configuration: AppConfiguration(defaults: defaults))
+        defer { owner.window?.close() }
+        func key(_ code: Int, _ flags: NSEvent.ModifierFlags) -> NSEvent {
+            NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0,
+                             windowNumber: owner.window?.windowNumber ?? 0, context: nil,
+                             characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: UInt16(code))!
+        }
+        for _ in 0..<3 { #expect(owner.handleTabShortcut(key(kVK_ANSI_T, [.command]))) }
+        let ids = owner.tabs.map(\.id)
+        #expect(ids.count == 4)
+        #expect(owner.handleTabShortcut(key(kVK_Tab, [.control])))
+        #expect(owner.selectedTabID == ids[0])
+        #expect(owner.handleTabShortcut(key(kVK_Tab, [.control, .shift])))
+        #expect(owner.selectedTabID == ids[3])
+        #expect(owner.handleTabShortcut(key(kVK_ANSI_2, [.command, .shift])))
+        #expect(owner.selectedTabID == ids[1])
+        #expect(owner.handleTabShortcut(key(kVK_ANSI_LeftBracket, [.command])))
+        #expect(owner.selectedTabID == ids[3])
+        #expect(owner.handleTabShortcut(key(kVK_ANSI_RightBracket, [.command])))
+        #expect(owner.selectedTabID == ids[1])
+        #expect(owner.handleTabShortcut(key(kVK_ANSI_RightBracket, [.command, .shift])))
+        #expect(owner.selectedTabID == ids[2])
+        #expect(owner.handleTabShortcut(key(kVK_ANSI_LeftBracket, [.command, .shift])))
+        #expect(owner.selectedTabID == ids[1])
+        func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }
+        let items = descendants(owner.workspaceViewController.tabBar).filter { String(describing: type(of: $0)) == "TCPViewerWorkspaceTabItem" }
+        let clicked = try #require(items.first)
+        let event = NSEvent.mouseEvent(with: .rightMouseDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                       windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 0)!
+        let menu = try #require(clicked.menu(for: event))
+        #expect(menu.items.map(\.title) == ["New Tab", "", "Close Tab", "Close Other Tabs", "Close Tabs to the Right"])
+        let close = menu.items[2]
+        #expect((close.representedObject as? UUID) == ids[0])
+        NSApp.sendAction(close.action!, to: close.target, from: close)
+        #expect(owner.tabs.map(\.id) == Array(ids.dropFirst()))
+        #expect(owner.selectedTabID == ids[1])
+        #expect(owner.handleTabShortcut(key(kVK_ANSI_W, [.command])))
+        #expect(owner.selectedTabID == ids[2])
+        owner.closeTabsToRight(of: ids[2])
+        #expect(owner.tabs.map(\.id) == [ids[2]])
+        #expect(owner.workspaceViewController.tabBarHeightForTesting == 0)
+    }
+
+    @Test func closingWindowCancelsQueuedImportsExactlyOnceWithoutCreatingPanes() async {
+        let gate = AsyncGate()
+        let document = FakeOfflineDocument(url: URL(fileURLWithPath: "/tmp/tab-queued.pcapng"), metadata: .init(format: .pcapng),
+                                           openPlan: .init(batches: [], progress: [], error: nil, gate: gate))
+        let core = FakeTCPViewerCore(interfaceInventories: [[]], documentFactory: { _ in document })
+        let defaults = UserDefaults(suiteName: "tabs-queue-\(UUID())")!
+        let owner = TCPViewerWindowController(services: .init(core: core), configuration: AppConfiguration(defaults: defaults), startsWithLiveTab: false)
+        var completions = 0
+        for _ in 0..<2 {
+            owner.importCaptureURLs([document.url], automaticNewTab: true) { result in
+                completions += 1
+                #expect((result.error as? TCPViewerCoreError)?.code == .operationCancelled)
+            }
+        }
+        await waitUntil { core.openedDocumentURLs.count == 1 }
+        #expect(owner.tabs.isEmpty)
+        owner.window?.close()
+        #expect(completions == 2)
+        await gate.open()
+        #expect(owner.tabs.isEmpty)
+        #expect(completions == 2)
+        #expect(core.openedDocumentURLs.count == 1)
+    }
+
+    private func weakDescendants(of controller: NSViewController) -> [WeakTabTestObject] {
+        controller.children.flatMap { [WeakTabTestObject($0)] + weakDescendants(of: $0) }
+    }
 
     @Test func controllerInitialLoadSelectsFirstEligibleInterface() async {
         let fakeCore = FakeTCPViewerCore(
@@ -2118,6 +2536,8 @@ private final class FakeLiveSession: LiveCaptureSessionProviding, @unchecked Sen
     var eventHandler: PacketIngestEventHandler?
 
     var inspections: [PacketSummary.ID: PacketInspection] = [:]
+    var inspectionGate: AsyncGate?
+    var exportGate: AsyncGate?
     var stopError: Error?
     private(set) var startCount = 0
     private(set) var pauseCount = 0
@@ -2162,7 +2582,8 @@ private final class FakeLiveSession: LiveCaptureSessionProviding, @unchecked Sen
             completion(.failure(TCPViewerCoreError(code: .liveSessionControlFailed, message: "Missing inspection for packet \(id).")))
             return
         }
-        completion(.success(inspection))
+        if let inspectionGate { inspectionGate.wait { completion(.success(inspection)) } }
+        else { completion(.success(inspection)) }
     }
 
     func exportPackets(
@@ -2180,7 +2601,8 @@ private final class FakeLiveSession: LiveCaptureSessionProviding, @unchecked Sen
 
         progress?(PacketExportProgress(exportedPacketCount: identifiers.count, totalPacketCount: identifiers.count))
         exportRequests.append((identifiers, url, format))
-        completion(.success(()))
+        if let exportGate { exportGate.wait { completion(.success(())) } }
+        else { completion(.success(())) }
     }
 
     func healthSnapshot(completion: @escaping (CaptureHealthSnapshot) -> Void) {
@@ -2264,6 +2686,8 @@ private final class FakeOfflineDocument: OfflineCaptureDocumentProviding, @unche
     private let displayFilterMatchesByExpression: [String: Set<PacketSummary.ID>]
     private var displayFilterExpressionByGeneration: [UInt64: String] = [:]
 
+    var filterEvaluationGate: AsyncGate?
+    private(set) var displayFilterActivationGenerations: [UInt64] = []
     private(set) var saveCount = 0
     private(set) var saveAsRequests: [(URL, CaptureFileFormat)] = []
     private(set) var exportRequests: [([PacketSummary.ID], URL, CaptureFileFormat)] = []
@@ -2327,6 +2751,7 @@ private final class FakeOfflineDocument: OfflineCaptureDocumentProviding, @unche
         generation: UInt64,
         completion: @escaping (DisplayFilterValidation) -> Void
     ) {
+        displayFilterActivationGenerations.append(generation)
         displayFilterExpressionByGeneration[generation] = expression
         completion(DisplayFilterValidation(normalizedExpression: expression, status: .valid))
     }
@@ -2339,11 +2764,13 @@ private final class FakeOfflineDocument: OfflineCaptureDocumentProviding, @unche
         displayFilterEvaluationRequests.append(packetIDs)
         let expression = displayFilterExpressionByGeneration[generation] ?? ""
         let matchingIDs = displayFilterMatchesByExpression[expression] ?? []
-        completion(.success(DisplayFilterMatchBatch(
+        let batch = DisplayFilterMatchBatch(
             generation: generation,
             evaluatedPacketIDs: packetIDs,
             matchingPacketIDs: packetIDs.filter(matchingIDs.contains)
-        )))
+        )
+        if let filterEvaluationGate { filterEvaluationGate.wait { completion(.success(batch)) } }
+        else { completion(.success(batch)) }
     }
 
     func clearDisplayFilter(completion: @escaping TCPViewerVoidCompletion) {
@@ -2516,4 +2943,9 @@ private final class AsyncGate {
         continuations.removeAll()
         waitingContinuations.forEach { $0() }
     }
+}
+
+private final class WeakTabTestObject {
+    weak var object: AnyObject?
+    init(_ object: AnyObject) { self.object = object }
 }

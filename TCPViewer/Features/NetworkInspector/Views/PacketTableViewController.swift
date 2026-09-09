@@ -270,6 +270,10 @@ final class PacketTableViewController: NSViewController {
     private var pendingCustomColumnReloadWorkItem: DispatchWorkItem?
     private var renderedPacketLineageRevision: UInt64?
 
+    private var suspendedScrollPosition: NSPoint?
+    private var suspendedSelection: [PacketSummary.ID]?
+    private var suspendedSelectionLineage: UInt64?
+    private var isPresentationSuspended = false
     private let maximumConcurrentCustomColumnInspections = 8
 
     // Wraps Optional<ID> so we can distinguish "no pending intent" from a
@@ -304,6 +308,7 @@ final class PacketTableViewController: NSViewController {
     }
 
     deinit {
+        pendingCustomColumnReloadWorkItem?.cancel()
         NotificationCenter.default.removeObserver(self)
     }
 
@@ -317,8 +322,43 @@ final class PacketTableViewController: NSViewController {
         view = scrollView
     }
 
-    // Apply packet rows, using append plans when the model says only new visible rows arrived.
+    // Preserve the viewport without retaining table rows or custom-column inspection work.
+    func rememberScrollPosition() {
+        guard isViewLoaded else { return }
+        suspendedScrollPosition = scrollView.contentView.bounds.origin
+        suspendedSelection = tableView.selectedRowIndexes.compactMap { viewModel.rowID(at: $0) }
+        suspendedSelectionLineage = renderedPacketLineageRevision
+    }
+
+    func releasePresentation(snapshot: NetworkInspectorSnapshot) {
+        isPresentationSuspended = true
+        customColumnService.clearValues()
+        resetCustomColumnResolutionQueue()
+        _ = viewModel.render(snapshot: snapshot)
+        if isViewLoaded {
+            selectionCallbackSuppressionDepth += 1
+            tableView.reloadData()
+            selectionCallbackSuppressionDepth -= 1
+        }
+    }
+
+    func restoreScrollPosition() {
+        isPresentationSuspended = false
+        guard isViewLoaded, !rows.isEmpty, let position = suspendedScrollPosition else { return }
+        if suspendedSelectionLineage == renderedPacketLineageRevision, let suspendedSelection {
+            let indexes = IndexSet(suspendedSelection.compactMap { viewModel.rowIndex(for: $0) })
+            suppressSelectionCallbacks { tableView.selectRowIndexes(indexes, byExtendingSelection: false) }
+        }
+        suspendedSelection = nil
+        suspendedSelectionLineage = nil
+        scrollView.contentView.scroll(to: position)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        suspendedScrollPosition = nil
+    }
+
     func render(snapshot: NetworkInspectorSnapshot) {
+        isPresentationSuspended = false
+        defer { restoreScrollPosition() }
         if renderedPacketLineageRevision != snapshot.base.packetIngestState.packetLineageRevision {
             customColumnService.clearValues()
             resetCustomColumnResolutionQueue()
@@ -974,7 +1014,8 @@ final class PacketTableViewController: NSViewController {
     }
 
     private func visibleCustomColumns() -> [PacketCustomColumn] {
-        customColumnService.columns.filter { columnService.isColumnVisible(identifier: $0.identifier) }
+        guard !isPresentationSuspended else { return [] }
+        return customColumnService.columns.filter { columnService.isColumnVisible(identifier: $0.identifier) }
     }
 
     private func reloadColumn(identifier: String) {

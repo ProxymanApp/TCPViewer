@@ -108,9 +108,12 @@ final class PacketWorkspaceViewModel {
             emptyImageName = "tray.and.arrow.down"
         default:
             emptyTitle = snapshot.totalPacketCount == 0 ? "No Packets" : "No Matching Packets"
-            emptyMessage = snapshot.totalPacketCount == 0
-                ? "Start a live capture or open a pcap/pcapng file."
-                : "Adjust the packet filter to show packets again."
+            if snapshot.totalPacketCount == 0 {
+                emptyMessage = snapshot.base.packetIngestState.source == .offline
+                    ? "This capture contains no packets." : "Start a live capture or open a pcap/pcapng file."
+            } else {
+                emptyMessage = "Adjust the packet filter to show packets again."
+            }
             emptyImageName = "list.bullet.rectangle"
         }
     }
@@ -154,6 +157,10 @@ final class PacketWorkspaceViewController: NSViewController {
         tableController.delegate = self
         structuredFilterController.delegate = self
     }
+
+    func rememberScrollPosition() { tableController.rememberScrollPosition() }
+    func restoreScrollPosition() { tableController.restoreScrollPosition() }
+    func releasePresentation(snapshot: NetworkInspectorSnapshot) { tableController.releasePresentation(snapshot: snapshot) }
 
     // Render the packet workspace and swap between the table and empty state as needed.
     func render(snapshot: NetworkInspectorSnapshot) {

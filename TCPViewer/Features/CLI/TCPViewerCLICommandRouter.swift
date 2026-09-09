@@ -156,7 +156,7 @@ final class TCPViewerCLICommandRouter: TCPViewerCLICommandRouting {
                 throw CLIError(code: "invalid_parameter", message: "A tcpviewsession must be imported by itself.")
             }
             appDelegate.cliImportCaptureURLs(urls) { result in
-                let packetCount = (try? appDelegate.cliWorkspaceViewModel().mcpWorkspaceSnapshot().totalPacketCount) ?? 0
+                let packetCount = result.packetCount ?? 0
                 let data: [String: TCPViewerCLIValue] = [
                     "imported_files": .array(result.importedURLs.map { .string($0.path) }),
                     "imported_file_count": .int(result.importedURLs.count),

@@ -1061,9 +1061,27 @@ final class NetworkInspectorViewModel {
     }
     private(set) var statusMetricsSnapshot: TCPViewerStatusMetricsSnapshot = .empty
 
+    let captureWorkspace: TCPViewerCaptureWorkspace
     private let controller: TCPViewerWorkspaceController
+    private let paneSelection: TCPViewerPaneSelection
+    private let lifetimeCancellation = PacketExportCancellationToken()
+    private(set) var isActive = true
+    private(set) var isClosed = false
+    private var inspectorThicknessByPlacement: [NetworkInspectorPlacement: CGFloat] = [:]
+
+    var isOffline: Bool { captureWorkspace.kind == .offline }
+    var captureSnapshotForCommands: TCPViewerWindowSnapshot { isClosed ? .foundation : controller.snapshot }
+
+    private func paneSnapshot(visibleIDs: [PacketSummary.ID]) -> TCPViewerWindowSnapshot {
+        var base = controller.snapshot
+        if isOffline { base.packetIngestState.source = .offline }
+        base.inspectionState = paneSelection.state
+        base.navigationState = .empty
+        base.navigationState.visiblePacketIDs = visibleIDs
+        return base
+    }
     private let preferences: NetworkInspectorPreferences
-    private let sourceListService = PacketSourceListService()
+    private let sourceListService: PacketSourceListService
     private let pinService: PacketPinService
     private let savedPacketService: SavedPacketService
     private let quickFilterService: PacketQuickFilterService
@@ -1143,35 +1161,41 @@ final class NetworkInspectorViewModel {
 
     init(
         services: TCPViewerServiceRegistry,
+        captureWorkspace: TCPViewerCaptureWorkspace? = nil,
+        freshPane: Bool = false,
         userDefaults: UserDefaults = .standard,
         interfaceHistoryStore: InterfaceSelectionHistoryStore? = nil,
-        pinService: PacketPinService = PacketPinService(),
-        savedPacketService: SavedPacketService = SavedPacketService(),
+        pinService: PacketPinService? = nil,
+        savedPacketService: SavedPacketService? = nil,
         quickFilterService: PacketQuickFilterService = PacketQuickFilterService(),
-        customFilterService: PacketCustomFilterService = PacketCustomFilterService(),
+        customFilterService: PacketCustomFilterService? = nil,
         structuredFilterService: PacketStructuredFilterService = PacketStructuredFilterService(),
         packetExportService: PacketExportService? = nil,
         tcpViewSessionExportService: (any TCPViewSessionExportWriting)? = nil,
-        statusMetricsService: TCPViewerStatusMetricsService = TCPViewerStatusMetricsService(),
+        statusMetricsService: TCPViewerStatusMetricsService? = nil,
         packetTableAsyncRebuildThreshold: Int = 5_000,
         packetTableFilterBuildHook: (@Sendable () -> Void)? = nil
     ) {
-        self.controller = TCPViewerWorkspaceController(
-            services: services,
-            userDefaults: userDefaults,
-            interfaceHistoryStore: interfaceHistoryStore
+        let workspace = captureWorkspace ?? TCPViewerCaptureWorkspace(
+            services: services, userDefaults: userDefaults, interfaceHistoryStore: interfaceHistoryStore,
+            pinService: pinService ?? PacketPinService(), savedPacketService: savedPacketService ?? SavedPacketService(),
+            customFilterService: customFilterService ?? PacketCustomFilterService(), statusMetricsService: statusMetricsService ?? TCPViewerStatusMetricsService()
         )
+        self.captureWorkspace = workspace
+        self.controller = workspace.controller
+        self.paneSelection = TCPViewerPaneSelection(controller: workspace.controller)
+        self.sourceListService = workspace.sourceListService
         self.preferences = NetworkInspectorPreferences(defaults: userDefaults)
-        self.pinService = pinService
-        self.savedPacketService = savedPacketService
+        self.pinService = workspace.pinService
+        self.savedPacketService = workspace.savedPacketService
         self.quickFilterService = quickFilterService
-        self.customFilterService = customFilterService
+        self.customFilterService = workspace.customFilterService
         self.structuredFilterService = structuredFilterService
         self.structuredFilterStore = PacketStructuredFilterStore(defaults: userDefaults)
         self.packetExportService = packetExportService ?? PacketExportService(defaults: userDefaults)
         self.tcpViewSessionExportService = tcpViewSessionExportService ?? TCPViewSessionExportService()
         self.packetTableColumnLayoutStore = PacketTableColumnLayoutStore(defaults: userDefaults)
-        self.statusMetricsService = statusMetricsService
+        self.statusMetricsService = workspace.statusMetricsService
         self.packetTableAsyncRebuildThreshold = max(1, packetTableAsyncRebuildThreshold)
         self.packetTableFilterBuildHook = packetTableFilterBuildHook
         self.inspectorPlacement = preferences.inspectorPlacement
@@ -1188,31 +1212,12 @@ final class NetworkInspectorViewModel {
         self.endpointStatisticsFilter = nil
         let sourceListSnapshot = sourceListService.snapshot(
             for: controller.snapshot.packetIngestState,
-            pinnedItems: pinService.pins(),
-            savedPacketCount: savedPacketService.records().count
+            pinnedItems: self.pinService.pins(),
+            savedPacketCount: self.savedPacketService.records().count
         )
-        let activeStructuredFilterGroup = isStructuredFilterVisible && filterMode == .builder ? structuredFilterGroup : .default
-        let packetTableResolution = packetTableContentCache.content(
-            for: controller.snapshot.packetIngestState,
-            displayFilterText: displayFilterText,
-            quickFilterSelection: quickFilterService.selection,
-            quickFilterService: quickFilterService,
-            structuredFilterGroup: activeStructuredFilterGroup,
-            structuredFilterService: structuredFilterService,
-            endpointStatisticsFilter: nil,
-            sourceListSelection: selectedSourceListSelection,
-            pinnedItems: pinService.pins(),
-            savedRecords: savedPacketService.records(),
-            wiresharkFilterMembership: nil,
-            allowsAsyncRebuild: false,
-            asyncRebuildThreshold: self.packetTableAsyncRebuildThreshold
-        )
-        let packetTableContent: PacketTableContent
-        switch packetTableResolution {
-        case .ready(let content), .deferred(let content, _):
-            packetTableContent = content
-        }
-        let initialCustomFilterItems = customFilterService.filters().map { filter in
+        // The first normal rebuild can filter a large shared source off the main queue.
+        let packetTableContent = PacketTableContent.empty
+        let initialCustomFilterItems = self.customFilterService.filters().map { filter in
             PacketCustomFilterItem(id: filter.id, title: filter.name, mode: filter.mode, isSelected: false)
         }
         self.snapshot = NetworkInspectorSnapshot.make(
@@ -1238,13 +1243,86 @@ final class NetworkInspectorViewModel {
             packetTableContent: packetTableContent
         )
 
-        controller.delegate = self
-        self.statusMetricsSnapshot = statusMetricsService.snapshot
-        self.statusMetricsService.snapshotHandler = { [weak self] metrics in
-            self?.applyStatusMetricsSnapshot(metrics)
+        workspace.subscribe(self)
+        self.statusMetricsSnapshot = workspace.statusMetricsService.snapshot
+        paneSelection.didChange = { [weak self] in self?.rebuildSnapshot() }
+        if freshPane {
+            filterMode = .builder
+            displayFilterText = ""
+            structuredFilterGroup = .default
+            quickFilterService.apply(.all)
+            wiresharkFilterState = PacketWiresharkFilterState(draftExpression: "")
         }
-        self.statusMetricsService.start()
-        syncStatusMetricsMonitoring(from: controller.snapshot)
+        isUsingSessionDocumentState = workspace.kind == .offline
+        if workspace.kind == .offline, let state = controller.currentDocumentSessionState {
+            applySessionDocumentState(state)
+            pendingSessionImportReport = controller.currentDocumentSessionImportReport
+        }
+        rebuildSnapshot()
+    }
+
+    private var pendingRequests: [UUID: () -> Void] = [:]
+
+    // Cancel the caller immediately on close without retaining this pane in native callbacks.
+    private func trackRequest<Value>(_ completion: @escaping TCPViewerCompletion<Value>) -> TCPViewerCompletion<Value>? {
+        let request = TCPViewerPaneRequest(completion: completion)
+        guard !isClosed else { request.cancel(); return nil }
+        let id = UUID()
+        pendingRequests[id] = { request.cancel() }
+        return { [weak self] result in
+            DispatchQueue.main.async {
+                self?.pendingRequests.removeValue(forKey: id)
+                request.finish(result)
+            }
+        }
+    }
+
+    // Resume only this pane's presentation; capture ownership never follows tab selection.
+    func activate() {
+        guard !isClosed else { return }
+        if isActive { rebuildSnapshot(); return }
+        isActive = true
+        captureWorkspace.subscribe(self)
+        paneSelection.refreshSource()
+        if let selectedID = paneSelection.state.selectedPacketID { paneSelection.select(selectedID) }
+        reapplyWiresharkFilterIfNeeded()
+        rebuildSnapshot()
+    }
+
+    // Drop packet-bearing snapshots and queued work while keeping small navigation preferences.
+    func deactivate() {
+        guard isActive else { return }
+        isActive = false
+        captureWorkspace.unsubscribe(self)
+        cancelPendingRebuild()
+        cancelActivePacketTableFilterJob()
+        cancelWiresharkFilterEvaluation(clearMembership: false)
+        paneSelection.suspend()
+        packetTableContentCache.reset()
+        displayFilterResultCache.removeAll()
+        wiresharkFilterMembership = nil
+        var empty = snapshot
+        empty.base = .foundation
+        empty.sourceListSnapshot = .empty
+        empty.packetTableRowStore = .empty
+        empty.selectedPacket = nil
+        empty.selectedPacketRowIndex = nil
+        snapshot = empty
+    }
+
+    // Close once before removing the pane from its owner so late callbacks cannot restart work.
+    func close() {
+        guard !isClosed else { return }
+        isClosed = true
+        deactivate()
+        lifetimeCancellation.cancel()
+        let requests = pendingRequests.values
+        pendingRequests.removeAll()
+        requests.forEach { $0() }
+        paneSelection.close()
+        delegate = nil
+        endpointStatisticsIngestHandler = nil
+        captureWorkspace.unsubscribe(self)
     }
 
     func performInitialLoadIfNeeded(completion: (() -> Void)? = nil) {
@@ -1254,6 +1332,7 @@ final class NetworkInspectorViewModel {
         }
 
         hasPerformedInitialLoad = true
+        guard !isOffline else { rebuildSnapshot(); completion?(); return }
         controller.performInitialLoadIfNeeded { [weak self] in
             self?.rebuildSnapshot()
             completion?()
@@ -1533,6 +1612,8 @@ final class NetworkInspectorViewModel {
     }
 
     func applyWiresharkFilter(completion: ((Bool) -> Void)? = nil) {
+        guard let finish = trackRequest({ (result: Result<Bool, Error>) in completion?((try? result.get()) ?? false) }) else { return }
+        let completion: ((Bool) -> Void)? = { finish(.success($0)) }
         cancelWiresharkFilterEvaluation(clearMembership: false)
         let generation = displayFilterValidationGeneration
         let expression = wiresharkFilterState.draftExpression
@@ -1565,6 +1646,13 @@ final class NetworkInspectorViewModel {
         _ request: PacketInspectorFilterRequest,
         completion: ((Bool, String?) -> Void)? = nil
     ) {
+        guard let finish = trackRequest({ (result: Result<(Bool, String?), Error>) in
+            switch result {
+            case .success(let value): completion?(value.0, value.1)
+            case .failure: completion?(false, nil)
+            }
+        }) else { return }
+        let completion: ((Bool, String?) -> Void)? = { finish(.success(($0, $1))) }
         cancelWiresharkFilterEvaluation(clearMembership: false)
 
         guard let expression = request.displayFilterExpression else {
@@ -1632,7 +1720,7 @@ final class NetworkInspectorViewModel {
 
     func resetQuickFilters() {
         cancelPendingInspectorFilterApplication()
-        quickFilterService.reset()
+        quickFilterService.apply(.all)
         rebuildSnapshot(clearsSelectedPacket: true)
     }
 
@@ -1788,6 +1876,7 @@ final class NetworkInspectorViewModel {
     // Rename a saved custom filter and refresh titlebar render models.
     func renameCustomFilter(id: PacketCustomFilter.ID, name: String) throws {
         try customFilterService.rename(id: id, name: name)
+        captureWorkspace.publishChange()
         rebuildSnapshot()
     }
 
@@ -1834,6 +1923,7 @@ final class NetworkInspectorViewModel {
     // Duplicate a saved custom filter without changing the active structured filter group.
     func duplicateCustomFilter(id: PacketCustomFilter.ID) throws {
         _ = try customFilterService.duplicate(id: id)
+        captureWorkspace.publishChange()
         rebuildSnapshot()
     }
 
@@ -1843,6 +1933,7 @@ final class NetworkInspectorViewModel {
         if selectedCustomFilterID == id {
             selectedCustomFilterID = nil
         }
+        captureWorkspace.publishChange()
         rebuildSnapshot()
     }
 
@@ -1935,7 +2026,7 @@ final class NetworkInspectorViewModel {
         selectedSourceListSelection = .allPackets
         workspaceMode = .packets
         displayFilterText = ""
-        quickFilterService.reset()
+        quickFilterService.apply(.all)
         endpointStatisticsFilter = nil
         selectedCustomFilterID = nil
     }
@@ -2224,11 +2315,12 @@ final class NetworkInspectorViewModel {
         if clearMembership {
             wiresharkFilterMembership = nil
             wiresharkFilterMembershipLineageRevision = nil
-            controller.clearDisplayFilters()
+            // Each evaluation owns its cancellation token; another pane may use the same native filter.
         }
     }
 
     func clearPackets() {
+        paneSelection.select(nil)
         #if DEBUG
         logClearMemorySnapshot("before")
         #endif
@@ -2291,6 +2383,7 @@ final class NetworkInspectorViewModel {
             return
         }
 
+        captureWorkspace.publishChange()
         rebuildSnapshot()
     }
 
@@ -2313,6 +2406,7 @@ final class NetworkInspectorViewModel {
             return
         }
         controller.applyTextStyleMutation(mutation, packetIDs: targets.activePacketIDs)
+        captureWorkspace.publishChange()
         rebuildSnapshot()
     }
 
@@ -2335,6 +2429,7 @@ final class NetworkInspectorViewModel {
             return
         }
         controller.setCustomComment(sanitizedComment, packetIDs: targets.activePacketIDs)
+        captureWorkspace.publishChange()
         rebuildSnapshot()
     }
 
@@ -2376,8 +2471,9 @@ final class NetworkInspectorViewModel {
 
         if let nextSelectionID,
            controller.snapshot.packetIngestState.packet(withID: nextSelectionID) != nil {
-            controller.selectPacket(nextSelectionID)
+            paneSelection.select(nextSelectionID)
         }
+        captureWorkspace.publishChange()
         rebuildSnapshot()
     }
 
@@ -2390,6 +2486,7 @@ final class NetworkInspectorViewModel {
         if selectedSourceListSelection == .pinnedItem(pinID) {
             selectedSourceListSelection = .pinned
         }
+        captureWorkspace.publishChange()
         rebuildSnapshot()
     }
 
@@ -2402,6 +2499,7 @@ final class NetworkInspectorViewModel {
         cancelPendingInspectorFilterApplication()
         selectedSourceListSelection = uniquePins.count == 1 ? .pinnedItem(uniquePins[0].id) : .pinned
         workspaceMode = .packets
+        captureWorkspace.publishChange()
         rebuildSnapshot()
     }
 
@@ -2439,7 +2537,7 @@ final class NetworkInspectorViewModel {
             structuredFilterGroup: structuredFilterGroup,
             displayFilterText: displayFilterText,
             sourceListFilterText: sourceListFilterText,
-            selectedPacketID: controller.snapshot.selectedPacketID,
+            selectedPacketID: paneSelection.state.selectedPacketID,
             selectedSourceListSelection: selectedSourceListSelection,
             workspaceMode: workspaceMode,
             inspectorTab: inspectorTab,
@@ -2516,6 +2614,7 @@ final class NetworkInspectorViewModel {
         shouldCancel: PacketExportCancellationCheck? = nil,
         completion: @escaping TCPViewerVoidCompletion
     ) {
+        guard let completion = trackRequest(completion) else { return }
         do {
             let identifiers = try validatedExportPacketIDs(identifiers, requiresSavedBacking: requiresSavedBacking)
             guard !identifiers.isEmpty else {
@@ -2529,7 +2628,7 @@ final class NetworkInspectorViewModel {
                 format: format,
                 metadata: packetExportMetadata(for: identifiers, prefersSavedPackets: requiresSavedBacking),
                 progress: progress,
-                shouldCancel: shouldCancel
+                shouldCancel: { [lifetimeCancellation] in lifetimeCancellation.isCancelled() || shouldCancel?() == true }
             ) { [weak self] result in
                 if case .success = result {
                     self?.packetExportService.rememberDestination(url)
@@ -2674,6 +2773,7 @@ final class NetworkInspectorViewModel {
     }
 
     func toggleLiveCapture(completion: (() -> Void)? = nil) {
+        guard !isOffline, !isClosed else { completion?(); return }
         if snapshot.base.sessionState.canStop {
             controller.stopLiveCapture { [weak self] in
                 self?.rebuildSnapshot()
@@ -2690,6 +2790,7 @@ final class NetworkInspectorViewModel {
     }
 
     func pauseLiveCapture(completion: (() -> Void)? = nil) {
+        guard !isOffline, !isClosed else { completion?(); return }
         controller.pauseLiveCapture { [weak self] in
             self?.rebuildSnapshot()
             completion?()
@@ -2697,6 +2798,7 @@ final class NetworkInspectorViewModel {
     }
 
     func resumeLiveCapture(completion: (() -> Void)? = nil) {
+        guard !isOffline, !isClosed else { completion?(); return }
         controller.resumeLiveCapture { [weak self] in
             self?.rebuildSnapshot()
             completion?()
@@ -2704,6 +2806,7 @@ final class NetworkInspectorViewModel {
     }
 
     func stopLiveCapture(completion: (() -> Void)? = nil) {
+        guard !isOffline, !isClosed else { completion?(); return }
         controller.stopLiveCapture { [weak self] in
             self?.rebuildSnapshot()
             completion?()
@@ -2831,7 +2934,7 @@ final class NetworkInspectorViewModel {
 
         if let selectedPacketID = state.selectedPacketID,
            controller.snapshot.packetIngestState.packet(withID: selectedPacketID) != nil {
-            controller.selectPacket(selectedPacketID)
+            paneSelection.select(selectedPacketID)
         }
         if isStructuredFilterVisible, filterMode == .wireshark {
             DispatchQueue.main.async { [weak self] in
@@ -2849,7 +2952,7 @@ final class NetworkInspectorViewModel {
         pinService.reloadPersistentPins()
         savedPacketService.reloadPersistentRecords()
         customFilterService.reloadPersistentFilters()
-        quickFilterService.reset()
+        quickFilterService.apply(.all)
         endpointStatisticsFilter = nil
         selectedCustomFilterID = nil
         sourceListFilterText = ""
@@ -2987,7 +3090,7 @@ final class NetworkInspectorViewModel {
             format: format,
             requiresSavedBacking: false,
             progress: progress,
-            shouldCancel: shouldCancel,
+            shouldCancel: { [lifetimeCancellation] in lifetimeCancellation.isCancelled() || shouldCancel?() == true },
             completion: completion
         )
     }
@@ -2998,6 +3101,7 @@ final class NetworkInspectorViewModel {
         shouldCancel: PacketExportCancellationCheck? = nil,
         completion: @escaping TCPViewerVoidCompletion
     ) {
+        guard let completion = trackRequest(completion) else { return }
         let exportSnapshot = makeTCPViewSessionExportSnapshot()
         guard !exportSnapshot.packets.isEmpty else {
             completion(.failure(TCPViewerCoreError(code: .offlineFileSaveFailed, message: "There are no packets to export.")))
@@ -3009,7 +3113,7 @@ final class NetworkInspectorViewModel {
             to: url,
             exportService: tcpViewSessionExportService,
             progress: progress,
-            shouldCancel: shouldCancel
+            shouldCancel: { [lifetimeCancellation] in lifetimeCancellation.isCancelled() || shouldCancel?() == true }
         ) { [weak self] result in
             if case .success = result {
                 self?.packetExportService.rememberDestination(url)
@@ -3033,7 +3137,7 @@ final class NetworkInspectorViewModel {
             format: format,
             requiresSavedBacking: selectedSourceListSelection == .saved,
             progress: progress,
-            shouldCancel: shouldCancel,
+            shouldCancel: { [lifetimeCancellation] in lifetimeCancellation.isCancelled() || shouldCancel?() == true },
             completion: completion
         )
     }
@@ -3054,7 +3158,7 @@ final class NetworkInspectorViewModel {
                 format: format,
                 requiresSavedBacking: selection == .saved,
                 progress: progress,
-                shouldCancel: shouldCancel,
+                shouldCancel: { [lifetimeCancellation] in lifetimeCancellation.isCancelled() || shouldCancel?() == true },
                 completion: completion
             )
         } catch {
@@ -3083,7 +3187,7 @@ final class NetworkInspectorViewModel {
 
     func selectPacket(_ identifier: PacketSummary.ID?) {
         print("[TCPViewer] \(NetworkInspectorDebugLog.timestamp()) 🎯 Packet row selected: \(identifier?.description ?? "nil")")
-        controller.selectPacket(identifier)
+        paneSelection.select(identifier)
         if identifier != nil {
             inspectorTab = .summary
         }
@@ -3091,11 +3195,12 @@ final class NetworkInspectorViewModel {
     }
 
     func selectDetailNode(_ identifier: String?) {
-        controller.selectDetailNode(identifier)
+        paneSelection.selectDetail(identifier)
         rebuildSnapshot()
     }
 
     func inspectPacket(_ identifier: PacketSummary.ID, completion: @escaping TCPViewerCompletion<PacketInspection>) {
+        guard let completion = trackRequest(completion) else { return }
         controller.inspectPacket(id: identifier, completion: completion)
     }
 
@@ -3121,12 +3226,13 @@ final class NetworkInspectorViewModel {
         shouldCancel: FollowStreamCancellationCheck?,
         completion: @escaping TCPViewerCompletion<FollowStream>
     ) {
+        guard let completion = trackRequest(completion) else { return }
         controller.followStream(
             containing: identifier,
             streamProtocol: streamProtocol,
             limits: limits,
             progress: progress,
-            shouldCancel: shouldCancel,
+            shouldCancel: { [lifetimeCancellation] in lifetimeCancellation.isCancelled() || shouldCancel?() == true },
             completion: completion
         )
     }
@@ -3174,6 +3280,7 @@ final class NetworkInspectorViewModel {
             return
         }
 
+        inspectorThicknessByPlacement[placement ?? inspectorPlacement] = thickness
         if !isUsingSessionDocumentState {
             preferences.persistInspectorThickness(thickness, placement: placement ?? inspectorPlacement)
         }
@@ -3186,7 +3293,7 @@ final class NetworkInspectorViewModel {
     ) -> CGFloat? {
         let placement = placement ?? inspectorPlacement
         guard availableLength.isFinite, availableLength > 0,
-              let thickness = preferences.inspectorThickness(for: placement),
+              let thickness = inspectorThicknessByPlacement[placement] ?? preferences.inspectorThickness(for: placement),
               thickness.isFinite,
               thickness > NetworkInspectorLayoutMetrics.minimumInspectorThickness,
               thickness < availableLength else {
@@ -3277,6 +3384,7 @@ final class NetworkInspectorViewModel {
         selectsFirstVisiblePacketAfterFiltering: Bool = false,
         clearsSelectedPacket: Bool = false
     ) {
+        guard isActive, !isClosed else { return }
         cancelPendingRebuild()
         let pinnedItems = pinService.pins()
         let savedRecords = savedPacketService.records()
@@ -3343,7 +3451,7 @@ final class NetworkInspectorViewModel {
             }
         }
         let updatedSnapshot = NetworkInspectorSnapshot.make(
-            base: controller.snapshot,
+            base: paneSnapshot(visibleIDs: packetTableContent.store.rowIDs),
             selectedSidebar: selectedSidebar,
             selectedSourceListSelection: selectedSourceListSelection,
             sourceListSnapshot: sourceListSnapshot,
@@ -3518,16 +3626,17 @@ final class NetworkInspectorViewModel {
     }
 
     private func applyPacketSelectionDuringRebuild(_ identifier: PacketSummary.ID?) {
-        guard controller.snapshot.selectedPacketID != identifier else {
+        guard paneSelection.state.selectedPacketID != identifier else {
             return
         }
 
         // Model-driven selection emits a workspace callback; this rebuild already owns the update.
-        controller.selectPacket(identifier)
+        paneSelection.select(identifier)
         cancelPendingRebuild()
     }
 
     private func scheduleCoalescedRebuild() {
+        guard isActive, !isClosed else { return }
         guard pendingRebuildWorkItem == nil else {
             return
         }
@@ -3562,46 +3671,11 @@ final class NetworkInspectorViewModel {
         delegate?.networkInspectorViewModelDidUpdateStatusMetrics(self)
     }
 
-    private func syncStatusMetricsMonitoring(from base: TCPViewerWindowSnapshot) {
-        let target = monitoredStatusMetricsTarget(for: base)
-        let metrics = statusMetricsService.updateMonitoring(
-            interfaceID: target?.interfaceID,
-            localAddresses: target?.localAddresses ?? [],
-            baselineIngestState: base.packetIngestState
-        )
-        applyStatusMetricsSnapshot(metrics)
-    }
-
-    private func monitoredStatusMetricsTarget(for base: TCPViewerWindowSnapshot) -> (interfaceID: String, localAddresses: Set<String>)? {
-        guard base.sessionState.phase == .running,
-              base.packetIngestState.source == .live,
-              let interface = base.sessionState.selectedInterface else {
-            return nil
-        }
-
-        let localAddresses = interface.addresses.reduce(into: Set<String>()) { result, address in
-            switch address.family {
-            case .ipv4, .ipv6:
-                result.insert(address.value)
-            case .linkLayer, .unknown:
-                break
-            @unknown default:
-                break
-            }
-        }
-        return (interface.id, localAddresses)
-    }
-
-    private func recordStatusMetrics(from base: TCPViewerWindowSnapshot) {
-        syncStatusMetricsMonitoring(from: base)
-        statusMetricsService.recordPacketIngestState(base.packetIngestState)
-        statusMetricsSnapshot = statusMetricsService.snapshot
-    }
-
     deinit {
         pendingRebuildWorkItem?.cancel()
         activePacketTableFilterJob?.cancellationToken.cancel()
-        statusMetricsService.stop()
+        lifetimeCancellation.cancel()
+        captureWorkspace.unsubscribe(self)
     }
 
     #if DEBUG
@@ -3679,8 +3753,10 @@ final class NetworkInspectorViewModel {
 
 extension NetworkInspectorViewModel: TCPViewerWorkspaceControllerDelegate {
     func tcpViewerWorkspaceControllerDidChange(_ controller: TCPViewerWorkspaceController) {
+        guard isActive, !isClosed else { return }
+        paneSelection.refreshSource()
         endpointStatisticsIngestHandler?(controller.snapshot.packetIngestState)
-        recordStatusMetrics(from: controller.snapshot)
+        applyStatusMetricsSnapshot(statusMetricsService.snapshot)
         let ingestState = controller.snapshot.packetIngestState
         let pendingInspectorCaptureChanged = pendingInspectorFilterApplicationGeneration != nil
             && !isCurrentInspectorFilterApplication(inspectorFilterApplicationGeneration)

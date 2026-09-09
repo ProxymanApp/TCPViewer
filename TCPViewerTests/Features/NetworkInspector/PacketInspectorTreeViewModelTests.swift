@@ -30,14 +30,10 @@ struct PacketInspectorTreeViewModelTests {
 
         controller.render(snapshot: makeSnapshot(inspectionState: .empty))
 
-        let outlineView = try #require(firstSubview(ofType: NSOutlineView.self, in: controller.view))
-        let outlineScrollView = try #require(findOutlineScrollView(in: controller.view))
-        let hexTextView = try #require(firstSubview(ofType: HFTextView.self, in: controller.view))
+        #expect(firstSubview(ofType: NSOutlineView.self, in: controller.view) == nil)
+        #expect(firstSubview(ofType: HFTextView.self, in: controller.view) == nil)
         let textValues = textFieldValues(in: controller.view)
 
-        #expect(isEffectivelyHidden(outlineView))
-        #expect(isEffectivelyHidden(outlineScrollView))
-        #expect(isEffectivelyHidden(hexTextView))
         #expect(textValues.contains("No Packet Selected"))
         #expect(textValues.contains("Select a packet to inspect its decode tree and bytes."))
     }
@@ -635,13 +631,13 @@ struct PacketInspectorTreeViewModelTests {
         let controller = PacketInspectorViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
         controller.loadViewIfNeeded()
 
-        let outlineView = try #require(firstSubview(ofType: NSOutlineView.self, in: controller.view))
         let searchField = try #require(firstSubview(ofType: NSSearchField.self, in: controller.view))
 
         controller.render(snapshot: makeSnapshot(
             packet: firstPacket,
             inspectionState: loadedInspectionState(packet: firstPacket, inspection: makeFrameInspection(for: firstPacket))
         ))
+        let outlineView = try #require(firstSubview(ofType: NSOutlineView.self, in: controller.view))
         searchField.stringValue = "Packet 1"
         controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: searchField))
         let firstItem = try #require(outlineView.item(atRow: 0) as? PacketInspectorTreeItem)

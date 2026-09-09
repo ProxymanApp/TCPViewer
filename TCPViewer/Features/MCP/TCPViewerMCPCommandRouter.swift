@@ -544,13 +544,12 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
         completion: @escaping (TCPViewerMCPResponse) -> Void,
         work: @escaping (any TCPViewerMCPDataSource) -> Void
     ) {
-        DispatchQueue.main.async {
-            guard let source = self.dataSourceProvider() else {
-                completion(self.failure(TCPViewerMCPCommandRouterError.noActiveWindow))
-                return
-            }
-            work(source)
+        // route already enters on main; bind the pane before another event can change selection.
+        guard let source = dataSourceProvider()?.sourceForCommand() else {
+            completion(failure(TCPViewerMCPCommandRouterError.noActiveWindow))
+            return
         }
+        work(source)
     }
 
     private func withSnapshot(

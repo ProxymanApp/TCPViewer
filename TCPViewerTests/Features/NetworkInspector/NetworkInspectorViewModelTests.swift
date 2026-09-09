@@ -1711,10 +1711,10 @@ struct NetworkInspectorViewModelTests {
         let window = NSWindow(contentViewController: controller)
         defer { window.close() }
         controller.loadViewIfNeeded()
+        #expect(controller.inspectorViewForTesting == nil)
+        controller.focusPacketDetailFilter()
         let inspectorView = try #require(controller.inspectorViewForTesting)
         let searchField = try #require(allSubviews(ofType: NSSearchField.self, in: inspectorView).first)
-
-        controller.focusPacketDetailFilter()
         await waitUntil {
             viewModel.snapshot.isInspectorVisible && searchField.currentEditor() === window.firstResponder
         }
@@ -2471,7 +2471,7 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.packetRows.count == 50_000)
         #expect(viewModel.snapshot.packetRows.first?.id == 2)
         #expect(viewModel.snapshot.packetRows.last?.id == 100_000)
-        #expect(viewModel.snapshot.base.navigationState.visiblePacketIDs.count == 100_000)
+        #expect(viewModel.snapshot.base.navigationState.visiblePacketIDs.count == 50_000)
         #expect(viewModel.snapshot.sourceListSnapshot.item(for: .domain(.ipAddresses))?.count == 100_000)
 
         viewModel.stopLiveCapture()
