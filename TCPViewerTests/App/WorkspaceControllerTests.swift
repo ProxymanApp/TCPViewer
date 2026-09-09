@@ -295,14 +295,17 @@ struct WindowControllerTests {
         #expect(history.goForward(validIDs: Set([ids[0], ids[2]])) == ids[2])
     }
 
-    @Test func windowTabsShareSidebarReusePanesAndCollapseTheWholeTabBar() async throws {
+    @Test func windowTabsShareSidebarReusePanesCollapseTheWholeTabBarAndShowSidebarAtLaunch() async throws {
         let core = FakeTCPViewerCore(interfaceInventories: [[]])
         let defaults = UserDefaults(suiteName: "tabs-window-\(UUID())")!
+        defaults.set(false, forKey: "TCPViewer.sidebarVisible")
         let owner = TCPViewerWindowController(services: .init(core: core), configuration: AppConfiguration(defaults: defaults))
         let first = try #require(owner.selectedTab)
         weak var firstPane = first.pane
         let sidebar = owner.workspaceViewController.sidebar
         #expect(owner.tabs.count == 1)
+        #expect(owner.workspaceViewController.isSidebarVisibleForTesting)
+        #expect(!owner.rootViewController.viewModel.prefersSidebarVisibleOnLaunch())
         #expect(owner.workspaceViewController.tabBarHeightForTesting == 0)
         #expect(owner.window?.tabbingMode == .disallowed)
         #expect(owner.rootViewController.children.flatMap(\.children).allSatisfy { !($0 is CaptureOverviewViewController) })
@@ -331,8 +334,67 @@ struct WindowControllerTests {
         let reopened = TCPViewerWindowController(services: .init(core: core), configuration: AppConfiguration(defaults: defaults))
         #expect(reopened.tabs.count == 1)
         #expect(reopened.selectedTab?.isOffline == false)
+        #expect(reopened.workspaceViewController.isSidebarVisibleForTesting)
         reopened.closeSelectedTab(nil)
         await waitUntil { reopened.tabs.isEmpty }
+    }
+
+    @Test func sourceListActionOpensClickedAppInNewSharedLiveTab() async throws {
+        let client = PacketClient(
+            pid: 123,
+            name: "Sparkle",
+            displayName: "Sparkle",
+            executablePath: "/Applications/Sparkle.app/Contents/MacOS/Sparkle",
+            bundleIdentifier: "org.sparkle-project.Sparkle",
+            bundlePath: "/Applications/Sparkle.app"
+        )
+        let packet = makePacket(packetNumber: 1, source: .live, transportHint: .tcp, client: client)
+        let appKey = try #require(PacketSourceListClassifier.clientIdentity(for: packet)?.key)
+        let live = FakeLiveSession()
+        let core = FakeTCPViewerCore(
+            interfaceInventories: [[makeInterface(id: "en0", displayName: "Test")]],
+            liveSession: live
+        )
+        let defaults = UserDefaults(suiteName: "tabs-source-list-new-tab-\(UUID())")!
+        let owner = TCPViewerWindowController(
+            services: .init(
+                core: core,
+                packetMetadataEnricher: PacketMetadataEnrichmentService(
+                    clientResolver: WorkspaceFakePacketClientResolver(client: client)
+                )
+            ),
+            configuration: AppConfiguration(defaults: defaults)
+        )
+        defer { owner.window?.close() }
+        let original = owner.rootViewController
+        await waitUntil {
+            original.viewModel.snapshot.base.sessionState.selectedInterfaceID == "en0"
+        }
+        await owner.liveWorkspace.controller.startLiveCapture()
+        live.send(.liveStateChanged(phase: .running, message: "Running"))
+        live.send(.packetBatch([packet], disposition: .append))
+        await waitUntil {
+            owner.liveWorkspace.controller.snapshot.packetIngestState.packets.map(\.id) == [packet.id] &&
+                original.viewModel.snapshot.sourceListSnapshot.contains(selection: .app(appKey))
+        }
+
+        original.sidebarViewController(
+            owner.workspaceViewController.sidebar,
+            didRequestOpenInNewTab: .app(appKey)
+        )
+
+        #expect(owner.tabs.count == 2)
+        #expect(owner.selectedTab?.source === owner.liveWorkspace)
+        #expect(owner.rootViewController !== original)
+        #expect(owner.liveWorkspace.controller.snapshot.packetIngestState.packets.map(\.id) == [packet.id])
+        #expect(owner.rootViewController.viewModel.snapshot.sourceListSnapshot.contains(selection: .app(appKey)))
+        await waitUntil {
+            owner.rootViewController.viewModel.snapshot.selectedSourceListSelection == .app(appKey) &&
+                owner.rootViewController.viewModel.snapshot.packetRows.map(\.id) == [packet.id]
+        }
+        #expect(owner.rootViewController.viewModel.snapshot.selectedSourceListSelection == .app(appKey))
+        #expect(owner.rootViewController.viewModel.snapshot.packetRows.map(\.id) == [packet.id])
+        #expect(owner.workspaceViewController.tabBarHeightForTesting == 34)
     }
 
     @Test func importerGroupsFilesInOfflineTabWithoutChangingSharedLiveSource() async throws {
@@ -2266,7 +2328,8 @@ struct WindowControllerTests {
         source: CaptureSource,
         transportHint: TransportProtocolHint,
         layers: [PacketLayer]? = nil,
-        followStreamID: FollowStreamID? = nil
+        followStreamID: FollowStreamID? = nil,
+        client: PacketClient? = nil
     ) -> PacketSummary {
         PacketSummary(
             packetNumber: packetNumber,
@@ -2285,7 +2348,8 @@ struct WindowControllerTests {
             infoSummary: "Packet \(packetNumber)",
             layers: layers ?? [PacketLayer(name: "Ethernet"), PacketLayer(name: source == .live ? "IPv4" : "TCP")],
             decodeStatus: PacketDecodeStatus(kind: .complete),
-            captureMetadata: PacketCaptureMetadata(linkType: .ethernet, isTruncated: false)
+            captureMetadata: PacketCaptureMetadata(linkType: .ethernet, isTruncated: false),
+            client: client
         )
     }
 
@@ -3075,4 +3139,18 @@ private final class AsyncGate {
 private final class WeakTabTestObject {
     weak var object: AnyObject?
     init(_ object: AnyObject) { self.object = object }
+}
+
+private final class WorkspaceFakePacketClientResolver: PacketClientResolving {
+    private let client: PacketClient?
+
+    init(client: PacketClient?) {
+        self.client = client
+    }
+
+    func reset() {}
+
+    func client(for packet: PacketSummary) -> PacketClient? {
+        client
+    }
 }

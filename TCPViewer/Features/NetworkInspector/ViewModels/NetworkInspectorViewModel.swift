@@ -43,10 +43,10 @@ private struct NetworkInspectorPreferences {
 
     var inspectorPlacement: NetworkInspectorPlacement {
         guard let rawValue = defaults.string(forKey: Key.inspectorPlacement) else {
-            return .trailing
+            return .bottom
         }
 
-        return NetworkInspectorPlacement(rawValue: rawValue) ?? .trailing
+        return NetworkInspectorPlacement(rawValue: rawValue) ?? .bottom
     }
 
     var isInspectorVisible: Bool {
@@ -1123,6 +1123,7 @@ final class NetworkInspectorViewModel {
 
     private var selectedSidebar: NetworkInspectorSidebarSelection = .liveCapture
     private var selectedSourceListSelection: PacketSourceListSelection = .allPackets
+    private var pendingSourceListSelection: PacketSourceListSelection?
     private var sourceListFilterText = ""
     private var workspaceMode: NetworkInspectorWorkspaceMode = .packets
     private var inspectorTab: PacketInspectorTab = .summary
@@ -1433,7 +1434,16 @@ final class NetworkInspectorViewModel {
 
     func selectSourceList(_ selection: PacketSourceListSelection?) {
         cancelPendingInspectorFilterApplication()
+        pendingSourceListSelection = nil
         selectedSourceListSelection = selection ?? .allPackets
+        workspaceMode = .packets
+        rebuildSnapshot()
+    }
+
+    // A new pane may render once before the shared source snapshot reaches it.
+    func selectSourceListWhenAvailable(_ selection: PacketSourceListSelection) {
+        cancelPendingInspectorFilterApplication()
+        pendingSourceListSelection = selection
         workspaceMode = .packets
         rebuildSnapshot()
     }
@@ -1445,7 +1455,13 @@ final class NetworkInspectorViewModel {
         case .deletePin(let pinID):
             deletePin(pinID)
         case .deletePackets(let selection):
-            deletePackets(packetIDs(matching: selection))
+            let removedEmptyApp = sourceListService.removeRetainedEmptyApp(for: selection)
+            let identifiers = packetIDs(matching: selection)
+            if identifiers.isEmpty, removedEmptyApp {
+                rebuildSnapshot()
+            } else {
+                deletePackets(identifiers)
+            }
         }
     }
 
@@ -2337,7 +2353,13 @@ final class NetworkInspectorViewModel {
     }
 
     func clearTablePackets() {
-        let identifiers = snapshot.packetRows.map(\.id)
+        sourceListService.retainEmptyApp(snapshot.sourceListSnapshot.item(for: selectedSourceListSelection))
+        let identifiers: [PacketSummary.ID]
+        if case .app = selectedSourceListSelection {
+            identifiers = packetIDs(matching: selectedSourceListSelection)
+        } else {
+            identifiers = snapshot.packetRows.map(\.id)
+        }
         deletePackets(identifiers)
     }
 
@@ -3393,6 +3415,11 @@ final class NetworkInspectorViewModel {
             pinnedItems: pinnedItems,
             savedPacketCount: savedRecords.count
         )
+        if let pendingSourceListSelection,
+           sourceListSnapshot.contains(selection: pendingSourceListSelection) {
+            selectedSourceListSelection = pendingSourceListSelection
+            self.pendingSourceListSelection = nil
+        }
         if !sourceListSnapshot.contains(selection: selectedSourceListSelection) {
             selectedSourceListSelection = .allPackets
         }

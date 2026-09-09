@@ -28,6 +28,13 @@ struct AppDelegateTerminationTests {
         #expect(!storyboard.contains(#"<action selector="openDocument:" target="Ady-hI-5gd""#))
     }
 
+    @Test func newTabMenuUsesCommandT() throws {
+        let storyboard = try mainStoryboardText()
+
+        #expect(storyboard.contains(#"<menuItem title="New Tab" keyEquivalent="t" id="Was-JA-tGl">"#))
+        #expect(storyboard.contains(#"<action selector="newWorkspaceTab:" target="Ady-hI-5gd""#))
+    }
+
     @Test func packetDetailFilterShortcutRoutesThroughMainWindowResponderChain() throws {
         let storyboard = try mainStoryboardText()
         let menuItemStart = try #require(storyboard.range(

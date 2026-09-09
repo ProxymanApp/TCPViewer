@@ -82,7 +82,7 @@ final class TCPViewerWorkspaceViewController: NSViewController {
         setTabCount(tabCount)
         if !hasRestoredSidebar, let model = pane.focusedPane?.viewModel {
             hasRestoredSidebar = true
-            setSidebarVisible(model.prefersSidebarVisibleOnLaunch(), viewModel: model)
+            setSidebarVisible(true, viewModel: model, persistPreference: false)
         }
     }
 
@@ -92,14 +92,14 @@ final class TCPViewerWorkspaceViewController: NSViewController {
         tabHeight.constant = count < 2 ? 0 : 34
     }
 
-    func setSidebarVisible(_ visible: Bool?, viewModel: NetworkInspectorViewModel) {
+    func setSidebarVisible(_ visible: Bool?, viewModel: NetworkInspectorViewModel, persistPreference: Bool = true) {
         _ = view
         isRestoringSidebar = true
         defer { isRestoringSidebar = false }
         let show = visible ?? sidebarItem.isCollapsed
         if !show { viewModel.rememberSidebarThickness(sidebar.view.frame.width) }
         sidebarItem.isCollapsed = !show
-        viewModel.setSidebarVisible(show)
+        if persistPreference { viewModel.setSidebarVisible(show) }
         if show, let width = viewModel.preferredSidebarThickness(for: view.bounds.width) {
             splitController.splitView.setPosition(width, ofDividerAt: 0)
         }
@@ -107,6 +107,7 @@ final class TCPViewerWorkspaceViewController: NSViewController {
 
     #if DEBUG
     var tabBarHeightForTesting: CGFloat { tabHeight?.constant ?? 0 }
+    var isSidebarVisibleForTesting: Bool { !sidebarItem.isCollapsed }
     #endif
 }
 

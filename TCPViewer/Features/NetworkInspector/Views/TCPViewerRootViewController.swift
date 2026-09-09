@@ -11,6 +11,7 @@ import PcapPlusPlusCore
 protocol TCPViewerRootViewControllerDelegate: AnyObject {
     func tcpviewerRootViewControllerDidRequestActivation(_ controller: TCPViewerRootViewController)
     func tcpviewerRootViewControllerDidChangeToolbarState(_ controller: TCPViewerRootViewController)
+    func tcpviewerRootViewController(_ controller: TCPViewerRootViewController, didRequestOpenInNewTab selection: PacketSourceListSelection)
     func tcpviewerRootViewController(_ controller: TCPViewerRootViewController, didRequestHelperOnboarding snapshot: TCPViewerNetworkHelperToolSnapshot)
     func tcpviewerRootViewControllerDidRequestPaywall(_ controller: TCPViewerRootViewController)
 }
@@ -228,6 +229,7 @@ final class TCPViewerRootViewController: NSViewController {
     private var followStreamWindowControllers: [FollowStreamWindowController] = []
     private var endpointStatisticsWindowController: EndpointStatisticsWindowController?
     private var pendingFollowStreamReveal: PendingFollowStreamReveal?
+    private var pendingSourceListReveal: PacketSourceListSelection?
     private var loadedOverviewViewController: CaptureOverviewViewController?
     private var overviewViewController: CaptureOverviewViewController {
         if let loadedOverviewViewController { return loadedOverviewViewController }
@@ -344,6 +346,7 @@ final class TCPViewerRootViewController: NSViewController {
         endpointStatisticsWindowController?.close()
         endpointStatisticsWindowController = nil
         pendingFollowStreamReveal = nil
+        pendingSourceListReveal = nil
         if let sheet = sessionImportSheetViewController { dismiss(sheet) }
         sessionImportSheetViewController = nil
         viewModel.close()
@@ -681,6 +684,11 @@ final class TCPViewerRootViewController: NSViewController {
         guard !isClosed, viewModel.isActive else { return }
         let snapshot = viewModel.snapshot
         sidebarViewController.render(snapshot: snapshot)
+        if let pendingSourceListReveal,
+           snapshot.selectedSourceListSelection == pendingSourceListReveal {
+            self.pendingSourceListReveal = nil
+            sidebarViewController.revealSourceListSelection(pendingSourceListReveal)
+        }
         workspaceViewController.render(snapshot: snapshot)
         loadedOverviewViewController?.render(snapshot: snapshot)
         endpointStatisticsWindowController?.render(snapshot: snapshot)
@@ -1485,6 +1493,7 @@ extension TCPViewerRootViewController: TCPViewerMainEmptyStateViewControllerDele
 
 extension TCPViewerRootViewController: SidebarViewControllerDelegate {
     func sidebarViewController(_ controller: SidebarViewController, didSelect selection: PacketSourceListSelection?) {
+        pendingSourceListReveal = nil
         viewModel.selectSourceList(selection)
     }
 
@@ -1497,6 +1506,23 @@ extension TCPViewerRootViewController: SidebarViewControllerDelegate {
 
     func sidebarViewController(_ controller: SidebarViewController, didUpdateFilterText text: String) {
         viewModel.updateSourceListFilterText(text)
+    }
+
+    func sidebarViewController(_ controller: SidebarViewController, canOpenInNewTab selection: PacketSourceListSelection) -> Bool {
+        !viewModel.isOffline
+    }
+
+    func sidebarViewController(_ controller: SidebarViewController, didRequestOpenInNewTab selection: PacketSourceListSelection) {
+        guard !viewModel.isOffline else {
+            return
+        }
+
+        delegate?.tcpviewerRootViewController(self, didRequestOpenInNewTab: selection)
+    }
+
+    func selectSourceListWhenAvailable(_ selection: PacketSourceListSelection) {
+        pendingSourceListReveal = selection
+        viewModel.selectSourceListWhenAvailable(selection)
     }
 
     func sidebarViewController(_ controller: SidebarViewController, didRequestPin targets: [PacketSourceListPinTarget]) {

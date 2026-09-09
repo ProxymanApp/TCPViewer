@@ -421,6 +421,18 @@ extension TCPViewerWindowController: TCPViewerRootViewControllerDelegate {
         updateHelperOnboardingSheet()
     }
 
+    func tcpviewerRootViewController(
+        _ controller: TCPViewerRootViewController,
+        didRequestOpenInNewTab selection: PacketSourceListSelection
+    ) {
+        guard tabs.first(where: { $0.pane === controller })?.source === liveWorkspace else {
+            return
+        }
+
+        newWorkspaceTab(nil)
+        rootViewController.selectSourceListWhenAvailable(selection)
+    }
+
     func tcpviewerRootViewController(_ controller: TCPViewerRootViewController, didRequestHelperOnboarding snapshot: TCPViewerNetworkHelperToolSnapshot) {
         presentHelperOnboarding(snapshot: snapshot)
     }

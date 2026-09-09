@@ -59,7 +59,7 @@
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <menu key="submenu" title="File" id="bib-Uj-vzu">
                                     <items>
-                                        <menuItem title="New Tab" keyEquivalent="n" id="Was-JA-tGl">
+                                        <menuItem title="New Tab" keyEquivalent="t" id="Was-JA-tGl">
                                             <connections>
                                                 <action selector="newWorkspaceTab:" target="Ady-hI-5gd" id="4Si-XN-c54"/>
                                             </connections>

@@ -12,6 +12,8 @@ protocol SidebarViewControllerDelegate: AnyObject {
     func sidebarViewController(_ controller: SidebarViewController, didSelect selection: PacketSourceListSelection?)
     func sidebarViewController(_ controller: SidebarViewController, didSelectWorkspaceMode mode: NetworkInspectorWorkspaceMode)
     func sidebarViewController(_ controller: SidebarViewController, didUpdateFilterText text: String)
+    func sidebarViewController(_ controller: SidebarViewController, canOpenInNewTab selection: PacketSourceListSelection) -> Bool
+    func sidebarViewController(_ controller: SidebarViewController, didRequestOpenInNewTab selection: PacketSourceListSelection)
     func sidebarViewController(_ controller: SidebarViewController, didRequestPin targets: [PacketSourceListPinTarget])
     func sidebarViewController(_ controller: SidebarViewController, didRequestDelete action: PacketSourceListDeletionAction)
     func sidebarViewController(_ controller: SidebarViewController, didRequestExport selection: PacketSourceListSelection, format: CaptureFileFormat)
@@ -762,6 +764,17 @@ final class SidebarViewController: NSViewController {
         PacketSourceListCopyPolicy.action(for: contextSourceItem() ?? selectedSourceItem())
     }
 
+    private func selectedOpenInNewTabSelection() -> PacketSourceListSelection? {
+        let item = contextSourceItem() ?? selectedSourceItem()
+        guard PacketSourceListCopyPolicy.action(for: item) != nil,
+              let selection = item?.selection,
+              delegate?.sidebarViewController(self, canOpenInNewTab: selection) == true else {
+            return nil
+        }
+
+        return selection
+    }
+
     private func selectedPinTargets() -> [PacketSourceListPinTarget] {
         PacketSourceListPinPolicy.targets(for: selectedSourceItems())
     }
@@ -806,6 +819,14 @@ final class SidebarViewController: NSViewController {
         }
 
         delegate?.sidebarViewController(self, didRequestPin: targets)
+    }
+
+    @objc private func openSelectedSourceListItemInNewTab(_ sender: Any?) {
+        guard let selection = selectedOpenInNewTabSelection() else {
+            return
+        }
+
+        delegate?.sidebarViewController(self, didRequestOpenInNewTab: selection)
     }
 
     @objc private func deleteSelectedSourceListItem(_ sender: Any?) {
@@ -1012,13 +1033,14 @@ extension SidebarViewController: NSMenuDelegate {
         // Rebuild the available actions for the rows targeted by the current click.
         updateSelectionFromCurrentMenuEvent()
         let copyAction = selectedCopyAction()
+        let openInNewTabSelection = selectedOpenInNewTabSelection()
         let pinTargets = selectedPinTargets()
         let action = selectedDeletionAction()
         let exportSelection = selectedExportSelection()
         let finderURL = selectedFinderURL()
 
         menu.removeAllItems()
-        guard copyAction != nil || !pinTargets.isEmpty || action.isEnabled || exportSelection != nil || finderURL != nil else {
+        guard copyAction != nil || openInNewTabSelection != nil || !pinTargets.isEmpty || action.isEnabled || exportSelection != nil || finderURL != nil else {
             return
         }
 
@@ -1030,8 +1052,20 @@ extension SidebarViewController: NSMenuDelegate {
             menu.addItem(pinItem)
         }
 
-        if let copyAction {
+        if openInNewTabSelection != nil {
             if !pinTargets.isEmpty {
+                menu.addItem(.separator())
+            }
+
+            let openItem = NSMenuItem(title: "Open in New Tab", action: #selector(openSelectedSourceListItemInNewTab(_:)), keyEquivalent: "")
+            openItem.target = self
+            openItem.isEnabled = true
+            openItem.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "Open in New Tab")
+            menu.addItem(openItem)
+        }
+
+        if let copyAction {
+            if !pinTargets.isEmpty || openInNewTabSelection != nil {
                 menu.addItem(.separator())
             }
 
