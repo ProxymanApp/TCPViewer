@@ -9,6 +9,7 @@ import AppKit
 import PcapPlusPlusCore
 
 protocol TCPViewerRootViewControllerDelegate: AnyObject {
+    func tcpviewerRootViewControllerDidRequestActivation(_ controller: TCPViewerRootViewController)
     func tcpviewerRootViewControllerDidChangeToolbarState(_ controller: TCPViewerRootViewController)
     func tcpviewerRootViewController(_ controller: TCPViewerRootViewController, didRequestHelperOnboarding snapshot: TCPViewerNetworkHelperToolSnapshot)
     func tcpviewerRootViewControllerDidRequestPaywall(_ controller: TCPViewerRootViewController)
@@ -712,6 +713,7 @@ final class TCPViewerRootViewController: NSViewController {
             self.pendingFollowStreamReveal = nil
             return
         }
+        guard !snapshot.isPacketTableFiltering else { return }
         let inspectionState = snapshot.base.inspectionState
         guard inspectionState.selectedPacketID == pendingFollowStreamReveal.target.packetID else {
             self.pendingFollowStreamReveal = nil
@@ -724,6 +726,7 @@ final class TCPViewerRootViewController: NSViewController {
             return
         }
 
+        workspaceViewController.scrollPacketToVisible(pendingFollowStreamReveal.target.packetID)
         inspectorViewController.revealFollowStreamPayload(pendingFollowStreamReveal.target)
         self.pendingFollowStreamReveal = nil
     }
@@ -1694,6 +1697,14 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
 }
 
 private extension TCPViewerRootViewController {
+    // Standalone panes are already active; tabbed panes ask their owner to reattach them.
+    func activateForNavigation() -> Bool {
+        guard !isClosed else { return false }
+        if !viewModel.isActive { workspaceViewController.cancelNavigationRestoration() }
+        delegate?.tcpviewerRootViewControllerDidRequestActivation(self)
+        return viewModel.isActive
+    }
+
     // Keep one statistics window per document and resolve packet IDs against its latest capture snapshot.
     func makeEndpointStatisticsWindowController() -> EndpointStatisticsWindowController {
         let controller = EndpointStatisticsWindowController(
@@ -1702,7 +1713,7 @@ private extension TCPViewerRootViewController {
                 self?.viewModel.packetSummariesForEndpointStatistics(packetIDs) ?? []
             },
             showRelatedPackets: { [weak self] rowID in
-                guard let self else {
+                guard let self, self.activateForNavigation() else {
                     return
                 }
                 let selection = self.viewModel.showRelatedPackets(forEndpoint: rowID)
@@ -1752,7 +1763,8 @@ private extension TCPViewerRootViewController {
         }
         controller.revealPacket = { [weak self] target in
             guard let self,
-                  self.viewModel.canRevealFollowStreamPacket(target.packetID, from: captureIdentity) else {
+                  self.viewModel.canRevealFollowStreamPacket(target.packetID, from: captureIdentity),
+                  self.activateForNavigation() else {
                 return
             }
             self.pendingFollowStreamReveal = PendingFollowStreamReveal(

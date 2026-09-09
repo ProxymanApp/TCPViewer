@@ -274,6 +274,7 @@ final class PacketTableViewController: NSViewController {
     private var suspendedSelection: [PacketSummary.ID]?
     private var suspendedSelectionLineage: UInt64?
     private var isPresentationSuspended = false
+    private var isRestoringSuspendedPresentation = false
     private let maximumConcurrentCustomColumnInspections = 8
 
     // Wraps Optional<ID> so we can distinguish "no pending intent" from a
@@ -330,8 +331,10 @@ final class PacketTableViewController: NSViewController {
         suspendedSelectionLineage = renderedPacketLineageRevision
     }
 
+    // Emptying a hidden table must not turn AppKit's selection changes into user input.
     func releasePresentation(snapshot: NetworkInspectorSnapshot) {
         isPresentationSuspended = true
+        isRestoringSuspendedPresentation = true
         customColumnService.clearValues()
         resetCustomColumnResolutionQueue()
         _ = viewModel.render(snapshot: snapshot)
@@ -342,9 +345,19 @@ final class PacketTableViewController: NSViewController {
         }
     }
 
+    // Explicit navigation replaces the saved viewport, even if rows are still rebuilding.
+    func cancelNavigationRestoration() {
+        suspendedScrollPosition = nil
+        suspendedSelection = nil
+        suspendedSelectionLineage = nil
+    }
+
+    // Restore saved navigation only after the active pane has rows again.
     func restoreScrollPosition() {
         isPresentationSuspended = false
-        guard isViewLoaded, !rows.isEmpty, let position = suspendedScrollPosition else { return }
+        guard isViewLoaded, !rows.isEmpty else { return }
+        isRestoringSuspendedPresentation = false
+        guard let position = suspendedScrollPosition else { return }
         if suspendedSelectionLineage == renderedPacketLineageRevision, let suspendedSelection {
             let indexes = IndexSet(suspendedSelection.compactMap { viewModel.rowIndex(for: $0) })
             suppressSelectionCallbacks { tableView.selectRowIndexes(indexes, byExtendingSelection: false) }
@@ -715,7 +728,9 @@ final class PacketTableViewController: NSViewController {
         // `selectRowIndexes` here would coalesce away the pending notification.
         // The user's intent would be silently dropped. Fire the delegate now
         // so the snapshot catches up to the visual instead.
-        if visualID != viewModel.selectedPacketID,
+        // Empty rows during tab restoration are not a user deselection.
+        if !isRestoringSuspendedPresentation,
+           visualID != viewModel.selectedPacketID,
            visualID != lastAppliedSelectedPacketID {
             pendingUserSelection = PendingUserSelection(id: visualID)
             lastAppliedSelectedPacketID = visualID

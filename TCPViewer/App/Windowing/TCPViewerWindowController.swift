@@ -65,6 +65,8 @@ final class TCPViewerWindowController: NSWindowController {
         // for this name, it overrides the default size/center set above.
         window.setFrameAutosaveName(Self.frameAutosaveName)
 
+        // File-only windows still need capture interfaces for CLI and MCP commands.
+        liveWorkspace.controller.performInitialLoadIfNeeded()
         if let initialURL {
             importCaptureURLs([initialURL], automaticNewTab: true)
         }
@@ -407,6 +409,12 @@ final class TCPViewerWindowController: NSWindowController {
 }
 
 extension TCPViewerWindowController: TCPViewerRootViewControllerDelegate {
+    // Auxiliary windows must reattach their original pane before changing its selection.
+    func tcpviewerRootViewControllerDidRequestActivation(_ controller: TCPViewerRootViewController) {
+        guard let tab = tabs.first(where: { $0.pane === controller }) else { return }
+        selectTab(tab.id)
+    }
+
     func tcpviewerRootViewControllerDidChangeToolbarState(_ controller: TCPViewerRootViewController) {
         guard controller === selectedTab?.pane else { return }
         renderToolbar()

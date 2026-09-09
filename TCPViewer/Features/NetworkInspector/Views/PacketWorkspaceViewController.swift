@@ -160,6 +160,7 @@ final class PacketWorkspaceViewController: NSViewController {
 
     func rememberScrollPosition() { tableController.rememberScrollPosition() }
     func restoreScrollPosition() { tableController.restoreScrollPosition() }
+    func cancelNavigationRestoration() { tableController.cancelNavigationRestoration() }
     func releasePresentation(snapshot: NetworkInspectorSnapshot) { tableController.releasePresentation(snapshot: snapshot) }
 
     // Render the packet workspace and swap between the table and empty state as needed.

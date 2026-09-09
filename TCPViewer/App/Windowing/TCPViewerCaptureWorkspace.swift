@@ -74,6 +74,10 @@ final class TCPViewerCaptureWorkspace: TCPViewerWorkspaceControllerDelegate {
 
     // Ingest and metrics run once per source, even when no live pane is selected.
     func tcpViewerWorkspaceControllerDidChange(_ controller: TCPViewerWorkspaceController) {
+        // With no pane consuming deltas, rebuild the sidebar once when a pane returns.
+        if subscriptions.allSatisfy({ $0.delegate == nil }) {
+            sourceListService.reset()
+        }
         let base = controller.snapshot
         let interface = base.sessionState.phase == .running && base.packetIngestState.source == .live
             ? base.sessionState.selectedInterface : nil

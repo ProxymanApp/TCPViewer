@@ -16,6 +16,131 @@ import PcapPlusPlusCore
 @MainActor
 struct WindowControllerTests {
 
+    // A suspended source can receive appends followed by summary updates before its next sidebar render.
+    @Test(arguments: [false, true])
+    func hiddenLivePaneKeepsSidebarPacketsAfterSummaryUpdate(opensNewPane: Bool) async {
+        let first = makePacket(packetNumber: 1, source: .live, transportHint: .tcp)
+        let second = makePacket(packetNumber: 2, source: .live, transportHint: .udp)
+        let live = FakeLiveSession()
+        let core = FakeTCPViewerCore(interfaceInventories: [[makeInterface(id: "en0", displayName: "Test")]], liveSession: live)
+        let source = TCPViewerCaptureWorkspace(services: .init(core: core))
+        let defaults = UserDefaults(suiteName: "tabs-sidebar-\(UUID())")!
+        let pane = NetworkInspectorViewModel(services: source.controller.services, captureWorkspace: source, userDefaults: defaults)
+        defer { pane.close(); source.close() }
+        await pane.performInitialLoadIfNeeded()
+        await source.controller.startLiveCapture()
+        live.send(.packetBatch([first], disposition: .append))
+        await waitUntil { pane.snapshot.totalPacketCount == 1 }
+        #expect(pane.snapshot.sourceListSnapshot.item(for: .domain(.ipAddresses))?.count == 1)
+
+        pane.deactivate()
+        live.send(.packetBatch([second], disposition: .append))
+        await waitUntil { source.controller.snapshot.packetIngestState.totalPacketCount == 2 }
+        live.send(.packetSummaryUpdates([PacketSummaryUpdate(packetID: first.id, protocolSummary: "HTTP", infoSummary: "Updated")]))
+        await waitUntil { source.controller.snapshot.packetIngestState.packet(withID: first.id)?.infoSummary == "Updated" }
+        #expect(pane.snapshot.packetRows.isEmpty)
+        #expect(!pane.hasPendingCoalescedRebuildForTesting)
+
+        let activePane = opensNewPane
+            ? NetworkInspectorViewModel(services: source.controller.services, captureWorkspace: source, userDefaults: defaults)
+            : pane
+        defer { activePane.close() }
+        activePane.activate()
+        #expect(activePane.snapshot.totalPacketCount == 2)
+        #expect(activePane.snapshot.sourceListSnapshot.item(for: .domain(.ipAddresses))?.count == 2)
+        #expect(core.liveSessionRequests.count == 1)
+    }
+
+    // Opening a capture at launch must expose interfaces without constructing a live pane or session.
+    @Test func offlineOnlyWindowDiscoversInterfacesOnceWithoutCreatingLivePane() async {
+        let core = FakeTCPViewerCore(interfaceInventories: [[makeInterface(id: "en0", displayName: "Test")]], documentFactory: { url in
+            FakeOfflineDocument(url: url, metadata: .init(format: .pcapng), openPlan: .completed([]))
+        })
+        let defaults = UserDefaults(suiteName: "tabs-interfaces-\(UUID())")!
+        let owner = TCPViewerWindowController(services: .init(core: core), configuration: AppConfiguration(defaults: defaults),
+                                               startsWithLiveTab: false)
+        defer { owner.window?.close() }
+        #expect(owner.tabs.isEmpty)
+        let result = await withCheckedContinuation { continuation in
+            owner.importCaptureURLs([URL(fileURLWithPath: "/tmp/tab-cold-import.pcapng")], automaticNewTab: true) {
+                continuation.resume(returning: $0)
+            }
+        }
+        #expect(result.error == nil)
+        let source = TCPViewerWorkspaceAutomationSource(windowController: owner)
+        await waitUntil { source.mcpWorkspaceSnapshot().interfaces.map(\.id) == ["en0"] }
+        #expect(source.mcpWorkspaceSnapshot().interfaces.map(\.id) == ["en0"])
+        #expect(owner.tabs.count == 1)
+        #expect(owner.selectedTab?.isOffline == true)
+        #expect(core.liveSessionRequests.isEmpty)
+        #expect(core.interfaceCallCount == 1)
+
+        owner.newWorkspaceTab(nil)
+        await settleEventLoop()
+        #expect(core.interfaceCallCount == 1)
+        #expect(core.liveSessionRequests.isEmpty)
+    }
+
+    // Transcript navigation must select the stream's original tab before updating its table and inspector.
+    @Test(arguments: [2, 5_001])
+    func followStreamRevealReactivatesOriginalTab(packetCount: Int) async throws {
+        let packets = (1...packetCount).map {
+            makePacket(packetNumber: UInt64($0), source: .offline, transportHint: .tcp,
+                       followStreamID: .init(streamProtocol: .tcp, streamID: 42))
+        }
+        let packet = try #require(packets.last)
+        let core = FakeTCPViewerCore(interfaceInventories: [[]], documentFactory: { url in
+            FakeOfflineDocument(url: url, metadata: .init(format: .pcapng), openPlan: .completed(packets))
+        })
+        let configuration = AppConfiguration(defaults: UserDefaults(suiteName: "tabs-reveal-\(UUID())")!)
+        let owner = TCPViewerWindowController(services: .init(core: core), configuration: configuration)
+        defer { owner.window?.close() }
+        _ = await withCheckedContinuation { continuation in
+            owner.importCaptureURLs([URL(fileURLWithPath: "/tmp/tab-reveal.pcapng")], automaticNewTab: true) {
+                continuation.resume(returning: $0)
+            }
+        }
+        let originalID = try #require(owner.selectedTabID)
+        let original = owner.rootViewController
+        original.viewModel.updateDisplayFilterText("protocol:tcp")
+        await waitUntil { !original.viewModel.snapshot.isPacketTableFiltering }
+        original.viewModel.selectPacket(packets[0].id)
+        original.followSelectedStream()
+        let follow = try #require(NSApp.windows.compactMap { $0.windowController as? FollowStreamWindowController }.first)
+        owner.newWorkspaceTab(nil)
+        let otherID = try #require(owner.selectedTabID)
+        // Ordinary tab switching still restores the previous selection before an explicit reveal overrides it.
+        owner.selectTab(originalID)
+        await waitUntil { !original.viewModel.snapshot.isPacketTableFiltering }
+        #expect(original.selectedFollowRow?.id == packets[0].id)
+        owner.selectTab(otherID)
+        #expect(original.view.window == nil)
+        #expect(!original.viewModel.isActive)
+
+        follow.revealPacket?(FollowStreamRevealTarget(packetID: packet.id, payload: Data()))
+        #expect(owner.selectedTabID == originalID)
+        #expect(original.viewModel.isActive)
+        #expect(original.view.window === owner.window)
+        await waitUntil {
+            !original.viewModel.snapshot.isPacketTableFiltering &&
+                original.viewModel.snapshot.base.inspectionState.inspection?.packetID == packet.id
+        }
+        #expect(original.viewModel.snapshot.base.inspectionState.inspection?.packetID == packet.id)
+        #expect(original.viewModel.snapshot.isInspectorVisible)
+        #expect(original.selectedFollowRow?.id == packet.id)
+
+        // Check the viewport after a deferred filter rebuild, not only the model's selected ID.
+        func packetTable(in view: NSView) -> NSTableView? {
+            if let table = view as? NSTableView { return table }
+            for child in view.subviews {
+                if let table = packetTable(in: child) { return table }
+            }
+            return nil
+        }
+        let table = try #require(packetTable(in: original.view))
+        #expect(NSIntersectsRect(table.rect(ofRow: packetCount - 1), table.visibleRect))
+    }
+
     @Test func workspaceTabLazilyCreatesAndReleasesItsPaneAcrossFiftyCycles() async {
         let core = FakeTCPViewerCore(interfaceInventories: [[]])
         let source = TCPViewerCaptureWorkspace(services: .init(core: core))
@@ -2140,7 +2265,8 @@ struct WindowControllerTests {
         packetNumber: UInt64,
         source: CaptureSource,
         transportHint: TransportProtocolHint,
-        layers: [PacketLayer]? = nil
+        layers: [PacketLayer]? = nil,
+        followStreamID: FollowStreamID? = nil
     ) -> PacketSummary {
         PacketSummary(
             packetNumber: packetNumber,
@@ -2155,6 +2281,7 @@ struct WindowControllerTests {
             originalLength: 128,
             capturedLength: 128,
             streamID: 42,
+            followStreamID: followStreamID,
             infoSummary: "Packet \(packetNumber)",
             layers: layers ?? [PacketLayer(name: "Ethernet"), PacketLayer(name: source == .live ? "IPv4" : "TCP")],
             decodeStatus: PacketDecodeStatus(kind: .complete),
@@ -2457,7 +2584,7 @@ private final class FakeTCPViewerCore: TCPViewerCoreProviding, @unchecked Sendab
     private let liveSession: FakeLiveSession
     private let documentFactory: (URL) -> FakeOfflineDocument
     private let captureFilterValidator: (String) -> CaptureFilterValidation
-    private var interfaceCallCount = 0
+    private(set) var interfaceCallCount = 0
 
     private(set) var liveSessionRequests: [(interfaceID: String, options: CaptureOptions)] = []
     private(set) var openedDocumentURLs: [URL] = []
