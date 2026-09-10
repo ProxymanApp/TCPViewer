@@ -331,6 +331,17 @@
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <menu key="submenu" title="View" id="HyV-fh-RgO">
                                     <items>
+                                        <menuItem title="Back" keyEquivalent="[" id="Tab-History-Back">
+                                            <connections>
+                                                <action selector="navigateBackInTabHistory:" target="Ady-hI-5gd" id="Tab-History-Back-Action"/>
+                                            </connections>
+                                        </menuItem>
+                                        <menuItem title="Forward" keyEquivalent="]" id="Tab-History-Forward">
+                                            <connections>
+                                                <action selector="navigateForwardInTabHistory:" target="Ady-hI-5gd" id="Tab-History-Forward-Action"/>
+                                            </connections>
+                                        </menuItem>
+                                        <menuItem isSeparatorItem="YES" id="Tab-History-Separator"/>
                                         <menuItem title="Show Toolbar" keyEquivalent="t" id="snW-S8-Cw5">
                                             <modifierMask key="keyEquivalentModifierMask" option="YES" command="YES"/>
                                             <connections>

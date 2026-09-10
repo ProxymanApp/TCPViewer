@@ -592,6 +592,45 @@ struct WindowControllerTests {
         #expect(owner.workspaceViewController.tabBarHeightForTesting == 0)
     }
 
+    @Test func tabHistoryMenuItemsNavigateAndFollowHistoryAvailability() throws {
+        let defaults = UserDefaults(suiteName: "tabs-history-menu-\(UUID())")!
+        let owner = TCPViewerWindowController(
+            services: .init(core: FakeTCPViewerCore(interfaceInventories: [[]])),
+            configuration: AppConfiguration(defaults: defaults)
+        )
+        defer { owner.window?.close() }
+        let firstID = try #require(owner.selectedTabID)
+        let back = NSMenuItem(
+            title: "Back",
+            action: #selector(TCPViewerWindowController.navigateBackInTabHistory(_:)),
+            keyEquivalent: "["
+        )
+        let forward = NSMenuItem(
+            title: "Forward",
+            action: #selector(TCPViewerWindowController.navigateForwardInTabHistory(_:)),
+            keyEquivalent: "]"
+        )
+
+        #expect(!owner.validateMenuItem(back))
+        #expect(!owner.validateMenuItem(forward))
+        owner.newWorkspaceTab(nil)
+        let secondID = try #require(owner.selectedTabID)
+        #expect(owner.validateMenuItem(back))
+        #expect(!owner.validateMenuItem(forward))
+
+        owner.navigateBackInTabHistory(back)
+
+        #expect(owner.selectedTabID == firstID)
+        #expect(!owner.validateMenuItem(back))
+        #expect(owner.validateMenuItem(forward))
+
+        owner.navigateForwardInTabHistory(forward)
+
+        #expect(owner.selectedTabID == secondID)
+        #expect(owner.validateMenuItem(back))
+        #expect(!owner.validateMenuItem(forward))
+    }
+
     @Test func closingWindowCancelsQueuedImportsExactlyOnceWithoutCreatingPanes() async {
         let gate = AsyncGate()
         let document = FakeOfflineDocument(url: URL(fileURLWithPath: "/tmp/tab-queued.pcapng"), metadata: .init(format: .pcapng),

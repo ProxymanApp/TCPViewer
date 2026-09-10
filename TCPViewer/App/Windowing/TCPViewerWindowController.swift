@@ -201,6 +201,14 @@ final class TCPViewerWindowController: NSWindowController {
         if let id { selectTab(id, recordsHistory: false) }
     }
 
+    @IBAction func navigateBackInTabHistory(_ sender: Any?) {
+        navigateHistory(forward: false)
+    }
+
+    @IBAction func navigateForwardInTabHistory(_ sender: Any?) {
+        navigateHistory(forward: true)
+    }
+
     private func selectAdjacentTab(_ offset: Int) {
         guard let index = tabs.firstIndex(where: { $0.id == selectedTabID }), tabs.count > 1 else { return }
         selectTab(tabs[(index + offset + tabs.count) % tabs.count].id)
@@ -213,8 +221,8 @@ final class TCPViewerWindowController: NSWindowController {
         if flags == [.command] {
             if event.keyCode == kVK_ANSI_T { newWorkspaceTab(nil); return true }
             if event.keyCode == kVK_ANSI_W { closeSelectedTab(nil); return true }
-            if event.keyCode == kVK_ANSI_LeftBracket { navigateHistory(forward: false); return true }
-            if event.keyCode == kVK_ANSI_RightBracket { navigateHistory(forward: true); return true }
+            if event.keyCode == kVK_ANSI_LeftBracket { navigateBackInTabHistory(nil); return true }
+            if event.keyCode == kVK_ANSI_RightBracket { navigateForwardInTabHistory(nil); return true }
         }
         if event.keyCode == kVK_Tab && (flags == [.control] || flags == [.control, .shift]) {
             selectAdjacentTab(flags.contains(.shift) ? -1 : 1); return true
@@ -522,6 +530,12 @@ extension TCPViewerWindowController: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(newWorkspaceTab(_:)) { return !isClosingWorkspace }
         guard selectedTab?.pane != nil, !isClosingWorkspace else { return false }
+        if menuItem.action == #selector(navigateBackInTabHistory(_:)) {
+            return window?.attachedSheet == nil && history.canGoBack(validIDs: Set(tabs.map(\.id)))
+        }
+        if menuItem.action == #selector(navigateForwardInTabHistory(_:)) {
+            return window?.attachedSheet == nil && history.canGoForward(validIDs: Set(tabs.map(\.id)))
+        }
         if [#selector(exportSessionAsPcap(_:)), #selector(exportSessionAsPcapng(_:)), #selector(exportSessionToFile(_:))].contains(menuItem.action) {
             return rootViewController.viewModel.snapshot.totalPacketCount > 0 && !rootViewController.viewModel.snapshot.base.loadState.canCancel
         }
