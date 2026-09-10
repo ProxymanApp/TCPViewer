@@ -4,4 +4,7 @@ TCPVIEWER_USES_LOCAL_LICENSE_SERVER = false
 // Load local-only app build values from an ignored Xcode config file.
 #include? "TCPViewer.local.xcconfig"
 
+// Both beta and production use Release, which must always use the remote license server.
+TCPVIEWER_USES_LOCAL_LICENSE_SERVER[config=Release] = false
+
 DEVELOPMENT_TEAM = $(TCPVIEWER_DEVELOPMENT_TEAM)
