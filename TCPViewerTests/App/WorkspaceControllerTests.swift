@@ -543,6 +543,7 @@ struct WindowControllerTests {
         let appKey = try #require(PacketSourceListClassifier.clientIdentity(for: packet)?.key)
         let ipKey = PacketSourceIPAddressKey(rawValue: "10.0.0.2")
         let live = FakeLiveSession()
+        live.inspections[packet.id] = makeInspection(for: packet)
         let core = FakeTCPViewerCore(
             interfaceInventories: [[makeInterface(id: "en0", displayName: "Test")]],
             liveSession: live
