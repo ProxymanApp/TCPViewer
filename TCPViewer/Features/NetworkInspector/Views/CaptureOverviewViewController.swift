@@ -156,6 +156,18 @@ final class CaptureOverviewViewController: NSViewController {
         renderDashboard()
     }
 
+    // Hidden panes keep no packet snapshot or aggregation pipeline alive.
+    func suspend() {
+        service?.snapshotHandler = nil
+        service?.cancel()
+        service = nil
+        latestNetworkSnapshot = nil
+        renderedNetworkFingerprint = nil
+        overviewSnapshot = .empty
+        renderedDashboardModel = nil
+        iconCache.removeAll()
+    }
+
     private func makeDashboardView(model: CaptureOverviewDashboardModel) -> CaptureOverviewDashboardView {
         CaptureOverviewDashboardView(
             model: model,

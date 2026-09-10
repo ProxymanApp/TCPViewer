@@ -603,6 +603,8 @@ final class PacketSourceListService {
     private var cachedSnapshot = PacketSourceListSnapshot.empty
     private var appBuckets: [PacketSourceClientKey: PacketSourceListTreeBuilder.AppBucket] = [:]
     private var appOrder: [PacketSourceClientKey] = []
+    private var retainedEmptyAppIdentities: [PacketSourceClientKey: PacketSourceClientIdentity] = [:]
+    private var retainedEmptyAppOrder: [PacketSourceClientKey] = []
     private var domainBuckets: [PacketSourceDomainKey: PacketSourceListTreeBuilder.DomainBucket] = [:]
     private var domainOrder: [PacketSourceDomainKey] = []
     private var ipAddressBuckets: [PacketSourceIPAddressKey: PacketSourceListTreeBuilder.IPAddressBucket] = [:]
@@ -622,6 +624,8 @@ final class PacketSourceListService {
         cachedSnapshot = .empty
         appBuckets.removeAll(keepingCapacity: false)
         appOrder.removeAll(keepingCapacity: false)
+        retainedEmptyAppIdentities.removeAll(keepingCapacity: false)
+        retainedEmptyAppOrder.removeAll(keepingCapacity: false)
         domainBuckets.removeAll(keepingCapacity: false)
         domainOrder.removeAll(keepingCapacity: false)
         ipAddressBuckets.removeAll(keepingCapacity: false)
@@ -633,6 +637,34 @@ final class PacketSourceListService {
         pinnedItems = []
         pinnedPacketCountsByID.removeAll(keepingCapacity: false)
         savedPacketCount = 0
+    }
+
+    // Keep a cleared app visible so its tab can remain scoped to new packets from the same app.
+    func retainEmptyApp(_ item: PacketSourceListItem?) {
+        guard let item, case .app(let key) = item.selection else {
+            return
+        }
+        retainedEmptyAppIdentities[key] = PacketSourceClientIdentity(
+            key: key,
+            displayName: item.title,
+            iconFilePath: item.iconFilePath
+        )
+        if !retainedEmptyAppOrder.contains(key) {
+            retainedEmptyAppOrder.append(key)
+        }
+    }
+
+    @discardableResult
+    func removeRetainedEmptyApp(for selection: PacketSourceListSelection) -> Bool {
+        guard case .app(let key) = selection else {
+            return false
+        }
+        guard retainedEmptyAppIdentities.removeValue(forKey: key) != nil else {
+            return false
+        }
+        retainedEmptyAppOrder.removeAll { $0 == key }
+        packetRevision = nil
+        return true
     }
 
     #if DEBUG
@@ -689,8 +721,10 @@ final class PacketSourceListService {
     }
 
     private func rebuildSnapshot(from ingestState: PacketIngestState) -> PacketSourceListSnapshot {
-        appBuckets = [:]
-        appOrder = []
+        appOrder = retainedEmptyAppOrder.filter { retainedEmptyAppIdentities[$0] != nil }
+        appBuckets = Dictionary(uniqueKeysWithValues: appOrder.compactMap { key in
+            retainedEmptyAppIdentities[key].map { (key, PacketSourceListTreeBuilder.AppBucket(identity: $0)) }
+        })
         domainBuckets = [:]
         domainOrder = []
         ipAddressBuckets = [:]

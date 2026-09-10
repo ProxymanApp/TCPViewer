@@ -45,6 +45,29 @@ struct PacketSourceListServiceTests {
         #expect(snapshot.item(for: .domains)?.children.map(\.title) == ["api.example.com", "openai.com"])
     }
 
+    @Test func retainedAppStaysVisibleAfterItsPacketsAreCleared() throws {
+        let service = PacketSourceListService()
+        let sparkle = makeClient(displayName: "Sparkle", bundleIdentifier: "org.sparkle-project.Sparkle")
+        let browser = makeClient(displayName: "Browser", bundleIdentifier: "com.example.browser")
+        let sparklePackets = (1...5).map { makePacket(packetNumber: UInt64($0), client: sparkle) }
+        let browserPacket = makePacket(packetNumber: 6, client: browser)
+        var state = PacketIngestState.empty
+        state.append(sparklePackets + [browserPacket], source: .live)
+
+        let sparkleKey = PacketSourceClientKey(rawValue: "bundleIdentifier:org.sparkle-project.Sparkle")
+        let item = try #require(service.snapshot(for: state).item(for: .app(sparkleKey)))
+        service.retainEmptyApp(item)
+        state.delete(packetIDs: Set(sparklePackets.map(\.id)))
+        let snapshot = service.snapshot(for: state)
+
+        #expect(snapshot.item(for: .app(sparkleKey))?.count == 0)
+        #expect(snapshot.item(for: .app(sparkleKey))?.children.isEmpty == true)
+        #expect(snapshot.item(for: .app(PacketSourceClientKey(rawValue: "bundleIdentifier:com.example.browser")))?.count == 1)
+
+        #expect(service.removeRetainedEmptyApp(for: .app(sparkleKey)))
+        #expect(service.snapshot(for: state).item(for: .app(sparkleKey)) == nil)
+    }
+
     @Test func duplicateClientsAndDomainsMergeAndCountPackets() {
         let client = makeClient(displayName: "Chrome", bundleIdentifier: "com.google.Chrome")
         var state = PacketIngestState.empty

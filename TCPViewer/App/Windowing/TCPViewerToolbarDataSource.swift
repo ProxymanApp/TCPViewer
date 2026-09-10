@@ -514,11 +514,11 @@ private final class TCPViewerToolbarViewModel {
         lastUsedInterfaceIDs = snapshot.base.sessionState.lastUsedInterfaceIDs
         activeInterfaceID = snapshot.base.sessionState.activeInterfaceID
         selectedInterfaceTitle = viewModel.selectedInterfaceTitle()
-        isCaptureLocked = snapshot.isCaptureLocked
+        isCaptureLocked = viewModel.isOffline || snapshot.isCaptureLocked
         captureButtonTitle = viewModel.captureButtonTitle()
         captureButtonImageName = viewModel.captureButtonSystemImage()
         captureButtonTint = snapshot.base.sessionState.canStop ? .systemRed : .systemGreen
-        canUseCaptureButton = snapshot.base.sessionState.canStart || snapshot.base.sessionState.canStop
+        canUseCaptureButton = !viewModel.isOffline && (snapshot.base.sessionState.canStart || snapshot.base.sessionState.canStop)
         canClearAllPackets = snapshot.totalPacketCount > 0 && !snapshot.base.loadState.canCancel
         canSave = snapshot.base.documentState.canSave
         canSaveAs = snapshot.base.documentState.canSaveAs
@@ -527,16 +527,16 @@ private final class TCPViewerToolbarViewModel {
         canUseInspector = snapshot.workspaceMode != .overview
         inspectorPlacement = snapshot.inspectorPlacement
         bpfCaptureFilter = snapshot.base.filterState.normalizedCaptureFilter
-        helperError = Self.helperError(for: viewModel.networkHelperToolSnapshot)
+        helperError = viewModel.isOffline ? nil : Self.helperError(for: viewModel.networkHelperToolSnapshot)
         isShowingHelperError = helperError != nil
         if let helperError {
             statusText = helperError.title
             emphasizedText = nil
             statusTint = .systemRed
         } else {
-            statusText = Self.statusText(for: snapshot)
+            statusText = viewModel.isOffline ? "Offline Capture" : Self.statusText(for: snapshot)
             emphasizedText = Self.emphasizedText(for: snapshot)
-            statusTint = Self.tint(for: snapshot)
+            statusTint = viewModel.isOffline ? .systemOrange : Self.tint(for: snapshot)
         }
         showsTrialButton = !isLicenseAuthorized
         helpText = [

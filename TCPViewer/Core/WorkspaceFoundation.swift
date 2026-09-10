@@ -934,6 +934,7 @@ enum TCPViewerCaptureFileImportPolicy {
 struct TCPViewerCaptureImportResult {
     let importedURLs: [URL]
     let error: Error?
+    var packetCount: Int? = nil
 }
 
 private extension PacketInspection {
@@ -1141,6 +1142,8 @@ final class TCPViewerWorkspaceController {
     private var liveEventGeneration = 0
     private var document: (any OfflineCaptureDocumentProviding)?
     private var pendingSessionImportDocument: (any OfflineCaptureDocumentProviding)?
+    private var captureImportGeneration = 0
+    private var pendingCaptureImportDocument: (any OfflineCaptureDocumentProviding)?
     private var importedDocumentsByFileID: [ImportedCaptureFileID: any OfflineCaptureDocumentProviding] = [:]
     private(set) var currentDocumentSessionState: TCPViewSessionState?
     private(set) var currentDocumentSessionImportReport: TCPViewSessionImportReport?
@@ -1150,6 +1153,10 @@ final class TCPViewerWorkspaceController {
     private var pendingSessionImportCompletion: (() -> Void)?
     private var inspectionGeneration = 0
     private var filterValidationGeneration = 0
+    private var nextDisplayFilterGeneration: UInt64 = 0
+    private var pendingDisplayFilterRequests: [() -> Void] = []
+    private var isEvaluatingDisplayFilter = false
+
     private var snapshotUpdateDepth = 0
     private var snapshotNeedsNotification = false
 
@@ -1420,6 +1427,47 @@ final class TCPViewerWorkspaceController {
         packetIDs: [PacketSummary.ID],
         cancellationToken: DisplayFilterEvaluationCancellationToken,
         progress: ((DisplayFilterMatchBatch) -> Void)? = nil,
+        completion: @escaping TCPViewerCompletion<DisplayFilterMatchBatch>
+    ) {
+        nextDisplayFilterGeneration &+= 1
+        let nativeGeneration = nextDisplayFilterGeneration
+        pendingDisplayFilterRequests.append { [weak self] in
+            guard let self else {
+                completion(.failure(TCPViewerCoreError(code: .operationCancelled, message: "Capture closed.")))
+                return
+            }
+            self.performDisplayFilterEvaluation(expression, generation: nativeGeneration, packetIDs: packetIDs,
+                                                cancellationToken: cancellationToken,
+                                                progress: { batch in
+                progress?(DisplayFilterMatchBatch(generation: generation, evaluatedPacketIDs: batch.evaluatedPacketIDs,
+                                                 matchingPacketIDs: batch.matchingPacketIDs))
+            }) { [weak self] result in
+                DispatchQueue.main.async {
+                    completion(result.map { batch in
+                        DisplayFilterMatchBatch(generation: generation, evaluatedPacketIDs: batch.evaluatedPacketIDs,
+                                                matchingPacketIDs: batch.matchingPacketIDs)
+                    })
+                    self?.isEvaluatingDisplayFilter = false
+                    self?.startNextDisplayFilterRequest()
+                }
+            }
+        }
+        startNextDisplayFilterRequest()
+    }
+
+    // Serialize complete activation/evaluation operations, not just individual native calls.
+    private func startNextDisplayFilterRequest() {
+        guard !isEvaluatingDisplayFilter, !pendingDisplayFilterRequests.isEmpty else { return }
+        isEvaluatingDisplayFilter = true
+        pendingDisplayFilterRequests.removeFirst()()
+    }
+
+    private func performDisplayFilterEvaluation(
+        _ expression: String,
+        generation: UInt64,
+        packetIDs: [PacketSummary.ID],
+        cancellationToken: DisplayFilterEvaluationCancellationToken,
+        progress: ((DisplayFilterMatchBatch) -> Void)?,
         completion: @escaping TCPViewerCompletion<DisplayFilterMatchBatch>
     ) {
         guard !cancellationToken.isCancelled() else {
@@ -2013,6 +2061,8 @@ final class TCPViewerWorkspaceController {
         }
 
         lastSessionImportSucceeded = false
+        captureImportGeneration += 1
+        let generation = captureImportGeneration
         stopLiveCaptureIfNeeded { [weak self] stopResult in
             DispatchQueue.main.async {
                 guard let self else {
@@ -2026,6 +2076,10 @@ final class TCPViewerWorkspaceController {
                     return
                 }
 
+                guard self.captureImportGeneration == generation else {
+                    completion(.init(importedURLs: [], error: TCPViewerCoreError(code: .operationCancelled, message: "Capture import was cancelled.")))
+                    return
+                }
                 if case .failure(let error) = stopResult {
                     let tcpviewerError = self.tcpviewerError(from: error, defaultCode: .liveSessionControlFailed)
                     self.snapshot.sessionState.phase = .failed
@@ -2892,6 +2946,9 @@ final class TCPViewerWorkspaceController {
     }
 
     func cancelDocumentLoading(completion: (() -> Void)? = nil) {
+        captureImportGeneration += 1
+        pendingCaptureImportDocument?.cancelLoading(completion: nil)
+        pendingCaptureImportDocument = nil
         let documents = Array(importedDocumentsByFileID.values)
         guard !documents.isEmpty else {
             guard let document else {
@@ -3391,6 +3448,12 @@ final class TCPViewerWorkspaceController {
         }
     }
 
+    // Drop the final source snapshots after native handles have acknowledged shutdown.
+    func releaseWorkspaceStorage() {
+        snapshot = .foundation
+        services.packetMetadataEnricher.reset()
+    }
+
     private func applyInterfaceInventory(_ interfaces: [CaptureInterfaceSummary], previousSelectionID: String?) {
         // Prefer a valid current selection, then a proven capture interface, then the active route.
         snapshot.sessionState.interfaceInventory = interfaces
@@ -3881,6 +3944,7 @@ final class TCPViewerWorkspaceController {
             return
         }
 
+        let generation = captureImportGeneration
         let url = urls[index]
         snapshot.documentState.statusMessage = "Opening \(url.lastPathComponent)..."
         snapshot.loadState.progress = PacketLoadProgress(
@@ -3903,8 +3967,14 @@ final class TCPViewerWorkspaceController {
                     return
                 }
 
+                guard self.captureImportGeneration == generation else {
+                    if case .success(let document) = result { document.cancelLoading(completion: nil) }
+                    completion(.init(importedURLs: importedURLs, error: TCPViewerCoreError(code: .operationCancelled, message: "Capture import was cancelled.")))
+                    return
+                }
                 switch result {
                 case .success(let document):
+                    self.pendingCaptureImportDocument = document
                     document.open { [weak self] openResult in
                         DispatchQueue.main.async {
                             guard let self else {
@@ -3918,6 +3988,12 @@ final class TCPViewerWorkspaceController {
                                 return
                             }
 
+                            guard self.captureImportGeneration == generation else {
+                                document.cancelLoading(completion: nil)
+                                completion(.init(importedURLs: importedURLs, error: TCPViewerCoreError(code: .operationCancelled, message: "Capture import was cancelled.")))
+                                return
+                            }
+                            self.pendingCaptureImportDocument = nil
                             switch openResult {
                             case .success(let packets):
                                 self.appendImportedDocument(document, packets: packets)
@@ -4134,6 +4210,9 @@ final class TCPViewerWorkspaceController {
     }
 
     private func cancelControllerTasks() {
+        captureImportGeneration += 1
+        pendingCaptureImportDocument?.cancelLoading(completion: nil)
+        pendingCaptureImportDocument = nil
         let pendingImportDocument = pendingSessionImportDocument
         liveEventGeneration += 1
         documentEventGeneration += 1

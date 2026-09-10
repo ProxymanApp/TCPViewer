@@ -14,6 +14,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let networkHelperToolManager = TCPViewerNetworkHelperToolManager()
     let appConfiguration = AppConfiguration()
 
+    private(set) var mainWindowController: TCPViewerWindowController?
     private var aboutWindowController: TCPViewerAboutWindowController?
     private var settingsWindowController: NSWindowController?
     private var licenseWindowController: TCPViewerLicenseWindowController?
@@ -40,11 +41,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
+        NSWindow.allowsAutomaticWindowTabbing = false
         cliCoordinator.start()
         sentryService.start()
         appConfiguration.applyAppearance()
         observeLicenseStatusChanges()
         observeConfigurationChanges()
+        wireWorkspaceMenus()
         wireAboutMenu()
         wirePreferencesMenu()
         wireUpdatesMenu()
@@ -59,13 +62,82 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         verifyLicenseAtLaunch()
         updateMCPServerAvailability()
         networkHelperToolManager.refreshStatusForLaunch()
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.mainWindowController == nil else { return }
+            self.focusWindowController(self.openMainWindow())
+        }
         #if DEBUG
         openUntitledDocumentAfterIgnoringDebugLaunchFilesIfNeeded()
         #endif
     }
 
+    func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool { false }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        focusWindowController(openMainWindow())
+        return false
+    }
+
+    // The app owns one window and its live source; file tabs never create another app runtime.
+    @discardableResult
+    func openMainWindow(startsWithLiveTab: Bool = true) -> TCPViewerWindowController {
+        if let mainWindowController { return mainWindowController }
+        let services = TCPViewerServiceRegistry(core: NativeTCPViewerCore(), networkHelperTool: networkHelperToolManager)
+        let controller = TCPViewerWindowController(services: services, configuration: appConfiguration,
+                                                   startsWithLiveTab: startsWithLiveTab)
+        mainWindowController = controller
+        controller.closeHandler = { [weak self, weak controller] in
+            if self?.mainWindowController === controller { self?.mainWindowController = nil }
+        }
+        return controller
+    }
+
+    @IBAction func newWorkspaceTab(_ sender: Any?) {
+        if let controller = mainWindowController { controller.newWorkspaceTab(sender); focusWindowController(controller) }
+        else { focusWindowController(openMainWindow()) }
+    }
+
+    // Keep recent-file routing app-owned while using AppKit's persisted recent URL list.
+    private func wireWorkspaceMenus() {
+        guard let fileMenu = NSApp.mainMenu?.items.first(where: { $0.title == "File" })?.submenu else { return }
+        if let recentMenu = fileMenu.items.first(where: { $0.title == "Open Recent" })?.submenu {
+            recentMenu.delegate = self
+            updateRecentCaptureMenu(recentMenu)
+        }
+        if let close = fileMenu.items.first(where: { $0.keyEquivalent == "w" }) {
+            close.target = self
+            close.action = #selector(closeWindowOrTab(_:))
+        }
+    }
+
+    private func updateRecentCaptureMenu(_ menu: NSMenu) {
+        menu.removeAllItems()
+        for url in NSDocumentController.shared.recentDocumentURLs {
+            let item = menu.addItem(withTitle: url.lastPathComponent, action: #selector(openRecentCapture(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = url
+        }
+        if !menu.items.isEmpty { menu.addItem(.separator()) }
+        let clear = menu.addItem(withTitle: "Clear Menu", action: #selector(clearRecentCaptures(_:)), keyEquivalent: "")
+        clear.target = self
+    }
+
+    @objc private func openRecentCapture(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        importCaptureURLs([url])
+    }
+
+    @objc private func clearRecentCaptures(_ sender: Any?) { NSDocumentController.shared.clearRecentDocuments(sender) }
+
+    @objc private func closeWindowOrTab(_ sender: Any?) {
+        let window = NSApp.keyWindow ?? NSApp.mainWindow
+        if let controller = window?.windowController as? TCPViewerWindowController { controller.closeSelectedTab(sender) }
+        else { window?.performClose(sender) }
+    }
+
     // Resolve the active capture explicitly so the menu uses its current table selection.
     func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu.title == "Open Recent" { updateRecentCaptureMenu(menu); return }
         updateFollowStreamMenu(menu, window: NSApp.mainWindow)
     }
 
@@ -142,6 +214,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         isHandlingTermination = true
         TCPViewerWorkspaceController.prepareAllForApplicationTermination { [weak self] shouldTerminate in
             self?.isHandlingTermination = false
+            if shouldTerminate { self?.mainWindowController?.window?.close() }
             sender.reply(toApplicationShouldTerminate: shouldTerminate)
         }
 
@@ -228,18 +301,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
 
-        do {
-            let windowController = try frontmostOrNewTCPViewerWindowController()
-            if focusesWindow {
-                focusWindowController(windowController)
-            }
-            windowController.rootViewController.importDocumentsWithResult(at: supportedURLs, completion: completion)
-        } catch {
-            if presentsErrors {
-                NSDocumentController.shared.presentError(error)
-            }
-            completion(TCPViewerCaptureImportResult(importedURLs: [], error: error))
-        }
+        let windowController = frontmostTCPViewerWindowController() ?? openMainWindow(startsWithLiveTab: false)
+        if focusesWindow { focusWindowController(windowController) }
+        windowController.importCaptureURLs(supportedURLs, automaticNewTab: !presentsErrors, completion: completion)
     }
 
     // CLI commands share the active workspace but never activate TCP Viewer implicitly.
@@ -265,36 +329,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Open One Session"
-        alert.informativeText = "TCPViewer sessions replace the current document and cannot be merged with other capture files."
+        alert.informativeText = "TCPViewer sessions open in offline tabs and cannot be merged with other capture files."
         alert.runModal()
     }
 
     private func frontmostOrNewTCPViewerWindowController() throws -> TCPViewerWindowController {
-        if let controller = frontmostTCPViewerWindowController() {
-            return controller
-        }
-
-        let document = try NSDocumentController.shared.openUntitledDocumentAndDisplay(true)
-        guard let controller = document.windowControllers.compactMap({ $0 as? TCPViewerWindowController }).first else {
-            throw TCPViewerCoreError(code: .offlineFileOpenFailed, message: "TCP Viewer could not create a window for imported capture files.")
-        }
+        let controller = mainWindowController ?? openMainWindow()
+        if controller.tabs.isEmpty { controller.newWorkspaceTab(nil) }
         return controller
     }
 
-    // Finds an existing TCP Viewer document window before falling back to a new one.
-    private func frontmostTCPViewerWindowController() -> TCPViewerWindowController? {
-        if let controller = NSApp.orderedWindows.compactMap({ $0.windowController as? TCPViewerWindowController }).first {
-            return controller
-        }
-
-        for document in NSDocumentController.shared.documents {
-            if let controller = document.windowControllers.compactMap({ $0 as? TCPViewerWindowController }).first {
-                return controller
-            }
-        }
-
-        return NSApp.windows.compactMap { $0.windowController as? TCPViewerWindowController }.first
-    }
+    private func frontmostTCPViewerWindowController() -> TCPViewerWindowController? { mainWindowController }
 
     // Brings the import target window forward so newly imported files are immediately visible.
     private func focusWindowController(_ controller: TCPViewerWindowController) {
@@ -322,11 +367,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 return
             }
 
-            do {
-                _ = try NSDocumentController.shared.openUntitledDocumentAndDisplay(true)
-            } catch {
-                NSDocumentController.shared.presentError(error)
-            }
+            self.focusWindowController(self.openMainWindow())
         }
     }
     #endif
@@ -470,7 +511,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func createLicenseSheetParentWindow() -> NSWindow? {
         // A sheet needs a parent, so create the default document window when none is open.
-        _ = try? NSDocumentController.shared.openUntitledDocumentAndDisplay(true)
+        focusWindowController(openMainWindow())
         return licenseSheetParentWindow()
     }
 

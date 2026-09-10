@@ -9,7 +9,9 @@ import AppKit
 import PcapPlusPlusCore
 
 protocol TCPViewerRootViewControllerDelegate: AnyObject {
+    func tcpviewerRootViewControllerDidRequestActivation(_ controller: TCPViewerRootViewController)
     func tcpviewerRootViewControllerDidChangeToolbarState(_ controller: TCPViewerRootViewController)
+    func tcpviewerRootViewController(_ controller: TCPViewerRootViewController, didRequestOpenInNewTab selection: PacketSourceListSelection)
     func tcpviewerRootViewController(_ controller: TCPViewerRootViewController, didRequestHelperOnboarding snapshot: TCPViewerNetworkHelperToolSnapshot)
     func tcpviewerRootViewControllerDidRequestPaywall(_ controller: TCPViewerRootViewController)
 }
@@ -196,10 +198,21 @@ final class TCPViewerRootViewController: NSViewController {
     private let contentSplitViewController = TCPViewerInspectorSplitViewController()
     private let mainContainerViewController = NSViewController()
     private let mainEmptyStateViewController = TCPViewerMainEmptyStateViewController()
-    private let sidebarViewController = SidebarViewController()
+    private let sidebarViewController: SidebarViewController
+    private let ownsSidebar: Bool
+    var importHandler: (([URL], @escaping (TCPViewerCaptureImportResult) -> Void) -> Void)?
+    var sidebarVisibilityHandler: ((Bool?) -> Void)?
+    private(set) var isClosed = false
     private let workspaceViewController: PacketWorkspaceViewController
     private let workspaceContainerViewController = NSViewController()
-    private let inspectorViewController: PacketInspectorViewController
+    private var loadedInspectorViewController: PacketInspectorViewController?
+    private var inspectorViewController: PacketInspectorViewController {
+        if let loadedInspectorViewController { return loadedInspectorViewController }
+        let controller = PacketInspectorViewController(configuration: configuration)
+        controller.delegate = self
+        loadedInspectorViewController = controller
+        return controller
+    }
     private let statusStripViewController = StatusStripViewController()
     private var sidebarItem: NSSplitViewItem?
     private var workspaceItem: NSSplitViewItem?
@@ -211,15 +224,22 @@ final class TCPViewerRootViewController: NSViewController {
     private var isRestoringInspectorDivider = false
     private var temporaryInspectorRestoreThickness: CGFloat?
     private var hasRenderedHelperOnboarding = false
+    private var hasRequestedInspectorFocus = false
     private var sessionImportSheetViewController: TCPViewSessionImportSheetViewController?
     private var followStreamWindowControllers: [FollowStreamWindowController] = []
     private var endpointStatisticsWindowController: EndpointStatisticsWindowController?
     private var pendingFollowStreamReveal: PendingFollowStreamReveal?
-    private lazy var overviewViewController = CaptureOverviewViewController(
-        latestIngestStateProvider: { [weak self] in
+    private var pendingSourceListReveal: PacketSourceListSelection?
+    private var loadedOverviewViewController: CaptureOverviewViewController?
+    private var overviewViewController: CaptureOverviewViewController {
+        if let loadedOverviewViewController { return loadedOverviewViewController }
+        let controller = CaptureOverviewViewController(latestIngestStateProvider: { [weak self] in
             self?.viewModel.currentPacketIngestStateForEndpointStatistics() ?? .empty
-        }
-    )
+        })
+        controller.delegate = self
+        loadedOverviewViewController = controller
+        return controller
+    }
     #if DEBUG
     private var packetSelectionCrashReproducer: TCPViewerPacketSelectionCrashReproducer?
     #endif
@@ -231,11 +251,12 @@ final class TCPViewerRootViewController: NSViewController {
         NotificationCenter.default.removeObserver(self)
     }
 
-    init(viewModel: NetworkInspectorViewModel, configuration: AppConfiguration) {
+    init(viewModel: NetworkInspectorViewModel, configuration: AppConfiguration, sharedSidebar: SidebarViewController? = nil) {
         self.viewModel = viewModel
         self.configuration = configuration
         self.workspaceViewController = PacketWorkspaceViewController(configuration: configuration)
-        self.inspectorViewController = PacketInspectorViewController(configuration: configuration)
+        self.sidebarViewController = sharedSidebar ?? SidebarViewController()
+        self.ownsSidebar = sharedSidebar == nil
         super.init(nibName: nil, bundle: nil)
         self.viewModel.delegate = self
         self.contentSplitViewController.didResizeSubviews = { [weak self] notification in
@@ -249,7 +270,7 @@ final class TCPViewerRootViewController: NSViewController {
     }
 
     override func loadView() {
-        let rootView = TCPViewerCaptureDropView()
+        let rootView = TCPViewerCaptureDropView(frame: NSRect(x: 0, y: 0, width: 1200, height: 800))
         rootView.importHandler = { [weak self] urls in
             self?.importDocuments(at: urls)
         }
@@ -289,6 +310,65 @@ final class TCPViewerRootViewController: NSViewController {
     override func viewDidAppear() {
         super.viewDidAppear()
         renderSessionImportSheet(viewModel.snapshot.base.sessionImportState)
+        presentSessionImportReportIfNeeded()
+    }
+
+    // Reattach the shared sidebar delegate only when this pane becomes visible.
+    func activate() {
+        guard !isClosed else { return }
+        sidebarViewController.delegate = self
+        viewModel.activate()
+        if isViewLoaded { render(); workspaceViewController.restoreScrollPosition() }
+    }
+
+    func deactivate() {
+        guard !isClosed else { return }
+        workspaceViewController.rememberScrollPosition()
+        viewModel.deactivate()
+        if isViewLoaded {
+            workspaceViewController.releasePresentation(snapshot: viewModel.snapshot)
+            loadedInspectorViewController?.render(snapshot: viewModel.snapshot)
+        }
+        loadedOverviewViewController?.suspend()
+        if sidebarViewController.delegate === self { sidebarViewController.delegate = nil }
+    }
+
+    // Cancel and detach the entire pane before its tab releases ownership.
+    func close() {
+        guard !isClosed else { return }
+        deactivate()
+        isClosed = true
+        #if DEBUG
+        packetSelectionCrashReproducer?.cancel()
+        #endif
+        followStreamWindowControllers.forEach { $0.close() }
+        followStreamWindowControllers.removeAll()
+        endpointStatisticsWindowController?.close()
+        endpointStatisticsWindowController = nil
+        pendingFollowStreamReveal = nil
+        pendingSourceListReveal = nil
+        if let sheet = sessionImportSheetViewController { dismiss(sheet) }
+        sessionImportSheetViewController = nil
+        viewModel.close()
+        importHandler = nil
+        sidebarVisibilityHandler = nil
+        delegate = nil
+        NotificationCenter.default.removeObserver(self)
+        Self.detachHierarchy(self)
+    }
+
+    // AppKit split items and responder links can outlive the root unless explicitly detached.
+    private static func detachHierarchy(_ controller: NSViewController) {
+        let children = controller.children
+        if let split = controller as? NSSplitViewController {
+            for item in split.splitViewItems { split.removeSplitViewItem(item) }
+        }
+        children.forEach(detachHierarchy)
+        if controller.isViewLoaded {
+            controller.view.removeFromSuperview()
+            controller.view.nextResponder = nil
+        }
+        controller.removeFromParent()
     }
 
     func openDocument(at url: URL) {
@@ -313,6 +393,7 @@ final class TCPViewerRootViewController: NSViewController {
         at urls: [URL],
         completion: @escaping (TCPViewerCaptureImportResult) -> Void
     ) {
+        if let importHandler { importHandler(urls, completion); return }
         viewModel.importDocumentsWithResult(at: urls) { [weak self] result in
             self?.sidebarViewController.revealSelectedImportedFileIfNeeded()
             self?.presentSessionImportReportIfNeeded()
@@ -433,6 +514,11 @@ final class TCPViewerRootViewController: NSViewController {
     }
 
     func focusSidebarFilter() {
+        if !ownsSidebar {
+            sidebarVisibilityHandler?(true)
+            sidebarViewController.focusFilterField()
+            return
+        }
         guard sidebarItem?.isCollapsed == true else {
             sidebarViewController.focusFilterField()
             return
@@ -449,7 +535,10 @@ final class TCPViewerRootViewController: NSViewController {
         guard viewModel.snapshot.workspaceMode != .overview else {
             return
         }
-        guard inspectorItem?.isCollapsed == true else {
+        hasRequestedInspectorFocus = true
+        applyMainEmptyStateVisibility(viewModel.snapshot)
+        guard inspectorItem == nil || inspectorItem?.isCollapsed == true else {
+            view.layoutSubtreeIfNeeded()
             inspectorViewController.focusFilterField()
             return
         }
@@ -457,7 +546,9 @@ final class TCPViewerRootViewController: NSViewController {
         // Reopen the inspector before focusing because collapsed split items cannot accept focus.
         viewModel.setInspectorVisible(true)
         DispatchQueue.main.async { [weak self] in
-            self?.inspectorViewController.focusFilterField()
+            guard let self, !self.isClosed, self.viewModel.isActive else { return }
+            self.view.layoutSubtreeIfNeeded()
+            self.inspectorViewController.focusFilterField()
         }
     }
 
@@ -493,6 +584,7 @@ final class TCPViewerRootViewController: NSViewController {
     }
 
     @objc func toggleSidebar(_ sender: Any?) {
+        if !ownsSidebar { sidebarVisibilityHandler?(nil); return }
         // Mirror AppKit's toggleSidebar action while keeping the split state persisted in our model.
         setSidebarVisible(sidebarItem?.isCollapsed ?? false)
     }
@@ -505,8 +597,6 @@ final class TCPViewerRootViewController: NSViewController {
         // Build the two-level split layout: sidebar | (workspace + inspector).
         sidebarViewController.delegate = self
         workspaceViewController.delegate = self
-        overviewViewController.delegate = self
-        inspectorViewController.delegate = self
         statusStripViewController.delegate = self
         mainEmptyStateViewController.delegate = self
 
@@ -515,8 +605,7 @@ final class TCPViewerRootViewController: NSViewController {
 
         workspaceContainerViewController.view = TCPViewerDynamicBackgroundView(backgroundColor: .controlBackgroundColor)
         workspaceContainerViewController.addChild(workspaceViewController)
-        workspaceContainerViewController.addChild(overviewViewController)
-        for childView in [workspaceViewController.view, overviewViewController.view] {
+        for childView in [workspaceViewController.view] {
             childView.translatesAutoresizingMaskIntoConstraints = false
             workspaceContainerViewController.view.addSubview(childView)
             NSLayoutConstraint.activate([
@@ -526,19 +615,11 @@ final class TCPViewerRootViewController: NSViewController {
                 childView.bottomAnchor.constraint(equalTo: workspaceContainerViewController.view.bottomAnchor),
             ])
         }
-        overviewViewController.view.isHidden = true
 
         // Keep the selected workspace and inspector inside the main container split.
         let workspaceItem = NSSplitViewItem(contentListWithViewController: workspaceContainerViewController)
         contentSplitViewController.addSplitViewItem(workspaceItem)
         self.workspaceItem = workspaceItem
-
-        let inspectorItem = NSSplitViewItem(viewController: inspectorViewController)
-        inspectorItem.canCollapse = true
-        inspectorItem.allowsFullHeightLayout = false
-        inspectorItem.minimumThickness = NetworkInspectorLayoutMetrics.minimumInspectorThickness
-        contentSplitViewController.addSplitViewItem(inspectorItem)
-        self.inspectorItem = inspectorItem
 
         mainContainerViewController.view = TCPViewerDynamicBackgroundView(backgroundColor: .controlBackgroundColor)
         mainContainerViewController.addChild(contentSplitViewController)
@@ -572,11 +653,14 @@ final class TCPViewerRootViewController: NSViewController {
 
         addChild(mainSplitViewController)
 
+        if ownsSidebar {
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarViewController)
         sidebarItem.minimumThickness = NetworkInspectorLayoutMetrics.minimumSidebarThickness
         sidebarItem.canCollapse = true
         mainSplitViewController.addSplitViewItem(sidebarItem)
         self.sidebarItem = sidebarItem
+
+        }
 
         let mainContainerItem = NSSplitViewItem(viewController: mainContainerViewController)
         mainContainerItem.allowsFullHeightLayout = false
@@ -597,13 +681,19 @@ final class TCPViewerRootViewController: NSViewController {
     }
 
     private func render() {
+        guard !isClosed, viewModel.isActive else { return }
         let snapshot = viewModel.snapshot
         sidebarViewController.render(snapshot: snapshot)
+        if let pendingSourceListReveal,
+           snapshot.selectedSourceListSelection == pendingSourceListReveal {
+            self.pendingSourceListReveal = nil
+            sidebarViewController.revealSourceListSelection(pendingSourceListReveal)
+        }
         workspaceViewController.render(snapshot: snapshot)
-        overviewViewController.render(snapshot: snapshot)
+        loadedOverviewViewController?.render(snapshot: snapshot)
         endpointStatisticsWindowController?.render(snapshot: snapshot)
         endpointStatisticsWindowController?.updateTitle(endpointStatisticsWindowTitle)
-        inspectorViewController.render(snapshot: snapshot)
+        loadedInspectorViewController?.render(snapshot: snapshot)
         applyPendingFollowStreamReveal(snapshot)
         mainEmptyStateViewController.render(snapshot: snapshot)
         statusStripViewController.render(snapshot: snapshot, metrics: viewModel.statusMetricsSnapshot)
@@ -631,6 +721,7 @@ final class TCPViewerRootViewController: NSViewController {
             self.pendingFollowStreamReveal = nil
             return
         }
+        guard !snapshot.isPacketTableFiltering else { return }
         let inspectionState = snapshot.base.inspectionState
         guard inspectionState.selectedPacketID == pendingFollowStreamReveal.target.packetID else {
             self.pendingFollowStreamReveal = nil
@@ -643,13 +734,15 @@ final class TCPViewerRootViewController: NSViewController {
             return
         }
 
+        workspaceViewController.scrollPacketToVisible(pendingFollowStreamReveal.target.packetID)
         inspectorViewController.revealFollowStreamPayload(pendingFollowStreamReveal.target)
         self.pendingFollowStreamReveal = nil
     }
 
     private func applyMainEmptyStateVisibility(_ snapshot: NetworkInspectorSnapshot) {
         // Swap only the central content region so sidebar and status remain available.
-        let shouldShowEmptyState = snapshot.workspaceMode != .overview && snapshot.shouldShowMainEmptyState
+        let shouldShowEmptyState = !viewModel.isOffline && snapshot.workspaceMode != .overview && snapshot.shouldShowMainEmptyState
+            && !(hasRequestedInspectorFocus && snapshot.isInspectorVisible)
         // Reapply both flags because AppKit can restore split-item visibility during initial layout.
         contentSplitViewController.view.isHidden = shouldShowEmptyState
         mainEmptyStateViewController.view.isHidden = !shouldShowEmptyState
@@ -658,7 +751,16 @@ final class TCPViewerRootViewController: NSViewController {
     private func applyWorkspaceVisibility(_ snapshot: NetworkInspectorSnapshot) {
         let showsOverview = snapshot.workspaceMode == .overview
         workspaceViewController.view.isHidden = showsOverview
-        overviewViewController.view.isHidden = !showsOverview
+        if showsOverview, loadedOverviewViewController?.parent == nil {
+            let controller = overviewViewController
+            workspaceContainerViewController.addChild(controller)
+            controller.view.frame = workspaceContainerViewController.view.bounds
+            controller.view.autoresizingMask = [.width, .height]
+            workspaceContainerViewController.view.addSubview(controller.view)
+        }
+        loadedOverviewViewController?.view.isHidden = !showsOverview
+        if showsOverview { loadedOverviewViewController?.render(snapshot: snapshot) }
+        else { loadedOverviewViewController?.suspend() }
     }
 
     private func renderSessionImportSheet(_ state: TCPViewSessionImportState) {
@@ -690,6 +792,7 @@ final class TCPViewerRootViewController: NSViewController {
 
     // Restore the last sidebar state early so AppKit lays out the window with the expected split.
     private func applyPersistedSidebarLayout() {
+        guard ownsSidebar else { return }
         setSidebarVisible(viewModel.prefersSidebarVisibleOnLaunch(), persistPreference: false)
     }
 
@@ -734,6 +837,15 @@ final class TCPViewerRootViewController: NSViewController {
     private func applyInspectorLayout(_ snapshot: NetworkInspectorSnapshot) {
         let placementChanged = appliedInspectorPlacement != snapshot.inspectorPlacement
         let shouldShowInspector = snapshot.isInspectorVisible && snapshot.workspaceMode != .overview
+        if shouldShowInspector, inspectorItem == nil {
+            let item = NSSplitViewItem(viewController: inspectorViewController)
+            item.canCollapse = true
+            item.allowsFullHeightLayout = false
+            item.minimumThickness = NetworkInspectorLayoutMetrics.minimumInspectorThickness
+            contentSplitViewController.addSplitViewItem(item)
+            inspectorItem = item
+            inspectorViewController.render(snapshot: snapshot)
+        }
         let visibilityChanged = appliedInspectorVisibility != shouldShowInspector
         let previousPlacement = appliedInspectorPlacement ?? snapshot.inspectorPlacement
 
@@ -745,7 +857,7 @@ final class TCPViewerRootViewController: NSViewController {
             isRestoringInspectorDivider = true
             configureInspectorPlacement(snapshot.inspectorPlacement)
         }
-        inspectorViewController.applyPlacement(snapshot.inspectorPlacement)
+        loadedInspectorViewController?.applyPlacement(snapshot.inspectorPlacement)
 
         appliedInspectorPlacement = snapshot.inspectorPlacement
         if visibilityChanged {
@@ -906,9 +1018,8 @@ final class TCPViewerRootViewController: NSViewController {
             return
         }
 
-        guard !isRestoringInspectorDivider else {
-            return
-        }
+        guard !isRestoringInspectorDivider, inspectorItem != nil, appliedInspectorVisibility != nil,
+              viewModel.isActive, viewModel.snapshot.workspaceMode != .overview else { return }
 
         persistCurrentInspectorLayout()
     }
@@ -1344,7 +1455,7 @@ extension TCPViewerRootViewController {
     }
 
     var isOverviewWorkspaceVisibleForTesting: Bool {
-        !overviewViewController.view.isHidden
+        loadedOverviewViewController?.view.isHidden == false
     }
 
     var isPacketWorkspaceVisibleForTesting: Bool {
@@ -1382,6 +1493,7 @@ extension TCPViewerRootViewController: TCPViewerMainEmptyStateViewControllerDele
 
 extension TCPViewerRootViewController: SidebarViewControllerDelegate {
     func sidebarViewController(_ controller: SidebarViewController, didSelect selection: PacketSourceListSelection?) {
+        pendingSourceListReveal = nil
         viewModel.selectSourceList(selection)
     }
 
@@ -1394,6 +1506,23 @@ extension TCPViewerRootViewController: SidebarViewControllerDelegate {
 
     func sidebarViewController(_ controller: SidebarViewController, didUpdateFilterText text: String) {
         viewModel.updateSourceListFilterText(text)
+    }
+
+    func sidebarViewController(_ controller: SidebarViewController, canOpenInNewTab selection: PacketSourceListSelection) -> Bool {
+        !viewModel.isOffline
+    }
+
+    func sidebarViewController(_ controller: SidebarViewController, didRequestOpenInNewTab selection: PacketSourceListSelection) {
+        guard !viewModel.isOffline else {
+            return
+        }
+
+        delegate?.tcpviewerRootViewController(self, didRequestOpenInNewTab: selection)
+    }
+
+    func selectSourceListWhenAvailable(_ selection: PacketSourceListSelection) {
+        pendingSourceListReveal = selection
+        viewModel.selectSourceListWhenAvailable(selection)
     }
 
     func sidebarViewController(_ controller: SidebarViewController, didRequestPin targets: [PacketSourceListPinTarget]) {
@@ -1594,6 +1723,14 @@ extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
 }
 
 private extension TCPViewerRootViewController {
+    // Standalone panes are already active; tabbed panes ask their owner to reattach them.
+    func activateForNavigation() -> Bool {
+        guard !isClosed else { return false }
+        if !viewModel.isActive { workspaceViewController.cancelNavigationRestoration() }
+        delegate?.tcpviewerRootViewControllerDidRequestActivation(self)
+        return viewModel.isActive
+    }
+
     // Keep one statistics window per document and resolve packet IDs against its latest capture snapshot.
     func makeEndpointStatisticsWindowController() -> EndpointStatisticsWindowController {
         let controller = EndpointStatisticsWindowController(
@@ -1602,7 +1739,7 @@ private extension TCPViewerRootViewController {
                 self?.viewModel.packetSummariesForEndpointStatistics(packetIDs) ?? []
             },
             showRelatedPackets: { [weak self] rowID in
-                guard let self else {
+                guard let self, self.activateForNavigation() else {
                     return
                 }
                 let selection = self.viewModel.showRelatedPackets(forEndpoint: rowID)
@@ -1652,7 +1789,8 @@ private extension TCPViewerRootViewController {
         }
         controller.revealPacket = { [weak self] target in
             guard let self,
-                  self.viewModel.canRevealFollowStreamPacket(target.packetID, from: captureIdentity) else {
+                  self.viewModel.canRevealFollowStreamPacket(target.packetID, from: captureIdentity),
+                  self.activateForNavigation() else {
                 return
             }
             self.pendingFollowStreamReveal = PendingFollowStreamReveal(

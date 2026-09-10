@@ -8,9 +8,23 @@
 import AppKit
 import PcapPlusPlusCore
 import SwiftUI
+import Carbon
 
 final class TCPViewerWindowController: NSWindowController {
-    let rootViewController: TCPViewerRootViewController
+    let workspaceViewController = TCPViewerWorkspaceViewController()
+    private(set) var tabs: [TCPViewerWorkspaceTab] = []
+    private(set) var selectedTabID: UUID?
+    var selectedTab: TCPViewerWorkspaceTab? { tabs.first { $0.id == selectedTabID } }
+    var rootViewController: TCPViewerRootViewController { selectedTab!.pane! }
+    let liveWorkspace: TCPViewerCaptureWorkspace
+    private let services: TCPViewerServiceRegistry
+    private let configuration: AppConfiguration
+    private var history = TCPViewerWorkspaceTabHistory()
+    private var isClosingWorkspace = false
+    private var isReadyToClose = false
+    var closeHandler: (() -> Void)?
+    private lazy var importer = TCPViewerWorkspaceImporter(windowController: self)
+    private lazy var automationSource = TCPViewerWorkspaceAutomationSource(windowController: self)
 
     private let toolbarDataSource = TCPViewerToolbarDataSource()
     private let filterController = PacketQuickFilterViewController()
@@ -19,13 +33,13 @@ final class TCPViewerWindowController: NSWindowController {
     private var isHelperOnboardingManuallyPresented = false
     private var licenseStatusObserver: NSObjectProtocol?
 
-    init(services: TCPViewerServiceRegistry, configuration: AppConfiguration, initialURL: URL? = nil) {
-        let viewModel = NetworkInspectorViewModel(
-            services: services,
-            interfaceHistoryStore: configuration.interfaceSelectionHistory
-        )
-        self.rootViewController = TCPViewerRootViewController(viewModel: viewModel, configuration: configuration)
-        let window = NSWindow(contentViewController: rootViewController)
+    init(services: TCPViewerServiceRegistry, configuration: AppConfiguration, initialURL: URL? = nil,
+         startsWithLiveTab: Bool = true) {
+        self.services = services
+        self.configuration = configuration
+        self.liveWorkspace = TCPViewerCaptureWorkspace(services: services, userDefaults: configuration.userDefaults,
+                                                      interfaceHistoryStore: configuration.interfaceSelectionHistory)
+        let window = TCPViewerWorkspaceWindow(contentViewController: workspaceViewController)
         window.title = initialURL?.lastPathComponent ?? "TCP Viewer"
         window.titleVisibility = .hidden
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
@@ -37,8 +51,13 @@ final class TCPViewerWindowController: NSWindowController {
         window.center()
         window.isReleasedWhenClosed = false
         super.init(window: window)
-        self.rootViewController.delegate = self
-        TCPViewerMCPServiceProvider.shared.register(source: rootViewController.viewModel, window: window)
+        window.tabbingMode = .disallowed
+        window.isRestorable = false
+        window.delegate = self
+        window.shortcutHandler = { [weak self] in self?.handleTabShortcut($0) ?? false }
+        configureTabs()
+        if startsWithLiveTab && initialURL == nil { newWorkspaceTab(nil) }
+        TCPViewerMCPServiceProvider.shared.register(source: automationSource, window: window)
         setupToolbar()
         setupQuickFilters()
         observeLicenseStatusChanges()
@@ -46,9 +65,175 @@ final class TCPViewerWindowController: NSWindowController {
         // for this name, it overrides the default size/center set above.
         window.setFrameAutosaveName(Self.frameAutosaveName)
 
+        // File-only windows still need capture interfaces for CLI and MCP commands.
+        liveWorkspace.controller.performInitialLoadIfNeeded()
         if let initialURL {
-            rootViewController.openDocument(at: initialURL)
+            importCaptureURLs([initialURL], automaticNewTab: true)
         }
+    }
+
+    // Tab creation allocates metadata first; selecting it is the only pane factory call.
+    @IBAction func newWorkspaceTab(_ sender: Any?) {
+        guard !isClosingWorkspace else { return }
+        let tab = TCPViewerWorkspaceTab(source: liveWorkspace)
+        tabs.append(tab)
+        selectTab(tab.id)
+    }
+
+    func selectTab(_ id: UUID, recordsHistory: Bool = true) {
+        guard let next = tabs.first(where: { $0.id == id }), !isClosingWorkspace else { return }
+        if selectedTabID == id { return }
+        if let previous = selectedTab {
+            previous.sidebarNavigation = workspaceViewController.sidebar.saveNavigationState()
+            _ = previous.displayTitle
+            previous.pane?.deactivate()
+        }
+        selectedTabID = id
+        if recordsHistory { history.visit(id) }
+        workspaceViewController.sidebar.restoreNavigationState(next.sidebarNavigation)
+        guard let pane = next.openPane(using: { source in
+            let model = NetworkInspectorViewModel(services: source.controller.services, captureWorkspace: source,
+                                                  freshPane: source.kind == .live, userDefaults: configuration.userDefaults,
+                                                  interfaceHistoryStore: configuration.interfaceSelectionHistory)
+            let pane = TCPViewerRootViewController(viewModel: model, configuration: configuration,
+                                                  sharedSidebar: workspaceViewController.sidebar)
+            pane.delegate = self
+            pane.importHandler = { [weak self] urls, completion in
+                guard let self else { completion(TCPViewerCaptureImportResult(importedURLs: [], error: TCPViewerWorkspaceImporter.cancelledError)); return }
+                self.importCaptureURLs(urls, completion: completion)
+            }
+            pane.sidebarVisibilityHandler = { [weak self, weak model] visible in
+                guard let self, let model else { return }
+                self.workspaceViewController.setSidebarVisible(visible, viewModel: model)
+            }
+            return pane
+        }) else { return }
+        guard let content = next.contentController else { return }
+        workspaceViewController.show(content, tabCount: tabs.count)
+        pane.activate()
+        updateTabBar()
+        renderToolbar()
+        window?.makeFirstResponder(pane.view)
+    }
+
+    @IBAction func closeSelectedTab(_ sender: Any?) { if let id = selectedTabID { closeTab(id) } }
+
+    func closeTab(_ id: UUID) {
+        guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
+        if tabs.count == 1 { window?.performClose(nil); return }
+        let selection = TCPViewerWorkspaceTabOrder.selectionAfterClosing(id, selectedID: selectedTabID, ids: tabs.map(\.id))
+        let tab = tabs.remove(at: index)
+        history.remove(id)
+        tab.close()
+        if selectedTabID == id { selectedTabID = nil; if let selection { selectTab(selection) } }
+        updateTabBar()
+    }
+
+    func closeOtherTabs(keeping id: UUID) {
+        selectTab(id)
+        TCPViewerWorkspaceTabOrder.tabsToClose(except: id, ids: tabs.map(\.id)).forEach(closeTab)
+    }
+
+    func closeTabsToRight(of id: UUID) {
+        let ids = TCPViewerWorkspaceTabOrder.tabsToClose(toRightOf: id, ids: tabs.map(\.id))
+        if let selectedTabID, ids.contains(selectedTabID) { selectTab(id) }
+        ids.forEach(closeTab)
+    }
+
+    func importCaptureURLs(_ urls: [URL], automaticNewTab: Bool = false,
+                           completion: @escaping (TCPViewerCaptureImportResult) -> Void = { _ in }) {
+        importer.open(urls, automaticNewTab: automaticNewTab, completion: completion)
+    }
+
+    func makeOfflineWorkspace() -> TCPViewerCaptureWorkspace {
+        let offlineServices = TCPViewerServiceRegistry(core: services.core, networkHelperTool: services.networkHelperTool)
+        return TCPViewerCaptureWorkspace(services: offlineServices, kind: .offline, userDefaults: configuration.userDefaults)
+    }
+
+    // Placement commits only after import succeeds; replacement retains the destination's position.
+    func placeImportedWorkspace(_ source: TCPViewerCaptureWorkspace, title: String, replacing id: UUID?) -> Bool {
+        guard !isClosingWorkspace else { return false }
+        let tab = TCPViewerWorkspaceTab(id: id ?? UUID(), source: source, title: title)
+        if let id {
+            guard let index = tabs.firstIndex(where: { $0.id == id }) else { return false }
+            let previous = tabs[index]
+            tabs[index] = tab
+            previous.close()
+            if selectedTabID == id { selectedTabID = nil }
+        } else { tabs.append(tab) }
+        selectTab(tab.id)
+        return true
+    }
+
+    @IBAction func exportSessionAsPcap(_ sender: Any?) { rootViewController.exportSession(format: .pcap) }
+    @IBAction func exportSessionAsPcapng(_ sender: Any?) { rootViewController.exportSession(format: .pcapng) }
+    @IBAction func exportSessionToFile(_ sender: Any?) { rootViewController.exportTCPViewSession() }
+
+    private func configureTabs() {
+        let bar = workspaceViewController.tabBar
+        bar.onAdd = { [weak self] in self?.newWorkspaceTab(nil) }
+        bar.onSelect = { [weak self] in self?.selectTab($0) }
+        bar.onClose = { [weak self] in self?.closeTab($0) }
+        bar.onCloseOthers = { [weak self] in self?.closeOtherTabs(keeping: $0) }
+        bar.onCloseToRight = { [weak self] in self?.closeTabsToRight(of: $0) }
+        bar.onBack = { [weak self] in self?.navigateHistory(forward: false) }
+        bar.onForward = { [weak self] in self?.navigateHistory(forward: true) }
+        bar.onMove = { [weak self] id, insertion in
+            guard let self, let index = self.tabs.firstIndex(where: { $0.id == id }) else { return }
+            let destination = TCPViewerWorkspaceTabOrder.destinationIndex(from: index, insertionIndex: insertion, count: self.tabs.count)
+            self.tabs.insert(self.tabs.remove(at: index), at: destination)
+            self.updateTabBar()
+        }
+        workspaceViewController.importHandler = { [weak self] in self?.importCaptureURLs($0) }
+    }
+
+    private func updateTabBar() {
+        let validIDs = Set(tabs.map(\.id))
+        workspaceViewController.setTabCount(tabs.count)
+        workspaceViewController.tabBar.update(items: tabs.map { .init(id: $0.id, title: $0.displayTitle, isSnapshot: $0.isOffline) },
+                                             selectedID: selectedTabID, canGoBack: history.canGoBack(validIDs: validIDs),
+                                             canGoForward: history.canGoForward(validIDs: validIDs))
+    }
+
+    private func navigateHistory(forward: Bool) {
+        let validIDs = Set(tabs.map(\.id))
+        let id = forward ? history.goForward(validIDs: validIDs) : history.goBack(validIDs: validIDs)
+        if let id { selectTab(id, recordsHistory: false) }
+    }
+
+    @IBAction func navigateBackInTabHistory(_ sender: Any?) {
+        navigateHistory(forward: false)
+    }
+
+    @IBAction func navigateForwardInTabHistory(_ sender: Any?) {
+        navigateHistory(forward: true)
+    }
+
+    private func selectAdjacentTab(_ offset: Int) {
+        guard let index = tabs.firstIndex(where: { $0.id == selectedTabID }), tabs.count > 1 else { return }
+        selectTab(tabs[(index + offset + tabs.count) % tabs.count].id)
+    }
+
+    // Handle tab keys in this window only, leaving sheets and auxiliary windows untouched.
+    func handleTabShortcut(_ event: NSEvent) -> Bool {
+        guard window?.attachedSheet == nil, !isClosingWorkspace else { return false }
+        let flags = event.modifierFlags.intersection([.command, .shift, .control, .option])
+        if flags == [.command] {
+            if event.keyCode == kVK_ANSI_T { newWorkspaceTab(nil); return true }
+            if event.keyCode == kVK_ANSI_W { closeSelectedTab(nil); return true }
+            if event.keyCode == kVK_ANSI_LeftBracket { navigateBackInTabHistory(nil); return true }
+            if event.keyCode == kVK_ANSI_RightBracket { navigateForwardInTabHistory(nil); return true }
+        }
+        if event.keyCode == kVK_Tab && (flags == [.control] || flags == [.control, .shift]) {
+            selectAdjacentTab(flags.contains(.shift) ? -1 : 1); return true
+        }
+        if flags == [.command, .shift] {
+            if event.keyCode == kVK_ANSI_LeftBracket { selectAdjacentTab(-1); return true }
+            if event.keyCode == kVK_ANSI_RightBracket { selectAdjacentTab(1); return true }
+            let keys = [kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3, kVK_ANSI_4, kVK_ANSI_5, kVK_ANSI_6, kVK_ANSI_7, kVK_ANSI_8, kVK_ANSI_9]
+            if let index = keys.firstIndex(of: Int(event.keyCode)), tabs.indices.contains(index) { selectTab(tabs[index].id); return true }
+        }
+        return false
     }
 
     private static let frameAutosaveName = "TCPViewer.MainWindow"
@@ -75,7 +260,9 @@ final class TCPViewerWindowController: NSWindowController {
     }
 
     @IBAction func openDocumentPanel(_ sender: Any?) {
-        rootViewController.showOpenPanel()
+        let panel = NSOpenPanel()
+        TCPViewerCaptureFileImportPolicy.configureOpenPanel(panel)
+        if panel.runModal() == .OK { importCaptureURLs(panel.urls) }
     }
 
     @IBAction func saveDocument(_ sender: Any?) {
@@ -129,11 +316,13 @@ final class TCPViewerWindowController: NSWindowController {
 
     private func setupQuickFilters() {
         filterController.delegate = self
-        filterController.render(snapshot: rootViewController.viewModel.snapshot)
+        if let pane = selectedTab?.pane { filterController.render(snapshot: pane.viewModel.snapshot) }
         window?.addTitlebarAccessoryViewController(filterController)
     }
 
     private func renderToolbar() {
+        guard selectedTab?.pane != nil else { return }
+        updateTabBar()
         let snapshot = rootViewController.viewModel.snapshot
         toolbarDataSource.render(
             snapshot: snapshot,
@@ -141,7 +330,7 @@ final class TCPViewerWindowController: NSWindowController {
             isLicenseAuthorized: TCPViewerLicenseService.shared.isLicenseAuthorized
         )
         filterController.render(snapshot: snapshot)
-        window?.title = snapshot.base.documentState.fileURL?.lastPathComponent ?? "TCP Viewer"
+        window?.title = selectedTab?.displayTitle ?? "TCP Viewer"
     }
 
     private func observeLicenseStatusChanges() {
@@ -228,9 +417,28 @@ final class TCPViewerWindowController: NSWindowController {
 }
 
 extension TCPViewerWindowController: TCPViewerRootViewControllerDelegate {
+    // Auxiliary windows must reattach their original pane before changing its selection.
+    func tcpviewerRootViewControllerDidRequestActivation(_ controller: TCPViewerRootViewController) {
+        guard let tab = tabs.first(where: { $0.pane === controller }) else { return }
+        selectTab(tab.id)
+    }
+
     func tcpviewerRootViewControllerDidChangeToolbarState(_ controller: TCPViewerRootViewController) {
+        guard controller === selectedTab?.pane else { return }
         renderToolbar()
         updateHelperOnboardingSheet()
+    }
+
+    func tcpviewerRootViewController(
+        _ controller: TCPViewerRootViewController,
+        didRequestOpenInNewTab selection: PacketSourceListSelection
+    ) {
+        guard tabs.first(where: { $0.pane === controller })?.source === liveWorkspace else {
+            return
+        }
+
+        newWorkspaceTab(nil)
+        rootViewController.selectSourceListWhenAvailable(selection)
     }
 
     func tcpviewerRootViewController(_ controller: TCPViewerRootViewController, didRequestHelperOnboarding snapshot: TCPViewerNetworkHelperToolSnapshot) {
@@ -320,6 +528,17 @@ extension TCPViewerWindowController: PacketQuickFilterViewControllerDelegate {
 
 extension TCPViewerWindowController: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(newWorkspaceTab(_:)) { return !isClosingWorkspace }
+        guard selectedTab?.pane != nil, !isClosingWorkspace else { return false }
+        if menuItem.action == #selector(navigateBackInTabHistory(_:)) {
+            return window?.attachedSheet == nil && history.canGoBack(validIDs: Set(tabs.map(\.id)))
+        }
+        if menuItem.action == #selector(navigateForwardInTabHistory(_:)) {
+            return window?.attachedSheet == nil && history.canGoForward(validIDs: Set(tabs.map(\.id)))
+        }
+        if [#selector(exportSessionAsPcap(_:)), #selector(exportSessionAsPcapng(_:)), #selector(exportSessionToFile(_:))].contains(menuItem.action) {
+            return rootViewController.viewModel.snapshot.totalPacketCount > 0 && !rootViewController.viewModel.snapshot.base.loadState.canCancel
+        }
         if menuItem.action == #selector(followSelectedStream(_:)) {
             let row = rootViewController.selectedFollowRow
             menuItem.title = (row?.followStreamProtocol ?? .tcp).menuTitle
@@ -332,5 +551,45 @@ extension TCPViewerWindowController: NSMenuItemValidation {
         // Keep the keyboard command disabled whenever the toolbar clear button is disabled.
         let snapshot = rootViewController.viewModel.snapshot
         return snapshot.totalPacketCount > 0 && !snapshot.base.loadState.canCancel
+    }
+}
+
+private final class TCPViewerWorkspaceWindow: NSWindow {
+    var shortcutHandler: ((NSEvent) -> Bool)?
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if shortcutHandler?(event) == true { return true }
+        return super.performKeyEquivalent(with: event)
+    }
+}
+
+extension TCPViewerWindowController: NSWindowDelegate {
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if isReadyToClose { return true }
+        guard !isClosingWorkspace else { return false }
+        isClosingWorkspace = true
+        importer.cancelAll()
+        liveWorkspace.close { [weak self] succeeded in
+            guard let self else { return }
+            guard succeeded else { self.isClosingWorkspace = false; return }
+            self.isReadyToClose = true
+            self.window?.close()
+        }
+        return false
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        isClosingWorkspace = true
+        liveWorkspace.close { [liveWorkspace] _ in _ = liveWorkspace }
+        importer.cancelAll()
+        tabs.forEach { $0.close() }
+        tabs.removeAll()
+        selectedTabID = nil
+        history = TCPViewerWorkspaceTabHistory()
+        updateTabBar()
+        dismissHelperOnboarding()
+        TCPViewerMCPServiceProvider.shared.unregister(source: automationSource)
+        window?.toolbar = nil
+        closeHandler?()
+        closeHandler = nil
     }
 }

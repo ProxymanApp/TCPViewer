@@ -30,6 +30,7 @@ struct TCPViewerMCPWorkspaceSnapshot: Sendable {
 }
 
 protocol TCPViewerMCPDataSource: AnyObject {
+    func sourceForCommand() -> any TCPViewerMCPDataSource
     func mcpWorkspaceSnapshot(
         packetLimit: Int,
         packetOffset: Int,
@@ -58,6 +59,8 @@ protocol TCPViewerMCPDataSource: AnyObject {
 }
 
 extension TCPViewerMCPDataSource {
+    func sourceForCommand() -> any TCPViewerMCPDataSource { self }
+
     func mcpWorkspaceSnapshot() -> TCPViewerMCPWorkspaceSnapshot {
         mcpWorkspaceSnapshot(packetLimit: 0, packetOffset: 0, packetOrder: .recent)
     }
@@ -107,7 +110,7 @@ extension NetworkInspectorViewModel: TCPViewerMCPDataSource {
         packetOffset: Int,
         packetOrder: TCPViewerMCPPacketOrder
     ) -> TCPViewerMCPWorkspaceSnapshot {
-        let base = snapshot.base
+        let base = captureSnapshotForCommands
         let boundedLimit = max(0, min(packetLimit, TCPViewerMCPPacketQuery.maximumScanLimit))
         let packets = TCPViewerMCPPacketWindow.packets(
             from: base.packetIngestState.packets,
@@ -140,7 +143,7 @@ extension NetworkInspectorViewModel: TCPViewerMCPDataSource {
         id: PacketSummary.ID,
         completion: @escaping TCPViewerCompletion<PacketInspection>
     ) {
-        guard snapshot.base.packetIngestState.packet(withID: id) != nil else {
+        guard captureSnapshotForCommands.packetIngestState.packet(withID: id) != nil else {
             completion(.failure(TCPViewerMCPDataSourceError.packetNotFound(id)))
             return
         }
@@ -333,6 +336,10 @@ final class TCPViewerMCPServiceProvider {
             return
         }
         entries.append(Entry(source: source, window: window))
+    }
+
+    func unregister(source: any TCPViewerMCPDataSource) {
+        entries.removeAll { $0.source == nil || $0.source === source }
     }
 
     func activeSource() -> (any TCPViewerMCPDataSource)? {

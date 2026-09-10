@@ -320,6 +320,8 @@ struct SidebarOutlineReloadPolicyTests {
     @Test func sidebarContextMenuPlacesPinFirstAndShowInFinderAboveDelete() throws {
         let appKey = PacketSourceClientKey(rawValue: "bundleIdentifier:com.example.App")
         let controller = SidebarViewController()
+        let recorder = SidebarSelectionRecorder()
+        controller.delegate = recorder
         controller.loadViewIfNeeded()
         controller.render(snapshot: makeSnapshot(
             sourceListSnapshot: snapshotWithFinderApp(),
@@ -334,22 +336,31 @@ struct SidebarOutlineReloadPolicyTests {
         controller.menuNeedsUpdate(menu)
 
         let nonSeparatorTitles = menu.items.filter { !$0.isSeparatorItem }.map(\.title)
-        #expect(nonSeparatorTitles == ["Pin", "Copy App Name", "Export", "Show in Finder…", "Delete"])
+        #expect(nonSeparatorTitles == ["Pin", "Open in New Tab", "Copy App Name", "Export", "Show in Finder…", "Delete"])
         let pinIndex = try #require(menu.items.firstIndex { $0.title == "Pin" })
         #expect(pinIndex == 0)
         #expect(menu.items[pinIndex + 1].isSeparatorItem)
+        let openIndex = try #require(menu.items.firstIndex { $0.title == "Open in New Tab" })
+        #expect(openIndex == pinIndex + 2)
+        #expect(menu.items[openIndex + 1].isSeparatorItem)
         let copyIndex = try #require(menu.items.firstIndex { $0.title == "Copy App Name" })
         #expect(menu.items[copyIndex + 1].isSeparatorItem)
         let finderIndex = try #require(menu.items.firstIndex { $0.title == "Show in Finder…" })
         let deleteIndex = try #require(menu.items.firstIndex { $0.title == "Delete" })
         #expect(deleteIndex == finderIndex + 2)
         #expect(menu.items[finderIndex + 1].isSeparatorItem)
+
+        let openItem = menu.items[openIndex]
+        NSApp.sendAction(openItem.action!, to: openItem.target, from: openItem)
+        #expect(recorder.openedInNewTabSelections == [.app(appKey)])
     }
 
     @MainActor
     @Test func sidebarContextMenuUsesDomainCopyTitleForDomainRows() throws {
         let domainKey = PacketSourceDomainKey(rawValue: "example.com", isMissingDomain: false)
         let controller = SidebarViewController()
+        let recorder = SidebarSelectionRecorder()
+        controller.delegate = recorder
         controller.loadViewIfNeeded()
         controller.render(snapshot: makeSnapshot(
             sourceListSnapshot: snapshotWithDomain(),
@@ -365,8 +376,36 @@ struct SidebarOutlineReloadPolicyTests {
 
         let nonSeparatorTitles = menu.items.filter { !$0.isSeparatorItem }.map(\.title)
         #expect(nonSeparatorTitles.first == "Pin")
+        #expect(nonSeparatorTitles.dropFirst().first == "Open in New Tab")
         #expect(nonSeparatorTitles.contains("Copy Domain Name"))
         #expect(!nonSeparatorTitles.contains("Copy App Name"))
+    }
+
+    @MainActor
+    @Test func sidebarContextMenuOpensIPAddressInNewTabBeforeCopy() throws {
+        let ipAddressKey = PacketSourceIPAddressKey(rawValue: "10.0.0.1")
+        let controller = SidebarViewController()
+        let recorder = SidebarSelectionRecorder()
+        controller.delegate = recorder
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: makeSnapshot(
+            sourceListSnapshot: snapshotWithIPAddress(),
+            selectedSelection: .ipAddress(ipAddressKey),
+            packetMutation: .none
+        ))
+        controller.revealSourceListSelection(.ipAddress(ipAddressKey))
+
+        let outlineView = try #require(findOutlineScrollView(in: controller.view)?.documentView as? NSOutlineView)
+        let menu = try #require(outlineView.menu)
+        #expect(outlineView.selectedRow >= 0)
+
+        controller.menuNeedsUpdate(menu)
+
+        #expect(menu.items[0].title == "Open in New Tab")
+        #expect(menu.items[1].isSeparatorItem)
+        #expect(menu.items[2].title == "Copy IP Address")
+        NSApp.sendAction(menu.items[0].action!, to: menu.items[0].target, from: menu.items[0])
+        #expect(recorder.openedInNewTabSelections == [.ipAddress(ipAddressKey)])
     }
 
     @MainActor
@@ -596,6 +635,27 @@ struct SidebarOutlineReloadPolicyTests {
         )
     }
 
+    private func snapshotWithIPAddress() -> PacketSourceListSnapshot {
+        PacketSourceListTreeBuilder.makeSnapshot(
+            appBuckets: [],
+            domainBuckets: [
+                PacketSourceListTreeBuilder.DomainBucket(
+                    identity: PacketSourceDomainIdentity(key: .ipAddresses, displayName: "IP Addresses"),
+                    packetCount: 1
+                ),
+            ],
+            ipAddressBuckets: [
+                PacketSourceListTreeBuilder.IPAddressBucket(
+                    identity: PacketSourceIPAddressIdentity(
+                        key: PacketSourceIPAddressKey(rawValue: "10.0.0.1"),
+                        displayName: "10.0.0.1"
+                    ),
+                    packetCount: 1
+                ),
+            ]
+        )
+    }
+
     private func snapshotWithImportedFile(fileID: ImportedCaptureFileID, displayName: String) -> PacketSourceListSnapshot {
         let file = ImportedCaptureFile(
             id: fileID,
@@ -761,6 +821,7 @@ private final class SidebarSelectionRecorder: SidebarViewControllerDelegate {
     var selectedSelection: PacketSourceListSelection?
     var selectedSelections: [PacketSourceListSelection?] = []
     var selectedWorkspaceModes: [NetworkInspectorWorkspaceMode] = []
+    var openedInNewTabSelections: [PacketSourceListSelection] = []
 
     func sidebarViewController(_ controller: SidebarViewController, didSelect selection: PacketSourceListSelection?) {
         selectedSelection = selection
@@ -775,6 +836,14 @@ private final class SidebarSelectionRecorder: SidebarViewControllerDelegate {
     }
 
     func sidebarViewController(_ controller: SidebarViewController, didUpdateFilterText text: String) {}
+
+    func sidebarViewController(_ controller: SidebarViewController, canOpenInNewTab selection: PacketSourceListSelection) -> Bool {
+        true
+    }
+
+    func sidebarViewController(_ controller: SidebarViewController, didRequestOpenInNewTab selection: PacketSourceListSelection) {
+        openedInNewTabSelections.append(selection)
+    }
 
     func sidebarViewController(_ controller: SidebarViewController, didRequestPin targets: [PacketSourceListPinTarget]) {}
 

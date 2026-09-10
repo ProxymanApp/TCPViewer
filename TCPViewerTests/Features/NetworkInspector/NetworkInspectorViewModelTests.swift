@@ -1676,22 +1676,22 @@ struct NetworkInspectorViewModelTests {
             userDefaults: defaults
         )
 
-        #expect(viewModel.snapshot.inspectorPlacement == .trailing)
+        #expect(viewModel.snapshot.inspectorPlacement == .bottom)
         #expect(viewModel.snapshot.isInspectorVisible)
 
         viewModel.toggleInspector()
-        #expect(viewModel.snapshot.inspectorPlacement == .trailing)
+        #expect(viewModel.snapshot.inspectorPlacement == .bottom)
         #expect(!viewModel.snapshot.isInspectorVisible)
 
         let hiddenReloadedViewModel = NetworkInspectorViewModel(
             services: services,
             userDefaults: defaults
         )
-        #expect(hiddenReloadedViewModel.snapshot.inspectorPlacement == .trailing)
+        #expect(hiddenReloadedViewModel.snapshot.inspectorPlacement == .bottom)
         #expect(!hiddenReloadedViewModel.snapshot.isInspectorVisible)
 
         hiddenReloadedViewModel.toggleInspector()
-        #expect(hiddenReloadedViewModel.snapshot.inspectorPlacement == .trailing)
+        #expect(hiddenReloadedViewModel.snapshot.inspectorPlacement == .bottom)
         #expect(hiddenReloadedViewModel.snapshot.isInspectorVisible)
     }
 
@@ -1711,10 +1711,10 @@ struct NetworkInspectorViewModelTests {
         let window = NSWindow(contentViewController: controller)
         defer { window.close() }
         controller.loadViewIfNeeded()
+        #expect(controller.inspectorViewForTesting == nil)
+        controller.focusPacketDetailFilter()
         let inspectorView = try #require(controller.inspectorViewForTesting)
         let searchField = try #require(allSubviews(ofType: NSSearchField.self, in: inspectorView).first)
-
-        controller.focusPacketDetailFilter()
         await waitUntil {
             viewModel.snapshot.isInspectorVisible && searchField.currentEditor() === window.firstResponder
         }
@@ -1733,27 +1733,27 @@ struct NetworkInspectorViewModelTests {
             userDefaults: defaults
         )
 
-        #expect(viewModel.snapshot.inspectorPlacement == .trailing)
+        #expect(viewModel.snapshot.inspectorPlacement == .bottom)
         #expect(viewModel.snapshot.isInspectorVisible)
+
+        viewModel.toggleInspector(placement: .bottom)
+        #expect(viewModel.snapshot.inspectorPlacement == .bottom)
+        #expect(!viewModel.snapshot.isInspectorVisible)
 
         viewModel.toggleInspector(placement: .trailing)
         #expect(viewModel.snapshot.inspectorPlacement == .trailing)
-        #expect(!viewModel.snapshot.isInspectorVisible)
+        #expect(viewModel.snapshot.isInspectorVisible)
 
         viewModel.toggleInspector(placement: .bottom)
         #expect(viewModel.snapshot.inspectorPlacement == .bottom)
         #expect(viewModel.snapshot.isInspectorVisible)
 
-        viewModel.toggleInspector(placement: .trailing)
-        #expect(viewModel.snapshot.inspectorPlacement == .trailing)
-        #expect(viewModel.snapshot.isInspectorVisible)
-
-        viewModel.toggleInspector(placement: .trailing)
-        #expect(viewModel.snapshot.inspectorPlacement == .trailing)
+        viewModel.toggleInspector(placement: .bottom)
+        #expect(viewModel.snapshot.inspectorPlacement == .bottom)
         #expect(!viewModel.snapshot.isInspectorVisible)
     }
 
-    @Test func bottomInspectorPlacementPersistsAcrossReloads() {
+    @Test func trailingInspectorPlacementPersistsAcrossReloads() {
         let defaults = isolatedDefaults()
         let services = TCPViewerServiceRegistry(core: InspectorFakeCore(
             interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")]
@@ -1763,24 +1763,24 @@ struct NetworkInspectorViewModelTests {
             userDefaults: defaults
         )
 
-        viewModel.toggleInspector(placement: .bottom)
+        viewModel.toggleInspector(placement: .trailing)
 
         let reloadedViewModel = NetworkInspectorViewModel(
             services: services,
             userDefaults: defaults
         )
 
-        #expect(reloadedViewModel.snapshot.inspectorPlacement == .bottom)
+        #expect(reloadedViewModel.snapshot.inspectorPlacement == .trailing)
         #expect(reloadedViewModel.snapshot.isInspectorVisible)
 
-        reloadedViewModel.toggleInspector(placement: .bottom)
+        reloadedViewModel.toggleInspector(placement: .trailing)
 
         let hiddenReloadedViewModel = NetworkInspectorViewModel(
             services: services,
             userDefaults: defaults
         )
 
-        #expect(hiddenReloadedViewModel.snapshot.inspectorPlacement == .bottom)
+        #expect(hiddenReloadedViewModel.snapshot.inspectorPlacement == .trailing)
         #expect(!hiddenReloadedViewModel.snapshot.isInspectorVisible)
     }
 
@@ -2471,7 +2471,7 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.packetRows.count == 50_000)
         #expect(viewModel.snapshot.packetRows.first?.id == 2)
         #expect(viewModel.snapshot.packetRows.last?.id == 100_000)
-        #expect(viewModel.snapshot.base.navigationState.visiblePacketIDs.count == 100_000)
+        #expect(viewModel.snapshot.base.navigationState.visiblePacketIDs.count == 50_000)
         #expect(viewModel.snapshot.sourceListSnapshot.item(for: .domain(.ipAddresses))?.count == 100_000)
 
         viewModel.stopLiveCapture()
@@ -3232,6 +3232,63 @@ struct NetworkInspectorViewModelTests {
 
         viewModel.clearDisplayFilter()
         #expect(viewModel.snapshot.packetRows.map(\.id) == [packets[0].id, packets[2].id])
+    }
+
+    @Test func clearTablePacketsKeepsSelectedLiveAppInSidebar() async throws {
+        let sparkle = makeClient(displayName: "Sparkle", bundleIdentifier: "org.sparkle-project.Sparkle")
+        let browser = makeClient(displayName: "Browser", bundleIdentifier: "com.example.browser")
+        let sparklePackets = (1...5).map {
+            makePacket(packetNumber: UInt64($0), source: .live, transportHint: .tcp, streamID: UInt32($0), client: sparkle)
+        }
+        let browserPacket = makePacket(packetNumber: 6, source: .live, transportHint: .tcp, streamID: 6, client: browser)
+        let liveSession = InspectorFakeLiveSession()
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Wi-Fi")],
+                liveSession: liveSession
+            ), packetMetadataEnricher: PacketMetadataEnrichmentService(
+                clientResolver: InspectorFakePacketClientResolver(defaultClient: nil)
+            )),
+            userDefaults: isolatedDefaults()
+        )
+        await viewModel.performInitialLoadIfNeeded()
+        await viewModel.toggleLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        liveSession.send(.packetBatch(sparklePackets + [browserPacket], disposition: .append))
+        let sparkleKey = try #require(PacketSourceListClassifier.clientIdentity(for: sparklePackets[0])?.key)
+        await waitUntil {
+            viewModel.snapshot.totalPacketCount == 6 &&
+                viewModel.snapshot.sourceListSnapshot.item(for: .app(sparkleKey))?.count == 5
+        }
+        viewModel.flushPendingCoalescedRebuildForTesting()
+        viewModel.selectSourceList(.app(sparkleKey))
+        #expect(viewModel.snapshot.selectedSourceListSelection == .app(sparkleKey))
+        #expect(viewModel.snapshot.packetRows.count == 5)
+        #expect(viewModel.snapshot.packetRows.map(\.id) == sparklePackets.map(\.id))
+
+        viewModel.clearTablePackets()
+
+        #expect(viewModel.snapshot.totalPacketCount == 1)
+        let retainedApp = try #require(viewModel.snapshot.sourceListSnapshot.item(for: .app(sparkleKey)))
+        #expect(viewModel.snapshot.selectedSourceListSelection == .app(sparkleKey))
+        #expect(viewModel.snapshot.packetRows.isEmpty)
+        #expect(retainedApp.title == "Sparkle")
+        #expect(retainedApp.count == 0)
+        #expect(retainedApp.children.isEmpty)
+
+        let newSparklePacket = makePacket(
+            packetNumber: 7,
+            source: .live,
+            transportHint: .tcp,
+            streamID: 7,
+            client: sparkle
+        )
+        liveSession.send(.packetBatch([newSparklePacket], disposition: .append))
+        await waitUntil {
+            viewModel.snapshot.selectedSourceListSelection == .app(sparkleKey) &&
+                viewModel.snapshot.packetRows.map(\.id) == [newSparklePacket.id]
+        }
+        #expect(viewModel.snapshot.sourceListSnapshot.item(for: .app(sparkleKey))?.count == 1)
     }
 
     @Test func savedExportRequiresCurrentRawBacking() async throws {

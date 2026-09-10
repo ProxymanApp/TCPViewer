@@ -28,6 +28,22 @@ struct AppDelegateTerminationTests {
         #expect(!storyboard.contains(#"<action selector="openDocument:" target="Ady-hI-5gd""#))
     }
 
+    @Test func newTabMenuUsesCommandT() throws {
+        let storyboard = try mainStoryboardText()
+
+        #expect(storyboard.contains(#"<menuItem title="New Tab" keyEquivalent="t" id="Was-JA-tGl">"#))
+        #expect(storyboard.contains(#"<action selector="newWorkspaceTab:" target="Ady-hI-5gd""#))
+    }
+
+    @Test func viewMenuShowsTabHistoryShortcuts() throws {
+        let storyboard = try mainStoryboardText()
+
+        #expect(storyboard.contains(#"<menuItem title="Back" keyEquivalent="[" id="Tab-History-Back">"#))
+        #expect(storyboard.contains(#"<action selector="navigateBackInTabHistory:" target="Ady-hI-5gd""#))
+        #expect(storyboard.contains(#"<menuItem title="Forward" keyEquivalent="]" id="Tab-History-Forward">"#))
+        #expect(storyboard.contains(#"<action selector="navigateForwardInTabHistory:" target="Ady-hI-5gd""#))
+    }
+
     @Test func packetDetailFilterShortcutRoutesThroughMainWindowResponderChain() throws {
         let storyboard = try mainStoryboardText()
         let menuItemStart = try #require(storyboard.range(
