@@ -14,6 +14,9 @@ final class TCPViewerWorkspaceTab {
     private(set) var source: TCPViewerCaptureWorkspace?
     private(set) var contentController: TCPViewerWorkspaceTabContentController?
     var pane: TCPViewerRootViewController? { contentController?.focusedPane }
+    var firstPane: TCPViewerRootViewController? { contentController?.firstPane }
+    var secondPane: TCPViewerRootViewController? { contentController?.secondPane }
+    var isSplitViewVisible: Bool { contentController?.isSplitViewVisible == true }
     private(set) var isClosed = false
     private var lastLiveTitle = "All Packets"
     var sidebarNavigation: SidebarViewController.NavigationState?
@@ -41,6 +44,43 @@ final class TCPViewerWorkspaceTab {
         let pane = factory(source)
         contentController = TCPViewerWorkspaceTabContentController(pane: pane)
         return pane
+    }
+
+    @discardableResult
+    func openSecondPane(
+        using factory: (TCPViewerCaptureWorkspace, NetworkInspectorPaneState) -> TCPViewerRootViewController
+    ) -> TCPViewerRootViewController? {
+        guard !isClosed, let source, let contentController, let firstPane else { return nil }
+        if let secondPane {
+            contentController.focus(secondPane)
+            return secondPane
+        }
+        var state = firstPane.viewModel.makeSplitPaneState()
+        state.inspectorPlacement = .bottom
+        state.isInspectorVisible = true
+        return contentController.showSecondPane {
+            factory(source, state)
+        }
+    }
+
+    func closeSplitView() {
+        contentController?.removeSecondPane()
+    }
+
+    func focus(_ pane: TCPViewerRootViewController) {
+        contentController?.focus(pane)
+    }
+
+    func contains(_ pane: TCPViewerRootViewController) -> Bool {
+        contentController?.panes.contains(where: { $0 === pane }) == true
+    }
+
+    func activate() {
+        contentController?.activate()
+    }
+
+    func deactivate() {
+        contentController?.deactivate()
     }
 
     func close() {

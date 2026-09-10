@@ -12,6 +12,11 @@ protocol TCPViewerRootViewControllerDelegate: AnyObject {
     func tcpviewerRootViewControllerDidRequestActivation(_ controller: TCPViewerRootViewController)
     func tcpviewerRootViewControllerDidChangeToolbarState(_ controller: TCPViewerRootViewController)
     func tcpviewerRootViewController(_ controller: TCPViewerRootViewController, didRequestOpenInNewTab selection: PacketSourceListSelection)
+    func tcpviewerRootViewController(
+        _ controller: TCPViewerRootViewController,
+        didRequestOpenInSplitView selection: PacketSourceListSelection,
+        preserving originalSelection: PacketSourceListSelection
+    )
     func tcpviewerRootViewController(_ controller: TCPViewerRootViewController, didRequestHelperOnboarding snapshot: TCPViewerNetworkHelperToolSnapshot)
     func tcpviewerRootViewControllerDidRequestPaywall(_ controller: TCPViewerRootViewController)
 }
@@ -200,6 +205,8 @@ final class TCPViewerRootViewController: NSViewController {
     private let mainEmptyStateViewController = TCPViewerMainEmptyStateViewController()
     private let sidebarViewController: SidebarViewController
     private let ownsSidebar: Bool
+    private(set) var isFocusedPane = true
+    private var showsFocusedPaneOutline = false
     var importHandler: (([URL], @escaping (TCPViewerCaptureImportResult) -> Void) -> Void)?
     var sidebarVisibilityHandler: ((Bool?) -> Void)?
     private(set) var isClosed = false
@@ -295,6 +302,7 @@ final class TCPViewerRootViewController: NSViewController {
 
     override func viewDidLayout() {
         super.viewDidLayout()
+        renderFocusedPaneOutline()
         applyMainEmptyStateVisibility(viewModel.snapshot)
         if needsSidebarDividerRefresh, sidebarItem?.isCollapsed == false {
             needsSidebarDividerRefresh = false
@@ -316,9 +324,26 @@ final class TCPViewerRootViewController: NSViewController {
     // Reattach the shared sidebar delegate only when this pane becomes visible.
     func activate() {
         guard !isClosed else { return }
-        sidebarViewController.delegate = self
+        if ownsSidebar || isFocusedPane { sidebarViewController.delegate = self }
         viewModel.activate()
         if isViewLoaded { render(); workspaceViewController.restoreScrollPosition() }
+    }
+
+    // Local content stays active in Split View while only the focused pane owns shared controls.
+    func setFocusedPane(_ isFocused: Bool, showsOutline: Bool) {
+        guard !isClosed,
+              isFocusedPane != isFocused || showsFocusedPaneOutline != showsOutline else { return }
+        isFocusedPane = isFocused
+        showsFocusedPaneOutline = showsOutline
+        if ownsSidebar || isFocused {
+            sidebarViewController.delegate = self
+        } else if sidebarViewController.delegate === self {
+            sidebarViewController.delegate = nil
+        }
+        if isViewLoaded {
+            renderFocusedPaneOutline()
+            render()
+        }
     }
 
     func deactivate() {
@@ -363,7 +388,7 @@ final class TCPViewerRootViewController: NSViewController {
         if let split = controller as? NSSplitViewController {
             for item in split.splitViewItems { split.removeSplitViewItem(item) }
         }
-        children.forEach(detachHierarchy)
+        for child in children { detachHierarchy(child) }
         if controller.isViewLoaded {
             controller.view.removeFromSuperview()
             controller.view.nextResponder = nil
@@ -595,7 +620,7 @@ final class TCPViewerRootViewController: NSViewController {
 
     private func setupChildControllers() {
         // Build the two-level split layout: sidebar | (workspace + inspector).
-        sidebarViewController.delegate = self
+        if ownsSidebar || isFocusedPane { sidebarViewController.delegate = self }
         workspaceViewController.delegate = self
         statusStripViewController.delegate = self
         mainEmptyStateViewController.delegate = self
@@ -683,11 +708,13 @@ final class TCPViewerRootViewController: NSViewController {
     private func render() {
         guard !isClosed, viewModel.isActive else { return }
         let snapshot = viewModel.snapshot
-        sidebarViewController.render(snapshot: snapshot)
-        if let pendingSourceListReveal,
-           snapshot.selectedSourceListSelection == pendingSourceListReveal {
-            self.pendingSourceListReveal = nil
-            sidebarViewController.revealSourceListSelection(pendingSourceListReveal)
+        if ownsSidebar || isFocusedPane {
+            sidebarViewController.render(snapshot: snapshot)
+            if let pendingSourceListReveal,
+               snapshot.selectedSourceListSelection == pendingSourceListReveal {
+                self.pendingSourceListReveal = nil
+                sidebarViewController.revealSourceListSelection(pendingSourceListReveal)
+            }
         }
         workspaceViewController.render(snapshot: snapshot)
         loadedOverviewViewController?.render(snapshot: snapshot)
@@ -701,12 +728,21 @@ final class TCPViewerRootViewController: NSViewController {
         applyMainEmptyStateVisibility(snapshot)
         renderSessionImportSheet(snapshot.base.sessionImportState)
         applyInspectorLayout(snapshot)
-        delegate?.tcpviewerRootViewControllerDidChangeToolbarState(self)
+        if isFocusedPane {
+            delegate?.tcpviewerRootViewControllerDidChangeToolbarState(self)
+        }
 
-        if viewModel.shouldPresentNetworkHelperOnboarding && !hasRenderedHelperOnboarding {
+        if isFocusedPane, viewModel.shouldPresentNetworkHelperOnboarding && !hasRenderedHelperOnboarding {
             hasRenderedHelperOnboarding = true
             delegate?.tcpviewerRootViewController(self, didRequestHelperOnboarding: viewModel.networkHelperToolSnapshot)
         }
+    }
+
+    private func renderFocusedPaneOutline() {
+        guard !ownsSidebar else { return }
+        view.wantsLayer = true
+        view.layer?.borderColor = NSColor.controlAccentColor.cgColor
+        view.layer?.borderWidth = showsFocusedPaneOutline && isFocusedPane ? 2 : 0
     }
 
     // Wait for asynchronous dissection before asking the Hex pane to reveal reassembled bytes.
@@ -1518,6 +1554,22 @@ extension TCPViewerRootViewController: SidebarViewControllerDelegate {
         }
 
         delegate?.tcpviewerRootViewController(self, didRequestOpenInNewTab: selection)
+    }
+
+    func sidebarViewController(_ controller: SidebarViewController, canOpenInSplitView selection: PacketSourceListSelection) -> Bool {
+        !isClosed
+    }
+
+    func sidebarViewController(
+        _ controller: SidebarViewController,
+        didRequestOpenInSplitView selection: PacketSourceListSelection,
+        preserving originalSelection: PacketSourceListSelection
+    ) {
+        delegate?.tcpviewerRootViewController(
+            self,
+            didRequestOpenInSplitView: selection,
+            preserving: originalSelection
+        )
     }
 
     func selectSourceListWhenAvailable(_ selection: PacketSourceListSelection) {

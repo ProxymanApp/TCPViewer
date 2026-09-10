@@ -1883,6 +1883,7 @@ struct NetworkInspectorViewModelTests {
             )),
             userDefaults: defaults
         )
+        viewModel.toggleInspector(placement: .trailing)
         let controller = TCPViewerRootViewController(
             viewModel: viewModel,
             configuration: AppConfiguration(defaults: defaults)

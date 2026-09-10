@@ -20,10 +20,10 @@ final class TCPViewerPaneSelection {
     init(controller: TCPViewerWorkspaceController) { self.controller = controller }
 
     // Reject completions from old selections, closed panes, or a cleared capture.
-    func select(_ id: PacketSummary.ID?) {
+    func select(_ id: PacketSummary.ID?, selectedDetailNodeID: String? = nil) {
         generation += 1
         let requestGeneration = generation
-        let detailID = state.selectedPacketID == id ? state.selectedDetailNodeID : nil
+        let detailID = selectedDetailNodeID ?? (state.selectedPacketID == id ? state.selectedDetailNodeID : nil)
         state = .empty
         guard let controller, let id,
               controller.snapshot.packetIngestState.packet(withID: id) != nil else { didChange?(); return }

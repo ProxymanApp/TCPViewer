@@ -15,6 +15,7 @@ private enum TCPViewerToolbarItemMetadata: String, CaseIterable {
     case status = "Status"
     case trial = "Trial"
     case share = "Share"
+    case splitView = "SplitView"
     case inspectorBottom = "InspectorBottom"
     case inspector = "Inspector"
     case flexibleSpace
@@ -48,12 +49,15 @@ protocol TCPViewerToolbarDataSourceDelegate: AnyObject {
     func tcpviewerToolbarDataSource(_ dataSource: TCPViewerToolbarDataSource, didRequestExport format: CaptureFileFormat)
     func tcpviewerToolbarDataSourceDidToggleInspector(_ dataSource: TCPViewerToolbarDataSource)
     func tcpviewerToolbarDataSourceDidToggleBottomInspector(_ dataSource: TCPViewerToolbarDataSource)
+    func tcpviewerToolbarDataSourceDidToggleSplitView(_ dataSource: TCPViewerToolbarDataSource)
     func tcpviewerToolbarDataSourceDidRequestHelperToolScreen(_ dataSource: TCPViewerToolbarDataSource)
     func tcpviewerToolbarDataSourceDidRequestPaywall(_ dataSource: TCPViewerToolbarDataSource)
     func tcpviewerToolbarDataSourceDidRequestCheckForUpdates(_ dataSource: TCPViewerToolbarDataSource)
 }
 
 final class TCPViewerToolbarDataSource: NSObject {
+    static let splitViewMigrationKey = "TCPViewer.didInstallSplitViewToolbarItem.v1"
+
     let toolbar: NSToolbar
     weak var delegate: TCPViewerToolbarDataSourceDelegate?
 
@@ -74,11 +78,13 @@ final class TCPViewerToolbarDataSource: NSObject {
         frame: NSRect(x: 0, y: 0, width: TCPViewerToolbarLayout.trialButtonWidth, height: 30)
     )
     private let sharePopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 42, height: 30), pullsDown: true)
+    private let splitViewButton = NSButton(frame: NSRect(x: 0, y: 0, width: 34, height: 30))
     private let inspectorButton = NSButton(frame: NSRect(x: 0, y: 0, width: 34, height: 30))
     private let inspectorBottomButton = NSButton(frame: NSRect(x: 0, y: 0, width: 34, height: 30))
     private var interfacePopupWidthConstraint: NSLayoutConstraint?
     private var isTrialButtonRequired = !TCPViewerLicenseService.shared.isLicenseAuthorized
     private var availableUpdateCount = 0
+    private let userDefaults: UserDefaults
 
     private var allowedItemIdentifiers: [NSToolbarItem.Identifier] {
         var identifiers = TCPViewerToolbarItemMetadata.allCases
@@ -111,6 +117,7 @@ final class TCPViewerToolbarDataSource: NSObject {
         identifiers += [
             TCPViewerToolbarItemMetadata.flexibleSpace.identifier,
             TCPViewerToolbarItemMetadata.share.identifier,
+            TCPViewerToolbarItemMetadata.splitView.identifier,
             TCPViewerToolbarItemMetadata.inspectorBottom.identifier,
             TCPViewerToolbarItemMetadata.inspector.identifier,
         ]
@@ -118,15 +125,22 @@ final class TCPViewerToolbarDataSource: NSObject {
         return identifiers
     }
 
-    override init() {
+    init(userDefaults: UserDefaults = .standard, autosavesConfiguration: Bool = true) {
         self.toolbar = NSToolbar(identifier: "TCPViewer.MainToolbar.v6")
+        self.userDefaults = userDefaults
         super.init()
+        toolbar.autosavesConfiguration = autosavesConfiguration
         configureToolbar()
         configureToolbarViews()
     }
 
     // Apply root state to the toolbar controls without leaking toolbar view ownership to the window.
-    func render(snapshot: NetworkInspectorSnapshot, inspectorViewModel: NetworkInspectorViewModel, isLicenseAuthorized: Bool) {
+    func render(
+        snapshot: NetworkInspectorSnapshot,
+        inspectorViewModel: NetworkInspectorViewModel,
+        isLicenseAuthorized: Bool,
+        isSplitViewVisible: Bool = false
+    ) {
         viewModel.render(snapshot: snapshot, viewModel: inspectorViewModel, isLicenseAuthorized: isLicenseAuthorized)
         isTrialButtonRequired = viewModel.showsTrialButton
         renderInterfacePopup()
@@ -134,6 +148,7 @@ final class TCPViewerToolbarDataSource: NSObject {
         renderClearAllButton()
         renderTrialButton()
         renderSharePopup()
+        renderSplitViewButton(isVisible: isSplitViewVisible)
         renderInspectorButton()
         statusView.render(viewModel: viewModel)
         syncTrialToolbarItem()
@@ -145,12 +160,24 @@ final class TCPViewerToolbarDataSource: NSObject {
         statusView.renderUpdateBadge(availableUpdateCount)
     }
 
+    // Add the new default once for saved toolbar layouts, then respect later customization.
+    func installSplitViewItemIfNeeded() {
+        guard !userDefaults.bool(forKey: Self.splitViewMigrationKey) else { return }
+        defer { userDefaults.set(true, forKey: Self.splitViewMigrationKey) }
+        let splitIdentifier = TCPViewerToolbarItemMetadata.splitView.identifier
+        guard !toolbar.items.contains(where: { $0.itemIdentifier == splitIdentifier }) else { return }
+        let inspectorIndex = toolbar.items.firstIndex {
+            $0.itemIdentifier == TCPViewerToolbarItemMetadata.inspectorBottom.identifier ||
+                $0.itemIdentifier == TCPViewerToolbarItemMetadata.inspector.identifier
+        } ?? toolbar.items.count
+        toolbar.insertItem(withItemIdentifier: splitIdentifier, at: inspectorIndex)
+    }
+
     private func configureToolbar() {
         toolbar.delegate = self
         toolbar.displayMode = .iconOnly
         toolbar.sizeMode = .default
         toolbar.allowsUserCustomization = true
-        toolbar.autosavesConfiguration = true
 
         if #available(macOS 13.0, *) {
             toolbar.centeredItemIdentifiers = Set([TCPViewerToolbarItemMetadata.status.identifier])
@@ -166,6 +193,7 @@ final class TCPViewerToolbarDataSource: NSObject {
         constrainToolbarView(statusView, width: 360, height: 28)
         constrainToolbarView(trialButton, width: TCPViewerToolbarLayout.trialButtonWidth, height: 30)
         constrainToolbarView(sharePopup, width: 42, height: 30)
+        constrainToolbarView(splitViewButton, width: 34, height: 30)
         constrainToolbarView(inspectorButton, width: 34, height: 30)
         constrainToolbarView(inspectorBottomButton, width: 34, height: 30)
 
@@ -215,6 +243,15 @@ final class TCPViewerToolbarDataSource: NSObject {
         sharePopup.target = self
         sharePopup.action = #selector(shareActionSelected(_:))
         sharePopup.toolTip = "Share"
+
+        splitViewButton.target = self
+        splitViewButton.action = #selector(splitViewButtonPressed(_:))
+        splitViewButton.setButtonType(.toggle)
+        splitViewButton.bezelStyle = .texturedRounded
+        splitViewButton.controlSize = .regular
+        splitViewButton.image = TCPViewerUI.image("rectangle.split.2x1")
+        splitViewButton.imagePosition = .imageOnly
+        splitViewButton.title = ""
 
         inspectorButton.target = self
         inspectorButton.action = #selector(inspectorButtonPressed(_:))
@@ -321,6 +358,11 @@ final class TCPViewerToolbarDataSource: NSObject {
         inspectorBottomButton.alphaValue = viewModel.canUseInspector ? 1 : 0.45
     }
 
+    private func renderSplitViewButton(isVisible: Bool) {
+        splitViewButton.state = isVisible ? .on : .off
+        splitViewButton.toolTip = isVisible ? "Hide Split View" : "Show Split View"
+    }
+
     private func syncTrialToolbarItem() {
         let trialIdentifier = TCPViewerToolbarItemMetadata.trial.identifier
         let trialItemIndexes = toolbar.items.enumerated()
@@ -398,6 +440,10 @@ final class TCPViewerToolbarDataSource: NSObject {
     @objc private func inspectorBottomButtonPressed(_ sender: NSButton) {
         delegate?.tcpviewerToolbarDataSourceDidToggleBottomInspector(self)
     }
+
+    @objc private func splitViewButtonPressed(_ sender: NSButton) {
+        delegate?.tcpviewerToolbarDataSourceDidToggleSplitView(self)
+    }
 }
 
 extension TCPViewerToolbarDataSource: NSToolbarDelegate {
@@ -461,6 +507,11 @@ extension TCPViewerToolbarDataSource: NSToolbarDelegate {
             item.label = "Share"
             item.paletteLabel = "Share"
             item.view = sharePopup
+            item.visibilityPriority = .high
+        case TCPViewerToolbarItemMetadata.splitView.identifier:
+            item.label = "Split View"
+            item.paletteLabel = "Toggle Split View"
+            item.view = splitViewButton
             item.visibilityPriority = .high
         case TCPViewerToolbarItemMetadata.inspector.identifier:
             item.label = "Inspector"

@@ -1050,6 +1050,28 @@ extension NetworkInspectorViewModelDelegate {
     func networkInspectorViewModelDidUpdateStatusMetrics(_ viewModel: NetworkInspectorViewModel) {}
 }
 
+/// Captures only pane-local presentation state when creating the optional second pane.
+struct NetworkInspectorPaneState {
+    let selectedSidebar: NetworkInspectorSidebarSelection
+    let selectedSourceListSelection: PacketSourceListSelection
+    let selectedPacketID: PacketSummary.ID?
+    let selectedDetailNodeID: String?
+    let sourceListFilterText: String
+    let quickFilterSelection: PacketQuickFilterSelection
+    let workspaceMode: NetworkInspectorWorkspaceMode
+    let inspectorTab: PacketInspectorTab
+    var inspectorPlacement: NetworkInspectorPlacement
+    var isInspectorVisible: Bool
+    let inspectorThicknessByPlacement: [NetworkInspectorPlacement: CGFloat]
+    let isStructuredFilterVisible: Bool
+    let filterMode: PacketFilterMode
+    let wiresharkFilterState: PacketWiresharkFilterState
+    let displayFilterText: String
+    let structuredFilterGroup: PacketStructuredFilterGroup
+    let endpointStatisticsFilter: EndpointStatisticsRow.ID?
+    let selectedCustomFilterID: PacketCustomFilter.ID?
+}
+
 final class NetworkInspectorViewModel {
     weak var delegate: NetworkInspectorViewModelDelegate?
     var endpointStatisticsIngestHandler: ((PacketIngestState) -> Void)?
@@ -1175,7 +1197,8 @@ final class NetworkInspectorViewModel {
         tcpViewSessionExportService: (any TCPViewSessionExportWriting)? = nil,
         statusMetricsService: TCPViewerStatusMetricsService? = nil,
         packetTableAsyncRebuildThreshold: Int = 5_000,
-        packetTableFilterBuildHook: (@Sendable () -> Void)? = nil
+        packetTableFilterBuildHook: (@Sendable () -> Void)? = nil,
+        paneState: NetworkInspectorPaneState? = nil
     ) {
         let workspace = captureWorkspace ?? TCPViewerCaptureWorkspace(
             services: services, userDefaults: userDefaults, interfaceHistoryStore: interfaceHistoryStore,
@@ -1259,7 +1282,73 @@ final class NetworkInspectorViewModel {
             applySessionDocumentState(state)
             pendingSessionImportReport = controller.currentDocumentSessionImportReport
         }
+        if let paneState {
+            applyPaneState(paneState)
+        }
         rebuildSnapshot()
+    }
+
+    func makeSplitPaneState() -> NetworkInspectorPaneState {
+        NetworkInspectorPaneState(
+            selectedSidebar: selectedSidebar,
+            selectedSourceListSelection: selectedSourceListSelection,
+            selectedPacketID: paneSelection.state.selectedPacketID,
+            selectedDetailNodeID: paneSelection.state.selectedDetailNodeID,
+            sourceListFilterText: sourceListFilterText,
+            quickFilterSelection: quickFilterService.selection,
+            workspaceMode: workspaceMode,
+            inspectorTab: inspectorTab,
+            inspectorPlacement: inspectorPlacement,
+            isInspectorVisible: isInspectorVisible,
+            inspectorThicknessByPlacement: inspectorThicknessByPlacement,
+            isStructuredFilterVisible: isStructuredFilterVisible,
+            filterMode: filterMode,
+            wiresharkFilterState: wiresharkFilterState,
+            displayFilterText: displayFilterText,
+            structuredFilterGroup: structuredFilterGroup,
+            endpointStatisticsFilter: endpointStatisticsFilter,
+            selectedCustomFilterID: selectedCustomFilterID
+        )
+    }
+
+    // Split View uses bottom inspectors without changing the user's normal inspector preference.
+    func showInspectorForSplitView() {
+        guard inspectorPlacement != .bottom || !isInspectorVisible else { return }
+        inspectorPlacement = .bottom
+        isInspectorVisible = true
+        rebuildSnapshot()
+    }
+
+    private func applyPaneState(_ state: NetworkInspectorPaneState) {
+        selectedSidebar = state.selectedSidebar
+        selectedSourceListSelection = state.selectedSourceListSelection
+        sourceListFilterText = state.sourceListFilterText
+        quickFilterService.apply(state.quickFilterSelection)
+        workspaceMode = state.workspaceMode
+        inspectorTab = state.inspectorTab
+        inspectorPlacement = state.inspectorPlacement
+        isInspectorVisible = state.isInspectorVisible
+        inspectorThicknessByPlacement = state.inspectorThicknessByPlacement
+        isStructuredFilterVisible = state.isStructuredFilterVisible
+        filterMode = state.filterMode
+        wiresharkFilterState = state.wiresharkFilterState
+        wiresharkFilterState.isValidating = false
+        wiresharkFilterState.isApplying = false
+        wiresharkFilterMembership = nil
+        wiresharkFilterMembershipLineageRevision = nil
+        displayFilterText = state.displayFilterText
+        structuredFilterGroup = state.structuredFilterGroup
+        endpointStatisticsFilter = state.endpointStatisticsFilter
+        selectedCustomFilterID = state.selectedCustomFilterID
+        displayFilterResultCache.removeAll()
+        packetTableContentCache.reset()
+        paneSelection.select(state.selectedPacketID, selectedDetailNodeID: state.selectedDetailNodeID)
+
+        if isStructuredFilterVisible, filterMode == .wireshark {
+            DispatchQueue.main.async { [weak self] in
+                self?.reapplyWiresharkFilterIfNeeded()
+            }
+        }
     }
 
     private var pendingRequests: [UUID: () -> Void] = [:]
