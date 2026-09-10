@@ -1,4 +1,5 @@
 // Copy to Config/TCPViewer.local.xcconfig for local Xcode app builds.
 // Do not commit real local values. URL values must escape :// as :/$()/.
 
+// This affects Debug builds only. Release always uses the remote license server.
 TCPVIEWER_USES_LOCAL_LICENSE_SERVER = false

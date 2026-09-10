@@ -9,6 +9,7 @@ missing=0
 team_id="${TCPVIEWER_DEVELOPMENT_TEAM:-}"
 build_key="${TCPVIEWER_BUILD_KEY:-}"
 development_team="${DEVELOPMENT_TEAM:-}"
+uses_local_license_server="$(printf '%s' "${TCPVIEWER_USES_LOCAL_LICENSE_SERVER:-}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
 
 if is_blank "${team_id}"; then
     echo "error: Missing TCPVIEWER_DEVELOPMENT_TEAM. Copy Config/TCPViewer.local.xcconfig.example to Config/TCPViewer.local.xcconfig and set your Apple Development Team ID."
@@ -25,6 +26,11 @@ fi
 
 if [ "${missing}" -eq 0 ] && [ "${development_team}" != "${team_id}" ]; then
     echo "error: DEVELOPMENT_TEAM must resolve from TCPVIEWER_DEVELOPMENT_TEAM for Xcode signing."
+    missing=1
+fi
+
+if [ "${CONFIGURATION:-}" = "Release" ] && [ "${uses_local_license_server}" != "false" ]; then
+    echo "error: Beta and production builds must set TCPVIEWER_USES_LOCAL_LICENSE_SERVER to false."
     missing=1
 fi
 
