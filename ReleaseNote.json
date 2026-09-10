@@ -290,6 +290,17 @@
       "bugs": [
         "Fixed: TCPViewer app doesn't show the correct app name in the System Settings -> General -> Login Item & Extension"
       ]
+    },
+        {
+      "version": "1.17.1",
+      "title": "TCP Viewer 1.17.1: HOT FIX License Key",
+      "features": [
+      ],
+      "improvements": [
+      ],
+      "bugs": [
+        "Fixed: Can not activate the license key"
+      ]
     }
   ]
 }
