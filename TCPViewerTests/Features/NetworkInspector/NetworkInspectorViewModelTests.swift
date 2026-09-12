@@ -1666,6 +1666,20 @@ struct NetworkInspectorViewModelTests {
         #expect(viewModel.snapshot.packetTableGeneration == generationAfterPackets)
     }
 
+    @Test(arguments: ["", "unknown-placement"])
+    func inspectorDefaultsToBottomWithoutValidSavedPlacement(savedPlacement: String) {
+        let defaults = isolatedDefaults()
+        if !savedPlacement.isEmpty {
+            defaults.set(savedPlacement, forKey: "TCPViewer.inspectorPlacement")
+        }
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(interfaces: [])),
+            userDefaults: defaults
+        )
+        #expect(viewModel.snapshot.inspectorPlacement == .bottom)
+        #expect(viewModel.snapshot.isInspectorVisible)
+    }
+
     @Test func inspectorTogglePersistsVisibility() {
         let defaults = isolatedDefaults()
         let services = TCPViewerServiceRegistry(core: InspectorFakeCore(

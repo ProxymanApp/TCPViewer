@@ -656,7 +656,6 @@ final class TCPViewerRootViewController: NSViewController {
         mainEmptyStateViewController.view.translatesAutoresizingMaskIntoConstraints = false
         statusStripViewController.view.translatesAutoresizingMaskIntoConstraints = false
         mainContainerView.addSubview(contentSplitViewController.view)
-        mainContainerView.addSubview(mainEmptyStateViewController.view)
         mainContainerView.addSubview(statusStripViewController.view)
         mainEmptyStateViewController.view.isHidden = true
 
@@ -665,11 +664,6 @@ final class TCPViewerRootViewController: NSViewController {
             contentSplitViewController.view.trailingAnchor.constraint(equalTo: mainContainerView.trailingAnchor),
             contentSplitViewController.view.topAnchor.constraint(equalTo: mainContainerView.topAnchor),
             contentSplitViewController.view.bottomAnchor.constraint(equalTo: statusStripViewController.view.topAnchor),
-
-            mainEmptyStateViewController.view.leadingAnchor.constraint(equalTo: mainContainerView.leadingAnchor),
-            mainEmptyStateViewController.view.trailingAnchor.constraint(equalTo: mainContainerView.trailingAnchor),
-            mainEmptyStateViewController.view.topAnchor.constraint(equalTo: mainContainerView.topAnchor),
-            mainEmptyStateViewController.view.bottomAnchor.constraint(equalTo: statusStripViewController.view.topAnchor),
 
             statusStripViewController.view.leadingAnchor.constraint(equalTo: mainContainerView.leadingAnchor),
             statusStripViewController.view.trailingAnchor.constraint(equalTo: mainContainerView.trailingAnchor),
@@ -742,7 +736,7 @@ final class TCPViewerRootViewController: NSViewController {
         guard !ownsSidebar else { return }
         view.wantsLayer = true
         view.layer?.borderColor = NSColor.controlAccentColor.cgColor
-        view.layer?.borderWidth = showsFocusedPaneOutline && isFocusedPane ? 2 : 0
+        view.layer?.borderWidth = showsFocusedPaneOutline && isFocusedPane ? 1 : 0
     }
 
     // Wait for asynchronous dissection before asking the Hex pane to reveal reassembled bytes.
@@ -776,12 +770,27 @@ final class TCPViewerRootViewController: NSViewController {
     }
 
     private func applyMainEmptyStateVisibility(_ snapshot: NetworkInspectorSnapshot) {
+        guard !isClosed else { return }
         // Swap only the central content region so sidebar and status remain available.
         let shouldShowEmptyState = !viewModel.isOffline && snapshot.workspaceMode != .overview && snapshot.shouldShowMainEmptyState
             && !(hasRequestedInspectorFocus && snapshot.isInspectorVisible)
         // Reapply both flags because AppKit can restore split-item visibility during initial layout.
         contentSplitViewController.view.isHidden = shouldShowEmptyState
         mainEmptyStateViewController.view.isHidden = !shouldShowEmptyState
+        let emptyView = mainEmptyStateViewController.view
+        // Detach the hidden guide so its fixed controls cannot set the packet pane's minimum width.
+        if shouldShowEmptyState, emptyView.superview == nil {
+            let container = mainContainerViewController.view
+            container.addSubview(emptyView)
+            NSLayoutConstraint.activate([
+                emptyView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+                emptyView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+                emptyView.topAnchor.constraint(equalTo: container.topAnchor),
+                emptyView.bottomAnchor.constraint(equalTo: statusStripViewController.view.topAnchor),
+            ])
+        } else if !shouldShowEmptyState {
+            emptyView.removeFromSuperview()
+        }
     }
 
     private func applyWorkspaceVisibility(_ snapshot: NetworkInspectorSnapshot) {

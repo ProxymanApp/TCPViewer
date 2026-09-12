@@ -3023,7 +3023,7 @@ final class NetworkInspectorViewModel {
         workspaceMode = NetworkInspectorWorkspaceMode(rawValue: state.workspaceMode) ?? .packets
         selectedSidebar = workspaceMode == .packets ? .liveCapture : .view(workspaceMode)
         inspectorTab = PacketInspectorTab(rawValue: state.inspectorTab) ?? .summary
-        inspectorPlacement = NetworkInspectorPlacement(rawValue: state.inspectorPlacement) ?? .trailing
+        inspectorPlacement = NetworkInspectorPlacement(rawValue: state.inspectorPlacement) ?? .bottom
         isInspectorVisible = state.isInspectorVisible
         isStructuredFilterVisible = state.isStructuredFilterVisible
         filterMode = state.filterMode ?? .builder

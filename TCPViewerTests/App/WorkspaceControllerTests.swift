@@ -260,6 +260,133 @@ struct WindowControllerTests {
         source.close()
     }
 
+    // Populated inspectors must not restore the old large window-size floor when panes change.
+    @Test(arguments: [false, true], [false, true])
+    func mainWindowResizesToCompactContent(opensSplit: Bool, sidebarVisible: Bool) async throws {
+        let packet = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp)
+        let inspection = makeInspection(for: packet)
+        let core = FakeTCPViewerCore(interfaceInventories: [[]], documentFactory: { url in
+            FakeOfflineDocument(
+                url: url,
+                metadata: .init(format: .pcapng),
+                openPlan: .completed([packet]),
+                inspections: [packet.id: inspection]
+            )
+        })
+        let defaults = UserDefaults(suiteName: "compact-window-\(UUID())")!
+        let owner = TCPViewerWindowController(
+            services: .init(core: core),
+            configuration: AppConfiguration(defaults: defaults),
+            startsWithLiveTab: false
+        )
+        defer { owner.window?.close() }
+        let result = await withCheckedContinuation { continuation in
+            owner.importCaptureURLs([URL(fileURLWithPath: "/tmp/compact-window.pcapng")], automaticNewTab: true) {
+                continuation.resume(returning: $0)
+            }
+        }
+        #expect(result.error == nil)
+        let window = try #require(owner.window)
+        let first = owner.rootViewController
+        first.viewModel.showInspectorForSplitView()
+        first.viewModel.selectPacket(packet.id)
+        await waitUntil { first.viewModel.snapshot.base.inspectionState.inspection?.packetID == packet.id }
+        #expect(first.viewModel.snapshot.base.inspectionState.inspection?.packetID == packet.id)
+        owner.workspaceViewController.setSidebarVisible(sidebarVisible, viewModel: first.viewModel, persistPreference: false)
+        if opensSplit { owner.toggleSplitView(nil) }
+        await settleEventLoop()
+
+        let compactSize = sidebarVisible ? NSSize(width: 840, height: 450) : NSSize(width: 640, height: 400)
+        #expect(window.contentMinSize.width <= compactSize.width)
+        #expect(window.contentMinSize.height <= compactSize.height)
+        func filterEditor(in controller: NSViewController) -> PacketStructuredFilterViewController? {
+            if let editor = controller as? PacketStructuredFilterViewController { return editor }
+            return controller.children.compactMap { filterEditor(in: $0) }.first
+        }
+        let content = try #require(owner.selectedTab?.contentController)
+        let quickFilters = try #require(window.titlebarAccessoryViewControllers.first { $0 is PacketQuickFilterViewController })
+        let quickFilterScroll = try #require(quickFilters.view.subviews.compactMap { $0 as? NSScrollView }.first)
+        for showsFilter in [false, true, false] {
+            content.panes.forEach { $0.viewModel.setStructuredFilterVisible(showsFilter) }
+            for size in [compactSize, NSSize(width: 1_000, height: 700), compactSize] {
+                window.setContentSize(size)
+                window.contentView?.layoutSubtreeIfNeeded()
+                await settleEventLoop()
+                let actualSize = window.contentRect(forFrameRect: window.frame).size
+                #expect(actualSize.width == size.width)
+                #expect(actualSize.height == size.height)
+                #expect(content.view.bounds.width <= actualSize.width + 1)
+                #expect(quickFilterScroll.contentView.bounds.width > 0)
+                let quickFilterDocument = try #require(quickFilterScroll.documentView)
+                if quickFilterDocument.bounds.width > quickFilterScroll.contentView.bounds.width {
+                    quickFilterScroll.contentView.scroll(to: NSPoint(
+                        x: quickFilterDocument.bounds.width - quickFilterScroll.contentView.bounds.width,
+                        y: 0
+                    ))
+                    quickFilterScroll.reflectScrolledClipView(quickFilterScroll.contentView)
+                    quickFilters.view.layoutSubtreeIfNeeded()
+                    #expect(quickFilterScroll.contentView.bounds.origin.x > 0)
+                    quickFilterScroll.contentView.scroll(to: .zero)
+                }
+                for pane in content.panes {
+                    #expect(pane.view.bounds.width > 0)
+                    #expect(pane.view.bounds.height > 0)
+                    #expect(pane.view.frame.maxX <= content.splitViewForTesting.bounds.width + 1)
+                    let editor = try #require(filterEditor(in: pane))
+                    let scroll = try #require(editor.view.enclosingScrollView)
+                    #expect(scroll.isHidden == !showsFilter)
+                    if showsFilter {
+                        #expect(scroll.hasHorizontalScroller)
+                        #expect(scroll.contentView.bounds.height >= editor.view.fittingSize.height - 1)
+                        if editor.view.bounds.width > scroll.contentView.bounds.width {
+                            scroll.contentView.scroll(to: NSPoint(x: editor.view.bounds.width - scroll.contentView.bounds.width, y: 0))
+                            scroll.reflectScrolledClipView(scroll.contentView)
+                            pane.view.layoutSubtreeIfNeeded()
+                            #expect(scroll.contentView.bounds.origin.x > 0)
+                            scroll.contentView.scroll(to: .zero)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Opening a split defaults both inspectors to Bottom, but never locks the manual placement controls.
+    @Test func splitOpeningDefaultsToBottomAndAllowsManualRightPlacement() throws {
+        let defaults = UserDefaults(suiteName: "split-inspector-placement-\(UUID())")!
+        defaults.set(NetworkInspectorPlacement.trailing.rawValue, forKey: "TCPViewer.inspectorPlacement")
+        let owner = TCPViewerWindowController(
+            services: .init(core: FakeTCPViewerCore(interfaceInventories: [[]])),
+            configuration: AppConfiguration(defaults: defaults)
+        )
+        defer { owner.window?.close() }
+        let first = owner.rootViewController
+        #expect(first.viewModel.snapshot.inspectorPlacement == .trailing)
+        owner.toggleSplitView(nil)
+        let content = try #require(owner.selectedTab?.contentController)
+        let second = try #require(content.secondPane)
+        #expect(first.viewModel.snapshot.inspectorPlacement == .bottom)
+        #expect(second.viewModel.snapshot.inspectorPlacement == .bottom)
+
+        first.viewModel.toggleInspector(placement: .trailing)
+        second.viewModel.toggleInspector(placement: .trailing)
+        #expect(first.viewModel.snapshot.inspectorPlacement == .trailing)
+        #expect(second.viewModel.snapshot.inspectorPlacement == .trailing)
+        #expect(first.viewModel.snapshot.isInspectorVisible)
+        #expect(second.viewModel.snapshot.isInspectorVisible)
+        #expect(content.showSecondPane { preconditionFailure("An existing split must be reused") } === second)
+        #expect(first.viewModel.snapshot.inspectorPlacement == .trailing)
+        #expect(second.viewModel.snapshot.inspectorPlacement == .trailing)
+
+        owner.toggleSplitView(nil)
+        #expect(content.secondPane == nil)
+        #expect(first.viewModel.snapshot.inspectorPlacement == .trailing)
+        owner.toggleSplitView(nil)
+        #expect(first.viewModel.snapshot.inspectorPlacement == .bottom)
+        #expect(content.secondPane?.viewModel.snapshot.inspectorPlacement == .bottom)
+        #expect(defaults.string(forKey: "TCPViewer.inspectorPlacement") == NetworkInspectorPlacement.trailing.rawValue)
+    }
+
     @Test func splitPaneCopiesEveryLocalFilterThenChangesIndependently() throws {
         let core = FakeTCPViewerCore(interfaceInventories: [[]])
         let source = TCPViewerCaptureWorkspace(services: .init(core: core))
@@ -592,7 +719,7 @@ struct WindowControllerTests {
         #expect(!first.isFocusedPane)
         #expect(second.isFocusedPane)
         #expect(first.view.layer?.borderWidth == 0)
-        #expect(second.view.layer?.borderWidth == 2)
+        #expect(second.view.layer?.borderWidth == 1)
         #expect(content.pane(containing: first.view) === first)
         #expect(content.pane(containing: second.view) === second)
         #expect(first.viewModel.captureWorkspace === second.viewModel.captureWorkspace)
@@ -615,7 +742,7 @@ struct WindowControllerTests {
         #expect(tab.pane === first)
         #expect(first.isFocusedPane)
         #expect(!second.isFocusedPane)
-        #expect(first.view.layer?.borderWidth == 2)
+        #expect(first.view.layer?.borderWidth == 1)
         #expect(second.view.layer?.borderWidth == 0)
         #expect(owner.window?.makeFirstResponder(second.view) == true)
         #expect(tab.pane === second)

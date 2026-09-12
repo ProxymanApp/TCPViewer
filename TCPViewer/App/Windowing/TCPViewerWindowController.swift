@@ -47,7 +47,6 @@ final class TCPViewerWindowController: NSWindowController {
         if #available(macOS 11.0, *) {
             window.titlebarSeparatorStyle = .automatic
         }
-        window.contentMinSize = Self.contentMinSize
         window.setContentSize(Self.defaultContentSize(for: window))
         window.center()
         window.isReleasedWhenClosed = false
@@ -302,15 +301,13 @@ final class TCPViewerWindowController: NSWindowController {
     }
 
     private static let frameAutosaveName = "TCPViewer.MainWindow"
-    private static let contentMinSize = NSSize(width: 1_180, height: 600)
     private static let defaultScreenRatio: CGFloat = 0.85
 
+    // Choose a display-sized launch frame without imposing an app-level resizing minimum.
     private static func defaultContentSize(for window: NSWindow) -> NSSize {
         let visibleFrame = (window.screen ?? NSScreen.main ?? NSScreen.screens.first)?.visibleFrame
             ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        let width = max(contentMinSize.width, visibleFrame.width * defaultScreenRatio)
-        let height = max(contentMinSize.height, visibleFrame.height * defaultScreenRatio)
-        return NSSize(width: width, height: height)
+        return NSSize(width: visibleFrame.width * defaultScreenRatio, height: visibleFrame.height * defaultScreenRatio)
     }
 
     @available(*, unavailable)
