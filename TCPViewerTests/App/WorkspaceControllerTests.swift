@@ -186,6 +186,266 @@ struct WindowControllerTests {
         #expect(!source.statusMetricsService.isSampling)
     }
 
+    @Test func splitPaneIsLazyLimitedToTwoAndFullyReleasedAcrossFiftyCycles() async throws {
+        let core = FakeTCPViewerCore(interfaceInventories: [[]])
+        let source = TCPViewerCaptureWorkspace(services: .init(core: core))
+        let defaults = UserDefaults(suiteName: "split-lifetime-\(UUID())")!
+        let configuration = AppConfiguration(defaults: defaults)
+        let tab = TCPViewerWorkspaceTab(source: source)
+        let first = try #require(tab.openPane { source in
+            TCPViewerRootViewController(
+                viewModel: NetworkInspectorViewModel(
+                    services: source.controller.services,
+                    captureWorkspace: source,
+                    userDefaults: defaults
+                ),
+                configuration: configuration
+            )
+        })
+        first.loadViewIfNeeded()
+        tab.contentController?.loadViewIfNeeded()
+        #expect(tab.secondPane == nil)
+        #expect(source.subscriberCountForTesting == 1)
+
+        for cycle in 0..<50 {
+            weak var releasedPane: TCPViewerRootViewController?
+            weak var releasedModel: NetworkInspectorViewModel?
+            var releasedHierarchy: [WeakTabTestObject] = []
+            autoreleasepool {
+                let second = tab.openSecondPane { source, state in
+                    TCPViewerRootViewController(
+                        viewModel: NetworkInspectorViewModel(
+                            services: source.controller.services,
+                            captureWorkspace: source,
+                            userDefaults: defaults,
+                            paneState: state
+                        ),
+                        configuration: configuration
+                    )
+                }
+                #expect(second != nil)
+                #expect(tab.openSecondPane { _, _ in Issue.record("Created a third pane"); return first } === second)
+                second?.loadViewIfNeeded()
+                tab.contentController?.view.frame = NSRect(x: 0, y: 0, width: 1_200, height: 700)
+                tab.contentController?.view.layoutSubtreeIfNeeded()
+                #expect(tab.contentController?.splitViewForTesting.arrangedSubviews.count == 2)
+                #expect(source.subscriberCountForTesting == 2)
+                if cycle == 0, let splitView = tab.contentController?.splitViewForTesting {
+                    let widths = splitView.arrangedSubviews.map(\.frame.width)
+                    #expect(abs(widths[0] - widths[1]) <= 2)
+                    #expect(widths.allSatisfy { $0 >= 300 })
+                    #expect(splitView.dividerThickness > 0)
+                }
+                if let second { releasedHierarchy = weakHierarchy(of: second) }
+                releasedPane = second
+                releasedModel = second?.viewModel
+                tab.closeSplitView()
+                #expect(tab.secondPane == nil)
+                #expect(tab.pane === first)
+            }
+            await waitUntil {
+                releasedPane == nil && releasedModel == nil &&
+                    releasedHierarchy.allSatisfy { $0.object == nil }
+            }
+            #expect(releasedPane == nil)
+            #expect(releasedModel == nil)
+            let retainedTypes = releasedHierarchy.compactMap(\.typeName)
+            #expect(retainedTypes.isEmpty, "Retained split hierarchy: \(retainedTypes)")
+            #expect(source.subscriberCountForTesting == 1)
+        }
+
+        tab.close()
+        #expect(source.subscriberCountForTesting == 0)
+        #expect(core.liveSessionRequests.isEmpty)
+        source.close()
+    }
+
+    // Populated inspectors must not restore the old large window-size floor when panes change.
+    @Test(arguments: [false, true], [false, true])
+    func mainWindowResizesToCompactContent(opensSplit: Bool, sidebarVisible: Bool) async throws {
+        let packet = makePacket(packetNumber: 1, source: .offline, transportHint: .tcp)
+        let inspection = makeInspection(for: packet)
+        let core = FakeTCPViewerCore(interfaceInventories: [[]], documentFactory: { url in
+            FakeOfflineDocument(
+                url: url,
+                metadata: .init(format: .pcapng),
+                openPlan: .completed([packet]),
+                inspections: [packet.id: inspection]
+            )
+        })
+        let defaults = UserDefaults(suiteName: "compact-window-\(UUID())")!
+        let owner = TCPViewerWindowController(
+            services: .init(core: core),
+            configuration: AppConfiguration(defaults: defaults),
+            startsWithLiveTab: false
+        )
+        defer { owner.window?.close() }
+        let result = await withCheckedContinuation { continuation in
+            owner.importCaptureURLs([URL(fileURLWithPath: "/tmp/compact-window.pcapng")], automaticNewTab: true) {
+                continuation.resume(returning: $0)
+            }
+        }
+        #expect(result.error == nil)
+        let window = try #require(owner.window)
+        let first = owner.rootViewController
+        first.viewModel.showInspectorForSplitView()
+        first.viewModel.selectPacket(packet.id)
+        await waitUntil { first.viewModel.snapshot.base.inspectionState.inspection?.packetID == packet.id }
+        #expect(first.viewModel.snapshot.base.inspectionState.inspection?.packetID == packet.id)
+        owner.workspaceViewController.setSidebarVisible(sidebarVisible, viewModel: first.viewModel, persistPreference: false)
+        if opensSplit { owner.toggleSplitView(nil) }
+        await settleEventLoop()
+
+        let compactSize = sidebarVisible ? NSSize(width: 840, height: 450) : NSSize(width: 640, height: 400)
+        #expect(window.contentMinSize.width <= compactSize.width)
+        #expect(window.contentMinSize.height <= compactSize.height)
+        func filterEditor(in controller: NSViewController) -> PacketStructuredFilterViewController? {
+            if let editor = controller as? PacketStructuredFilterViewController { return editor }
+            return controller.children.compactMap { filterEditor(in: $0) }.first
+        }
+        let content = try #require(owner.selectedTab?.contentController)
+        let quickFilters = try #require(window.titlebarAccessoryViewControllers.first { $0 is PacketQuickFilterViewController })
+        let quickFilterScroll = try #require(quickFilters.view.subviews.compactMap { $0 as? NSScrollView }.first)
+        for showsFilter in [false, true, false] {
+            content.panes.forEach { $0.viewModel.setStructuredFilterVisible(showsFilter) }
+            for size in [compactSize, NSSize(width: 1_000, height: 700), compactSize] {
+                window.setContentSize(size)
+                window.contentView?.layoutSubtreeIfNeeded()
+                await settleEventLoop()
+                let actualSize = window.contentRect(forFrameRect: window.frame).size
+                #expect(actualSize.width == size.width)
+                #expect(actualSize.height == size.height)
+                #expect(content.view.bounds.width <= actualSize.width + 1)
+                #expect(quickFilterScroll.contentView.bounds.width > 0)
+                let quickFilterDocument = try #require(quickFilterScroll.documentView)
+                if quickFilterDocument.bounds.width > quickFilterScroll.contentView.bounds.width {
+                    quickFilterScroll.contentView.scroll(to: NSPoint(
+                        x: quickFilterDocument.bounds.width - quickFilterScroll.contentView.bounds.width,
+                        y: 0
+                    ))
+                    quickFilterScroll.reflectScrolledClipView(quickFilterScroll.contentView)
+                    quickFilters.view.layoutSubtreeIfNeeded()
+                    #expect(quickFilterScroll.contentView.bounds.origin.x > 0)
+                    quickFilterScroll.contentView.scroll(to: .zero)
+                }
+                for pane in content.panes {
+                    #expect(pane.view.bounds.width > 0)
+                    #expect(pane.view.bounds.height > 0)
+                    #expect(pane.view.frame.maxX <= content.splitViewForTesting.bounds.width + 1)
+                    let editor = try #require(filterEditor(in: pane))
+                    let scroll = try #require(editor.view.enclosingScrollView)
+                    #expect(scroll.isHidden == !showsFilter)
+                    if showsFilter {
+                        #expect(scroll.hasHorizontalScroller)
+                        #expect(scroll.contentView.bounds.height >= editor.view.fittingSize.height - 1)
+                        if editor.view.bounds.width > scroll.contentView.bounds.width {
+                            scroll.contentView.scroll(to: NSPoint(x: editor.view.bounds.width - scroll.contentView.bounds.width, y: 0))
+                            scroll.reflectScrolledClipView(scroll.contentView)
+                            pane.view.layoutSubtreeIfNeeded()
+                            #expect(scroll.contentView.bounds.origin.x > 0)
+                            scroll.contentView.scroll(to: .zero)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Opening a split defaults both inspectors to Bottom, but never locks the manual placement controls.
+    @Test func splitOpeningDefaultsToBottomAndAllowsManualRightPlacement() throws {
+        let defaults = UserDefaults(suiteName: "split-inspector-placement-\(UUID())")!
+        defaults.set(NetworkInspectorPlacement.trailing.rawValue, forKey: "TCPViewer.inspectorPlacement")
+        let owner = TCPViewerWindowController(
+            services: .init(core: FakeTCPViewerCore(interfaceInventories: [[]])),
+            configuration: AppConfiguration(defaults: defaults)
+        )
+        defer { owner.window?.close() }
+        let first = owner.rootViewController
+        #expect(first.viewModel.snapshot.inspectorPlacement == .trailing)
+        owner.toggleSplitView(nil)
+        let content = try #require(owner.selectedTab?.contentController)
+        let second = try #require(content.secondPane)
+        #expect(first.viewModel.snapshot.inspectorPlacement == .bottom)
+        #expect(second.viewModel.snapshot.inspectorPlacement == .bottom)
+
+        first.viewModel.toggleInspector(placement: .trailing)
+        second.viewModel.toggleInspector(placement: .trailing)
+        #expect(first.viewModel.snapshot.inspectorPlacement == .trailing)
+        #expect(second.viewModel.snapshot.inspectorPlacement == .trailing)
+        #expect(first.viewModel.snapshot.isInspectorVisible)
+        #expect(second.viewModel.snapshot.isInspectorVisible)
+        #expect(content.showSecondPane { preconditionFailure("An existing split must be reused") } === second)
+        #expect(first.viewModel.snapshot.inspectorPlacement == .trailing)
+        #expect(second.viewModel.snapshot.inspectorPlacement == .trailing)
+
+        owner.toggleSplitView(nil)
+        #expect(content.secondPane == nil)
+        #expect(first.viewModel.snapshot.inspectorPlacement == .trailing)
+        owner.toggleSplitView(nil)
+        #expect(first.viewModel.snapshot.inspectorPlacement == .bottom)
+        #expect(content.secondPane?.viewModel.snapshot.inspectorPlacement == .bottom)
+        #expect(defaults.string(forKey: "TCPViewer.inspectorPlacement") == NetworkInspectorPlacement.trailing.rawValue)
+    }
+
+    @Test func splitPaneCopiesEveryLocalFilterThenChangesIndependently() throws {
+        let core = FakeTCPViewerCore(interfaceInventories: [[]])
+        let source = TCPViewerCaptureWorkspace(services: .init(core: core))
+        let defaults = UserDefaults(suiteName: "split-state-\(UUID())")!
+        let first = NetworkInspectorViewModel(
+            services: source.controller.services,
+            captureWorkspace: source,
+            userDefaults: defaults
+        )
+        defer { first.close(); source.close() }
+        let builder = PacketStructuredFilterGroup(filters: [
+            PacketStructuredFilter(query: .protocol, condition: .contains, text: "tcp"),
+        ])
+        first.updateSourceListFilterText("source query")
+        first.updateDisplayFilterText("protocol:tcp")
+        first.toggleQuickFilter(.tcp)
+        first.updateStructuredFilterGroup(builder)
+        first.setStructuredFilterVisible(true)
+        let customFilter = try first.saveCustomFilter(name: "TCP only", group: builder)
+        first.selectWorkspaceMode(.overview)
+        first.selectInspectorTab(.hex)
+        first.rememberInspectorThickness(320, placement: .bottom)
+
+        let copied = NetworkInspectorViewModel(
+            services: source.controller.services,
+            captureWorkspace: source,
+            userDefaults: defaults,
+            paneState: first.makeSplitPaneState()
+        )
+        #expect(copied.snapshot.sourceListFilterText == "source query")
+        #expect(copied.snapshot.displayFilterText == "protocol:tcp")
+        #expect(copied.snapshot.quickFilterSelection == PacketQuickFilterSelection(selectedIDs: [.tcp]))
+        #expect(copied.snapshot.structuredFilterGroup == builder)
+        #expect(copied.snapshot.workspaceMode == .overview)
+        #expect(copied.snapshot.inspectorTab == .hex)
+        #expect(copied.preferredInspectorThickness(for: 800, placement: .bottom) == 320)
+        #expect(copied.snapshot.customFilterItems.first { $0.id == customFilter.id }?.isSelected == true)
+
+        first.updateDisplayFilterText("protocol:udp")
+        first.toggleQuickFilter(.udp)
+        #expect(copied.snapshot.displayFilterText == "protocol:tcp")
+        #expect(copied.snapshot.quickFilterSelection == PacketQuickFilterSelection(selectedIDs: [.tcp]))
+        copied.close()
+
+        first.setFilterMode(.wireshark)
+        first.updateWiresharkFilterDraft("tcp.port == 443")
+        let wiresharkCopy = NetworkInspectorViewModel(
+            services: source.controller.services,
+            captureWorkspace: source,
+            userDefaults: defaults,
+            paneState: first.makeSplitPaneState()
+        )
+        #expect(wiresharkCopy.snapshot.filterMode == .wireshark)
+        #expect(wiresharkCopy.snapshot.wiresharkFilterState.draftExpression == "tcp.port == 443")
+        #expect(wiresharkCopy.snapshot.structuredFilterGroup.filters.first?.text == "tcp.port == 443")
+        #expect(wiresharkCopy.snapshot.structuredFilterGroup.filters.first?.query == .anyText)
+        wiresharkCopy.close()
+    }
+
     @Test func livePanesShareCaptureButKeepSelectionAndFiltersIndependent() async {
         let first = makePacket(packetNumber: 1, source: .live, transportHint: .tcp)
         let second = makePacket(packetNumber: 2, source: .live, transportHint: .udp)
@@ -397,6 +657,134 @@ struct WindowControllerTests {
         #expect(owner.workspaceViewController.tabBarHeightForTesting == 34)
     }
 
+    @Test func sourceListActionCreatesAndReusesSplitPaneWithoutChangingFirstPane() async throws {
+        let client = PacketClient(
+            pid: 123,
+            name: "Sparkle",
+            displayName: "Sparkle",
+            executablePath: "/Applications/Sparkle.app/Contents/MacOS/Sparkle",
+            bundleIdentifier: "org.sparkle-project.Sparkle",
+            bundlePath: "/Applications/Sparkle.app"
+        )
+        let packet = makePacket(packetNumber: 1, source: .live, transportHint: .tcp, client: client)
+        let appKey = try #require(PacketSourceListClassifier.clientIdentity(for: packet)?.key)
+        let ipKey = PacketSourceIPAddressKey(rawValue: "10.0.0.2")
+        let live = FakeLiveSession()
+        live.inspections[packet.id] = makeInspection(for: packet)
+        let core = FakeTCPViewerCore(
+            interfaceInventories: [[makeInterface(id: "en0", displayName: "Test")]],
+            liveSession: live
+        )
+        let defaults = UserDefaults(suiteName: "split-source-list-\(UUID())")!
+        let owner = TCPViewerWindowController(
+            services: .init(
+                core: core,
+                packetMetadataEnricher: PacketMetadataEnrichmentService(
+                    clientResolver: WorkspaceFakePacketClientResolver(client: client)
+                )
+            ),
+            configuration: AppConfiguration(defaults: defaults)
+        )
+        defer { owner.window?.close() }
+        let first = owner.rootViewController
+        #expect(first.view.layer?.borderWidth == 0)
+        await waitUntil { first.viewModel.snapshot.base.sessionState.selectedInterfaceID == "en0" }
+        await owner.liveWorkspace.controller.startLiveCapture()
+        live.send(.liveStateChanged(phase: .running, message: "Running"))
+        live.send(.packetBatch([packet], disposition: .append))
+        await waitUntil {
+            first.viewModel.snapshot.sourceListSnapshot.contains(selection: .app(appKey)) &&
+                first.viewModel.snapshot.sourceListSnapshot.contains(selection: .ipAddress(ipKey))
+        }
+
+        // A context click temporarily selects the target in the shared sidebar before the action runs.
+        first.selectSourceListWhenAvailable(.app(appKey))
+        await waitUntil { first.viewModel.snapshot.selectedSourceListSelection == .app(appKey) }
+        first.viewModel.selectPacket(packet.id)
+        await waitUntil {
+            first.viewModel.snapshot.base.inspectionState.inspection?.packetID == packet.id
+        }
+        first.viewModel.selectDetailNode("frame.number")
+        owner.tcpviewerRootViewController(
+            first,
+            didRequestOpenInSplitView: .app(appKey),
+            preserving: .allPackets
+        )
+
+        let tab = try #require(owner.selectedTab)
+        let second = try #require(tab.secondPane)
+        let content = try #require(tab.contentController)
+        #expect(tab.firstPane === first)
+        #expect(tab.pane === second)
+        #expect(!first.isFocusedPane)
+        #expect(second.isFocusedPane)
+        #expect(first.view.layer?.borderWidth == 0)
+        #expect(second.view.layer?.borderWidth == 1)
+        #expect(content.pane(containing: first.view) === first)
+        #expect(content.pane(containing: second.view) === second)
+        #expect(first.viewModel.captureWorkspace === second.viewModel.captureWorkspace)
+        #expect(owner.tabs.count == 1)
+        await waitUntil {
+            first.viewModel.snapshot.selectedSourceListSelection == .allPackets &&
+                second.viewModel.snapshot.selectedSourceListSelection == .app(appKey) &&
+                second.viewModel.snapshot.base.inspectionState.inspection?.packetID == packet.id
+        }
+        #expect(second.viewModel.snapshot.selectedPacketID == packet.id)
+        #expect(second.viewModel.snapshot.base.inspectionState.selectedDetailNodeID == "frame.number")
+        #expect(first.viewModel.snapshot.inspectorPlacement == .bottom)
+        #expect(second.viewModel.snapshot.inspectorPlacement == .bottom)
+        #expect(first.viewModel.snapshot.isInspectorVisible)
+        #expect(second.viewModel.snapshot.isInspectorVisible)
+        #expect(core.liveSessionRequests.count == 1)
+        #expect(live.startCount == 1)
+
+        #expect(owner.window?.makeFirstResponder(first.view) == true)
+        #expect(tab.pane === first)
+        #expect(first.isFocusedPane)
+        #expect(!second.isFocusedPane)
+        #expect(first.view.layer?.borderWidth == 1)
+        #expect(second.view.layer?.borderWidth == 0)
+        #expect(owner.window?.makeFirstResponder(second.view) == true)
+        #expect(tab.pane === second)
+
+        let splitMenuItem = NSMenuItem(
+            title: "Toggle Split View",
+            action: #selector(TCPViewerWindowController.toggleSplitView(_:)),
+            keyEquivalent: ""
+        )
+        #expect(owner.validateMenuItem(splitMenuItem))
+        #expect(splitMenuItem.state == .on)
+
+        second.viewModel.updateDisplayFilterText("right-only")
+        owner.tcpviewerRootViewController(
+            second,
+            didRequestOpenInSplitView: .ipAddress(ipKey),
+            preserving: .app(appKey)
+        )
+        #expect(tab.secondPane === second)
+        await waitUntil { second.viewModel.snapshot.selectedSourceListSelection == .ipAddress(ipKey) }
+        #expect(first.viewModel.snapshot.selectedSourceListSelection == .allPackets)
+        #expect(second.viewModel.snapshot.displayFilterText == "right-only")
+
+        owner.newWorkspaceTab(nil)
+        #expect(!first.viewModel.isActive)
+        #expect(!second.viewModel.isActive)
+        owner.selectTab(tab.id)
+        #expect(first.viewModel.isActive)
+        #expect(second.viewModel.isActive)
+        #expect(tab.isSplitViewVisible)
+
+        owner.toggleSplitView(nil)
+        #expect(tab.secondPane == nil)
+        #expect(tab.pane === first)
+        #expect(second.isClosed)
+        #expect(second.viewModel.isClosed)
+        #expect(first.view.layer?.borderWidth == 0)
+        #expect(owner.liveWorkspace.subscriberCountForTesting == 1)
+        #expect(owner.validateMenuItem(splitMenuItem))
+        #expect(splitMenuItem.state == .off)
+    }
+
     @Test func importerGroupsFilesInOfflineTabWithoutChangingSharedLiveSource() async throws {
         let core = FakeTCPViewerCore(interfaceInventories: [[]], documentFactory: { url in
             FakeOfflineDocument(url: url, metadata: .init(format: .pcapng), openPlan: .completed([]))
@@ -420,6 +808,16 @@ struct WindowControllerTests {
         let emptyWorkspace = PacketWorkspaceViewModel()
         emptyWorkspace.render(snapshot: offline.pane!.viewModel.snapshot)
         #expect(emptyWorkspace.emptyMessage == "This capture contains no packets.")
+        #expect(offline.firstPane != nil)
+        owner.toggleSplitView(nil)
+        let offlineSecondPane = try #require(offline.secondPane)
+        #expect(offlineSecondPane.viewModel.isOffline)
+        #expect(offlineSecondPane.viewModel.captureWorkspace === offline.source)
+        #expect(owner.tabs.count == 2)
+        #expect(core.liveSessionRequests.isEmpty)
+        owner.toggleSplitView(nil)
+        #expect(offline.secondPane == nil)
+        #expect(offlineSecondPane.isClosed)
         #expect(liveTab.source === owner.liveWorkspace)
         #expect(core.liveSessionRequests.isEmpty)
         let replacement = owner.makeOfflineWorkspace()
@@ -659,6 +1057,22 @@ struct WindowControllerTests {
         controller.children.flatMap { [WeakTabTestObject($0)] + weakDescendants(of: $0) }
     }
 
+    private func weakHierarchy(of controller: NSViewController) -> [WeakTabTestObject] {
+        [WeakTabTestObject(controller)] + trackedView(controller.view) +
+            weakViews(in: controller.view) + controller.children.flatMap { weakHierarchy(of: $0) }
+    }
+
+    private func weakViews(in view: NSView) -> [WeakTabTestObject] {
+        view.subviews.flatMap { trackedView($0) + weakViews(in: $0) }
+    }
+
+    // NSSplitView keeps private implementation views cached after its controller is gone; track every app-owned view around them.
+    private func trackedView(_ view: NSView) -> [WeakTabTestObject] {
+        let typeName = String(describing: type(of: view))
+        guard !(view is NSSplitView), !typeName.hasPrefix("_NSSplitView") else { return [] }
+        return [WeakTabTestObject(view)]
+    }
+
     @Test func controllerInitialLoadSelectsFirstEligibleInterface() async {
         let fakeCore = FakeTCPViewerCore(
             interfaceInventories: [[
@@ -759,6 +1173,53 @@ struct WindowControllerTests {
         ))
         let button = try #require(item.view as? NSButton)
         #expect(button.toolTip == "Clear All Packets (⌘K)")
+    }
+
+    @Test func splitToolbarButtonRendersStateAndMigrationRunsOnlyOnce() throws {
+        let suiteName = "split-toolbar-\(UUID())"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let dataSource = TCPViewerToolbarDataSource(userDefaults: defaults, autosavesConfiguration: false)
+        let item = try #require(dataSource.toolbar(
+            dataSource.toolbar,
+            itemForItemIdentifier: NSToolbarItem.Identifier("TCPViewer.SplitView"),
+            willBeInsertedIntoToolbar: true
+        ))
+        let button = try #require(item.view as? NSButton)
+        let inspector = NetworkInspectorViewModel(userDefaults: defaults)
+        defer { inspector.close() }
+
+        dataSource.render(
+            snapshot: inspector.snapshot,
+            inspectorViewModel: inspector,
+            isLicenseAuthorized: true,
+            isSplitViewVisible: false
+        )
+        #expect(button.state == .off)
+        #expect(button.toolTip == "Show Split View")
+        dataSource.render(
+            snapshot: inspector.snapshot,
+            inspectorViewModel: inspector,
+            isLicenseAuthorized: true,
+            isSplitViewVisible: true
+        )
+        #expect(button.state == .on)
+        #expect(button.toolTip == "Hide Split View")
+
+        dataSource.installSplitViewItemIfNeeded()
+        #expect(defaults.bool(forKey: TCPViewerToolbarDataSource.splitViewMigrationKey))
+        let defaultIdentifiers = dataSource.toolbarDefaultItemIdentifiers(dataSource.toolbar)
+        let defaultSplitIndex = try #require(defaultIdentifiers.firstIndex(of: NSToolbarItem.Identifier("TCPViewer.SplitView")))
+        let defaultInspectorIndex = try #require(defaultIdentifiers.firstIndex(of: NSToolbarItem.Identifier("TCPViewer.InspectorBottom")))
+        #expect(defaultSplitIndex < defaultInspectorIndex)
+        let splitIndex = try #require(dataSource.toolbar.items.firstIndex {
+            $0.itemIdentifier == NSToolbarItem.Identifier("TCPViewer.SplitView")
+        })
+        dataSource.toolbar.removeItem(at: splitIndex)
+        dataSource.installSplitViewItemIfNeeded()
+        #expect(!dataSource.toolbar.items.contains {
+            $0.itemIdentifier == NSToolbarItem.Identifier("TCPViewer.SplitView")
+        })
     }
 
     @Test func interfacePopupWidthIncludesSelectedIcon() {
@@ -3178,6 +3639,10 @@ private final class AsyncGate {
 private final class WeakTabTestObject {
     weak var object: AnyObject?
     init(_ object: AnyObject) { self.object = object }
+
+    var typeName: String? {
+        object.map { String(reflecting: type(of: $0)) }
+    }
 }
 
 private final class WorkspaceFakePacketClientResolver: PacketClientResolving {

@@ -106,11 +106,16 @@ final class StatusStripViewController: NSViewController {
 
         totalLabel.alignment = .center
         totalLabel.translatesAutoresizingMaskIntoConstraints = false
+        totalLabel.lineBreakMode = .byTruncatingTail
+        // Keep optional status text below fitting-size priority so it cannot widen split panes.
+        totalLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
 
         metricsLabel.alignment = .right
         metricsLabel.toolTip = "App memory and captured upload/download speed"
         metricsLabel.translatesAutoresizingMaskIntoConstraints = false
-        metricsLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        // Status text can truncate in compact panes instead of setting their minimum width.
+        metricsLabel.lineBreakMode = .byTruncatingHead
+        metricsLabel.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
 
         let controlStack = NSStackView(views: [
             cancelButton,
@@ -129,7 +134,7 @@ final class StatusStripViewController: NSViewController {
         view.addSubview(metricsLabel)
 
         let totalCenterConstraint = totalLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor)
-        totalCenterConstraint.priority = .defaultHigh
+        totalCenterConstraint.priority = NSLayoutConstraint.Priority(1)
 
         NSLayoutConstraint.activate([
             view.heightAnchor.constraint(equalToConstant: 33),

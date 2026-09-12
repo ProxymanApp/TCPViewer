@@ -361,6 +361,12 @@
                                                 <action selector="toggleSidebar:" target="Ady-hI-5gd" id="iwa-gc-5KM"/>
                                             </connections>
                                         </menuItem>
+                                        <menuItem title="Toggle Split View" id="TCP-Split-Toggle">
+                                            <modifierMask key="keyEquivalentModifierMask"/>
+                                            <connections>
+                                                <action selector="toggleSplitView:" target="Ady-hI-5gd" id="TCP-Split-Toggle-Action"/>
+                                            </connections>
+                                        </menuItem>
                                         <menuItem title="Focus Sidebar Filter" keyEquivalent="F" id="u7v-AH-b6Z">
                                             <modifierMask key="keyEquivalentModifierMask" shift="YES" command="YES"/>
                                             <connections>

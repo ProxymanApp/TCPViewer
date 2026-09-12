@@ -14,6 +14,12 @@ protocol SidebarViewControllerDelegate: AnyObject {
     func sidebarViewController(_ controller: SidebarViewController, didUpdateFilterText text: String)
     func sidebarViewController(_ controller: SidebarViewController, canOpenInNewTab selection: PacketSourceListSelection) -> Bool
     func sidebarViewController(_ controller: SidebarViewController, didRequestOpenInNewTab selection: PacketSourceListSelection)
+    func sidebarViewController(_ controller: SidebarViewController, canOpenInSplitView selection: PacketSourceListSelection) -> Bool
+    func sidebarViewController(
+        _ controller: SidebarViewController,
+        didRequestOpenInSplitView selection: PacketSourceListSelection,
+        preserving originalSelection: PacketSourceListSelection
+    )
     func sidebarViewController(_ controller: SidebarViewController, didRequestPin targets: [PacketSourceListPinTarget])
     func sidebarViewController(_ controller: SidebarViewController, didRequestDelete action: PacketSourceListDeletionAction)
     func sidebarViewController(_ controller: SidebarViewController, didRequestExport selection: PacketSourceListSelection, format: CaptureFileFormat)
@@ -274,6 +280,7 @@ final class SidebarViewController: NSViewController {
     private var isSyncingExpansion = false
     private var isSyncingFilter = false
     private var contextMenuItemID: String?
+    private var contextMenuOriginalSelection: PacketSourceListSelection?
     private var outlineReloadGeneration = 0
 
     deinit {
@@ -775,6 +782,17 @@ final class SidebarViewController: NSViewController {
         return selection
     }
 
+    private func selectedOpenInSplitViewSelection() -> PacketSourceListSelection? {
+        let item = contextSourceItem() ?? selectedSourceItem()
+        guard PacketSourceListCopyPolicy.action(for: item) != nil,
+              let selection = item?.selection,
+              delegate?.sidebarViewController(self, canOpenInSplitView: selection) == true else {
+            return nil
+        }
+
+        return selection
+    }
+
     private func selectedPinTargets() -> [PacketSourceListPinTarget] {
         PacketSourceListPinPolicy.targets(for: selectedSourceItems())
     }
@@ -827,6 +845,15 @@ final class SidebarViewController: NSViewController {
         }
 
         delegate?.sidebarViewController(self, didRequestOpenInNewTab: selection)
+    }
+
+    @objc private func openSelectedSourceListItemInSplitView(_ sender: Any?) {
+        guard let selection = selectedOpenInSplitViewSelection() else { return }
+        delegate?.sidebarViewController(
+            self,
+            didRequestOpenInSplitView: selection,
+            preserving: contextMenuOriginalSelection ?? viewModel.selectedSelection
+        )
     }
 
     @objc private func deleteSelectedSourceListItem(_ sender: Any?) {
@@ -1031,16 +1058,19 @@ extension SidebarViewController: NSSearchFieldDelegate {
 extension SidebarViewController: NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         // Rebuild the available actions for the rows targeted by the current click.
+        contextMenuOriginalSelection = viewModel.selectedSelection
         updateSelectionFromCurrentMenuEvent()
         let copyAction = selectedCopyAction()
         let openInNewTabSelection = selectedOpenInNewTabSelection()
+        let openInSplitViewSelection = selectedOpenInSplitViewSelection()
         let pinTargets = selectedPinTargets()
         let action = selectedDeletionAction()
         let exportSelection = selectedExportSelection()
         let finderURL = selectedFinderURL()
 
         menu.removeAllItems()
-        guard copyAction != nil || openInNewTabSelection != nil || !pinTargets.isEmpty || action.isEnabled || exportSelection != nil || finderURL != nil else {
+        guard copyAction != nil || openInNewTabSelection != nil || openInSplitViewSelection != nil ||
+                !pinTargets.isEmpty || action.isEnabled || exportSelection != nil || finderURL != nil else {
             return
         }
 
@@ -1052,20 +1082,30 @@ extension SidebarViewController: NSMenuDelegate {
             menu.addItem(pinItem)
         }
 
-        if openInNewTabSelection != nil {
+        if openInNewTabSelection != nil || openInSplitViewSelection != nil {
             if !pinTargets.isEmpty {
                 menu.addItem(.separator())
             }
 
-            let openItem = NSMenuItem(title: "Open in New Tab", action: #selector(openSelectedSourceListItemInNewTab(_:)), keyEquivalent: "")
-            openItem.target = self
-            openItem.isEnabled = true
-            openItem.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "Open in New Tab")
-            menu.addItem(openItem)
+            if openInNewTabSelection != nil {
+                let openItem = NSMenuItem(title: "Open in New Tab", action: #selector(openSelectedSourceListItemInNewTab(_:)), keyEquivalent: "")
+                openItem.target = self
+                openItem.isEnabled = true
+                openItem.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "Open in New Tab")
+                menu.addItem(openItem)
+            }
+
+            if openInSplitViewSelection != nil {
+                let splitItem = NSMenuItem(title: "Open in Split View", action: #selector(openSelectedSourceListItemInSplitView(_:)), keyEquivalent: "")
+                splitItem.target = self
+                splitItem.isEnabled = true
+                splitItem.image = NSImage(systemSymbolName: "rectangle.split.2x1", accessibilityDescription: "Open in Split View")
+                menu.addItem(splitItem)
+            }
         }
 
         if let copyAction {
-            if !pinTargets.isEmpty || openInNewTabSelection != nil {
+            if !pinTargets.isEmpty || openInNewTabSelection != nil || openInSplitViewSelection != nil {
                 menu.addItem(.separator())
             }
 
@@ -1122,6 +1162,11 @@ extension SidebarViewController: NSMenuDelegate {
             deleteItem.image = NSImage(systemSymbolName: "trash", accessibilityDescription: "Delete")
             menu.addItem(deleteItem)
         }
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        contextMenuItemID = nil
+        contextMenuOriginalSelection = nil
     }
 }
 
