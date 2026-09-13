@@ -1078,7 +1078,7 @@ final class NetworkInspectorViewModel {
 
     private(set) var snapshot: NetworkInspectorSnapshot {
         didSet {
-            delegate?.networkInspectorViewModelDidChange(self)
+            if isActive { delegate?.networkInspectorViewModelDidChange(self) }
         }
     }
     private(set) var statusMetricsSnapshot: TCPViewerStatusMetricsSnapshot = .empty
@@ -1088,6 +1088,8 @@ final class NetworkInspectorViewModel {
     private let paneSelection: TCPViewerPaneSelection
     private let lifetimeCancellation = PacketExportCancellationToken()
     private(set) var isActive = true
+    private var automationUseCount = 0
+    var automationMutationIsRunning = false
     private(set) var isClosed = false
     private var inspectorThicknessByPlacement: [NetworkInspectorPlacement: CGFloat] = [:]
 
@@ -1280,7 +1282,7 @@ final class NetworkInspectorViewModel {
         isUsingSessionDocumentState = workspace.kind == .offline
         if workspace.kind == .offline, let state = controller.currentDocumentSessionState {
             applySessionDocumentState(state)
-            pendingSessionImportReport = controller.currentDocumentSessionImportReport
+            pendingSessionImportReport = workspace.suppressesImportPresentation ? nil : controller.currentDocumentSessionImportReport
         }
         if let paneState {
             applyPaneState(paneState)
@@ -1384,6 +1386,7 @@ final class NetworkInspectorViewModel {
         guard isActive else { return }
         isActive = false
         captureWorkspace.unsubscribe(self)
+        if automationUseCount > 0, !isClosed { return }
         cancelPendingRebuild()
         cancelActivePacketTableFilterJob()
         cancelWiresharkFilterEvaluation(clearMembership: false)
@@ -1413,6 +1416,74 @@ final class NetworkInspectorViewModel {
         delegate = nil
         endpointStatisticsIngestHandler = nil
         captureWorkspace.unsubscribe(self)
+    }
+
+    // Command leases evaluate an inactive pane without subscribing it to live presentation updates.
+    func beginAutomation() throws {
+        guard !isClosed else { throw TCPViewerMCPDataSourceError.invalidState("The pane is closed.") }
+        automationUseCount += 1
+        paneSelection.refreshSource()
+        rebuildSnapshot()
+    }
+
+    // Drop temporary packet caches once the last command releases an inactive pane.
+    func endAutomation() {
+        automationUseCount = max(0, automationUseCount - 1)
+        if automationUseCount == 0, !isActive {
+            isActive = true
+            deactivate()
+        }
+    }
+
+    // Restore a dormant pane's Wireshark membership before a displayed-scope read.
+    func prepareAutomationScope(completion: @escaping (Result<Void, Error>) -> Void) {
+        if isStructuredFilterVisible, filterMode == .wireshark,
+           !wiresharkFilterState.draftExpression.isEmpty, wiresharkFilterMembership == nil {
+            applyWiresharkFilter { [weak self] succeeded in
+                guard let self else { return }
+                if succeeded { self.waitForAutomation(completion: completion) }
+                else { completion(.failure(TCPViewerMCPDataSourceError.invalidState("The Wireshark filter could not be applied."))) }
+            }
+        } else { waitForAutomation(completion: completion) }
+    }
+
+    // Wait only for this explicit command; no new presentation timer is installed.
+    func waitForAutomation(deadline: DispatchTime = .now() + 100,
+                           completion: @escaping (Result<Void, Error>) -> Void) {
+        guard !isClosed else {
+            completion(.failure(TCPViewerMCPDataSourceError.invalidState("The pane is closed."))); return
+        }
+        if !snapshot.isPacketTableFiltering, !wiresharkFilterState.isApplying, !wiresharkFilterState.isValidating {
+            completion(.success(())); return
+        }
+        guard DispatchTime.now() < deadline else {
+            completion(.failure(TCPViewerMCPDataSourceError.invalidState("The pane operation timed out."))); return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
+            self.waitForAutomation(deadline: deadline, completion: completion)
+        }
+    }
+
+    // Apply the existing filter models without toggling individual quick-filter buttons.
+    func setAutomationFilters(group: PacketStructuredFilterGroup?, quick: PacketQuickFilterSelection?,
+                              wireshark: String?, completion: @escaping (Result<Void, Error>) -> Void) {
+        if let quick { quickFilterService.apply(quick) }
+        if let group { updateStructuredFilterGroup(group); setStructuredFilterVisible(true) }
+        let expression = wireshark ?? group?.wiresharkExpression
+        if let expression {
+            setFilterMode(.wireshark)
+            updateWiresharkFilterDraft(expression)
+            pendingDisplayFilterValidationWorkItem?.cancel()
+            pendingDisplayFilterValidationWorkItem = nil
+            applyWiresharkFilter { [weak self] succeeded in
+                guard let self else { return }
+                if succeeded { self.waitForAutomation(completion: completion) }
+                else { completion(.failure(TCPViewerMCPDataSourceError.invalidState("The Wireshark filter is invalid or was cancelled."))) }
+            }
+        } else {
+            rebuildSnapshot()
+            prepareAutomationScope(completion: completion)
+        }
     }
 
     func performInitialLoadIfNeeded(completion: (() -> Void)? = nil) {
@@ -3495,7 +3566,7 @@ final class NetworkInspectorViewModel {
         selectsFirstVisiblePacketAfterFiltering: Bool = false,
         clearsSelectedPacket: Bool = false
     ) {
-        guard isActive, !isClosed else { return }
+        guard isActive || automationUseCount > 0, !isClosed else { return }
         cancelPendingRebuild()
         let pinnedItems = pinService.pins()
         let savedRecords = savedPacketService.records()
@@ -3752,7 +3823,7 @@ final class NetworkInspectorViewModel {
     }
 
     private func scheduleCoalescedRebuild() {
-        guard isActive, !isClosed else { return }
+        guard isActive || automationUseCount > 0, !isClosed else { return }
         guard pendingRebuildWorkItem == nil else {
             return
         }
@@ -3869,7 +3940,7 @@ final class NetworkInspectorViewModel {
 
 extension NetworkInspectorViewModel: TCPViewerWorkspaceControllerDelegate {
     func tcpViewerWorkspaceControllerDidChange(_ controller: TCPViewerWorkspaceController) {
-        guard isActive, !isClosed else { return }
+        guard isActive || automationUseCount > 0, !isClosed else { return }
         paneSelection.refreshSource()
         endpointStatisticsIngestHandler?(controller.snapshot.packetIngestState)
         applyStatusMetricsSnapshot(statusMetricsService.snapshot)

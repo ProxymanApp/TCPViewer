@@ -189,6 +189,7 @@ final class TCPViewerCLIWorkspaceLauncher: TCPViewerCLIAppLaunching {
             throw TCPViewerCLIClientError.appNotFound
         }
         let configuration = NSWorkspace.OpenConfiguration()
+        configuration.arguments = ["--tcpviewer-cli-launch"]
         configuration.activates = false
         configuration.addsToRecentItems = false
         configuration.createsNewApplicationInstance = false

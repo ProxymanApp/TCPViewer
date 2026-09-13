@@ -55,6 +55,10 @@ struct TCPViewerMCPNodeIntegrationTests {
         #expect((result["captureFilterDescription"] as? String)?.contains("not a packet query") == true)
         #expect((result["confirmBPFDescription"] as? String)?.contains("explicitly confirms") == true)
         #expect(result["startDestructiveHint"] as? Bool == true)
+        #expect(result["queryTargetFields"] as? [String] == ["workspace_id", "tab_id", "pane_id", "scope"])
+        #expect(result["followProtocols"] as? [String] == ["auto", "tcp", "udp"])
+        #expect(result["closeDestructiveHint"] as? Bool == true)
+        #expect(result["overviewReadOnlyHint"] as? Bool == true)
     }
 
     @Test func nodeDiscoveryUsesExecutableFromPATH() throws {
@@ -134,6 +138,7 @@ struct TCPViewerMCPNodeIntegrationTests {
           const listed = await request('tools/list', {});
           const queryTool = listed.tools.find(tool => tool.name === 'query_packets');
           const startTool = listed.tools.find(tool => tool.name === 'start_capture');
+          const followTool = listed.tools.find(tool => tool.name === 'follow_stream');
           const queried = await request('tools/call', {
             name: 'query_packets',
             arguments: { protocols: ['TLS'], limit: 1 }
@@ -154,7 +159,11 @@ struct TCPViewerMCPNodeIntegrationTests {
             startDescription: startTool.description,
             captureFilterDescription: startTool.inputSchema.properties.capture_filter.description,
             confirmBPFDescription: startTool.inputSchema.properties.confirm_bpf_filter.description,
-            startDestructiveHint: startTool.annotations.destructiveHint
+            startDestructiveHint: startTool.annotations.destructiveHint,
+            queryTargetFields: ['workspace_id', 'tab_id', 'pane_id', 'scope'].filter(key => queryTool.inputSchema.properties[key]),
+            followProtocols: followTool.inputSchema.properties.protocol.enum,
+            closeDestructiveHint: listed.tools.find(tool => tool.name === 'close_tab').annotations.destructiveHint,
+            overviewReadOnlyHint: listed.tools.find(tool => tool.name === 'get_overview_statistics').annotations.readOnlyHint
           }));
           clearTimeout(timeout);
           child.kill('SIGTERM');

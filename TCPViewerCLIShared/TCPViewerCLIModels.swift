@@ -8,6 +8,19 @@
 import Foundation
 
 enum TCPViewerCLICommand: String, Codable, CaseIterable {
+    case workspaceList = "workspace.list"
+    case tabsList = "tabs.list"
+    case tabsCreate = "tabs.create"
+    case tabsSelect = "tabs.select"
+    case tabsMove = "tabs.move"
+    case tabsClose = "tabs.close"
+    case paneGet = "pane.get"
+    case paneUpdate = "pane.update"
+    case splitSet = "split.set"
+    case paneFocus = "pane.focus"
+    case sourcesList = "sources.list"
+    case overviewGet = "overview.get"
+    case statisticsEndpoints = "statistics.endpoints"
     case appStatus = "app.status"
     case interfacesList = "interfaces.list"
     case captureStatus = "capture.status"

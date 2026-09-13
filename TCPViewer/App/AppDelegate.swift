@@ -28,6 +28,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var sentryService = TCPViewerSentryService(configuration: appConfiguration)
     private lazy var factoryResetService = TCPViewerFactoryResetService(helperToolManager: networkHelperToolManager)
     private lazy var cliCoordinator = TCPViewerCLICommandCoordinator(appDelegate: self)
+    private let isCLIBackgroundLaunch = ProcessInfo.processInfo.arguments.contains("--tcpviewer-cli-launch")
     private var isHandlingTermination = false
     private var skipsNextQuitConfirmation = false
     private var isShowingRenewalRequiredAlert = false
@@ -63,7 +64,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateMCPServerAvailability()
         networkHelperToolManager.refreshStatusForLaunch()
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.mainWindowController == nil else { return }
+            guard let self, !self.isCLIBackgroundLaunch, self.mainWindowController == nil else { return }
             self.focusWindowController(self.openMainWindow())
         }
         #if DEBUG
@@ -307,6 +308,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // CLI commands share the active workspace but never activate TCP Viewer implicitly.
+    func cliPrepareWorkspace(creatingTab: Bool) {
+        let controller = frontmostTCPViewerWindowController() ?? openMainWindow(startsWithLiveTab: !creatingTab)
+        if !creatingTab && controller.tabs.isEmpty { controller.newWorkspaceTab(nil) }
+    }
+
     func cliWorkspaceViewModel() throws -> NetworkInspectorViewModel {
         try frontmostOrNewTCPViewerWindowController().rootViewController.viewModel
     }
@@ -1019,7 +1025,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func showRenewalRequiredAlertIfNeeded() {
-        guard !isShowingRenewalRequiredAlert else {
+        guard (!isCLIBackgroundLaunch || NSApp.isActive), !isShowingRenewalRequiredAlert else {
             return
         }
 

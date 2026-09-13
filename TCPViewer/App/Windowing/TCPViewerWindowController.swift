@@ -11,6 +11,7 @@ import SwiftUI
 import Carbon
 
 final class TCPViewerWindowController: NSWindowController {
+    let automationID = UUID()
     let workspaceViewController = TCPViewerWorkspaceViewController()
     private(set) var tabs: [TCPViewerWorkspaceTab] = []
     private(set) var selectedTabID: UUID?
@@ -22,6 +23,12 @@ final class TCPViewerWindowController: NSWindowController {
     private let configuration: AppConfiguration
     private let isLicenseAuthorized: () -> Bool
     private var history = TCPViewerWorkspaceTabHistory()
+    private struct AutomationImport {
+        let source: TCPViewerCaptureWorkspace
+        weak var target: TCPViewerWorkspaceTab?
+        let cancellation: () -> Void
+    }
+    private var automationImports: [UUID: AutomationImport] = [:]
     private var isClosingWorkspace = false
     private var isReadyToClose = false
     var closeHandler: (() -> Void)?
@@ -139,8 +146,15 @@ final class TCPViewerWindowController: NSWindowController {
         if recordsHistory { history.visit(id) }
         workspaceViewController.sidebar.restoreNavigationState(next.sidebarNavigation)
         guard let pane = next.openPane(using: { source in
-            self.makePane(source: source)
+            self.makePane(source: source, existingModel: next.primaryModel)
         }) else { return }
+        let savedFocus = next.focusedPaneID
+        if next.isSplitViewVisible, next.secondPane == nil {
+            _ = next.openSecondPane { source, state in
+                self.makePane(source: source, paneState: state, existingModel: next.secondaryModel)
+            }
+            next.setAutomationFocus(savedFocus)
+        }
         guard let content = next.contentController else { return }
         workspaceViewController.show(content, tabCount: tabs.count)
         next.activate()
@@ -151,9 +165,16 @@ final class TCPViewerWindowController: NSWindowController {
 
     private func makePane(
         source: TCPViewerCaptureWorkspace,
-        paneState: NetworkInspectorPaneState? = nil
+        paneState: NetworkInspectorPaneState? = nil,
+        existingModel: NetworkInspectorViewModel? = nil
     ) -> TCPViewerRootViewController {
-        let model = NetworkInspectorViewModel(
+        let model = existingModel ?? makeAutomationModel(source: source, paneState: paneState)
+        return makePane(viewModel: model)
+    }
+
+    // Share pane models between command-only tabs and their lazily constructed AppKit views.
+    func makeAutomationModel(source: TCPViewerCaptureWorkspace, paneState: NetworkInspectorPaneState? = nil) -> NetworkInspectorViewModel {
+        NetworkInspectorViewModel(
             services: source.controller.services,
             captureWorkspace: source,
             freshPane: paneState == nil && source.kind == .live,
@@ -161,6 +182,9 @@ final class TCPViewerWindowController: NSWindowController {
             interfaceHistoryStore: configuration.interfaceSelectionHistory,
             paneState: paneState
         )
+    }
+
+    private func makePane(viewModel model: NetworkInspectorViewModel) -> TCPViewerRootViewController {
         let pane = TCPViewerRootViewController(
             viewModel: model,
             configuration: configuration,
@@ -194,7 +218,7 @@ final class TCPViewerWindowController: NSWindowController {
         } else {
             guard authorizeProFeature("Split View") else { return }
             if let pane = selectedTab.openSecondPane(using: { source, state in
-                self.makePane(source: source, paneState: state)
+                self.makePane(source: source, paneState: state, existingModel: selectedTab.secondaryModel)
             }) {
                 window?.makeFirstResponder(pane.view)
             }
@@ -216,7 +240,7 @@ final class TCPViewerWindowController: NSWindowController {
             return
         }
         let pane = selectedTab.openSecondPane { source, state in
-            self.makePane(source: source, paneState: state)
+            self.makePane(source: source, paneState: state, existingModel: selectedTab.secondaryModel)
         }
         guard let pane else { return }
         pane.selectSourceListWhenAvailable(selection)
@@ -240,6 +264,7 @@ final class TCPViewerWindowController: NSWindowController {
         if tabs.count == 1 { window?.performClose(nil); return }
         let selection = TCPViewerWorkspaceTabOrder.selectionAfterClosing(id, selectedID: selectedTabID, ids: tabs.map(\.id))
         let tab = tabs.remove(at: index)
+        cancelAutomationImports(target: tab)
         history.remove(id)
         tab.close()
         if selectedTabID == id { selectedTabID = nil; if let selection { selectTab(selection) } }
@@ -268,18 +293,109 @@ final class TCPViewerWindowController: NSWindowController {
     }
 
     // Placement commits only after import succeeds; replacement retains the destination's position.
-    func placeImportedWorkspace(_ source: TCPViewerCaptureWorkspace, title: String, replacing id: UUID?) -> Bool {
-        guard !isClosingWorkspace, id != nil || authorizeAdditionalTab() else { return false }
+    func placeImportedWorkspace(_ source: TCPViewerCaptureWorkspace, title: String, replacing id: UUID?, selecting: Bool = true, allowsPrompt: Bool = true) -> Bool {
+        guard !isClosingWorkspace, id != nil || (allowsPrompt ? authorizeAdditionalTab() : canCreateAdditionalTab) else { return false }
+        let replacesSelection = id != nil && selectedTabID == id
         let tab = TCPViewerWorkspaceTab(id: id ?? UUID(), source: source, title: title)
         if let id {
             guard let index = tabs.firstIndex(where: { $0.id == id }) else { return false }
             let previous = tabs[index]
             tabs[index] = tab
+            cancelAutomationImports(target: previous)
             previous.close()
             if selectedTabID == id { selectedTabID = nil }
         } else { tabs.append(tab) }
-        selectTab(tab.id)
+        if selecting || replacesSelection || selectedTabID == nil { selectTab(tab.id) }
+        else { updateTabBar() }
         return true
+    }
+
+    // Keep staged imports cancellable even when their destination has no visual pane.
+    func registerAutomationImport(_ source: TCPViewerCaptureWorkspace, target: TCPViewerWorkspaceTab?, cancellation: @escaping () -> Void) -> UUID {
+        let id = UUID()
+        automationImports[id] = AutomationImport(source: source, target: target, cancellation: cancellation)
+        return id
+    }
+
+    func finishAutomationImport(_ id: UUID) -> Bool {
+        automationImports.removeValue(forKey: id) != nil
+    }
+
+    private func cancelAutomationImports(target: TCPViewerWorkspaceTab? = nil) {
+        let ids = automationImports.compactMap { id, item in target == nil || item.target === target ? id : nil }
+        for id in ids {
+            guard let item = automationImports.removeValue(forKey: id) else { continue }
+            item.source.close()
+            item.cancellation()
+        }
+    }
+
+    // Automation uses explicit errors instead of the UI's upgrade sheets.
+    func createAutomationTab(selecting: Bool) throws -> TCPViewerWorkspaceTab {
+        guard !isClosingWorkspace else { throw TCPViewerMCPDataSourceError.invalidState("The workspace is closing.") }
+        guard canCreateAdditionalTab else { throw TCPViewerMCPDataSourceError.invalidState("TCP Viewer PRO is required for additional tabs.") }
+        let tab = TCPViewerWorkspaceTab(source: liveWorkspace)
+        tabs.append(tab)
+        if selecting || selectedTabID == nil { selectTab(tab.id) }
+        else { updateTabBar() }
+        return tab
+    }
+
+    func moveAutomationTab(_ tab: TCPViewerWorkspaceTab, index: Int) throws {
+        guard !isClosingWorkspace, let previous = tabs.firstIndex(where: { $0 === tab }), tabs.indices.contains(index) else {
+            throw TCPViewerMCPDataSourceError.invalidState("The tab or destination index is unavailable.")
+        }
+        tabs.remove(at: previous)
+        tabs.insert(tab, at: index)
+        updateTabBar()
+    }
+
+    func setAutomationSplit(_ enabled: Bool, tab: TCPViewerWorkspaceTab) throws {
+        guard !isClosingWorkspace, tabs.contains(where: { $0 === tab }) else {
+            throw TCPViewerMCPDataSourceError.invalidState("The tab is unavailable.")
+        }
+        if enabled {
+            guard tab.isSplitViewVisible || isLicenseAuthorized() else {
+                throw TCPViewerMCPDataSourceError.invalidState("TCP Viewer PRO is required for Split View.")
+            }
+            let focus = tab.focusedPaneID
+            tab.enableAutomationSplit()
+            _ = tab.automationModel(id: tab.secondaryPaneID!, factory: makeAutomationModel)
+            if tab.contentController != nil {
+                _ = tab.openSecondPane { source, state in
+                    self.makePane(source: source, paneState: state, existingModel: tab.secondaryModel)
+                }
+                tab.setAutomationFocus(focus)
+            }
+        } else { tab.closeSplitView() }
+        if selectedTab === tab { renderToolbar() }
+    }
+
+    func focusAutomationPane(_ id: UUID, tab: TCPViewerWorkspaceTab) {
+        selectTab(tab.id)
+        tab.setAutomationFocus(id)
+        renderToolbar()
+    }
+
+    // The last tab closes only after the live source acknowledges shutdown.
+    func closeAutomationTab(_ tab: TCPViewerWorkspaceTab, completion: @escaping (Result<Void, Error>) -> Void) {
+        guard !isClosingWorkspace, tabs.contains(where: { $0 === tab }) else {
+            completion(.failure(TCPViewerMCPDataSourceError.invalidState("The tab is unavailable."))); return
+        }
+        if tabs.count > 1 { closeTab(tab.id); completion(.success(())); return }
+        isClosingWorkspace = true
+        importer.cancelAll()
+        cancelAutomationImports()
+        liveWorkspace.close { [weak self] succeeded in
+            guard let self else { completion(.failure(TCPViewerMCPDataSourceError.invalidState("The workspace closed."))); return }
+            guard succeeded else {
+                self.isClosingWorkspace = false
+                completion(.failure(TCPViewerMCPDataSourceError.invalidState("Capture could not be stopped."))); return
+            }
+            self.isReadyToClose = true
+            self.window?.close()
+            completion(.success(()))
+        }
     }
 
     @IBAction func exportSessionAsPcap(_ sender: Any?) { rootViewController.exportSession(format: .pcap) }
@@ -721,6 +837,7 @@ extension TCPViewerWindowController: NSWindowDelegate {
         guard !isClosingWorkspace else { return false }
         isClosingWorkspace = true
         importer.cancelAll()
+        cancelAutomationImports()
         liveWorkspace.close { [weak self] succeeded in
             guard let self else { return }
             guard succeeded else { self.isClosingWorkspace = false; return }
@@ -738,6 +855,7 @@ extension TCPViewerWindowController: NSWindowDelegate {
         paywallHandler = nil
         liveWorkspace.close { [liveWorkspace] _ in _ = liveWorkspace }
         importer.cancelAll()
+        cancelAutomationImports()
         tabs.forEach { $0.close() }
         tabs.removeAll()
         selectedTabID = nil

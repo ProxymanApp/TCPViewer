@@ -14,18 +14,11 @@ protocol TCPViewerCLICommandRouting: AnyObject {
 }
 
 final class TCPViewerCLICommandRouter: TCPViewerCLICommandRouting {
-    private enum Limit {
-        static let maximumImportedFiles = 100
-        static let maximumFollowCandidates = 250_000
-        static let maximumFollowBytes = 4 * 1_024 * 1_024
-        static let maximumFollowRecords = 10_000
-    }
-
     private weak var appDelegate: AppDelegate?
-    private let fileManager: FileManager
+    private let dataSourceOverride: (() -> (any TCPViewerMCPDataSource)?)?
     private let licenseService: TCPViewerLicenseService
     private lazy var mcpRouter = TCPViewerMCPCommandRouter(
-        dataSourceProvider: { TCPViewerMCPServiceProvider.shared.activeSource() },
+        dataSourceProvider: { [weak self] in self?.dataSourceOverride?() ?? TCPViewerMCPServiceProvider.shared.activeSource() },
         isLicenseAuthorized: { [licenseService] in licenseService.isLicenseAuthorized },
         requiresAuthorizedLicense: false,
         redactionEnabled: { false }
@@ -33,11 +26,11 @@ final class TCPViewerCLICommandRouter: TCPViewerCLICommandRouting {
 
     init(
         appDelegate: AppDelegate,
-        fileManager: FileManager = .default,
-        licenseService: TCPViewerLicenseService = .shared
+        licenseService: TCPViewerLicenseService = .shared,
+        dataSourceProvider: (() -> (any TCPViewerMCPDataSource)?)? = nil
     ) {
         self.appDelegate = appDelegate
-        self.fileManager = fileManager
+        self.dataSourceOverride = dataSourceProvider
         self.licenseService = licenseService
     }
 
@@ -53,12 +46,6 @@ final class TCPViewerCLICommandRouter: TCPViewerCLICommandRouting {
             revokeLicense(request, completion: completion)
         case .settingsList, .settingsGet, .settingsSet, .settingsReset:
             routeSettings(request, completion: completion)
-        case .fileImport:
-            importFiles(request, completion: completion)
-        case .fileExportSession:
-            exportSession(request, completion: completion)
-        case .streamFollow:
-            followStream(request, completion: completion)
         default:
             routeThroughMCP(request, completion: completion)
         }
@@ -72,13 +59,9 @@ final class TCPViewerCLICommandRouter: TCPViewerCLICommandRouting {
             completion(failure(request, code: "app_unavailable", message: "TCP Viewer is unavailable."))
             return
         }
-        if request.command != .appStatus {
-            do {
-                _ = try appDelegate.cliWorkspaceViewModel()
-            } catch {
-                completion(failure(request, code: "no_active_window", error: error))
-                return
-            }
+        if request.command != .appStatus && dataSourceOverride == nil &&
+            !["workspace_id", "tab_id", "pane_id"].contains(where: { request.value($0) != nil }) {
+            appDelegate.cliPrepareWorkspace(creatingTab: request.command == .fileImport || request.command == .tabsCreate)
         }
         guard let command = mcpCommand(for: request.command) else {
             completion(failure(request, code: "unsupported_command", message: "The command is not supported."))
@@ -96,8 +79,9 @@ final class TCPViewerCLICommandRouter: TCPViewerCLICommandRouting {
             guard response.success, let data = response.data else {
                 completion(self.failure(
                     request,
-                    code: "app_command_failed",
-                    message: response.error ?? "TCP Viewer could not complete the command."
+                    code: request.command == .fileImport ? "import_failed" : request.command == .fileExportSession ? "export_failed" : request.command == .streamFollow ? "follow_failed" : "app_command_failed",
+                    message: response.error ?? "TCP Viewer could not complete the command.",
+                    data: response.data?.mapValuesWithKeys { key, value in self.cliValue(value, key: key) }
                 ))
                 return
             }
@@ -119,6 +103,19 @@ final class TCPViewerCLICommandRouter: TCPViewerCLICommandRouting {
 
     private func mcpCommand(for command: TCPViewerCLICommand) -> TCPViewerMCPCommand? {
         switch command {
+        case .workspaceList: .listWorkspaces
+        case .tabsList: .listTabs
+        case .tabsCreate: .createTab
+        case .tabsSelect: .selectTab
+        case .tabsMove: .moveTab
+        case .tabsClose: .closeTab
+        case .paneGet: .getPane
+        case .paneUpdate: .updatePane
+        case .splitSet: .setSplitView
+        case .paneFocus: .focusPane
+        case .sourcesList: .listSources
+        case .overviewGet: .getOverviewStatistics
+        case .statisticsEndpoints: .getEndpointStatistics
         case .appStatus: .getAppStatus
         case .interfacesList: .listInterfaces
         case .captureStatus: .getCaptureOverview
@@ -134,181 +131,20 @@ final class TCPViewerCLICommandRouter: TCPViewerCLICommandRouting {
         case .packetsReveal: .revealPacket
         case .streamPackets: .listStreamPackets
         case .fileExport: .exportPackets
+        case .fileImport: .importCapture
+        case .fileExportSession: .exportSession
+        case .streamFollow: .followStream
         default: nil
         }
     }
 
-    private func importFiles(
-        _ request: TCPViewerCLIRequest,
-        completion: @escaping (TCPViewerCLIResponse) -> Void
-    ) {
-        do {
-            guard let appDelegate else {
-                throw CLIError(code: "app_unavailable", message: "TCP Viewer is unavailable.")
-            }
-            let paths = try stringArray(request, key: "paths", maximumCount: Limit.maximumImportedFiles)
-            guard !paths.isEmpty else {
-                throw CLIError(code: "invalid_parameter", message: "At least one import path is required.")
-            }
-            let urls = try paths.map(validImportURL)
-            let sessionCount = urls.filter(TCPViewerCaptureFileImportPolicy.isSessionFileURL).count
-            guard sessionCount == 0 || (sessionCount == 1 && urls.count == 1) else {
-                throw CLIError(code: "invalid_parameter", message: "A tcpviewsession must be imported by itself.")
-            }
-            appDelegate.cliImportCaptureURLs(urls) { result in
-                let packetCount = result.packetCount ?? 0
-                let data: [String: TCPViewerCLIValue] = [
-                    "imported_files": .array(result.importedURLs.map { .string($0.path) }),
-                    "imported_file_count": .int(result.importedURLs.count),
-                    "packet_count": .int(packetCount),
-                ]
-                if let error = result.error {
-                    completion(self.failure(request, code: "import_failed", error: error, data: data))
-                } else {
-                    completion(self.success(request, data: data))
-                }
-            }
-        } catch let error as CLIError {
-            completion(failure(request, code: error.code, message: error.message))
-        } catch {
-            completion(failure(request, code: "invalid_parameter", error: error))
-        }
-    }
-
-    private func exportSession(
-        _ request: TCPViewerCLIRequest,
-        completion: @escaping (TCPViewerCLIResponse) -> Void
-    ) {
-        do {
-            guard let appDelegate else {
-                throw CLIError(code: "app_unavailable", message: "TCP Viewer is unavailable.")
-            }
-            let destination = try exportSessionDestination(
-                path: request.string("path"),
-                overwrite: request.bool("overwrite") ?? false
-            )
-            let viewModel = try appDelegate.cliWorkspaceViewModel()
-            viewModel.exportTCPViewSession(to: destination) { result in
-                DispatchQueue.main.async {
-                    switch result {
-                    case .success:
-                        completion(self.success(request, data: ["path": .string(destination.path)]))
-                    case .failure(let error):
-                        completion(self.failure(request, code: "export_failed", error: error))
-                    }
-                }
-            }
-        } catch let error as CLIError {
-            completion(failure(request, code: error.code, message: error.message))
-        } catch {
-            completion(failure(request, code: "export_failed", error: error))
-        }
-    }
-
-    private func followStream(
-        _ request: TCPViewerCLIRequest,
-        completion: @escaping (TCPViewerCLIResponse) -> Void
-    ) {
-        do {
-            guard let appDelegate else {
-                throw CLIError(code: "app_unavailable", message: "TCP Viewer is unavailable.")
-            }
-            guard let rawID = request.string("packet_id"), let packetID = PacketSummary.ID(rawID) else {
-                throw CLIError(code: "invalid_parameter", message: "packet_id must be a valid UInt64 string.")
-            }
-            let maximumBytes = try bounded(request.int("max_bytes") ?? Limit.maximumFollowBytes, range: 1...Limit.maximumFollowBytes, name: "max_bytes")
-            let maximumRecords = try bounded(request.int("max_records") ?? Limit.maximumFollowRecords, range: 1...Limit.maximumFollowRecords, name: "max_records")
-            let direction = request.string("direction") ?? "both"
-            guard ["both", "client-to-server", "server-to-client"].contains(direction) else {
-                throw CLIError(code: "invalid_parameter", message: "direction is invalid.")
-            }
-            let encoding = request.string("encoding") ?? "text"
-            guard ["text", "hex", "base64"].contains(encoding) else {
-                throw CLIError(code: "invalid_parameter", message: "encoding is invalid.")
-            }
-            let includedDirection: FollowStreamDirection? = switch direction {
-            case "client-to-server": .clientToServer
-            case "server-to-client": .serverToClient
-            default: nil
-            }
-            let viewModel = try appDelegate.cliWorkspaceViewModel()
-            let limits = FollowStreamLimits(
-                maximumCandidatePacketCount: Limit.maximumFollowCandidates,
-                maximumPayloadBytes: maximumBytes,
-                maximumRecordCount: maximumRecords,
-                includedDirection: includedDirection
-            )
-            viewModel.followStream(
-                containing: packetID,
-                streamProtocol: nil,
-                limits: limits,
-                progress: nil,
-                shouldCancel: nil
-            ) { result in
-                DispatchQueue.main.async {
-                    switch result {
-                    case .success(let stream):
-                        completion(self.success(request, data: Self.followData(
-                            stream,
-                            direction: direction,
-                            encoding: encoding,
-                            maximumBytes: maximumBytes,
-                            maximumRecords: maximumRecords
-                        )))
-                    case .failure(let error):
-                        completion(self.failure(request, code: "follow_failed", error: error))
-                    }
-                }
-            }
-        } catch let error as CLIError {
-            completion(failure(request, code: error.code, message: error.message))
-        } catch {
-            completion(failure(request, code: "follow_failed", error: error))
-        }
-    }
-
-    // Serialize the shared snapshot without inventing TCP sequence numbers for UDP datagrams.
-    static func followData(
-        _ stream: FollowStream,
-        direction: String,
-        encoding: String,
-        maximumBytes: Int,
-        maximumRecords: Int
-    ) -> [String: TCPViewerCLIValue] {
-        var returnedBytes = 0
-        var records: [TCPViewerCLIValue] = []
-        var wasLimited = stream.isTruncated
-        for record in stream.records where includes(record.direction, selection: direction) {
-            guard records.count < maximumRecords, returnedBytes < maximumBytes || record.data.isEmpty else {
-                wasLimited = true
-                break
-            }
-            let data = Data(record.data.prefix(maximumBytes - returnedBytes))
-            if data.count < record.data.count { wasLimited = true }
-            returnedBytes += data.count
-            records.append(.object([
-                "direction": .string(record.direction == .clientToServer ? "client_to_server" : "server_to_client"),
-                "packet_id": .string(String(record.packetID)),
-                "timestamp": .string(Self.iso8601.string(from: record.timestamp)),
-                "sequence_number": record.sequenceNumber.map { .string(String($0)) } ?? .null,
-                "data": .string(encoded(data, as: encoding)),
-                "byte_count": .int(data.count),
-            ]))
-            if data.count < record.data.count { break }
-        }
-        return [
-            "protocol": .string(stream.streamProtocol.rawValue),
-            "client": endpointValue(stream.client),
-            "server": endpointValue(stream.server),
-            "encoding": .string(encoding),
-            "direction": .string(direction.replacingOccurrences(of: "-", with: "_")),
-            "records": .array(records),
-            "returned_record_count": .int(records.count),
-            "returned_byte_count": .int(returnedBytes),
-            "captured_through_packet_id": .string(String(stream.capturedThroughPacketID)),
-            "captured_at": .string(Self.iso8601.string(from: stream.capturedAt)),
-            "truncated": .bool(wasLimited),
-        ]
+    static func followData(_ stream: FollowStream, direction: String, encoding: String,
+                           maximumBytes: Int, maximumRecords: Int) -> [String: TCPViewerCLIValue] {
+        let values = TCPViewerAutomationStreamSerializer.data(stream, direction: direction, encoding: encoding,
+                                                              maximumBytes: maximumBytes, maximumRecords: maximumRecords)
+        guard let data = try? JSONEncoder().encode(values),
+              let result = try? JSONDecoder().decode([String: TCPViewerCLIValue].self, from: data) else { return [:] }
+        return result
     }
 
     private func activateLicense(
@@ -448,95 +284,12 @@ final class TCPViewerCLICommandRouter: TCPViewerCLICommandRouting {
         }
     }
 
-    private func validImportURL(_ path: String) throws -> URL {
-        guard (path as NSString).isAbsolutePath, !path.contains("\0"), path.utf8.count <= 4_096 else {
-            throw CLIError(code: "invalid_parameter", message: "Import paths must be absolute file paths.")
-        }
-        let url = URL(fileURLWithPath: path).standardizedFileURL
-        guard TCPViewerCaptureFileImportPolicy.isSupportedCaptureFileURL(url) else {
-            throw CLIError(code: "unsupported_file", message: "Import accepts pcap, pcapng, or tcpviewsession files.")
-        }
-        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
-        guard values.isRegularFile == true, values.isSymbolicLink != true else {
-            throw CLIError(code: "unsafe_file", message: "Import paths must point to regular files and cannot be symbolic links.")
-        }
-        return url
-    }
-
-    private func exportSessionDestination(path: String?, overwrite: Bool) throws -> URL {
-        guard let path, (path as NSString).isAbsolutePath, !path.contains("\0"), path.utf8.count <= 4_096 else {
-            throw CLIError(code: "invalid_parameter", message: "path must be an absolute file path.")
-        }
-        var destination = URL(fileURLWithPath: path).standardizedFileURL
-        if destination.pathExtension.isEmpty {
-            destination.appendPathExtension(TCPViewSessionFormat.fileExtension)
-        } else if destination.pathExtension.lowercased() != TCPViewSessionFormat.fileExtension {
-            throw CLIError(code: "invalid_parameter", message: "path must use the .tcpviewsession extension.")
-        }
-        let parent = destination.deletingLastPathComponent()
-        var isDirectory: ObjCBool = false
-        guard fileManager.fileExists(atPath: parent.path, isDirectory: &isDirectory), isDirectory.boolValue,
-              fileManager.isWritableFile(atPath: parent.path) else {
-            throw CLIError(code: "invalid_parameter", message: "The destination directory must exist and be writable.")
-        }
-        if fileManager.fileExists(atPath: destination.path) {
-            let values = try destination.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .isDirectoryKey])
-            guard values.isRegularFile == true, values.isSymbolicLink != true, values.isDirectory != true else {
-                throw CLIError(code: "unsafe_file", message: "The existing destination must be a regular file and cannot be a symbolic link.")
-            }
-            guard overwrite else {
-                throw CLIError(code: "file_exists", message: "The destination exists. Use --overwrite to replace it.")
-            }
-        }
-        return destination
-    }
-
-    private func stringArray(_ request: TCPViewerCLIRequest, key: String, maximumCount: Int) throws -> [String] {
-        guard let values = request.array(key), values.count <= maximumCount else {
-            throw CLIError(code: "invalid_parameter", message: "\(key) must contain at most \(maximumCount) strings.")
-        }
-        return try values.map { value in
-            guard let string = value.stringValue else {
-                throw CLIError(code: "invalid_parameter", message: "\(key) must contain only strings.")
-            }
-            return string
-        }
-    }
-
     private func boolean(_ value: String) throws -> Bool {
         switch value.lowercased() {
         case "true", "yes", "1", "on": true
         case "false", "no", "0", "off": false
         default: throw CLIError(code: "invalid_setting_value", message: "Boolean settings accept true or false.")
         }
-    }
-
-    private func bounded(_ value: Int, range: ClosedRange<Int>, name: String) throws -> Int {
-        guard range.contains(value) else {
-            throw CLIError(code: "invalid_parameter", message: "\(name) is outside its supported range.")
-        }
-        return value
-    }
-
-    private static func includes(_ direction: FollowStreamDirection, selection: String) -> Bool {
-        selection == "both" ||
-            (selection == "client-to-server" && direction == .clientToServer) ||
-            (selection == "server-to-client" && direction == .serverToClient)
-    }
-
-    private static func encoded(_ data: Data, as encoding: String) -> String {
-        switch encoding {
-        case "base64": data.base64EncodedString()
-        case "hex": data.map { String(format: "%02x", $0) }.joined()
-        default: String(decoding: data, as: UTF8.self)
-        }
-    }
-
-    private static func endpointValue(_ endpoint: PacketEndpoint) -> TCPViewerCLIValue {
-        var value: [String: TCPViewerCLIValue] = [:]
-        if let address = endpoint.address { value["address"] = .string(address) }
-        if let port = endpoint.port { value["port"] = .int(Int(port)) }
-        return .object(value)
     }
 
     private func mcpValue(_ value: TCPViewerCLIValue) -> TCPViewerMCPValue {

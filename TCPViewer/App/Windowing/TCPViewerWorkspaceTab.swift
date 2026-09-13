@@ -9,6 +9,11 @@ import AppKit
 
 /// A tab retains metadata and a source; its pane is created only on first selection.
 final class TCPViewerWorkspaceTab {
+    let primaryPaneID = UUID()
+    private(set) var secondaryPaneID: UUID?
+    private var storedFocusedPaneID: UUID?
+    private(set) var primaryModel: NetworkInspectorViewModel?
+    private(set) var secondaryModel: NetworkInspectorViewModel?
     let id: UUID
     let title: String?
     private(set) var source: TCPViewerCaptureWorkspace?
@@ -16,7 +21,45 @@ final class TCPViewerWorkspaceTab {
     var pane: TCPViewerRootViewController? { contentController?.focusedPane }
     var firstPane: TCPViewerRootViewController? { contentController?.firstPane }
     var secondPane: TCPViewerRootViewController? { contentController?.secondPane }
-    var isSplitViewVisible: Bool { contentController?.isSplitViewVisible == true }
+    var isSplitViewVisible: Bool { secondaryPaneID != nil }
+    var focusedPaneID: UUID {
+        if let contentController {
+            return contentController.focusedPane === contentController.secondPane ? secondaryPaneID ?? primaryPaneID : primaryPaneID
+        }
+        return storedFocusedPaneID ?? primaryPaneID
+    }
+
+    // Keep command state lightweight until a tab is explicitly selected.
+    func automationModel(id: UUID, factory: (TCPViewerCaptureWorkspace, NetworkInspectorPaneState?) -> NetworkInspectorViewModel) -> NetworkInspectorViewModel? {
+        guard !isClosed, let source else { return nil }
+        if id == primaryPaneID {
+            if let model = firstPane?.viewModel ?? primaryModel { return model }
+            let model = factory(source, nil)
+            model.deactivate()
+            primaryModel = model
+            return model
+        }
+        guard id == secondaryPaneID else { return nil }
+        if let model = secondPane?.viewModel ?? secondaryModel { return model }
+        guard let first = automationModel(id: primaryPaneID, factory: factory) else { return nil }
+        var state = first.makeSplitPaneState()
+        state.inspectorPlacement = .bottom
+        state.isInspectorVisible = true
+        let model = factory(source, state)
+        model.deactivate()
+        secondaryModel = model
+        return model
+    }
+
+    func enableAutomationSplit() {
+        if secondaryPaneID == nil { secondaryPaneID = UUID() }
+    }
+
+    func setAutomationFocus(_ id: UUID) {
+        storedFocusedPaneID = id
+        if id == primaryPaneID, let firstPane { focus(firstPane) }
+        else if id == secondaryPaneID, let secondPane { focus(secondPane) }
+    }
     private(set) var isClosed = false
     private var lastLiveTitle = "All Packets"
     var sidebarNavigation: SidebarViewController.NavigationState?
@@ -30,11 +73,16 @@ final class TCPViewerWorkspaceTab {
     var isOffline: Bool { source?.kind == .offline }
     var displayTitle: String {
         if let title { return title }
-        if let snapshot = pane?.viewModel.snapshot,
-           let selectedTitle = snapshot.sourceListSnapshot.item(for: snapshot.selectedSourceListSelection)?.title {
+        if let model = pane?.viewModel { updateAutomaticTitle(from: model) }
+        return lastLiveTitle
+    }
+
+    // Retain the automatic title before an inactive command releases its temporary source list.
+    func updateAutomaticTitle(from model: NetworkInspectorViewModel) {
+        let snapshot = model.snapshot
+        if let selectedTitle = snapshot.sourceListSnapshot.item(for: snapshot.selectedSourceListSelection)?.title {
             lastLiveTitle = selectedTitle
         }
-        return lastLiveTitle
     }
 
     // The factory is passed at selection time so dormant tabs retain no UI factory closure.
@@ -42,6 +90,7 @@ final class TCPViewerWorkspaceTab {
         guard !isClosed, let source else { return nil }
         if let pane { return pane }
         let pane = factory(source)
+        primaryModel = pane.viewModel
         contentController = TCPViewerWorkspaceTabContentController(pane: pane)
         return pane
     }
@@ -55,16 +104,21 @@ final class TCPViewerWorkspaceTab {
             contentController.focus(secondPane)
             return secondPane
         }
-        var state = firstPane.viewModel.makeSplitPaneState()
+        enableAutomationSplit()
+        var state = (secondaryModel ?? firstPane.viewModel).makeSplitPaneState()
         state.inspectorPlacement = .bottom
         state.isInspectorVisible = true
-        return contentController.showSecondPane {
-            factory(source, state)
-        }
+        let pane = contentController.showSecondPane { factory(source, state) }
+        secondaryModel = pane.viewModel
+        return pane
     }
 
     func closeSplitView() {
         contentController?.removeSecondPane()
+        secondaryModel?.close()
+        secondaryModel = nil
+        secondaryPaneID = nil
+        storedFocusedPaneID = primaryPaneID
     }
 
     func focus(_ pane: TCPViewerRootViewController) {
@@ -88,6 +142,10 @@ final class TCPViewerWorkspaceTab {
         isClosed = true
         contentController?.close()
         contentController = nil
+        primaryModel?.close()
+        secondaryModel?.close()
+        primaryModel = nil
+        secondaryModel = nil
         sidebarNavigation = nil
         let releasedSource = source
         source = nil

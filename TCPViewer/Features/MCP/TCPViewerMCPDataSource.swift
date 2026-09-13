@@ -342,6 +342,11 @@ final class TCPViewerMCPServiceProvider {
         entries.removeAll { $0.source == nil || $0.source === source }
     }
 
+    var workspaceSources: [TCPViewerWorkspaceAutomationSource] {
+        pruneReleasedEntries()
+        return entries.compactMap { $0.source as? TCPViewerWorkspaceAutomationSource }
+    }
+
     func activeSource() -> (any TCPViewerMCPDataSource)? {
         precondition(Thread.isMainThread)
         pruneReleasedEntries()

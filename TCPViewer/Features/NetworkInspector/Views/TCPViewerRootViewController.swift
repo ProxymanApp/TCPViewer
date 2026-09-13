@@ -703,7 +703,8 @@ final class TCPViewerRootViewController: NSViewController {
     }
 
     private func render() {
-        guard !isClosed, viewModel.isActive else { return }
+        // A command-only pane can become active before its AppKit hierarchy is attached.
+        guard isViewLoaded, !isClosed, viewModel.isActive else { return }
         let snapshot = viewModel.snapshot
         if ownsSidebar || isFocusedPane {
             sidebarViewController.render(snapshot: snapshot)

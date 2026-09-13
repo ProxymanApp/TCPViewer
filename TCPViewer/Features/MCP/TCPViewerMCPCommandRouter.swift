@@ -111,6 +111,7 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
         static let maximumSummaryGroups = 50
     }
 
+    private let resolvesWorkspace: Bool
     private let dataSourceProvider: () -> (any TCPViewerMCPDataSource)?
     private let isLicenseAuthorized: () -> Bool
     private let requiresAuthorizedLicense: Bool
@@ -121,6 +122,7 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
     private let redactor: TCPViewerMCPSensitiveDataRedactor
 
     init(
+        resolvesWorkspace: Bool = true,
         dataSourceProvider: @escaping () -> (any TCPViewerMCPDataSource)? = {
             TCPViewerMCPServiceProvider.shared.activeSource()
         },
@@ -138,6 +140,7 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
         workerQueue: DispatchQueue = DispatchQueue(label: "com.proxyman.tcpviewer.mcp.commands", qos: .userInitiated),
         redactor: TCPViewerMCPSensitiveDataRedactor = TCPViewerMCPSensitiveDataRedactor()
     ) {
+        self.resolvesWorkspace = resolvesWorkspace
         self.dataSourceProvider = dataSourceProvider
         self.isLicenseAuthorized = isLicenseAuthorized
         self.requiresAuthorizedLicense = requiresAuthorizedLicense
@@ -165,7 +168,29 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
             return
         }
 
+        let preferredSource = dataSourceProvider()
+        let hasTarget = ["workspace_id", "tab_id", "pane_id"].contains(where: { request.value($0) != nil })
+        if resolvesWorkspace, command != .getAppStatus || hasTarget,
+           command.isWorkspaceCommand || preferredSource is TCPViewerWorkspaceAutomationSource || hasTarget {
+            TCPViewerAutomationCommandRouter.route(request, preferredSource: preferredSource,
+                                                  redactionEnabled: redactionEnabled, completion: completion) { source, done in
+                let router = TCPViewerMCPCommandRouter(
+                    resolvesWorkspace: false, dataSourceProvider: { source },
+                    isLicenseAuthorized: self.isLicenseAuthorized,
+                    requiresAuthorizedLicense: self.requiresAuthorizedLicense,
+                    redactionEnabled: self.redactionEnabled, versionProvider: self.versionProvider,
+                    exportPathPolicy: self.exportPathPolicy, workerQueue: self.workerQueue, redactor: self.redactor
+                )
+                router.route(request, completion: done)
+            }
+            return
+        }
+
         switch command {
+        case .listWorkspaces, .listTabs, .createTab, .selectTab, .moveTab, .closeTab,
+             .getPane, .updatePane, .setSplitView, .focusPane, .listSources,
+             .getOverviewStatistics, .getEndpointStatistics, .followStream, .importCapture, .exportSession:
+            completion(.failure("The workspace is unavailable."))
         case .getAppStatus:
             getAppStatus(completion: completion)
         case .getCaptureOverview:

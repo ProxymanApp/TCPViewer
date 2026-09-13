@@ -132,7 +132,71 @@ enum TCPViewerMCPToolCatalog {
             properties: ["packet_id": stringProperty("Packet ID as an unsigned decimal string.")],
             required: ["packet_id"]
         ),
-    ]
+    ] + automationTools
+
+    private static var automationTools: [Tool] {
+        let boolean: MCP.Value = .object(["type": "boolean"])
+        let scope = enumProperty(["all", "displayed"], description: "Defaults to all. Displayed uses the targeted pane's source and filters.")
+        let group = enumProperty(["apps", "domains", "ipv4", "ipv6", "tcp", "udp"], description: "Endpoint group. Defaults to apps.")
+        let structured: MCP.Value = .object([
+            "type": "object", "additionalProperties": false, "required": ["filters"],
+            "properties": .object([
+                "operator": enumProperty(["and", "or"], description: "Filter group operator."),
+                "filters": .object(["type": "array", "maxItems": 5, "items": .object([
+                    "type": "object", "additionalProperties": false, "required": ["query", "condition", "text"],
+                    "properties": .object([
+                        "id": stringProperty("Optional existing filter ID."),
+                        "query": enumProperty(["anyText", "urlDomain", "protocol", "source", "destination", "sourcePort", "destinationPort", "client", "pid", "bundleIdentifier", "streamID", "direction", "tcpFlags", "tcpPayload", "decodeStatus", "interface", "length", "summary", "tags"], description: "Use anyText alone for a Wireshark expression."),
+                        "condition": enumProperty(["contains", "notContains", "hasPrefix", "notHasPrefix", "hasSuffix", "notHasSuffix", "lessThan", "greaterThanOrEqual", "matchesRegex", "notMatchesRegex"], description: "Structured filter comparison."),
+                        "text": stringProperty("Filter text.", maximumLength: 4096), "is_enabled": boolean,
+                    ]),
+                ])]),
+            ]),
+        ])
+        return [
+            readOnlyTool(.listWorkspaces, title: "List Workspaces", description: "List open workspaces and stable tab/pane IDs without loading inactive views.", properties: [:]),
+            readOnlyTool(.listTabs, title: "List Tabs", description: "List live/offline tabs, ordering, selected tab, and split pane IDs.", properties: [:]),
+            controlTool(.createTab, title: "Create Tab", description: "Create a live tab sharing the workspace capture. Requires PRO for an additional tab. Does not select it unless select=true.", properties: ["select": boolean]),
+            controlTool(.selectTab, title: "Select Tab", description: "Select the targeted tab without activating the app.", properties: [:]),
+            controlTool(.moveTab, title: "Move Tab", description: "Move the targeted tab to a zero-based index without changing selection.", properties: ["index": integerProperty("Destination tab index.", minimum: 0)], required: ["index"]),
+            controlTool(.closeTab, title: "Close Tab", description: "Close a tab with confirm=true. Closing the last tab stops its capture and closes the workspace window.", properties: ["confirm": boolean], required: ["confirm"], destructive: true),
+            readOnlyTool(.getPane, title: "Get Pane", description: "Read a pane's source, filters, packet selection, view mode, and packet counts without focusing it.", properties: [:]),
+            controlTool(.updatePane, title: "Update Pane", description: "Update only supplied pane fields without changing focus or capture BPF. Empty filters clear them. Completion waits for filter application. Use endpoint from a statistics row to drill down.", properties: [
+                "mode": enumProperty(["packets", "overview"], description: "Pane view mode."),
+                "source_id": stringProperty("Exact source_id from list_sources."),
+                "display_filter": stringProperty("Packet text filter; empty clears it.", maximumLength: 4096),
+                "wireshark_filter": stringProperty("Wireshark display expression; empty clears it.", maximumLength: 4096),
+                "structured_filter": structured,
+                "quick_filters": .object(["type": "array", "maxItems": 11, "items": enumProperty(["all", "tcp", "udp", "dns", "http", "tls", "websocket", "clientHello", "serverHello", "errors"], description: "Quick filter ID.")]),
+                "packet_id": .object(["type": ["string", "null"], "description": "Unsigned decimal packet ID; null clears selection."]),
+                "endpoint": .object(["type": ["object", "null"], "required": ["group", "key"], "additionalProperties": false,
+                                     "properties": .object(["group": group, "key": stringProperty("Exact endpoint key from get_endpoint_statistics.")])]),
+            ]),
+            controlTool(.setSplitView, title: "Set Split View", description: "Set enabled=true or false. Supports two panes sharing one capture. Opening a second pane requires PRO and preserves focus.", properties: ["enabled": boolean], required: ["enabled"]),
+            controlTool(.focusPane, title: "Focus Pane", description: "Select the target tab and focus the specified pane without activating the app.", properties: [:]),
+            readOnlyTool(.listSources, title: "List Sources", description: "List source selection IDs for apps, domains, files, and other sidebar items. No source selection is changed.", properties: ["offset": integerProperty("Result offset.", minimum: 0), "limit": integerProperty("Page size, defaults to 50.", minimum: 1, maximum: 500)]),
+            readOnlyTool(.getOverviewStatistics, title: "Get Overview Statistics", description: "Return full-source Overview totals, time range, protocol breakdown, top apps/destinations, and bounded timeline. Unlike get_capture_overview, this returns dashboard analysis.", properties: [:]),
+            readOnlyTool(.getEndpointStatistics, title: "Get Endpoint Statistics", description: "Aggregate a complete capture or displayed pane scope without opening Statistics. Returns endpoint identifiers for drill-down. Defaults to Apps sorted by bytes descending.", properties: [
+                "group": group, "scope": scope, "search": stringProperty("Search endpoint fields.", maximumLength: 4096),
+                "sort": enumProperty(["address", "port", "protocol", "client", "domain", "packets", "bytes", "tx_packets", "tx_bytes", "rx_packets", "rx_bytes", "summary"], description: "Sort column."),
+                "order": enumProperty(["asc", "desc"], description: "Sort direction, defaults to desc."),
+                "offset": integerProperty("Result offset.", minimum: 0), "limit": integerProperty("Page size, defaults to 50.", minimum: 1, maximum: 500),
+            ]),
+            readOnlyTool(.followStream, title: "Follow Stream", description: "Follow the TCP or UDP stream containing a packet, including DNS. Returns bounded payload records without opening a window. When redaction is enabled, payloads are omitted and payload_redacted=true.", properties: [
+                "packet_id": stringProperty("Unsigned decimal packet ID."),
+                "protocol": enumProperty(["auto", "tcp", "udp"], description: "Transport protocol, defaults to auto."),
+                "direction": enumProperty(["both", "client-to-server", "server-to-client"], description: "Direction, defaults to both."),
+                "encoding": enumProperty(["text", "hex", "base64"], description: "Payload encoding, defaults to text."),
+                "max_bytes": integerProperty("Payload byte limit, defaults to 4 MiB.", minimum: 1, maximum: 4194304),
+                "max_records": integerProperty("Record limit, defaults to 10000.", minimum: 1, maximum: 10000),
+            ], required: ["packet_id"]),
+            controlTool(.importCapture, title: "Import Capture", description: "Import absolute pcap/pcapng paths or one tcpviewsession. Defaults to creating and selecting an offline tab. Supplying tab_id replaces that tab, requires confirm=true, and preserves selection by default.", properties: [
+                "paths": .object(["type": "array", "minItems": 1, "maxItems": 100, "items": stringProperty("Absolute capture path.")]),
+                "select": boolean, "confirm": boolean,
+            ], required: ["paths"], destructive: true),
+            controlTool(.exportSession, title: "Export Session", description: "Export the targeted pane's source to an explicit absolute tcpviewsession path. Existing destinations require overwrite=true.", properties: ["path": stringProperty("Absolute destination path."), "overwrite": boolean], required: ["path"], destructive: true),
+        ]
+    }
 
     static func tool(named name: String) -> Tool? {
         tools.first { $0.name == name }
@@ -160,7 +224,7 @@ enum TCPViewerMCPToolCatalog {
             name: command.rawValue,
             title: title,
             description: description,
-            inputSchema: objectSchema(properties: properties, required: required),
+            inputSchema: objectSchema(properties: properties, required: required, includesTarget: command != .listWorkspaces),
             annotations: readOnlyAnnotations,
             outputSchema: objectOutputSchema
         )
@@ -178,7 +242,7 @@ enum TCPViewerMCPToolCatalog {
             name: command.rawValue,
             title: title,
             description: description,
-            inputSchema: objectSchema(properties: properties, required: required),
+            inputSchema: objectSchema(properties: properties, required: required, includesTarget: command != .listWorkspaces),
             annotations: .init(
                 title: title,
                 readOnlyHint: false,
@@ -195,6 +259,7 @@ enum TCPViewerMCPToolCatalog {
         required: [String] = []
     ) -> MCP.Value {
         var properties: [String: MCP.Value] = [
+            "scope": enumProperty(["all", "displayed"], description: "Read all captured packets or the targeted pane's displayed packets. Defaults to all."),
             "filters": .object([
                 "type": "array",
                 "maxItems": 20,
@@ -268,8 +333,15 @@ enum TCPViewerMCPToolCatalog {
 
     private static func objectSchema(
         properties: [String: MCP.Value],
-        required: [String] = []
+        required: [String] = [],
+        includesTarget: Bool = true
     ) -> MCP.Value {
+        var properties = properties
+        if includesTarget {
+            for key in ["workspace_id", "tab_id", "pane_id"] {
+                properties[key] = .object(["type": "string", "format": "uuid", "description": "Stable target UUID from list_workspaces or list_tabs. Omission uses the current selection. Explicit targets preserve selection."])
+            }
+        }
         var schema: [String: MCP.Value] = [
             "type": "object",
             "properties": .object(properties),

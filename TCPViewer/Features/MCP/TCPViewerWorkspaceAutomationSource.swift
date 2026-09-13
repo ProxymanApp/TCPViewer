@@ -10,11 +10,13 @@ import PcapPlusPlusCore
 
 /// Capture commands use the live source; packet commands bind to the selected pane at dispatch.
 final class TCPViewerWorkspaceAutomationSource: TCPViewerMCPDataSource {
-    private weak var windowController: TCPViewerWindowController?
+    private(set) weak var windowController: TCPViewerWindowController?
+    private weak var commandTab: TCPViewerWorkspaceTab?
+    private var usesDisplayedScope = false
     private weak var commandPane: NetworkInspectorViewModel?
     private var isBoundToCommand = false
     private var pane: NetworkInspectorViewModel? {
-        isBoundToCommand ? commandPane : windowController?.selectedTab?.pane?.viewModel
+        isBoundToCommand ? (isValid ? commandPane : nil) : windowController?.selectedTab?.pane?.viewModel
     }
     private var live: TCPViewerWorkspaceController? { windowController?.liveWorkspace.controller }
     private static let unavailable = TCPViewerMCPDataSourceError.invalidState("The workspace is closed.")
@@ -23,18 +25,46 @@ final class TCPViewerWorkspaceAutomationSource: TCPViewerMCPDataSource {
 
     // Bind once before any asynchronous command stage; switching tabs cannot retarget the request.
     func sourceForCommand() -> any TCPViewerMCPDataSource {
+        if isBoundToCommand { return self }
         guard let windowController else { return self }
         let source = TCPViewerWorkspaceAutomationSource(windowController: windowController)
+        source.commandTab = windowController.selectedTab
         source.commandPane = pane
         source.isBoundToCommand = true
         return source
     }
 
+    var isValid: Bool {
+        guard let windowController, let commandTab, !commandTab.isClosed, commandPane?.isClosed == false else { return false }
+        return windowController.tabs.contains { $0 === commandTab }
+    }
+
+    // Bind object identity as well as IDs, since imported replacements retain their tab ID.
+    func bound(to tab: TCPViewerWorkspaceTab, model: NetworkInspectorViewModel, displayed: Bool) -> TCPViewerWorkspaceAutomationSource {
+        guard let windowController else { return self }
+        let source = TCPViewerWorkspaceAutomationSource(windowController: windowController)
+        source.commandTab = tab
+        source.commandPane = model
+        source.isBoundToCommand = true
+        source.usesDisplayedScope = displayed
+        return source
+    }
+
     func mcpWorkspaceSnapshot(packetLimit: Int, packetOffset: Int, packetOrder: TCPViewerMCPPacketOrder) -> TCPViewerMCPWorkspaceSnapshot {
         let active = pane?.mcpWorkspaceSnapshot(packetLimit: packetLimit, packetOffset: packetOffset, packetOrder: packetOrder)
+        let displayedIDs = usesDisplayedScope ? pane?.snapshot.base.navigationState.visiblePacketIDs : nil
+        let scopedPackets: [PacketSummary]?
+        if let displayedIDs, let pane {
+            let skip = min(max(packetOffset, 0), displayedIDs.count)
+            let count = min(max(packetLimit, 0), displayedIDs.count - skip)
+            let ids = packetOrder == .recent
+                ? displayedIDs[(displayedIDs.count - skip - count)..<(displayedIDs.count - skip)]
+                : displayedIDs[skip..<(skip + count)]
+            scopedPackets = pane.packetSummariesForEndpointStatistics(Array(ids))
+        } else { scopedPackets = nil }
         let source = live?.snapshot ?? .foundation
         return TCPViewerMCPWorkspaceSnapshot(
-            packets: active?.packets ?? [], totalPacketCount: active?.totalPacketCount ?? 0,
+            packets: scopedPackets ?? active?.packets ?? [], totalPacketCount: displayedIDs?.count ?? active?.totalPacketCount ?? 0,
             interfaces: source.sessionState.interfaceInventory, capturePhase: source.sessionState.phase.rawValue,
             selectedInterfaceID: source.sessionState.selectedInterfaceID, activeInterfaceID: source.sessionState.activeInterfaceID,
             captureFilter: source.filterState.captureFilterText, statusMessage: source.sessionState.statusMessage,
@@ -61,8 +91,16 @@ final class TCPViewerWorkspaceAutomationSource: TCPViewerMCPDataSource {
 
     func mcpStartCapture(interfaceID: String?, captureFilter: String?, completion: @escaping (Result<Void, Error>) -> Void) {
         guard let live else { completion(.failure(Self.unavailable)); return }
+        guard live.networkHelperToolSnapshot.status.allowsLiveCapture else {
+            completion(.failure(TCPViewerMCPDataSourceError.invalidState(live.networkHelperToolSnapshot.message))); return
+        }
         live.performInitialLoadIfNeeded {
-            if let interfaceID { live.selectInterface(interfaceID) }
+            if let interfaceID {
+                guard live.snapshot.sessionState.interfaceInventory.contains(where: { $0.id == interfaceID && $0.isSelectable }) else {
+                    completion(.failure(TCPViewerMCPDataSourceError.invalidState("The requested capture interface is unavailable."))); return
+                }
+                live.selectInterface(interfaceID)
+            }
             if let captureFilter { live.updateCaptureFilterText(captureFilter) }
             guard live.snapshot.sessionState.canStart else {
                 completion(.failure(TCPViewerMCPDataSourceError.invalidState(live.snapshot.sessionState.statusMessage))); return

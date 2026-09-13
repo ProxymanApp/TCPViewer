@@ -15,6 +15,7 @@ enum TCPViewerCLIOutputFormat: String, ExpressibleByArgument {
 }
 
 struct TCPViewerCLIGlobalOptions: ParsableArguments {
+    @OptionGroup var target: TCPViewerCLITargetOptions
     @Option(name: .long, help: "Output format.")
     var output: TCPViewerCLIOutputFormat = .json
 
@@ -47,6 +48,8 @@ struct TCPViewerCLI: ParsableCommand {
         subcommands: [
             AppCommand.self,
             InterfacesCommand.self,
+            WorkspaceCommand.self, TabsCommand.self, PaneCommand.self, SplitCommand.self,
+            SourcesCommand.self, OverviewCommand.self, StatisticsCommand.self,
             CaptureCommand.self,
             PacketsCommand.self,
             StreamCommand.self,
@@ -105,6 +108,12 @@ extension TCPViewerCLIRequestCommand {
         defaultTimeout: Int = 30,
         launchIfNeeded: Bool = true
     ) throws {
+        try global.target.validate()
+        if [.licenseStatus, .licenseActivate, .licenseRevoke, .settingsList, .settingsGet, .settingsSet, .settingsReset].contains(command),
+           !global.target.params.isEmpty {
+            throw ValidationError("License and settings commands do not accept workspace, tab, pane, or scope options.")
+        }
+        let params = params.merging(global.target.params) { existing, _ in existing }
         let timeout = try global.resolvedTimeout(default: defaultTimeout)
         let runner = TCPViewerCLIEnvironment.current.runner
         let response: TCPViewerCLIResponse

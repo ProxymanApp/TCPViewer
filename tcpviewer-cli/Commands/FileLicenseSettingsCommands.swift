@@ -21,8 +21,11 @@ struct FileImportCommand: ParsableCommand, TCPViewerCLIRequestCommand {
     static let configuration = CommandConfiguration(commandName: "import", abstract: "Import pcap, pcapng, or one tcpviewsession file.")
     @OptionGroup var global: TCPViewerCLIGlobalOptions
     @Argument(help: "Capture file paths.") var paths: [String]
+    @Option(name: .long, help: "Select the imported tab. Defaults to true for new tabs and false for replacement.") var select: Bool?
+    @Flag(name: .long, help: "Confirm replacing the explicitly targeted tab.") var yes = false
 
     func validate() throws {
+        if global.target.tabID != nil && !yes { throw ValidationError("Replacing a tab requires --yes.") }
         guard !paths.isEmpty, paths.count <= 100 else {
             throw ValidationError("file import requires between 1 and 100 paths.")
         }
@@ -37,9 +40,9 @@ struct FileImportCommand: ParsableCommand, TCPViewerCLIRequestCommand {
 
     func run() throws {
         let absolutePaths = paths.map(TCPViewerCLIPath.absolute)
-        try execute(.fileImport, params: [
-            "paths": .array(absolutePaths.map(TCPViewerCLIValue.string)),
-        ], defaultTimeout: 300)
+        var params: [String: TCPViewerCLIValue] = ["paths": .array(absolutePaths.map(TCPViewerCLIValue.string)), "confirm": .bool(yes)]
+        if let select { params["select"] = .bool(select) }
+        try execute(.fileImport, params: params, defaultTimeout: 300)
     }
 }
 

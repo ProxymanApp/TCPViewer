@@ -9,6 +9,22 @@ import Darwin
 import Foundation
 
 enum TCPViewerMCPCommand: String, Codable, CaseIterable, Sendable {
+    case listWorkspaces = "list_workspaces"
+    case listTabs = "list_tabs"
+    case createTab = "create_tab"
+    case selectTab = "select_tab"
+    case moveTab = "move_tab"
+    case closeTab = "close_tab"
+    case getPane = "get_pane"
+    case updatePane = "update_pane"
+    case setSplitView = "set_split_view"
+    case focusPane = "focus_pane"
+    case listSources = "list_sources"
+    case getOverviewStatistics = "get_overview_statistics"
+    case getEndpointStatistics = "get_endpoint_statistics"
+    case followStream = "follow_stream"
+    case importCapture = "import_capture"
+    case exportSession = "export_session"
     case getAppStatus = "get_app_status"
     case getCaptureOverview = "get_capture_overview"
     case listInterfaces = "list_interfaces"
@@ -24,6 +40,17 @@ enum TCPViewerMCPCommand: String, Codable, CaseIterable, Sendable {
     case stopCapture = "stop_capture"
     case clearPackets = "clear_packets"
     case revealPacket = "reveal_packet"
+}
+
+extension TCPViewerMCPCommand {
+    var isWorkspaceCommand: Bool {
+        switch self {
+        case .listWorkspaces, .listTabs, .createTab, .selectTab, .moveTab, .closeTab,
+             .getPane, .updatePane, .setSplitView, .focusPane, .listSources,
+             .getOverviewStatistics, .getEndpointStatistics, .followStream, .importCapture, .exportSession: true
+        default: false
+        }
+    }
 }
 
 enum TCPViewerMCPQueryLimit {
