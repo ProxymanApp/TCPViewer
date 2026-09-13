@@ -3467,6 +3467,7 @@ private final class FakeTCPViewerCore: TCPViewerCoreProviding, @unchecked Sendab
     private let documentFactory: (URL) -> FakeOfflineDocument
     private let captureFilterValidator: (String) -> CaptureFilterValidation
     private(set) var interfaceCallCount = 0
+    var validDisplayFilterExpressions: Set<String> = []
 
     private(set) var liveSessionRequests: [(interfaceID: String, options: CaptureOptions)] = []
     private(set) var openedDocumentURLs: [URL] = []
@@ -3509,6 +3510,16 @@ private final class FakeTCPViewerCore: TCPViewerCoreProviding, @unchecked Sendab
 
     func validateCaptureFilter(_ expression: String, completion: @escaping (CaptureFilterValidation) -> Void) {
         completion(captureFilterValidator(expression))
+    }
+
+    // Only explicitly configured synthetic expressions bypass the default unavailable validator.
+    func validateDisplayFilter(_ expression: String, completion: @escaping (DisplayFilterValidation) -> Void) {
+        let normalized = expression.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isValid = normalized.isEmpty || validDisplayFilterExpressions.contains(normalized)
+        completion(DisplayFilterValidation(
+            normalizedExpression: normalized, status: isValid ? .valid : .unavailable,
+            diagnostics: isValid ? [] : [DisplayFilterDiagnostic(severity: .error, message: "Wireshark display-filter validation is unavailable.")]
+        ))
     }
 
     func validateCaptureOptions(_ options: CaptureOptions, for interface: CaptureInterfaceSummary?) throws -> CaptureOptions {
@@ -4071,6 +4082,91 @@ struct TCPViewerAutomationCommandTests {
         #expect((await route(owner, .focusPane, ["pane_id": .string(tab.secondaryPaneID!.uuidString)])).success)
         #expect(owner.selectedTab === tab)
         #expect(tab.pane === tab.secondPane)
+    }
+
+    // Split changes on a visited inactive tab must leave sidebar actions with the visible pane.
+    @Test(arguments: [false, true])
+    func inactiveSplitChangesPreserveSidebarOwnership(startsWithSplit: Bool) async throws {
+        let owner = makeOwner()
+        defer { owner.window?.close() }
+        let hidden = try #require(owner.selectedTab)
+        if startsWithSplit {
+            try owner.setAutomationSplit(true, tab: hidden)
+            hidden.setAutomationFocus(try #require(hidden.secondaryPaneID))
+        }
+        let visible = try owner.createAutomationTab(selecting: true)
+        let sidebar = owner.workspaceViewController.sidebar
+        let originalFocus = hidden.focusedPaneID
+        #expect(sidebar.delegate === visible.firstPane)
+
+        for enabled in [true, true, false] {
+            let response = await route(owner, .setSplitView, ["tab_id": .string(hidden.id.uuidString), "enabled": .bool(enabled)])
+            #expect(response.success)
+            #expect(owner.selectedTab === visible)
+            #expect(hidden.focusedPaneID == (enabled ? originalFocus : hidden.primaryPaneID))
+            #expect(hidden.isSplitViewVisible == enabled)
+            #expect(hidden.firstPane?.viewModel.isActive == false)
+            #expect(sidebar.delegate === visible.firstPane)
+            sidebar.delegate?.sidebarViewController(sidebar, didUpdateFilterText: "visible source query")
+            #expect(visible.firstPane?.viewModel.makeSplitPaneState().sourceListFilterText == "visible source query")
+            #expect(hidden.firstPane?.viewModel.makeSplitPaneState().sourceListFilterText == "")
+        }
+
+        owner.selectTab(hidden.id)
+        #expect(sidebar.delegate === hidden.firstPane)
+        try owner.setAutomationSplit(true, tab: hidden)
+        hidden.setAutomationFocus(try #require(hidden.secondaryPaneID))
+        #expect(sidebar.delegate === hidden.secondPane)
+    }
+
+    // Disabling and re-enabling the same row preserves its draft and changes only packet membership.
+    @Test(arguments: [false, true])
+    func automationWiresharkGroupsPreserveDraftAndEnabledState(inactive: Bool) async throws {
+        let expression = "tcp.port == 443"
+        let document = FakeOfflineDocument(
+            url: URL(fileURLWithPath: "/tmp/synthetic-filter.pcapng"), metadata: .init(format: .pcapng),
+            openPlan: .completed([makeMCPPacket(id: 1), makeMCPPacket(id: 2)]),
+            displayFilterMatchesByExpression: [expression: [1]]
+        )
+        let core = FakeTCPViewerCore(interfaceInventories: [[]], documentFactory: { _ in document })
+        core.validDisplayFilterExpressions = [expression]
+        let owner = TCPViewerWindowController(
+            services: .init(core: core),
+            configuration: AppConfiguration(defaults: UserDefaults(suiteName: "automation-filter-\(UUID())")!),
+            isLicenseAuthorized: { true }
+        )
+        defer { owner.window?.close() }
+        let source = owner.makeOfflineWorkspace()
+        await withCheckedContinuation { continuation in
+            source.controller.importDocumentsWithResult(at: [document.url]) { _ in continuation.resume() }
+        }
+        #expect(owner.placeImportedWorkspace(source, title: "Synthetic", replacing: nil, selecting: !inactive))
+        let tab = try #require(owner.tabs.first { $0.source === source })
+        let target: [String: TCPViewerMCPValue] = ["tab_id": .string(tab.id.uuidString)]
+
+        for enabled in [false, true, false] {
+            let group = PacketStructuredFilterGroup(filters: [
+                PacketStructuredFilter(id: "filter-row", query: .anyText, condition: .contains, text: expression, isEnabled: enabled),
+            ])
+            let value = TCPViewerAutomationCommandRouter.structuredValue(group)
+            let result = await route(owner, .updatePane, target.merging(["structured_filter": value]) { _, new in new })
+            #expect(result.success, "\(result.error ?? "")")
+            #expect(result.data?["structured_filter"] == value)
+            #expect(result.data?["wireshark_filter"] == .string(expression))
+            #expect(result.data?["displayed_packet_count"] == .int(enabled ? 1 : 2))
+            let read = await route(owner, .getPane, target)
+            #expect(read.success)
+            #expect(read.data?["structured_filter"] == value)
+            #expect(read.data?["displayed_packet_count"] == .int(enabled ? 1 : 2))
+            if inactive { #expect(tab.contentController == nil) }
+        }
+
+        owner.selectTab(tab.id)
+        let selected = await route(owner, .getPane, target)
+        #expect(selected.success)
+        #expect(selected.data?["displayed_packet_count"] == .int(2))
+        #expect(tab.firstPane?.viewModel.makeSplitPaneState().structuredFilterGroup.filters.first?.isEnabled == false)
+        #expect(tab.firstPane?.viewModel.makeSplitPaneState().structuredFilterGroup.filters.first?.text == expression)
     }
 
     @Test func errorsDoNotPresentSheetsAndMismatchedTargetsFail() async throws {

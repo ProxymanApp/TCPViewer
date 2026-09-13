@@ -1469,10 +1469,12 @@ final class NetworkInspectorViewModel {
                               wireshark: String?, completion: @escaping (Result<Void, Error>) -> Void) {
         if let quick { quickFilterService.apply(quick) }
         if let group { updateStructuredFilterGroup(group); setStructuredFilterVisible(true) }
-        let expression = wireshark ?? group?.wiresharkExpression
-        if let expression {
+        if let wireshark {
             setFilterMode(.wireshark)
-            updateWiresharkFilterDraft(expression)
+            updateWiresharkFilterDraft(wireshark)
+        }
+        // Structured groups already own their draft, row ID, and enabled state.
+        if wireshark != nil || group?.usesWiresharkFilter == true {
             pendingDisplayFilterValidationWorkItem?.cancel()
             pendingDisplayFilterValidationWorkItem = nil
             applyWiresharkFilter { [weak self] succeeded in
@@ -1792,7 +1794,8 @@ final class NetworkInspectorViewModel {
         let completion: ((Bool) -> Void)? = { finish(.success($0)) }
         cancelWiresharkFilterEvaluation(clearMembership: false)
         let generation = displayFilterValidationGeneration
-        let expression = wiresharkFilterState.draftExpression
+        // Disabled rows retain their draft while applying an empty filter.
+        let expression = structuredFilterGroup.wiresharkExpression ?? wiresharkFilterState.draftExpression
         wiresharkFilterState.isValidating = true
         rebuildSnapshot()
         controller.validateDisplayFilter(expression) { [weak self] validation in

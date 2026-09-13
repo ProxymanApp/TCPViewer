@@ -338,7 +338,8 @@ final class TCPViewerRootViewController: NSViewController {
         isFocusedPane = isFocused
         showsFocusedPaneOutline = showsOutline
         roundsFocusedPaneBottomRightCorner = roundsBottomRightCorner
-        if ownsSidebar || isFocused {
+        // Inactive tabs can change split focus without taking over the visible sidebar.
+        if viewModel.isActive && (ownsSidebar || isFocused) {
             sidebarViewController.delegate = self
         } else if sidebarViewController.delegate === self {
             sidebarViewController.delegate = nil
