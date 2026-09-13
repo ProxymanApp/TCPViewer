@@ -76,9 +76,11 @@ final class PacketQuickFilterViewController: NSTitlebarAccessoryViewController {
     weak var delegate: PacketQuickFilterViewControllerDelegate?
 
     private let stackView = NSStackView()
+    private let scrollView = NSScrollView()
     private let customSeparator = NSBox()
     private let resetSeparator = NSBox()
-    private let bottomSeparator = NSBox()
+    // A plain separator has no intrinsic width that could resize the titlebar's window.
+    private let bottomSeparator = TCPViewerDynamicBackgroundView(backgroundColor: .separatorColor)
     private let resetButton = NSButton(title: "Reset Filters", target: nil, action: nil)
     private var heightConstraint: NSLayoutConstraint?
     private var buttons: [PacketQuickFilterID: PacketQuickFilterButton] = [:]
@@ -105,6 +107,7 @@ final class PacketQuickFilterViewController: NSTitlebarAccessoryViewController {
 
     override func loadView() {
         view = NSView(frame: NSRect(x: 0, y: 0, width: 1, height: Metrics.height))
+        view.autoresizingMask = [.width]
         setupLayout()
     }
 
@@ -159,7 +162,6 @@ final class PacketQuickFilterViewController: NSTitlebarAccessoryViewController {
         customSeparator.boxType = .separator
         customSeparator.translatesAutoresizingMaskIntoConstraints = false
 
-        bottomSeparator.boxType = .separator
         bottomSeparator.translatesAutoresizingMaskIntoConstraints = false
 
         resetButton.target = self
@@ -170,16 +172,28 @@ final class PacketQuickFilterViewController: NSTitlebarAccessoryViewController {
         render(button: resetButton, title: "Reset Filters", toolTip: "Reset quick filters", isSelected: false)
         resetButton.isHidden = true
 
-        view.addSubview(stackView)
+        // Overlay scrolling keeps every filter accessible without imposing a wide titlebar.
+        scrollView.borderType = .noBorder
+        scrollView.drawsBackground = false
+        scrollView.hasHorizontalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.scrollerStyle = .overlay
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.documentView = stackView
+        view.addSubview(scrollView)
         view.addSubview(bottomSeparator)
         let heightConstraint = view.heightAnchor.constraint(equalToConstant: Metrics.height)
         self.heightConstraint = heightConstraint
         NSLayoutConstraint.activate([
             heightConstraint,
-            stackView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            stackView.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor),
-            stackView.topAnchor.constraint(equalTo: view.topAnchor),
-            stackView.bottomAnchor.constraint(equalTo: bottomSeparator.topAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            scrollView.topAnchor.constraint(equalTo: view.topAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: bottomSeparator.topAnchor),
+            stackView.leadingAnchor.constraint(equalTo: scrollView.contentView.leadingAnchor),
+            stackView.topAnchor.constraint(equalTo: scrollView.contentView.topAnchor),
+            stackView.widthAnchor.constraint(greaterThanOrEqualTo: scrollView.contentView.widthAnchor),
+            stackView.heightAnchor.constraint(equalTo: scrollView.contentView.heightAnchor),
             customSeparator.heightAnchor.constraint(equalToConstant: 18),
             resetSeparator.heightAnchor.constraint(equalToConstant: 18),
             resetButton.heightAnchor.constraint(equalToConstant: Metrics.buttonHeight),

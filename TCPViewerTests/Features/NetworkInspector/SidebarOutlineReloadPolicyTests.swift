@@ -336,13 +336,15 @@ struct SidebarOutlineReloadPolicyTests {
         controller.menuNeedsUpdate(menu)
 
         let nonSeparatorTitles = menu.items.filter { !$0.isSeparatorItem }.map(\.title)
-        #expect(nonSeparatorTitles == ["Pin", "Open in New Tab", "Copy App Name", "Export", "Show in Finder…", "Delete"])
+        #expect(nonSeparatorTitles == ["Pin", "Open in New Tab", "Open in Split View", "Copy App Name", "Export", "Show in Finder…", "Delete"])
         let pinIndex = try #require(menu.items.firstIndex { $0.title == "Pin" })
         #expect(pinIndex == 0)
         #expect(menu.items[pinIndex + 1].isSeparatorItem)
         let openIndex = try #require(menu.items.firstIndex { $0.title == "Open in New Tab" })
         #expect(openIndex == pinIndex + 2)
-        #expect(menu.items[openIndex + 1].isSeparatorItem)
+        let splitIndex = try #require(menu.items.firstIndex { $0.title == "Open in Split View" })
+        #expect(splitIndex == openIndex + 1)
+        #expect(menu.items[splitIndex + 1].isSeparatorItem)
         let copyIndex = try #require(menu.items.firstIndex { $0.title == "Copy App Name" })
         #expect(menu.items[copyIndex + 1].isSeparatorItem)
         let finderIndex = try #require(menu.items.firstIndex { $0.title == "Show in Finder…" })
@@ -377,6 +379,7 @@ struct SidebarOutlineReloadPolicyTests {
         let nonSeparatorTitles = menu.items.filter { !$0.isSeparatorItem }.map(\.title)
         #expect(nonSeparatorTitles.first == "Pin")
         #expect(nonSeparatorTitles.dropFirst().first == "Open in New Tab")
+        #expect(nonSeparatorTitles.dropFirst(2).first == "Open in Split View")
         #expect(nonSeparatorTitles.contains("Copy Domain Name"))
         #expect(!nonSeparatorTitles.contains("Copy App Name"))
     }
@@ -402,10 +405,37 @@ struct SidebarOutlineReloadPolicyTests {
         controller.menuNeedsUpdate(menu)
 
         #expect(menu.items[0].title == "Open in New Tab")
-        #expect(menu.items[1].isSeparatorItem)
-        #expect(menu.items[2].title == "Copy IP Address")
+        #expect(menu.items[1].title == "Open in Split View")
+        #expect(menu.items[2].isSeparatorItem)
+        #expect(menu.items[3].title == "Copy IP Address")
         NSApp.sendAction(menu.items[0].action!, to: menu.items[0].target, from: menu.items[0])
+        NSApp.sendAction(menu.items[1].action!, to: menu.items[1].target, from: menu.items[1])
         #expect(recorder.openedInNewTabSelections == [.ipAddress(ipAddressKey)])
+        #expect(recorder.openedInSplitViewSelections == [.ipAddress(ipAddressKey)])
+        #expect(recorder.splitViewOriginalSelections == [.ipAddress(ipAddressKey)])
+    }
+
+    @MainActor
+    @Test func offlineSidebarContextMenuOffersSplitViewWithoutNewTab() throws {
+        let appKey = PacketSourceClientKey(rawValue: "bundleIdentifier:com.example.App")
+        let controller = SidebarViewController()
+        let recorder = SidebarSelectionRecorder()
+        recorder.allowsNewTab = false
+        controller.delegate = recorder
+        controller.loadViewIfNeeded()
+        controller.render(snapshot: makeSnapshot(
+            sourceListSnapshot: snapshotWithApp(),
+            selectedSelection: .app(appKey),
+            packetMutation: .none
+        ))
+
+        let outlineView = try #require(findOutlineScrollView(in: controller.view)?.documentView as? NSOutlineView)
+        let menu = try #require(outlineView.menu)
+        controller.menuNeedsUpdate(menu)
+
+        let titles = menu.items.filter { !$0.isSeparatorItem }.map(\.title)
+        #expect(!titles.contains("Open in New Tab"))
+        #expect(titles.contains("Open in Split View"))
     }
 
     @MainActor
@@ -822,6 +852,9 @@ private final class SidebarSelectionRecorder: SidebarViewControllerDelegate {
     var selectedSelections: [PacketSourceListSelection?] = []
     var selectedWorkspaceModes: [NetworkInspectorWorkspaceMode] = []
     var openedInNewTabSelections: [PacketSourceListSelection] = []
+    var openedInSplitViewSelections: [PacketSourceListSelection] = []
+    var splitViewOriginalSelections: [PacketSourceListSelection] = []
+    var allowsNewTab = true
 
     func sidebarViewController(_ controller: SidebarViewController, didSelect selection: PacketSourceListSelection?) {
         selectedSelection = selection
@@ -838,11 +871,24 @@ private final class SidebarSelectionRecorder: SidebarViewControllerDelegate {
     func sidebarViewController(_ controller: SidebarViewController, didUpdateFilterText text: String) {}
 
     func sidebarViewController(_ controller: SidebarViewController, canOpenInNewTab selection: PacketSourceListSelection) -> Bool {
-        true
+        allowsNewTab
     }
 
     func sidebarViewController(_ controller: SidebarViewController, didRequestOpenInNewTab selection: PacketSourceListSelection) {
         openedInNewTabSelections.append(selection)
+    }
+
+    func sidebarViewController(_ controller: SidebarViewController, canOpenInSplitView selection: PacketSourceListSelection) -> Bool {
+        true
+    }
+
+    func sidebarViewController(
+        _ controller: SidebarViewController,
+        didRequestOpenInSplitView selection: PacketSourceListSelection,
+        preserving originalSelection: PacketSourceListSelection
+    ) {
+        openedInSplitViewSelections.append(selection)
+        splitViewOriginalSelections.append(originalSelection)
     }
 
     func sidebarViewController(_ controller: SidebarViewController, didRequestPin targets: [PacketSourceListPinTarget]) {}

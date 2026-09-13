@@ -128,6 +128,7 @@ final class PacketWorkspaceViewController: NSViewController {
     private let endpointFilterBar = TCPViewerDynamicBackgroundView(backgroundColor: .controlBackgroundColor)
     private let endpointFilterLabel = NSTextField(labelWithString: "")
     private let structuredFilterController = PacketStructuredFilterViewController()
+    private let structuredFilterScrollView = NSScrollView()
     var selectedFollowRow: PacketTableRow? { tableController.selectedFollowRow }
 
     private let tableController: PacketTableViewController
@@ -219,13 +220,20 @@ final class PacketWorkspaceViewController: NSViewController {
         addChild(structuredFilterController)
         addChild(tableController)
         structuredFilterController.view.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(structuredFilterController.view)
+        // Scroll the full editor horizontally so its control and shortcut widths cannot enlarge the window.
+        structuredFilterScrollView.borderType = .noBorder
+        structuredFilterScrollView.drawsBackground = false
+        structuredFilterScrollView.hasHorizontalScroller = true
+        structuredFilterScrollView.autohidesScrollers = true
+        structuredFilterScrollView.translatesAutoresizingMaskIntoConstraints = false
+        structuredFilterScrollView.documentView = structuredFilterController.view
+        view.addSubview(structuredFilterScrollView)
 
-        let contentTopToBuilderBottomConstraint = contentContainer.topAnchor.constraint(equalTo: structuredFilterController.view.bottomAnchor)
+        let contentTopToBuilderBottomConstraint = contentContainer.topAnchor.constraint(equalTo: structuredFilterScrollView.bottomAnchor)
         let contentTopToSafeAreaConstraint = contentContainer.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor)
         self.contentTopToBuilderBottomConstraint = contentTopToBuilderBottomConstraint
         self.contentTopToSafeAreaConstraint = contentTopToSafeAreaConstraint
-        structuredFilterController.view.isHidden = true
+        structuredFilterScrollView.isHidden = true
 
         NSLayoutConstraint.activate([
             contentContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -242,9 +250,13 @@ final class PacketWorkspaceViewController: NSViewController {
             contentBodyContainer.topAnchor.constraint(equalTo: endpointFilterBar.bottomAnchor),
             contentBodyContainer.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor),
 
-            structuredFilterController.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            structuredFilterController.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            structuredFilterController.view.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            structuredFilterScrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            structuredFilterScrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            structuredFilterScrollView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            structuredFilterController.view.leadingAnchor.constraint(equalTo: structuredFilterScrollView.contentView.leadingAnchor),
+            structuredFilterController.view.topAnchor.constraint(equalTo: structuredFilterScrollView.contentView.topAnchor),
+            structuredFilterController.view.widthAnchor.constraint(greaterThanOrEqualTo: structuredFilterScrollView.contentView.widthAnchor),
+            structuredFilterController.view.heightAnchor.constraint(equalTo: structuredFilterScrollView.contentView.heightAnchor),
         ])
     }
 
@@ -306,7 +318,7 @@ final class PacketWorkspaceViewController: NSViewController {
         }
 
         isStructuredFilterVisible = isVisible
-        structuredFilterController.view.isHidden = !isVisible
+        structuredFilterScrollView.isHidden = !isVisible
         contentTopToBuilderBottomConstraint?.isActive = false
         if isVisible {
             contentTopToSafeAreaConstraint?.isActive = false

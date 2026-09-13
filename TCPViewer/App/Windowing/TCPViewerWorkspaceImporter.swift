@@ -39,13 +39,17 @@ final class TCPViewerWorkspaceImporter: TCPViewerWorkspaceControllerDelegate {
             return
         }
         pending.append(Request(urls: supported, targetID: windowController?.selectedTabID, targetTab: windowController?.selectedTab,
-                               asksPlacement: Self.shouldAskForPlacement(tabCount: windowController?.tabs.count ?? 0, automaticNewTab: automaticNewTab),
+                               asksPlacement: Self.shouldAskForPlacement(
+                                   tabCount: windowController?.tabs.count ?? 0, automaticNewTab: automaticNewTab,
+                                   canCreateAdditionalTab: windowController?.canCreateAdditionalTab ?? false
+                               ),
                                presentsErrors: !automaticNewTab, completion: completion))
         startNext()
     }
 
-    static func shouldAskForPlacement(tabCount: Int, automaticNewTab: Bool) -> Bool {
-        !automaticNewTab && tabCount >= 2
+    static func shouldAskForPlacement(tabCount: Int, automaticNewTab: Bool, canCreateAdditionalTab: Bool = true) -> Bool {
+        // Free users can still open captures by explicitly replacing their single tab.
+        !automaticNewTab && (tabCount >= 2 || (tabCount == 1 && !canCreateAdditionalTab))
     }
 
     private func startNext() {
@@ -73,6 +77,10 @@ final class TCPViewerWorkspaceImporter: TCPViewerWorkspaceControllerDelegate {
     private func load(_ request: Request, replacing targetID: UUID?) {
         guard let owner = windowController, active?.id == request.id else { return }
         if targetID != nil, !owner.tabs.contains(where: { $0 === request.targetTab }) {
+            finish(request, result: .init(importedURLs: [], error: Self.cancelledError)); return
+        }
+        // Reject paid tab creation before opening files or allocating a staging workspace.
+        if targetID == nil, !owner.authorizeAdditionalTab() {
             finish(request, result: .init(importedURLs: [], error: Self.cancelledError)); return
         }
         let source = owner.makeOfflineWorkspace()

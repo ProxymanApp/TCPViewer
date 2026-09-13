@@ -16,17 +16,22 @@ final class TCPViewerWindowController: NSWindowController {
     private(set) var selectedTabID: UUID?
     var selectedTab: TCPViewerWorkspaceTab? { tabs.first { $0.id == selectedTabID } }
     var rootViewController: TCPViewerRootViewController { selectedTab!.pane! }
+    var canCreateAdditionalTab: Bool { tabs.isEmpty || isLicenseAuthorized() }
     let liveWorkspace: TCPViewerCaptureWorkspace
     private let services: TCPViewerServiceRegistry
     private let configuration: AppConfiguration
+    private let isLicenseAuthorized: () -> Bool
     private var history = TCPViewerWorkspaceTabHistory()
     private var isClosingWorkspace = false
     private var isReadyToClose = false
     var closeHandler: (() -> Void)?
+    var upgradeAlertPresenter: ((NSAlert, @escaping (NSApplication.ModalResponse) -> Void) -> Void)?
+    var paywallHandler: (() -> Void)?
+    private var upgradeAlert: NSAlert?
     private lazy var importer = TCPViewerWorkspaceImporter(windowController: self)
     private lazy var automationSource = TCPViewerWorkspaceAutomationSource(windowController: self)
 
-    private let toolbarDataSource = TCPViewerToolbarDataSource()
+    private let toolbarDataSource: TCPViewerToolbarDataSource
     private let filterController = PacketQuickFilterViewController()
     private var helperSheetController: NSHostingController<TCPViewerNetworkHelperOnboardingSheet>?
     private var helperSheetWindow: NSWindow?
@@ -34,9 +39,12 @@ final class TCPViewerWindowController: NSWindowController {
     private var licenseStatusObserver: NSObjectProtocol?
 
     init(services: TCPViewerServiceRegistry, configuration: AppConfiguration, initialURL: URL? = nil,
-         startsWithLiveTab: Bool = true) {
+         startsWithLiveTab: Bool = true,
+         isLicenseAuthorized: @escaping () -> Bool = { TCPViewerLicenseService.shared.isLicenseAuthorized }) {
         self.services = services
         self.configuration = configuration
+        self.isLicenseAuthorized = isLicenseAuthorized
+        self.toolbarDataSource = TCPViewerToolbarDataSource(userDefaults: configuration.userDefaults)
         self.liveWorkspace = TCPViewerCaptureWorkspace(services: services, userDefaults: configuration.userDefaults,
                                                       interfaceHistoryStore: configuration.interfaceSelectionHistory)
         let window = TCPViewerWorkspaceWindow(contentViewController: workspaceViewController)
@@ -46,7 +54,6 @@ final class TCPViewerWindowController: NSWindowController {
         if #available(macOS 11.0, *) {
             window.titlebarSeparatorStyle = .automatic
         }
-        window.contentMinSize = Self.contentMinSize
         window.setContentSize(Self.defaultContentSize(for: window))
         window.center()
         window.isReleasedWhenClosed = false
@@ -55,6 +62,7 @@ final class TCPViewerWindowController: NSWindowController {
         window.isRestorable = false
         window.delegate = self
         window.shortcutHandler = { [weak self] in self?.handleTabShortcut($0) ?? false }
+        window.focusHandler = { [weak self] in self?.focusPane(containing: $0) }
         configureTabs()
         if startsWithLiveTab && initialURL == nil { newWorkspaceTab(nil) }
         TCPViewerMCPServiceProvider.shared.register(source: automationSource, window: window)
@@ -74,10 +82,49 @@ final class TCPViewerWindowController: NSWindowController {
 
     // Tab creation allocates metadata first; selecting it is the only pane factory call.
     @IBAction func newWorkspaceTab(_ sender: Any?) {
-        guard !isClosingWorkspace else { return }
+        _ = createWorkspaceTab()
+    }
+
+    private func createWorkspaceTab() -> TCPViewerWorkspaceTab? {
+        guard authorizeAdditionalTab() else { return nil }
         let tab = TCPViewerWorkspaceTab(source: liveWorkspace)
         tabs.append(tab)
         selectTab(tab.id)
+        return tab
+    }
+
+    // Gate every additional-tab entry point while keeping the window's first tab available for free.
+    func authorizeAdditionalTab() -> Bool {
+        guard !isClosingWorkspace else { return false }
+        return canCreateAdditionalTab || authorizeProFeature("New Tabs")
+    }
+
+    // Keep one upgrade sheet per window without retaining a pane in the completion.
+    private func authorizeProFeature(_ feature: String) -> Bool {
+        guard !isClosingWorkspace else { return false }
+        guard !isLicenseAuthorized() else { return true }
+        guard upgradeAlert == nil, let window else { return false }
+        let alert = NSAlert()
+        alert.messageText = "Unlock \(feature) with TCP Viewer PRO"
+        alert.informativeText = "Upgrade to TCP Viewer PRO or activate an existing license to unlock \(feature.lowercased())."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Upgrade to PRO")
+        alert.addButton(withTitle: "Not Now")
+        upgradeAlert = alert
+        let completion: (NSApplication.ModalResponse) -> Void = { [weak self, weak alert] response in
+            guard let self, let alert, self.upgradeAlert === alert else { return }
+            self.upgradeAlert = nil
+            guard !self.isClosingWorkspace, response == .alertFirstButtonReturn else { return }
+            self.showPaywall()
+        }
+        if let upgradeAlertPresenter { upgradeAlertPresenter(alert, completion) }
+        else { alert.beginSheetModal(for: window, completionHandler: completion) }
+        return false
+    }
+
+    private func showPaywall() {
+        if let paywallHandler { paywallHandler() }
+        else { (NSApp.delegate as? AppDelegate)?.showPaywall(self) }
     }
 
     func selectTab(_ id: UUID, recordsHistory: Bool = true) {
@@ -86,34 +133,104 @@ final class TCPViewerWindowController: NSWindowController {
         if let previous = selectedTab {
             previous.sidebarNavigation = workspaceViewController.sidebar.saveNavigationState()
             _ = previous.displayTitle
-            previous.pane?.deactivate()
+            previous.deactivate()
         }
         selectedTabID = id
         if recordsHistory { history.visit(id) }
         workspaceViewController.sidebar.restoreNavigationState(next.sidebarNavigation)
         guard let pane = next.openPane(using: { source in
-            let model = NetworkInspectorViewModel(services: source.controller.services, captureWorkspace: source,
-                                                  freshPane: source.kind == .live, userDefaults: configuration.userDefaults,
-                                                  interfaceHistoryStore: configuration.interfaceSelectionHistory)
-            let pane = TCPViewerRootViewController(viewModel: model, configuration: configuration,
-                                                  sharedSidebar: workspaceViewController.sidebar)
-            pane.delegate = self
-            pane.importHandler = { [weak self] urls, completion in
-                guard let self else { completion(TCPViewerCaptureImportResult(importedURLs: [], error: TCPViewerWorkspaceImporter.cancelledError)); return }
-                self.importCaptureURLs(urls, completion: completion)
-            }
-            pane.sidebarVisibilityHandler = { [weak self, weak model] visible in
-                guard let self, let model else { return }
-                self.workspaceViewController.setSidebarVisible(visible, viewModel: model)
-            }
-            return pane
+            self.makePane(source: source)
         }) else { return }
         guard let content = next.contentController else { return }
         workspaceViewController.show(content, tabCount: tabs.count)
-        pane.activate()
+        next.activate()
         updateTabBar()
         renderToolbar()
         window?.makeFirstResponder(pane.view)
+    }
+
+    private func makePane(
+        source: TCPViewerCaptureWorkspace,
+        paneState: NetworkInspectorPaneState? = nil
+    ) -> TCPViewerRootViewController {
+        let model = NetworkInspectorViewModel(
+            services: source.controller.services,
+            captureWorkspace: source,
+            freshPane: paneState == nil && source.kind == .live,
+            userDefaults: configuration.userDefaults,
+            interfaceHistoryStore: configuration.interfaceSelectionHistory,
+            paneState: paneState
+        )
+        let pane = TCPViewerRootViewController(
+            viewModel: model,
+            configuration: configuration,
+            sharedSidebar: workspaceViewController.sidebar
+        )
+        pane.delegate = self
+        pane.importHandler = { [weak self] urls, completion in
+            guard let self else {
+                completion(TCPViewerCaptureImportResult(
+                    importedURLs: [],
+                    error: TCPViewerWorkspaceImporter.cancelledError
+                ))
+                return
+            }
+            self.importCaptureURLs(urls, completion: completion)
+        }
+        pane.sidebarVisibilityHandler = { [weak self, weak model] visible in
+            guard let self, let model else { return }
+            self.workspaceViewController.setSidebarVisible(visible, viewModel: model)
+        }
+        return pane
+    }
+
+    @IBAction func toggleSplitView(_ sender: Any?) {
+        guard !isClosingWorkspace, let selectedTab else { return }
+        if selectedTab.isSplitViewVisible {
+            selectedTab.closeSplitView()
+            if let firstPane = selectedTab.firstPane {
+                window?.makeFirstResponder(firstPane.view)
+            }
+        } else {
+            guard authorizeProFeature("Split View") else { return }
+            if let pane = selectedTab.openSecondPane(using: { source, state in
+                self.makePane(source: source, paneState: state)
+            }) {
+                window?.makeFirstResponder(pane.view)
+            }
+        }
+        renderToolbar()
+    }
+
+    private func openInSplitView(
+        from controller: TCPViewerRootViewController,
+        selection: PacketSourceListSelection,
+        preserving originalSelection: PacketSourceListSelection
+    ) {
+        guard let selectedTab, let firstPane = selectedTab.firstPane else { return }
+        if controller === firstPane {
+            firstPane.selectSourceListWhenAvailable(originalSelection)
+        }
+        if !selectedTab.isSplitViewVisible, !authorizeProFeature("Split View") {
+            controller.selectSourceListWhenAvailable(originalSelection)
+            return
+        }
+        let pane = selectedTab.openSecondPane { source, state in
+            self.makePane(source: source, paneState: state)
+        }
+        guard let pane else { return }
+        pane.selectSourceListWhenAvailable(selection)
+        selectedTab.focus(pane)
+        window?.makeFirstResponder(pane.view)
+        renderToolbar()
+    }
+
+    private func focusPane(containing responder: NSResponder?) {
+        guard let content = selectedTab?.contentController,
+              let pane = content.pane(containing: responder),
+              content.focusedPane !== pane else { return }
+        content.focus(pane)
+        renderToolbar()
     }
 
     @IBAction func closeSelectedTab(_ sender: Any?) { if let id = selectedTabID { closeTab(id) } }
@@ -152,7 +269,7 @@ final class TCPViewerWindowController: NSWindowController {
 
     // Placement commits only after import succeeds; replacement retains the destination's position.
     func placeImportedWorkspace(_ source: TCPViewerCaptureWorkspace, title: String, replacing id: UUID?) -> Bool {
-        guard !isClosingWorkspace else { return false }
+        guard !isClosingWorkspace, id != nil || authorizeAdditionalTab() else { return false }
         let tab = TCPViewerWorkspaceTab(id: id ?? UUID(), source: source, title: title)
         if let id {
             guard let index = tabs.firstIndex(where: { $0.id == id }) else { return false }
@@ -237,15 +354,13 @@ final class TCPViewerWindowController: NSWindowController {
     }
 
     private static let frameAutosaveName = "TCPViewer.MainWindow"
-    private static let contentMinSize = NSSize(width: 1_180, height: 600)
     private static let defaultScreenRatio: CGFloat = 0.85
 
+    // Choose a display-sized launch frame without imposing an app-level resizing minimum.
     private static func defaultContentSize(for window: NSWindow) -> NSSize {
         let visibleFrame = (window.screen ?? NSScreen.main ?? NSScreen.screens.first)?.visibleFrame
             ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        let width = max(contentMinSize.width, visibleFrame.width * defaultScreenRatio)
-        let height = max(contentMinSize.height, visibleFrame.height * defaultScreenRatio)
-        return NSSize(width: width, height: height)
+        return NSSize(width: visibleFrame.width * defaultScreenRatio, height: visibleFrame.height * defaultScreenRatio)
     }
 
     @available(*, unavailable)
@@ -306,6 +421,7 @@ final class TCPViewerWindowController: NSWindowController {
         toolbarDataSource.delegate = self
         window?.toolbar = toolbarDataSource.toolbar
         window?.toolbarStyle = .unified
+        toolbarDataSource.installSplitViewItemIfNeeded()
         toolbarDataSource.setAvailableUpdateCount((NSApp.delegate as? AppDelegate)?.currentAvailableUpdateCount() ?? 0)
     }
 
@@ -327,7 +443,8 @@ final class TCPViewerWindowController: NSWindowController {
         toolbarDataSource.render(
             snapshot: snapshot,
             inspectorViewModel: rootViewController.viewModel,
-            isLicenseAuthorized: TCPViewerLicenseService.shared.isLicenseAuthorized
+            isLicenseAuthorized: TCPViewerLicenseService.shared.isLicenseAuthorized,
+            isSplitViewVisible: selectedTab?.isSplitViewVisible == true
         )
         filterController.render(snapshot: snapshot)
         window?.title = selectedTab?.displayTitle ?? "TCP Viewer"
@@ -419,8 +536,10 @@ final class TCPViewerWindowController: NSWindowController {
 extension TCPViewerWindowController: TCPViewerRootViewControllerDelegate {
     // Auxiliary windows must reattach their original pane before changing its selection.
     func tcpviewerRootViewControllerDidRequestActivation(_ controller: TCPViewerRootViewController) {
-        guard let tab = tabs.first(where: { $0.pane === controller }) else { return }
-        selectTab(tab.id)
+        guard let tab = tabs.first(where: { $0.contains(controller) }) else { return }
+        if selectedTabID != tab.id { selectTab(tab.id) }
+        tab.focus(controller)
+        renderToolbar()
     }
 
     func tcpviewerRootViewControllerDidChangeToolbarState(_ controller: TCPViewerRootViewController) {
@@ -433,12 +552,21 @@ extension TCPViewerWindowController: TCPViewerRootViewControllerDelegate {
         _ controller: TCPViewerRootViewController,
         didRequestOpenInNewTab selection: PacketSourceListSelection
     ) {
-        guard tabs.first(where: { $0.pane === controller })?.source === liveWorkspace else {
+        guard tabs.first(where: { $0.contains(controller) })?.source === liveWorkspace else {
             return
         }
 
-        newWorkspaceTab(nil)
-        rootViewController.selectSourceListWhenAvailable(selection)
+        guard let tab = createWorkspaceTab() else { return }
+        tab.pane?.selectSourceListWhenAvailable(selection)
+    }
+
+    func tcpviewerRootViewController(
+        _ controller: TCPViewerRootViewController,
+        didRequestOpenInSplitView selection: PacketSourceListSelection,
+        preserving originalSelection: PacketSourceListSelection
+    ) {
+        guard selectedTab?.contains(controller) == true else { return }
+        openInSplitView(from: controller, selection: selection, preserving: originalSelection)
     }
 
     func tcpviewerRootViewController(_ controller: TCPViewerRootViewController, didRequestHelperOnboarding snapshot: TCPViewerNetworkHelperToolSnapshot) {
@@ -446,7 +574,7 @@ extension TCPViewerWindowController: TCPViewerRootViewControllerDelegate {
     }
 
     func tcpviewerRootViewControllerDidRequestPaywall(_ controller: TCPViewerRootViewController) {
-        (NSApp.delegate as? AppDelegate)?.showPaywall(self)
+        showPaywall()
     }
 }
 
@@ -480,6 +608,10 @@ extension TCPViewerWindowController: TCPViewerToolbarDataSourceDelegate {
         rootViewController.toggleInspector(placement: .bottom)
     }
 
+    func tcpviewerToolbarDataSourceDidToggleSplitView(_ dataSource: TCPViewerToolbarDataSource) {
+        toggleSplitView(dataSource)
+    }
+
     func tcpviewerToolbarDataSourceDidRequestHelperToolScreen(_ dataSource: TCPViewerToolbarDataSource) {
         presentHelperOnboarding(
             snapshot: rootViewController.viewModel.networkHelperToolSnapshot,
@@ -488,7 +620,7 @@ extension TCPViewerWindowController: TCPViewerToolbarDataSourceDelegate {
     }
 
     func tcpviewerToolbarDataSourceDidRequestPaywall(_ dataSource: TCPViewerToolbarDataSource) {
-        (NSApp.delegate as? AppDelegate)?.showPaywall(self)
+        showPaywall()
     }
 
     func tcpviewerToolbarDataSourceDidRequestCheckForUpdates(_ dataSource: TCPViewerToolbarDataSource) {
@@ -530,6 +662,10 @@ extension TCPViewerWindowController: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(newWorkspaceTab(_:)) { return !isClosingWorkspace }
         guard selectedTab?.pane != nil, !isClosingWorkspace else { return false }
+        if menuItem.action == #selector(toggleSplitView(_:)) {
+            menuItem.state = selectedTab?.isSplitViewVisible == true ? .on : .off
+            return true
+        }
         if menuItem.action == #selector(navigateBackInTabHistory(_:)) {
             return window?.attachedSheet == nil && history.canGoBack(validIDs: Set(tabs.map(\.id)))
         }
@@ -556,6 +692,23 @@ extension TCPViewerWindowController: NSMenuItemValidation {
 
 private final class TCPViewerWorkspaceWindow: NSWindow {
     var shortcutHandler: ((NSEvent) -> Bool)?
+    var focusHandler: ((NSResponder?) -> Void)?
+
+    override func sendEvent(_ event: NSEvent) {
+        if [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type),
+           let contentView,
+           let hitView = contentView.hitTest(contentView.convert(event.locationInWindow, from: nil)) {
+            focusHandler?(hitView)
+        }
+        super.sendEvent(event)
+    }
+
+    override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
+        let didChange = super.makeFirstResponder(responder)
+        if didChange { focusHandler?(responder) }
+        return didChange
+    }
+
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if shortcutHandler?(event) == true { return true }
         return super.performKeyEquivalent(with: event)
@@ -579,6 +732,10 @@ extension TCPViewerWindowController: NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         isClosingWorkspace = true
+        if let sheet = window?.attachedSheet, sheet === upgradeAlert?.window { window?.endSheet(sheet) }
+        upgradeAlert = nil
+        upgradeAlertPresenter = nil
+        paywallHandler = nil
         liveWorkspace.close { [liveWorkspace] _ in _ = liveWorkspace }
         importer.cancelAll()
         tabs.forEach { $0.close() }

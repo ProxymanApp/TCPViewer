@@ -631,7 +631,7 @@ struct NetworkInspectorSnapshot: Equatable {
         quickFilterSelection: PacketQuickFilterSelection = .all,
         workspaceMode: NetworkInspectorWorkspaceMode,
         inspectorTab: PacketInspectorTab,
-        inspectorPlacement: NetworkInspectorPlacement = .trailing,
+        inspectorPlacement: NetworkInspectorPlacement = .bottom,
         isInspectorVisible: Bool,
         isStructuredFilterVisible: Bool = false,
         filterMode: PacketFilterMode = .builder,
