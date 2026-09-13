@@ -16,13 +16,18 @@ final class TCPViewerWindowController: NSWindowController {
     private(set) var selectedTabID: UUID?
     var selectedTab: TCPViewerWorkspaceTab? { tabs.first { $0.id == selectedTabID } }
     var rootViewController: TCPViewerRootViewController { selectedTab!.pane! }
+    var canCreateAdditionalTab: Bool { tabs.isEmpty || isLicenseAuthorized() }
     let liveWorkspace: TCPViewerCaptureWorkspace
     private let services: TCPViewerServiceRegistry
     private let configuration: AppConfiguration
+    private let isLicenseAuthorized: () -> Bool
     private var history = TCPViewerWorkspaceTabHistory()
     private var isClosingWorkspace = false
     private var isReadyToClose = false
     var closeHandler: (() -> Void)?
+    var upgradeAlertPresenter: ((NSAlert, @escaping (NSApplication.ModalResponse) -> Void) -> Void)?
+    var paywallHandler: (() -> Void)?
+    private var upgradeAlert: NSAlert?
     private lazy var importer = TCPViewerWorkspaceImporter(windowController: self)
     private lazy var automationSource = TCPViewerWorkspaceAutomationSource(windowController: self)
 
@@ -34,9 +39,11 @@ final class TCPViewerWindowController: NSWindowController {
     private var licenseStatusObserver: NSObjectProtocol?
 
     init(services: TCPViewerServiceRegistry, configuration: AppConfiguration, initialURL: URL? = nil,
-         startsWithLiveTab: Bool = true) {
+         startsWithLiveTab: Bool = true,
+         isLicenseAuthorized: @escaping () -> Bool = { TCPViewerLicenseService.shared.isLicenseAuthorized }) {
         self.services = services
         self.configuration = configuration
+        self.isLicenseAuthorized = isLicenseAuthorized
         self.toolbarDataSource = TCPViewerToolbarDataSource(userDefaults: configuration.userDefaults)
         self.liveWorkspace = TCPViewerCaptureWorkspace(services: services, userDefaults: configuration.userDefaults,
                                                       interfaceHistoryStore: configuration.interfaceSelectionHistory)
@@ -75,10 +82,49 @@ final class TCPViewerWindowController: NSWindowController {
 
     // Tab creation allocates metadata first; selecting it is the only pane factory call.
     @IBAction func newWorkspaceTab(_ sender: Any?) {
-        guard !isClosingWorkspace else { return }
+        _ = createWorkspaceTab()
+    }
+
+    private func createWorkspaceTab() -> TCPViewerWorkspaceTab? {
+        guard authorizeAdditionalTab() else { return nil }
         let tab = TCPViewerWorkspaceTab(source: liveWorkspace)
         tabs.append(tab)
         selectTab(tab.id)
+        return tab
+    }
+
+    // Gate every additional-tab entry point while keeping the window's first tab available for free.
+    func authorizeAdditionalTab() -> Bool {
+        guard !isClosingWorkspace else { return false }
+        return canCreateAdditionalTab || authorizeProFeature("New Tabs")
+    }
+
+    // Keep one upgrade sheet per window without retaining a pane in the completion.
+    private func authorizeProFeature(_ feature: String) -> Bool {
+        guard !isClosingWorkspace else { return false }
+        guard !isLicenseAuthorized() else { return true }
+        guard upgradeAlert == nil, let window else { return false }
+        let alert = NSAlert()
+        alert.messageText = "Unlock \(feature) with TCP Viewer PRO"
+        alert.informativeText = "Upgrade to TCP Viewer PRO or activate an existing license to unlock \(feature.lowercased())."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Upgrade to PRO")
+        alert.addButton(withTitle: "Not Now")
+        upgradeAlert = alert
+        let completion: (NSApplication.ModalResponse) -> Void = { [weak self, weak alert] response in
+            guard let self, let alert, self.upgradeAlert === alert else { return }
+            self.upgradeAlert = nil
+            guard !self.isClosingWorkspace, response == .alertFirstButtonReturn else { return }
+            self.showPaywall()
+        }
+        if let upgradeAlertPresenter { upgradeAlertPresenter(alert, completion) }
+        else { alert.beginSheetModal(for: window, completionHandler: completion) }
+        return false
+    }
+
+    private func showPaywall() {
+        if let paywallHandler { paywallHandler() }
+        else { (NSApp.delegate as? AppDelegate)?.showPaywall(self) }
     }
 
     func selectTab(_ id: UUID, recordsHistory: Bool = true) {
@@ -139,16 +185,19 @@ final class TCPViewerWindowController: NSWindowController {
     }
 
     @IBAction func toggleSplitView(_ sender: Any?) {
-        guard let selectedTab else { return }
+        guard !isClosingWorkspace, let selectedTab else { return }
         if selectedTab.isSplitViewVisible {
             selectedTab.closeSplitView()
             if let firstPane = selectedTab.firstPane {
                 window?.makeFirstResponder(firstPane.view)
             }
-        } else if let pane = selectedTab.openSecondPane(using: { source, state in
-            self.makePane(source: source, paneState: state)
-        }) {
-            window?.makeFirstResponder(pane.view)
+        } else {
+            guard authorizeProFeature("Split View") else { return }
+            if let pane = selectedTab.openSecondPane(using: { source, state in
+                self.makePane(source: source, paneState: state)
+            }) {
+                window?.makeFirstResponder(pane.view)
+            }
         }
         renderToolbar()
     }
@@ -161,6 +210,10 @@ final class TCPViewerWindowController: NSWindowController {
         guard let selectedTab, let firstPane = selectedTab.firstPane else { return }
         if controller === firstPane {
             firstPane.selectSourceListWhenAvailable(originalSelection)
+        }
+        if !selectedTab.isSplitViewVisible, !authorizeProFeature("Split View") {
+            controller.selectSourceListWhenAvailable(originalSelection)
+            return
         }
         let pane = selectedTab.openSecondPane { source, state in
             self.makePane(source: source, paneState: state)
@@ -216,7 +269,7 @@ final class TCPViewerWindowController: NSWindowController {
 
     // Placement commits only after import succeeds; replacement retains the destination's position.
     func placeImportedWorkspace(_ source: TCPViewerCaptureWorkspace, title: String, replacing id: UUID?) -> Bool {
-        guard !isClosingWorkspace else { return false }
+        guard !isClosingWorkspace, id != nil || authorizeAdditionalTab() else { return false }
         let tab = TCPViewerWorkspaceTab(id: id ?? UUID(), source: source, title: title)
         if let id {
             guard let index = tabs.firstIndex(where: { $0.id == id }) else { return false }
@@ -503,8 +556,8 @@ extension TCPViewerWindowController: TCPViewerRootViewControllerDelegate {
             return
         }
 
-        newWorkspaceTab(nil)
-        rootViewController.selectSourceListWhenAvailable(selection)
+        guard let tab = createWorkspaceTab() else { return }
+        tab.pane?.selectSourceListWhenAvailable(selection)
     }
 
     func tcpviewerRootViewController(
@@ -521,7 +574,7 @@ extension TCPViewerWindowController: TCPViewerRootViewControllerDelegate {
     }
 
     func tcpviewerRootViewControllerDidRequestPaywall(_ controller: TCPViewerRootViewController) {
-        (NSApp.delegate as? AppDelegate)?.showPaywall(self)
+        showPaywall()
     }
 }
 
@@ -567,7 +620,7 @@ extension TCPViewerWindowController: TCPViewerToolbarDataSourceDelegate {
     }
 
     func tcpviewerToolbarDataSourceDidRequestPaywall(_ dataSource: TCPViewerToolbarDataSource) {
-        (NSApp.delegate as? AppDelegate)?.showPaywall(self)
+        showPaywall()
     }
 
     func tcpviewerToolbarDataSourceDidRequestCheckForUpdates(_ dataSource: TCPViewerToolbarDataSource) {
@@ -679,6 +732,10 @@ extension TCPViewerWindowController: NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         isClosingWorkspace = true
+        if let sheet = window?.attachedSheet, sheet === upgradeAlert?.window { window?.endSheet(sheet) }
+        upgradeAlert = nil
+        upgradeAlertPresenter = nil
+        paywallHandler = nil
         liveWorkspace.close { [liveWorkspace] _ in _ = liveWorkspace }
         importer.cancelAll()
         tabs.forEach { $0.close() }

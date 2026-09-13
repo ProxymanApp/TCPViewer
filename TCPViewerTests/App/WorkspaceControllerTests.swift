@@ -16,6 +16,316 @@ import PcapPlusPlusCore
 @MainActor
 struct WindowControllerTests {
 
+    @Test(arguments: [13, 14, 15, 26])
+    func focusedPaneCornerRadiusMatchesTheMacOSDesign(macOSMajorVersion: Int) {
+        #expect(TCPViewerRootViewController.focusedPaneCornerRadius(macOSMajorVersion: macOSMajorVersion) ==
+                (macOSMajorVersion >= 26 ? 26 : 10))
+    }
+
+    @Test func splitFocusRoundsOnlyTheSecondPaneBottomRightCorner() throws {
+        let owner = TCPViewerWindowController(
+            services: .init(core: FakeTCPViewerCore(interfaceInventories: [[]])),
+            configuration: AppConfiguration(defaults: UserDefaults(suiteName: "split-corner-\(UUID())")!),
+            isLicenseAuthorized: { true }
+        )
+        defer { owner.window?.close() }
+        let first = owner.rootViewController
+        let originalClipping = first.view.layer?.masksToBounds
+        #expect(first.view.layer?.cornerRadius == 0)
+        owner.toggleSplitView(nil)
+        let tab = try #require(owner.selectedTab)
+        let second = try #require(tab.secondPane)
+        let radius = TCPViewerRootViewController.focusedPaneCornerRadius(
+            macOSMajorVersion: ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+        )
+        #expect(!second.view.isFlipped)
+        #expect(second.view.layer?.isGeometryFlipped == false)
+        #expect(second.view.layer?.borderWidth == 1)
+        #expect(second.view.layer?.cornerRadius == radius)
+        #expect(second.view.layer?.maskedCorners == [.layerMaxXMinYCorner])
+        #expect(second.view.layer?.cornerCurve == .continuous)
+        #expect(second.view.layer?.masksToBounds == originalClipping)
+        #expect(first.view.layer?.cornerRadius == 0)
+
+        tab.focus(first)
+        #expect(first.view.layer?.borderWidth == 1)
+        #expect(first.view.layer?.cornerRadius == 0)
+        #expect(second.view.layer?.borderWidth == 0)
+        tab.focus(second)
+        owner.window?.setContentSize(NSSize(width: 640, height: 400))
+        owner.window?.contentView?.layoutSubtreeIfNeeded()
+        #expect(second.view.layer?.borderWidth == 1)
+        #expect(second.view.layer?.cornerRadius == radius)
+        #expect(second.view.layer?.maskedCorners == [.layerMaxXMinYCorner])
+        #expect(first.view.layer?.cornerRadius == 0)
+        owner.toggleSplitView(nil)
+        #expect(second.isClosed)
+        #expect(first.view.layer?.borderWidth == 0)
+        #expect(first.view.layer?.cornerRadius == 0)
+    }
+
+    // All user entry points must reject allocation and leave the current pane untouched in the free version.
+    @Test(arguments: ["menuTab", "tabBar", "shortcut", "sourceTab", "menuSplit", "toolbarSplit", "sourceSplit"],
+          [NSApplication.ModalResponse.alertFirstButtonReturn, .alertSecondButtonReturn])
+    func freeWorkspaceActionsOfferUpgradeWithoutChangingThePane(entryPoint: String, response: NSApplication.ModalResponse) throws {
+        let core = FakeTCPViewerCore(interfaceInventories: [[]])
+        let defaults = UserDefaults(suiteName: "pro-workspace-actions-\(UUID())")!
+        defaults.set(NetworkInspectorPlacement.trailing.rawValue, forKey: "TCPViewer.inspectorPlacement")
+        let owner = TCPViewerWindowController(
+            services: .init(core: core), configuration: AppConfiguration(defaults: defaults),
+            isLicenseAuthorized: { false }
+        )
+        defer { owner.window?.close() }
+        let tab = try #require(owner.selectedTab)
+        let pane = owner.rootViewController
+        let originalSelection = pane.viewModel.snapshot.selectedSourceListSelection
+        let subscribers = owner.liveWorkspace.subscriberCountForTesting
+        var alerts: [NSAlert] = []
+        var completion: ((NSApplication.ModalResponse) -> Void)?
+        var paywallCount = 0
+        owner.upgradeAlertPresenter = { alert, reply in alerts.append(alert); completion = reply }
+        owner.paywallHandler = { paywallCount += 1 }
+        let clickedSource = PacketSourceListSelection.ipAddress(.init(rawValue: "10.0.0.2"))
+        switch entryPoint {
+        case "menuTab": owner.newWorkspaceTab(nil)
+        case "tabBar": owner.workspaceViewController.tabBar.onAdd?()
+        case "shortcut":
+            let key = try #require(NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [.command], timestamp: 0,
+                windowNumber: owner.window?.windowNumber ?? 0, context: nil,
+                characters: "t", charactersIgnoringModifiers: "t", isARepeat: false, keyCode: UInt16(kVK_ANSI_T)
+            ))
+            #expect(owner.handleTabShortcut(key))
+        case "sourceTab":
+            pane.sidebarViewController(owner.workspaceViewController.sidebar, didRequestOpenInNewTab: clickedSource)
+        case "menuSplit": owner.toggleSplitView(nil)
+        case "toolbarSplit": owner.tcpviewerToolbarDataSourceDidToggleSplitView(TCPViewerToolbarDataSource(userDefaults: defaults))
+        case "sourceSplit":
+            pane.sidebarViewController(owner.workspaceViewController.sidebar, didRequestOpenInSplitView: clickedSource,
+                                       preserving: originalSelection)
+        default: Issue.record("Unknown entry point")
+        }
+
+        let alert = try #require(alerts.first)
+        #expect(alerts.count == 1)
+        #expect(alert.messageText == "Unlock \(entryPoint.hasSuffix("Split") ? "Split View" : "New Tabs") with TCP Viewer PRO")
+        #expect(alert.buttons.map(\.title) == ["Upgrade to PRO", "Not Now"])
+        #expect(alert.informativeText.contains("activate an existing license"))
+        #expect(owner.tabs.count == 1)
+        #expect(owner.selectedTab === tab)
+        #expect(owner.rootViewController === pane)
+        #expect(tab.secondPane == nil)
+        #expect(pane.viewModel.snapshot.selectedSourceListSelection == originalSelection)
+        #expect(pane.viewModel.snapshot.inspectorPlacement == .trailing)
+        #expect(owner.liveWorkspace.subscriberCountForTesting == subscribers)
+        #expect(core.liveSessionRequests.isEmpty)
+        #expect(paywallCount == 0)
+        owner.newWorkspaceTab(nil)
+        #expect(alerts.count == 1)
+        completion?(response)
+        completion?(response)
+        #expect(paywallCount == (response == .alertFirstButtonReturn ? 1 : 0))
+        #expect(owner.tabs.count == 1)
+        #expect(tab.secondPane == nil)
+    }
+
+    @Test(arguments: [false, true])
+    func freeImportsCannotCreateAdditionalTabs(automaticNewTab: Bool) async throws {
+        let core = FakeTCPViewerCore(interfaceInventories: [[]])
+        let owner = TCPViewerWindowController(
+            services: .init(core: core),
+            configuration: AppConfiguration(defaults: UserDefaults(suiteName: "pro-import-\(UUID())")!),
+            isLicenseAuthorized: { false }
+        )
+        defer { owner.window?.close() }
+        let tab = try #require(owner.selectedTab)
+        var alerts = 0
+        var completion: ((NSApplication.ModalResponse) -> Void)?
+        owner.upgradeAlertPresenter = { _, reply in alerts += 1; completion = reply }
+        let result = await withCheckedContinuation { continuation in
+            owner.importCaptureURLs([URL(fileURLWithPath: "/tmp/pro-blocked-import.pcapng")], automaticNewTab: automaticNewTab) {
+                continuation.resume(returning: $0)
+            }
+            if !automaticNewTab, let sheet = owner.window?.attachedSheet {
+                owner.window?.endSheet(sheet, returnCode: .alertSecondButtonReturn)
+            }
+        }
+        #expect(result.importedURLs.isEmpty)
+        #expect((result.error as? TCPViewerCoreError)?.code == .operationCancelled)
+        #expect(alerts == 1)
+        #expect(core.openedDocumentURLs.isEmpty)
+        #expect(owner.tabs.count == 1)
+        #expect(owner.selectedTab === tab)
+        completion?(.alertSecondButtonReturn)
+
+        let source = owner.makeOfflineWorkspace()
+        defer { source.close() }
+        #expect(!owner.placeImportedWorkspace(source, title: "Blocked", replacing: nil))
+        #expect(alerts == 2)
+        #expect(owner.selectedTab === tab)
+    }
+
+    @Test func freeVersionAllowsFirstOfflineTabAndReplacementButNotSplit() async throws {
+        let core = FakeTCPViewerCore(interfaceInventories: [[]], documentFactory: { url in
+            FakeOfflineDocument(url: url, metadata: .init(format: .pcapng), openPlan: .completed([]))
+        })
+        let owner = TCPViewerWindowController(
+            services: .init(core: core),
+            configuration: AppConfiguration(defaults: UserDefaults(suiteName: "pro-first-import-\(UUID())")!),
+            startsWithLiveTab: false, isLicenseAuthorized: { false }
+        )
+        defer { owner.window?.close() }
+        var alert: NSAlert?
+        owner.upgradeAlertPresenter = { presented, _ in alert = presented }
+        let result = await withCheckedContinuation { continuation in
+            owner.importCaptureURLs([URL(fileURLWithPath: "/tmp/pro-first-import.pcapng")], automaticNewTab: true) {
+                continuation.resume(returning: $0)
+            }
+        }
+        #expect(result.error == nil)
+        #expect(owner.tabs.count == 1)
+        #expect(owner.selectedTab?.isOffline == true)
+        #expect(alert == nil)
+        let id = try #require(owner.selectedTabID)
+        #expect(owner.placeImportedWorkspace(owner.makeOfflineWorkspace(), title: "Replacement", replacing: id))
+        #expect(owner.tabs.count == 1)
+        #expect(owner.selectedTabID == id)
+        #expect(alert == nil)
+        let pane = owner.rootViewController
+        pane.sidebarViewController(owner.workspaceViewController.sidebar,
+                                   didRequestOpenInSplitView: .ipAddress(.init(rawValue: "10.0.0.2")), preserving: .allPackets)
+        #expect(alert?.messageText == "Unlock Split View with TCP Viewer PRO")
+        #expect(owner.selectedTab?.secondPane == nil)
+        #expect(owner.rootViewController === pane)
+        #expect(pane.viewModel.snapshot.selectedSourceListSelection == .allPackets)
+        #expect(core.liveSessionRequests.isEmpty)
+    }
+
+    @Test func freeCaptureImportCanReplaceTheSingleTabWithoutUpgrade() async {
+        let core = FakeTCPViewerCore(interfaceInventories: [[]], documentFactory: { url in
+            FakeOfflineDocument(url: url, metadata: .init(format: .pcapng), openPlan: .completed([]))
+        })
+        let owner = TCPViewerWindowController(
+            services: .init(core: core),
+            configuration: AppConfiguration(defaults: UserDefaults(suiteName: "pro-import-replace-\(UUID())")!),
+            isLicenseAuthorized: { false }
+        )
+        defer { owner.window?.close() }
+        let originalID = owner.selectedTabID
+        var alerts = 0
+        owner.upgradeAlertPresenter = { _, _ in alerts += 1 }
+        let result = await withCheckedContinuation { continuation in
+            owner.importCaptureURLs([URL(fileURLWithPath: "/tmp/pro-import-replace.pcapng")]) {
+                continuation.resume(returning: $0)
+            }
+            if let sheet = owner.window?.attachedSheet {
+                owner.window?.endSheet(sheet, returnCode: .alertFirstButtonReturn)
+            } else {
+                Issue.record("Free capture import did not offer replacement")
+            }
+        }
+        #expect(result.error == nil)
+        #expect(owner.tabs.count == 1)
+        #expect(owner.selectedTabID == originalID)
+        #expect(owner.selectedTab?.isOffline == true)
+        #expect(core.openedDocumentURLs.count == 1)
+        #expect(alerts == 0)
+    }
+
+    @Test func pendingImportRechecksLicenseBeforeCommittingAnotherTab() async {
+        var authorized = true
+        let gate = AsyncGate()
+        let document = FakeOfflineDocument(
+            url: URL(fileURLWithPath: "/tmp/pro-pending-import.pcapng"), metadata: .init(format: .pcapng),
+            openPlan: .init(batches: [], progress: [], error: nil, gate: gate)
+        )
+        let core = FakeTCPViewerCore(interfaceInventories: [[]], documentFactory: { _ in document })
+        let owner = TCPViewerWindowController(
+            services: .init(core: core),
+            configuration: AppConfiguration(defaults: UserDefaults(suiteName: "pro-pending-import-\(UUID())")!),
+            isLicenseAuthorized: { authorized }
+        )
+        defer { owner.window?.close() }
+        let originalID = owner.selectedTabID
+        var alerts = 0
+        var completions = 0
+        owner.upgradeAlertPresenter = { _, _ in alerts += 1 }
+        owner.importCaptureURLs([document.url], automaticNewTab: true) { result in
+            completions += 1
+            #expect(result.importedURLs.isEmpty)
+            #expect((result.error as? TCPViewerCoreError)?.code == .operationCancelled)
+        }
+        await waitUntil { core.openedDocumentURLs.count == 1 }
+        authorized = false
+        await gate.open()
+        await waitUntil { completions == 1 }
+        #expect(completions == 1)
+        #expect(owner.tabs.count == 1)
+        #expect(owner.selectedTabID == originalID)
+        #expect(alerts == 1)
+    }
+
+    @Test func licenseChangesAreCheckedAtCreationButDoNotPreventClosingSplit() throws {
+        var authorized = true
+        let owner = TCPViewerWindowController(
+            services: .init(core: FakeTCPViewerCore(interfaceInventories: [[]])),
+            configuration: AppConfiguration(defaults: UserDefaults(suiteName: "pro-license-changes-\(UUID())")!),
+            isLicenseAuthorized: { authorized }
+        )
+        defer { owner.window?.close() }
+        var alerts = 0
+        var completion: ((NSApplication.ModalResponse) -> Void)?
+        owner.upgradeAlertPresenter = { _, reply in alerts += 1; completion = reply }
+        owner.newWorkspaceTab(nil)
+        #expect(owner.tabs.count == 2)
+        owner.toggleSplitView(nil)
+        let second = try #require(owner.selectedTab?.secondPane)
+        #expect(alerts == 0)
+        authorized = false
+        owner.toggleSplitView(nil)
+        #expect(second.isClosed)
+        #expect(owner.selectedTab?.secondPane == nil)
+        #expect(alerts == 0)
+        owner.toggleSplitView(nil)
+        #expect(owner.selectedTab?.secondPane == nil)
+        #expect(alerts == 1)
+        completion?(.alertSecondButtonReturn)
+        authorized = true
+        owner.toggleSplitView(nil)
+        #expect(owner.selectedTab?.secondPane != nil)
+        #expect(alerts == 1)
+        authorized = false
+        owner.newWorkspaceTab(nil)
+        #expect(owner.tabs.count == 2)
+        #expect(alerts == 2)
+    }
+
+    @Test func closingWindowReleasesUpgradeAlertAndIgnoresLateCTA() async {
+        var owner: TCPViewerWindowController? = TCPViewerWindowController(
+            services: .init(core: FakeTCPViewerCore(interfaceInventories: [[]])),
+            configuration: AppConfiguration(defaults: UserDefaults(suiteName: "pro-close-alert-\(UUID())")!),
+            isLicenseAuthorized: { false }
+        )
+        weak var releasedOwner = owner
+        weak var releasedAlert: NSAlert?
+        var completion: ((NSApplication.ModalResponse) -> Void)?
+        var paywallCount = 0
+        owner?.upgradeAlertPresenter = { alert, reply in releasedAlert = alert; completion = reply }
+        owner?.paywallHandler = { paywallCount += 1 }
+        autoreleasepool {
+            owner?.newWorkspaceTab(nil)
+            #expect(releasedAlert != nil)
+            owner?.window?.close()
+            completion?(.alertFirstButtonReturn)
+            #expect(paywallCount == 0)
+        }
+        await waitUntil { releasedAlert == nil }
+        #expect(releasedAlert == nil)
+        owner = nil
+        await waitUntil { releasedOwner == nil }
+        #expect(releasedOwner == nil)
+    }
+
     // A suspended source can receive appends followed by summary updates before its next sidebar render.
     @Test(arguments: [false, true])
     func hiddenLivePaneKeepsSidebarPacketsAfterSummaryUpdate(opensNewPane: Bool) async {
@@ -58,7 +368,7 @@ struct WindowControllerTests {
         })
         let defaults = UserDefaults(suiteName: "tabs-interfaces-\(UUID())")!
         let owner = TCPViewerWindowController(services: .init(core: core), configuration: AppConfiguration(defaults: defaults),
-                                               startsWithLiveTab: false)
+                                               startsWithLiveTab: false, isLicenseAuthorized: { true })
         defer { owner.window?.close() }
         #expect(owner.tabs.isEmpty)
         let result = await withCheckedContinuation { continuation in
@@ -93,7 +403,7 @@ struct WindowControllerTests {
             FakeOfflineDocument(url: url, metadata: .init(format: .pcapng), openPlan: .completed(packets))
         })
         let configuration = AppConfiguration(defaults: UserDefaults(suiteName: "tabs-reveal-\(UUID())")!)
-        let owner = TCPViewerWindowController(services: .init(core: core), configuration: configuration)
+        let owner = TCPViewerWindowController(services: .init(core: core), configuration: configuration, isLicenseAuthorized: { true })
         defer { owner.window?.close() }
         _ = await withCheckedContinuation { continuation in
             owner.importCaptureURLs([URL(fileURLWithPath: "/tmp/tab-reveal.pcapng")], automaticNewTab: true) {
@@ -277,7 +587,8 @@ struct WindowControllerTests {
         let owner = TCPViewerWindowController(
             services: .init(core: core),
             configuration: AppConfiguration(defaults: defaults),
-            startsWithLiveTab: false
+            startsWithLiveTab: false,
+            isLicenseAuthorized: { true }
         )
         defer { owner.window?.close() }
         let result = await withCheckedContinuation { continuation in
@@ -357,7 +668,8 @@ struct WindowControllerTests {
         defaults.set(NetworkInspectorPlacement.trailing.rawValue, forKey: "TCPViewer.inspectorPlacement")
         let owner = TCPViewerWindowController(
             services: .init(core: FakeTCPViewerCore(interfaceInventories: [[]])),
-            configuration: AppConfiguration(defaults: defaults)
+            configuration: AppConfiguration(defaults: defaults),
+            isLicenseAuthorized: { true }
         )
         defer { owner.window?.close() }
         let first = owner.rootViewController
@@ -559,7 +871,7 @@ struct WindowControllerTests {
         let core = FakeTCPViewerCore(interfaceInventories: [[]])
         let defaults = UserDefaults(suiteName: "tabs-window-\(UUID())")!
         defaults.set(false, forKey: "TCPViewer.sidebarVisible")
-        let owner = TCPViewerWindowController(services: .init(core: core), configuration: AppConfiguration(defaults: defaults))
+        let owner = TCPViewerWindowController(services: .init(core: core), configuration: AppConfiguration(defaults: defaults), isLicenseAuthorized: { true })
         let first = try #require(owner.selectedTab)
         weak var firstPane = first.pane
         let sidebar = owner.workspaceViewController.sidebar
@@ -591,7 +903,7 @@ struct WindowControllerTests {
         #expect(owner.liveWorkspace.isClosed)
         await waitUntil { secondPane == nil }
         #expect(secondPane == nil)
-        let reopened = TCPViewerWindowController(services: .init(core: core), configuration: AppConfiguration(defaults: defaults))
+        let reopened = TCPViewerWindowController(services: .init(core: core), configuration: AppConfiguration(defaults: defaults), isLicenseAuthorized: { true })
         #expect(reopened.tabs.count == 1)
         #expect(reopened.selectedTab?.isOffline == false)
         #expect(reopened.workspaceViewController.isSidebarVisibleForTesting)
@@ -623,7 +935,8 @@ struct WindowControllerTests {
                     clientResolver: WorkspaceFakePacketClientResolver(client: client)
                 )
             ),
-            configuration: AppConfiguration(defaults: defaults)
+            configuration: AppConfiguration(defaults: defaults),
+            isLicenseAuthorized: { true }
         )
         defer { owner.window?.close() }
         let original = owner.rootViewController
@@ -683,7 +996,8 @@ struct WindowControllerTests {
                     clientResolver: WorkspaceFakePacketClientResolver(client: client)
                 )
             ),
-            configuration: AppConfiguration(defaults: defaults)
+            configuration: AppConfiguration(defaults: defaults),
+            isLicenseAuthorized: { true }
         )
         defer { owner.window?.close() }
         let first = owner.rootViewController
@@ -790,7 +1104,7 @@ struct WindowControllerTests {
             FakeOfflineDocument(url: url, metadata: .init(format: .pcapng), openPlan: .completed([]))
         })
         let defaults = UserDefaults(suiteName: "tabs-import-\(UUID())")!
-        let owner = TCPViewerWindowController(services: .init(core: core), configuration: AppConfiguration(defaults: defaults))
+        let owner = TCPViewerWindowController(services: .init(core: core), configuration: AppConfiguration(defaults: defaults), isLicenseAuthorized: { true })
         let liveTab = try #require(owner.selectedTab)
         let urls = [URL(fileURLWithPath: "/tmp/tab-group-a.pcap"), URL(fileURLWithPath: "/tmp/tab-group-b.pcapng")]
         let result = await withCheckedContinuation { continuation in
@@ -907,7 +1221,7 @@ struct WindowControllerTests {
         let core = FakeTCPViewerCore(interfaceInventories: [[makeInterface(id: "en0", displayName: "Test")]], liveSession: live,
                                      documentFactory: { url in FakeOfflineDocument(url: url, metadata: .init(format: .pcapng), openPlan: .completed([packet])) })
         let defaults = UserDefaults(suiteName: "tabs-automation-\(UUID())")!
-        let owner = TCPViewerWindowController(services: .init(core: core), configuration: AppConfiguration(defaults: defaults))
+        let owner = TCPViewerWindowController(services: .init(core: core), configuration: AppConfiguration(defaults: defaults), isLicenseAuthorized: { true })
         let liveID = try #require(owner.selectedTabID)
         _ = await withCheckedContinuation { continuation in
             owner.importCaptureURLs([URL(fileURLWithPath: "/tmp/tab-command.pcapng")], automaticNewTab: true) { continuation.resume(returning: $0) }
@@ -942,12 +1256,15 @@ struct WindowControllerTests {
         #expect(TCPViewerWorkspaceImporter.shouldAskForPlacement(tabCount: 2, automaticNewTab: false))
         #expect(TCPViewerWorkspaceImporter.shouldAskForPlacement(tabCount: 8, automaticNewTab: false))
         #expect(!TCPViewerWorkspaceImporter.shouldAskForPlacement(tabCount: 8, automaticNewTab: true))
+        #expect(!TCPViewerWorkspaceImporter.shouldAskForPlacement(tabCount: 0, automaticNewTab: false, canCreateAdditionalTab: false))
+        #expect(TCPViewerWorkspaceImporter.shouldAskForPlacement(tabCount: 1, automaticNewTab: false, canCreateAdditionalTab: false))
+        #expect(!TCPViewerWorkspaceImporter.shouldAskForPlacement(tabCount: 1, automaticNewTab: true, canCreateAdditionalTab: false))
     }
 
     @Test func windowShortcutsAndTabContextMenusTargetTheIntendedTab() async throws {
         let defaults = UserDefaults(suiteName: "tabs-keys-\(UUID())")!
         let owner = TCPViewerWindowController(services: .init(core: FakeTCPViewerCore(interfaceInventories: [[]])),
-                                               configuration: AppConfiguration(defaults: defaults))
+                                               configuration: AppConfiguration(defaults: defaults), isLicenseAuthorized: { true })
         defer { owner.window?.close() }
         func key(_ code: Int, _ flags: NSEvent.ModifierFlags) -> NSEvent {
             NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0,
@@ -994,7 +1311,8 @@ struct WindowControllerTests {
         let defaults = UserDefaults(suiteName: "tabs-history-menu-\(UUID())")!
         let owner = TCPViewerWindowController(
             services: .init(core: FakeTCPViewerCore(interfaceInventories: [[]])),
-            configuration: AppConfiguration(defaults: defaults)
+            configuration: AppConfiguration(defaults: defaults),
+            isLicenseAuthorized: { true }
         )
         defer { owner.window?.close() }
         let firstID = try #require(owner.selectedTabID)
@@ -1035,7 +1353,7 @@ struct WindowControllerTests {
                                            openPlan: .init(batches: [], progress: [], error: nil, gate: gate))
         let core = FakeTCPViewerCore(interfaceInventories: [[]], documentFactory: { _ in document })
         let defaults = UserDefaults(suiteName: "tabs-queue-\(UUID())")!
-        let owner = TCPViewerWindowController(services: .init(core: core), configuration: AppConfiguration(defaults: defaults), startsWithLiveTab: false)
+        let owner = TCPViewerWindowController(services: .init(core: core), configuration: AppConfiguration(defaults: defaults), startsWithLiveTab: false, isLicenseAuthorized: { true })
         var completions = 0
         for _ in 0..<2 {
             owner.importCaptureURLs([document.url], automaticNewTab: true) { result in

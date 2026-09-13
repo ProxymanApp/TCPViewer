@@ -50,7 +50,7 @@ final class TCPViewerWorkspaceTabContentController: NSViewController {
         }
 
         let pane = factory()
-        pane.setFocusedPane(false, showsOutline: true)
+        pane.setFocusedPane(false, showsOutline: true, roundsBottomRightCorner: true)
         firstPane?.viewModel.showInspectorForSplitView()
         pane.viewModel.showInspectorForSplitView()
         secondPane = pane
@@ -82,7 +82,10 @@ final class TCPViewerWorkspaceTabContentController: NSViewController {
     func focus(_ pane: TCPViewerRootViewController) {
         guard panes.contains(where: { $0 === pane }), focusedPane !== pane else { return }
         focusedPane = pane
-        panes.forEach { $0.setFocusedPane($0 === pane, showsOutline: isSplitViewVisible) }
+        panes.forEach {
+            $0.setFocusedPane($0 === pane, showsOutline: isSplitViewVisible,
+                             roundsBottomRightCorner: $0 === secondPane)
+        }
     }
 
     func pane(containing responder: NSResponder?) -> TCPViewerRootViewController? {

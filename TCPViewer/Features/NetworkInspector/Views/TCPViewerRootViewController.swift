@@ -207,6 +207,7 @@ final class TCPViewerRootViewController: NSViewController {
     private let ownsSidebar: Bool
     private(set) var isFocusedPane = true
     private var showsFocusedPaneOutline = false
+    private var roundsFocusedPaneBottomRightCorner = false
     var importHandler: (([URL], @escaping (TCPViewerCaptureImportResult) -> Void) -> Void)?
     var sidebarVisibilityHandler: ((Bool?) -> Void)?
     private(set) var isClosed = false
@@ -330,11 +331,13 @@ final class TCPViewerRootViewController: NSViewController {
     }
 
     // Local content stays active in Split View while only the focused pane owns shared controls.
-    func setFocusedPane(_ isFocused: Bool, showsOutline: Bool) {
+    func setFocusedPane(_ isFocused: Bool, showsOutline: Bool, roundsBottomRightCorner: Bool = false) {
         guard !isClosed,
-              isFocusedPane != isFocused || showsFocusedPaneOutline != showsOutline else { return }
+              isFocusedPane != isFocused || showsFocusedPaneOutline != showsOutline ||
+                roundsFocusedPaneBottomRightCorner != roundsBottomRightCorner else { return }
         isFocusedPane = isFocused
         showsFocusedPaneOutline = showsOutline
+        roundsFocusedPaneBottomRightCorner = roundsBottomRightCorner
         if ownsSidebar || isFocused {
             sidebarViewController.delegate = self
         } else if sidebarViewController.delegate === self {
@@ -737,6 +740,19 @@ final class TCPViewerRootViewController: NSViewController {
         view.wantsLayer = true
         view.layer?.borderColor = NSColor.controlAccentColor.cgColor
         view.layer?.borderWidth = showsFocusedPaneOutline && isFocusedPane ? 1 : 0
+        if roundsFocusedPaneBottomRightCorner {
+            // The second pane meets the unified window's outer corner; its other corners stay square.
+            view.layer?.cornerRadius = Self.focusedPaneCornerRadius(macOSMajorVersion: ProcessInfo.processInfo.operatingSystemVersion.majorVersion)
+            view.layer?.maskedCorners = [.layerMaxXMinYCorner]
+            view.layer?.cornerCurve = .continuous
+        } else {
+            view.layer?.cornerRadius = 0
+        }
+    }
+
+    // Unified-toolbar windows use 26 points on Tahoe and 10 points on Sequoia and earlier.
+    static func focusedPaneCornerRadius(macOSMajorVersion: Int) -> CGFloat {
+        macOSMajorVersion >= 26 ? 26 : 10
     }
 
     // Wait for asynchronous dissection before asking the Hex pane to reveal reassembled bytes.
