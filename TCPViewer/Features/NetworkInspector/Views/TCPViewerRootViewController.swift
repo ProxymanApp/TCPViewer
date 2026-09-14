@@ -338,7 +338,8 @@ final class TCPViewerRootViewController: NSViewController {
         isFocusedPane = isFocused
         showsFocusedPaneOutline = showsOutline
         roundsFocusedPaneBottomRightCorner = roundsBottomRightCorner
-        if ownsSidebar || isFocused {
+        // Inactive tabs can change split focus without taking over the visible sidebar.
+        if viewModel.isActive && (ownsSidebar || isFocused) {
             sidebarViewController.delegate = self
         } else if sidebarViewController.delegate === self {
             sidebarViewController.delegate = nil
@@ -703,7 +704,8 @@ final class TCPViewerRootViewController: NSViewController {
     }
 
     private func render() {
-        guard !isClosed, viewModel.isActive else { return }
+        // A command-only pane can become active before its AppKit hierarchy is attached.
+        guard isViewLoaded, !isClosed, viewModel.isActive else { return }
         let snapshot = viewModel.snapshot
         if ownsSidebar || isFocusedPane {
             sidebarViewController.render(snapshot: snapshot)

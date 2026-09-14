@@ -17,6 +17,8 @@ final class TCPViewerCaptureWorkspace: TCPViewerWorkspaceControllerDelegate {
         init(_ delegate: any TCPViewerWorkspaceControllerDelegate) { self.delegate = delegate }
     }
 
+    var automationAnalysisIsRunning = false
+    var suppressesImportPresentation = false
     let kind: Kind
     let controller: TCPViewerWorkspaceController
     let sourceListService = PacketSourceListService()

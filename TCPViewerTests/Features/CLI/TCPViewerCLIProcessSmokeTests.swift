@@ -17,6 +17,9 @@ struct TCPViewerCLIProcessSmokeTests {
         #expect(version.output.contains(TCPViewerLicenseAppVersion.current.appVersion))
 
         let commands = [
+            ["workspace", "list"], ["tabs", "list"], ["tabs", "create"], ["tabs", "select"], ["tabs", "move"], ["tabs", "close"],
+            ["pane", "get"], ["pane", "update"], ["pane", "focus"], ["split", "set"], ["sources", "list"],
+            ["overview", "get"], ["statistics", "endpoints"],
             ["app", "status"], ["interfaces", "list"],
             ["capture", "status"], ["capture", "start"], ["capture", "pause"], ["capture", "resume"], ["capture", "stop"],
             ["packets", "list"], ["packets", "summary"], ["packets", "details"], ["packets", "bytes"], ["packets", "clear"], ["packets", "reveal"],
@@ -34,6 +37,11 @@ struct TCPViewerCLIProcessSmokeTests {
 
     @Test func invalidArgumentsUseUsageExitCodeTwo() throws {
         let cases = [
+            ["tabs", "close"], ["tabs", "move", "-1"], ["split", "set", "maybe"],
+            ["pane", "get", "--pane-id", "bad-id"], ["pane", "update", "--mode", "map"],
+            ["pane", "update", "--structured-filter-json", "[]"], ["pane", "update", "--packet-id", "abc"],
+            ["statistics", "endpoints", "--limit", "501"], ["statistics", "endpoints", "--group", "invalid"],
+            ["stream", "follow", "1", "--protocol", "dns"], ["overview", "get", "--scope", "invalid"],
             ["capture", "start"],
             ["packets", "details", "not-a-packet"],
             ["packets", "list", "--limit", "501"],
@@ -56,6 +64,8 @@ struct TCPViewerCLIProcessSmokeTests {
             ["settings", "reset", "theme", "--all", "--yes"],
             ["app", "status", "--output", "text", "--pretty"],
             ["app", "status", "--timeout", "0"],
+            ["settings", "list", "--scope", "displayed"],
+            ["pane", "update", "--clear-endpoint", "--endpoint-group", "ipv6", "--endpoint-key", "2001:db8::1"],
         ]
         for arguments in cases {
             let result = try run(arguments)

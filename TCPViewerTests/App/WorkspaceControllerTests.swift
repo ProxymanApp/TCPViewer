@@ -3467,6 +3467,7 @@ private final class FakeTCPViewerCore: TCPViewerCoreProviding, @unchecked Sendab
     private let documentFactory: (URL) -> FakeOfflineDocument
     private let captureFilterValidator: (String) -> CaptureFilterValidation
     private(set) var interfaceCallCount = 0
+    var validDisplayFilterExpressions: Set<String> = []
 
     private(set) var liveSessionRequests: [(interfaceID: String, options: CaptureOptions)] = []
     private(set) var openedDocumentURLs: [URL] = []
@@ -3509,6 +3510,16 @@ private final class FakeTCPViewerCore: TCPViewerCoreProviding, @unchecked Sendab
 
     func validateCaptureFilter(_ expression: String, completion: @escaping (CaptureFilterValidation) -> Void) {
         completion(captureFilterValidator(expression))
+    }
+
+    // Only explicitly configured synthetic expressions bypass the default unavailable validator.
+    func validateDisplayFilter(_ expression: String, completion: @escaping (DisplayFilterValidation) -> Void) {
+        let normalized = expression.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isValid = normalized.isEmpty || validDisplayFilterExpressions.contains(normalized)
+        completion(DisplayFilterValidation(
+            normalizedExpression: normalized, status: isValid ? .valid : .unavailable,
+            diagnostics: isValid ? [] : [DisplayFilterDiagnostic(severity: .error, message: "Wireshark display-filter validation is unavailable.")]
+        ))
     }
 
     func validateCaptureOptions(_ options: CaptureOptions, for interface: CaptureInterfaceSummary?) throws -> CaptureOptions {
@@ -3696,6 +3707,9 @@ private final class FakeOfflineDocument: OfflineCaptureDocumentProviding, @unche
     private var displayFilterExpressionByGeneration: [UInt64: String] = [:]
 
     var filterEvaluationGate: AsyncGate?
+    var followGate: AsyncGate?
+    var followResult: FollowStream?
+    private(set) var followProtocols: [FollowStreamProtocol?] = []
     private(set) var displayFilterActivationGenerations: [UInt64] = []
     private(set) var saveCount = 0
     private(set) var saveAsRequests: [(URL, CaptureFileFormat)] = []
@@ -3763,6 +3777,16 @@ private final class FakeOfflineDocument: OfflineCaptureDocumentProviding, @unche
         displayFilterActivationGenerations.append(generation)
         displayFilterExpressionByGeneration[generation] = expression
         completion(DisplayFilterValidation(normalizedExpression: expression, status: .valid))
+    }
+
+    func followStream(containing packetID: PacketSummary.ID, streamProtocol: FollowStreamProtocol?, limits: FollowStreamLimits,
+                      progress: FollowStreamProgressHandler?, shouldCancel: FollowStreamCancellationCheck?, completion: @escaping TCPViewerCompletion<FollowStream>) {
+        followProtocols.append(streamProtocol)
+        let finish = {
+            if let result = self.followResult { completion(.success(result)) }
+            else { completion(.failure(TCPViewerCoreError(code: .unavailableFeature, message: "No follow fixture."))) }
+        }
+        if let followGate { followGate.wait(finish) } else { finish() }
     }
 
     func evaluateDisplayFilter(
@@ -3974,5 +3998,477 @@ private final class WorkspaceFakePacketClientResolver: PacketClientResolving {
 
     func client(for packet: PacketSummary) -> PacketClient? {
         client
+    }
+}
+
+// Exercise app commands directly with synthetic captures; no UI automation is involved.
+@Suite(.serialized)
+@MainActor
+struct TCPViewerAutomationCommandTests {
+    private func makeOwner(packets: [PacketSummary] = [], authorized: Bool = true) -> TCPViewerWindowController {
+        let core = FakeTCPViewerCore(interfaceInventories: [[]], documentFactory: { url in
+            FakeOfflineDocument(url: url, metadata: .init(format: .pcapng), openPlan: .completed(packets))
+        })
+        return TCPViewerWindowController(services: .init(core: core),
+                                        configuration: AppConfiguration(defaults: UserDefaults(suiteName: "automation-\(UUID())")!),
+                                        isLicenseAuthorized: { authorized })
+    }
+
+    private func route(_ owner: TCPViewerWindowController, _ command: TCPViewerMCPCommand,
+                       _ params: [String: TCPViewerMCPValue] = [:], redaction: @escaping () -> Bool = { false }) async -> TCPViewerMCPResponse {
+        let source = TCPViewerWorkspaceAutomationSource(windowController: owner)
+        let router = TCPViewerMCPCommandRouter(dataSourceProvider: { source }, requiresAuthorizedLicense: false, redactionEnabled: redaction)
+        return await withCheckedContinuation { continuation in
+            router.route(TCPViewerMCPRequest(command: command.rawValue, params: params)) { continuation.resume(returning: $0) }
+        }
+    }
+
+    @Test func dormantTabsKeepIDsAndStateWithoutConstructingViewsOrChangingSelection() async throws {
+        let owner = makeOwner()
+        defer { owner.window?.close() }
+        let original = try #require(owner.selectedTab)
+        let created = await route(owner, .createTab)
+        #expect(created.success)
+        let id = try #require(created.data?["tab_id"]?.stringValue.flatMap(UUID.init(uuidString:)))
+        let tab = try #require(owner.tabs.first { $0.id == id })
+        let target: [String: TCPViewerMCPValue] = ["tab_id": .string(id.uuidString)]
+        #expect(tab.contentController == nil)
+        #expect(owner.selectedTab === original)
+        let updated = await route(owner, .updatePane, target.merging(["mode": .string("overview"), "display_filter": .string("example")]) { _, new in new })
+        #expect(updated.success)
+        #expect(updated.data?["mode"] == .string("overview"))
+        #expect(tab.contentController == nil)
+        #expect(tab.primaryModel?.isActive == false)
+        #expect(tab.primaryModel?.snapshot.packetRows.isEmpty == true)
+        #expect(owner.selectedTab === original)
+        let model = tab.primaryModel
+        let structured: TCPViewerMCPValue = .object(["filters": .array([.object(["query": .string("protocol"), "condition": .string("contains"), "text": .string("DNS")])])])
+        #expect((await route(owner, .updatePane, target.merging(["structured_filter": structured]) { _, new in new })).success)
+        #expect(tab.primaryModel?.makeSplitPaneState().structuredFilterGroup.filters.first?.query == .protocol)
+        // A stale invalid editor draft must not prevent automation from clearing the filter.
+        model?.updateWiresharkFilterDraft("invalid ((")
+        let cleared = await route(owner, .updatePane, target.merging(["wireshark_filter": .string("")]) { _, new in new })
+        #expect(cleared.success, "\(cleared.error ?? "")")
+        #expect(cleared.data?["wireshark_filter"] == .string(""))
+        #expect(cleared.data?["mode"] == .string("overview"))
+        let selected = await route(owner, .selectTab, target)
+        #expect(selected.success)
+        #expect(tab.firstPane?.viewModel === model)
+        #expect(tab.firstPane?.viewModel.snapshot.displayFilterText == "example")
+        #expect(tab.firstPane?.viewModel.snapshot.workspaceMode == .overview)
+    }
+
+    @Test func hiddenSplitsHaveIndependentFiltersAndReleaseTheirModels() async throws {
+        let owner = makeOwner()
+        defer { owner.window?.close() }
+        let original = owner.selectedTabID
+        let tab = try owner.createAutomationTab(selecting: false)
+        let target: [String: TCPViewerMCPValue] = ["tab_id": .string(tab.id.uuidString)]
+        #expect((await route(owner, .setSplitView, target.merging(["enabled": .bool(true)]) { _, new in new })).success)
+        let secondID = try #require(tab.secondaryPaneID)
+        let secondTarget = target.merging(["pane_id": .string(secondID.uuidString)]) { _, new in new }
+        #expect((await route(owner, .updatePane, secondTarget.merging(["display_filter": .string("dns")]) { _, new in new })).success)
+        #expect(tab.primaryModel?.makeSplitPaneState().displayFilterText == "")
+        #expect(tab.secondaryModel?.makeSplitPaneState().displayFilterText == "dns")
+        #expect(tab.contentController == nil)
+        #expect(tab.focusedPaneID == tab.primaryPaneID)
+        #expect(owner.selectedTabID == original)
+        weak var releasedModel = tab.secondaryModel
+        #expect((await route(owner, .setSplitView, target.merging(["enabled": .bool(false)]) { _, new in new })).success)
+        #expect(releasedModel == nil)
+        #expect(!(await route(owner, .getPane, secondTarget)).success)
+        #expect((await route(owner, .setSplitView, target.merging(["enabled": .bool(true)]) { _, new in new })).success)
+        #expect(tab.secondaryPaneID != secondID)
+        #expect((await route(owner, .focusPane, ["pane_id": .string(tab.secondaryPaneID!.uuidString)])).success)
+        #expect(owner.selectedTab === tab)
+        #expect(tab.pane === tab.secondPane)
+    }
+
+    // Split changes on a visited inactive tab must leave sidebar actions with the visible pane.
+    @Test(arguments: [false, true])
+    func inactiveSplitChangesPreserveSidebarOwnership(startsWithSplit: Bool) async throws {
+        let owner = makeOwner()
+        defer { owner.window?.close() }
+        let hidden = try #require(owner.selectedTab)
+        if startsWithSplit {
+            try owner.setAutomationSplit(true, tab: hidden)
+            hidden.setAutomationFocus(try #require(hidden.secondaryPaneID))
+        }
+        let visible = try owner.createAutomationTab(selecting: true)
+        let sidebar = owner.workspaceViewController.sidebar
+        let originalFocus = hidden.focusedPaneID
+        #expect(sidebar.delegate === visible.firstPane)
+
+        for enabled in [true, true, false] {
+            let response = await route(owner, .setSplitView, ["tab_id": .string(hidden.id.uuidString), "enabled": .bool(enabled)])
+            #expect(response.success)
+            #expect(owner.selectedTab === visible)
+            #expect(hidden.focusedPaneID == (enabled ? originalFocus : hidden.primaryPaneID))
+            #expect(hidden.isSplitViewVisible == enabled)
+            #expect(hidden.firstPane?.viewModel.isActive == false)
+            #expect(sidebar.delegate === visible.firstPane)
+            sidebar.delegate?.sidebarViewController(sidebar, didUpdateFilterText: "visible source query")
+            #expect(visible.firstPane?.viewModel.makeSplitPaneState().sourceListFilterText == "visible source query")
+            #expect(hidden.firstPane?.viewModel.makeSplitPaneState().sourceListFilterText == "")
+        }
+
+        owner.selectTab(hidden.id)
+        #expect(sidebar.delegate === hidden.firstPane)
+        try owner.setAutomationSplit(true, tab: hidden)
+        hidden.setAutomationFocus(try #require(hidden.secondaryPaneID))
+        #expect(sidebar.delegate === hidden.secondPane)
+    }
+
+    // Disabling and re-enabling the same row preserves its draft and changes only packet membership.
+    @Test(arguments: [false, true])
+    func automationWiresharkGroupsPreserveDraftAndEnabledState(inactive: Bool) async throws {
+        let expression = "tcp.port == 443"
+        let document = FakeOfflineDocument(
+            url: URL(fileURLWithPath: "/tmp/synthetic-filter.pcapng"), metadata: .init(format: .pcapng),
+            openPlan: .completed([makeMCPPacket(id: 1), makeMCPPacket(id: 2)]),
+            displayFilterMatchesByExpression: [expression: [1]]
+        )
+        let core = FakeTCPViewerCore(interfaceInventories: [[]], documentFactory: { _ in document })
+        core.validDisplayFilterExpressions = [expression]
+        let owner = TCPViewerWindowController(
+            services: .init(core: core),
+            configuration: AppConfiguration(defaults: UserDefaults(suiteName: "automation-filter-\(UUID())")!),
+            isLicenseAuthorized: { true }
+        )
+        defer { owner.window?.close() }
+        let source = owner.makeOfflineWorkspace()
+        await withCheckedContinuation { continuation in
+            source.controller.importDocumentsWithResult(at: [document.url]) { _ in continuation.resume() }
+        }
+        #expect(owner.placeImportedWorkspace(source, title: "Synthetic", replacing: nil, selecting: !inactive))
+        let tab = try #require(owner.tabs.first { $0.source === source })
+        let target: [String: TCPViewerMCPValue] = ["tab_id": .string(tab.id.uuidString)]
+
+        for enabled in [false, true, false] {
+            let group = PacketStructuredFilterGroup(filters: [
+                PacketStructuredFilter(id: "filter-row", query: .anyText, condition: .contains, text: expression, isEnabled: enabled),
+            ])
+            let value = TCPViewerAutomationCommandRouter.structuredValue(group)
+            let result = await route(owner, .updatePane, target.merging(["structured_filter": value]) { _, new in new })
+            #expect(result.success, "\(result.error ?? "")")
+            #expect(result.data?["structured_filter"] == value)
+            #expect(result.data?["wireshark_filter"] == .string(expression))
+            #expect(result.data?["displayed_packet_count"] == .int(enabled ? 1 : 2))
+            let read = await route(owner, .getPane, target)
+            #expect(read.success)
+            #expect(read.data?["structured_filter"] == value)
+            #expect(read.data?["displayed_packet_count"] == .int(enabled ? 1 : 2))
+            if inactive { #expect(tab.contentController == nil) }
+        }
+
+        owner.selectTab(tab.id)
+        let selected = await route(owner, .getPane, target)
+        #expect(selected.success)
+        #expect(selected.data?["displayed_packet_count"] == .int(2))
+        #expect(tab.firstPane?.viewModel.makeSplitPaneState().structuredFilterGroup.filters.first?.isEnabled == false)
+        #expect(tab.firstPane?.viewModel.makeSplitPaneState().structuredFilterGroup.filters.first?.text == expression)
+    }
+
+    @Test func errorsDoNotPresentSheetsAndMismatchedTargetsFail() async throws {
+        let free = makeOwner(authorized: false)
+        let other = makeOwner()
+        defer { free.window?.close(); other.window?.close() }
+        var sheetCount = 0
+        free.upgradeAlertPresenter = { _, _ in sheetCount += 1 }
+        #expect(!(await route(free, .createTab)).success)
+        #expect(!(await route(free, .setSplitView, ["enabled": .bool(true)])).success)
+        #expect(!(await route(free, .closeTab)).success)
+        #expect(sheetCount == 0)
+        #expect(free.window?.attachedSheet == nil)
+        #expect(!(await route(free, .getPane, ["workspace_id": .string(free.automationID.uuidString), "tab_id": .string(other.selectedTabID!.uuidString)])).success)
+        #expect(!(await route(free, .getPane, ["pane_id": .int(1)])).success)
+        #expect(!(await route(free, .updatePane, ["mode": .string("map"), "display_filter": .string("must-not-apply")])).success)
+        #expect(free.rootViewController.viewModel.snapshot.displayFilterText == "")
+        let second = try other.createAutomationTab(selecting: false)
+        #expect(!(await route(other, .listTabs, ["tab_id": .string(second.id.uuidString), "pane_id": .string(other.selectedTab!.primaryPaneID.uuidString)])).success)
+    }
+
+    @Test func discoveryMoveAndClosePreserveOtherTabsAndSharedCapture() async throws {
+        let owner = makeOwner()
+        defer { owner.window?.close() }
+        let original = owner.selectedTabID
+        let tab = try owner.createAutomationTab(selecting: false)
+        let target: [String: TCPViewerMCPValue] = ["tab_id": .string(tab.id.uuidString)]
+        let listing = await route(owner, .listTabs)
+        #expect(listing.data?["tabs"]?.arrayValue?.count == 2)
+        #expect(tab.source === owner.liveWorkspace)
+        #expect((await route(owner, .moveTab, target.merging(["index": .int(0)]) { _, new in new })).success)
+        #expect(owner.tabs.first === tab)
+        #expect(owner.selectedTabID == original)
+        #expect((await route(owner, .closeTab, target.merging(["confirm": .bool(true)]) { _, new in new })).success)
+        #expect(owner.tabs.count == 1)
+        #expect(!owner.liveWorkspace.isClosed)
+        #expect((await route(owner, .closeTab, ["confirm": .bool(true)])).success)
+        #expect(owner.liveWorkspace.isClosed)
+        #expect(owner.tabs.isEmpty)
+    }
+
+    @Test func overviewAndStatisticsMatchServicesAcrossChunkBoundariesAndDisplayedFilters() async throws {
+        let packets = (1...4100).map { makeMCPPacket(id: UInt64($0), protocolName: $0.isMultiple(of: 2) ? "DNS" : "TLS", domain: $0.isMultiple(of: 2) ? "dns.example" : "tls.example") }
+        let owner = makeOwner(packets: packets)
+        defer { owner.window?.close() }
+        let source = owner.makeOfflineWorkspace()
+        await withCheckedContinuation { continuation in
+            source.controller.importDocumentsWithResult(at: [URL(fileURLWithPath: "/tmp/synthetic.pcapng")]) { _ in continuation.resume() }
+        }
+        #expect(owner.placeImportedWorkspace(source, title: "Synthetic", replacing: owner.selectedTabID))
+        let tab = try #require(owner.selectedTab)
+        let target: [String: TCPViewerMCPValue] = ["tab_id": .string(tab.id.uuidString)]
+        let overview = await route(owner, .getOverviewStatistics, target)
+        #expect(overview.success, "\(overview.error ?? "")")
+        #expect(overview.data?["packet_count"] == .int(4100))
+        var accumulator = CaptureOverviewAccumulator()
+        accumulator.appendReplacementChunk(source.controller.snapshot.packetIngestState.packets)
+        #expect(overview.data?["totals"] == .object(TCPViewerAutomationAnalysisJob.trafficTotals(accumulator.snapshot().totals)))
+        let expected = EndpointStatisticsService().rebuild(from: source.controller.snapshot.packetIngestState.packets)
+        let statistics = await route(owner, .getEndpointStatistics, target.merging(["group": .string("domains"), "limit": .int(1)]) { _, new in new })
+        #expect(statistics.success, "\(statistics.error ?? "")")
+        #expect(statistics.data?["total_count"] == .int(expected.rows(for: .domains).count))
+        #expect(statistics.data?["returned_count"] == .int(1))
+        #expect(statistics.data?["next_offset"] == .int(1))
+        #expect((await route(owner, .updatePane, target.merging(["quick_filters": .array([.string("dns")])]) { _, new in new })).success)
+        let scoped = target.merging(["scope": .string("displayed")]) { _, new in new }
+        let query = await route(owner, .queryPackets, scoped)
+        #expect(query.success)
+        #expect(query.data?["total_packet_count"] == .int(2050))
+        let displayed = await route(owner, .getEndpointStatistics, scoped)
+        #expect(displayed.success)
+        #expect(displayed.data?["packet_count"] == .int(2050))
+        #expect(!source.automationAnalysisIsRunning)
+    }
+
+    @Test func cliAndMCPReturnTheSameTargetedPaneAndAnalysisData() async throws {
+        let owner = makeOwner()
+        defer { owner.window?.close() }
+        let app = AppDelegate()
+        let source = TCPViewerWorkspaceAutomationSource(windowController: owner)
+        let cli = TCPViewerCLICommandRouter(appDelegate: app, dataSourceProvider: { source })
+        let tab = try owner.createAutomationTab(selecting: false)
+        for (cliCommand, mcpCommand) in [(TCPViewerCLICommand.paneGet, TCPViewerMCPCommand.getPane), (.overviewGet, .getOverviewStatistics), (.statisticsEndpoints, .getEndpointStatistics)] {
+            let cliResponse = await withCheckedContinuation { continuation in
+                cli.route(TCPViewerCLIRequest(command: cliCommand, params: ["tab_id": .string(tab.id.uuidString)], expiresAt: Date().addingTimeInterval(120))) {
+                    continuation.resume(returning: $0)
+                }
+            }
+            let mcpResponse = await route(owner, mcpCommand, ["tab_id": .string(tab.id.uuidString)])
+            #expect(cliResponse.ok)
+            #expect(mcpResponse.success)
+            let converted = try JSONDecoder().decode([String: TCPViewerCLIValue].self, from: JSONEncoder().encode(mcpResponse.data))
+            #expect(cliResponse.data == converted)
+            #expect(tab.contentController == nil)
+        }
+    }
+
+    @Test func cliTabCreationPreparesAnEmptyBackgroundWorkspace() async throws {
+        let app = AppDelegate()
+        app.cliPrepareWorkspace(creatingTab: true)
+        let owner = try #require(app.mainWindowController)
+        defer { owner.window?.close() }
+        #expect(owner.tabs.isEmpty)
+        #expect(owner.window?.isVisible == false)
+        #expect((await route(owner, .createTab)).success)
+        #expect(owner.tabs.count == 1)
+        #expect(owner.window?.isVisible == false)
+    }
+
+    @Test func queuedReadsStayBoundAndRejectReplacedTargets() async throws {
+        let owner = makeOwner()
+        defer { owner.window?.close() }
+        let original = try #require(owner.selectedTab)
+        let second = try owner.createAutomationTab(selecting: false)
+        let worker = DispatchQueue(label: "automation-held-query")
+        let source = TCPViewerWorkspaceAutomationSource(windowController: owner)
+        let router = TCPViewerMCPCommandRouter(dataSourceProvider: { source }, requiresAuthorizedLicense: false, redactionEnabled: { false }, workerQueue: worker)
+        for replacesSource in [false, true] {
+            let gate = DispatchSemaphore(value: 0)
+            worker.async { gate.wait() }
+            var result: TCPViewerMCPResponse?
+            router.route(TCPViewerMCPRequest(command: TCPViewerMCPCommand.queryPackets.rawValue, params: ["tab_id": .string(original.id.uuidString)])) { result = $0 }
+            owner.selectTab(second.id)
+            if replacesSource {
+                #expect(owner.placeImportedWorkspace(owner.makeOfflineWorkspace(), title: "Replacement", replacing: original.id, selecting: false))
+            }
+            gate.signal()
+            for _ in 0..<200 where result == nil { try await Task.sleep(for: .milliseconds(5)) }
+            #expect(result?.success == !replacesSource)
+            #expect(owner.selectedTab === second)
+        }
+    }
+
+    @Test func importsSupportHiddenPlacementReplacementAndCancellationWithoutSheets() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("automation-import-\(UUID())")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("synthetic.pcapng")
+        try Data().write(to: file)
+        let owner = makeOwner(packets: [makeMCPPacket(id: 1)])
+        defer { owner.window?.close() }
+        let original = owner.selectedTabID
+        let imported = await route(owner, .importCapture, ["paths": .array([.string(file.path)]), "select": .bool(false)])
+        #expect(imported.success, "\(imported.error ?? "")")
+        let tabID = try #require(imported.data?["tab_id"]?.stringValue)
+        let tab = try #require(owner.tabs.first { $0.id == UUID(uuidString: tabID) })
+        #expect(tab.isOffline)
+        #expect(tab.contentController == nil)
+        #expect(owner.selectedTabID == original)
+        #expect(!(await route(owner, .importCapture, ["paths": .array([.string(file.path)]), "tab_id": .string(tabID)])).success)
+        let replaced = await route(owner, .importCapture, ["paths": .array([.string(file.path)]), "tab_id": .string(tabID), "confirm": .bool(true)])
+        #expect(replaced.success)
+        #expect(tab.isClosed)
+        #expect(owner.selectedTabID == original)
+        #expect(owner.window?.attachedSheet == nil)
+        let link = directory.appendingPathComponent("link.tcpviewsession")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: directory.appendingPathComponent("missing.tcpviewsession"))
+        #expect(throws: (any Error).self) {
+            try TCPViewerAutomationCommandRouter.sessionDestination(TCPViewerMCPRequest(command: "export_session", params: ["path": .string(link.path), "overwrite": .bool(true)]))
+        }
+        let emptyOwner = TCPViewerWindowController(services: .init(core: FakeTCPViewerCore(interfaceInventories: [[]])),
+                                                  configuration: AppConfiguration(defaults: UserDefaults(suiteName: "empty-import-\(UUID())")!),
+                                                  startsWithLiveTab: false, isLicenseAuthorized: { false })
+        defer { emptyOwner.window?.close() }
+        #expect((await route(emptyOwner, .importCapture, ["paths": .array([.string(file.path)])])).success)
+        #expect(emptyOwner.tabs.count == 1)
+    }
+
+    @Test func pendingImportIsCancelledWhenItsDestinationCloses() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("automation-gated-\(UUID()).pcapng")
+        try Data().write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let gate = AsyncGate()
+        let document = FakeOfflineDocument(url: file, metadata: .init(format: .pcapng), openPlan: .init(batches: [], progress: [], error: nil, gate: gate))
+        let owner = TCPViewerWindowController(services: .init(core: FakeTCPViewerCore(interfaceInventories: [[]], documentFactory: { _ in document })),
+                                             configuration: AppConfiguration(defaults: UserDefaults(suiteName: "gated-import-\(UUID())")!), isLicenseAuthorized: { true })
+        defer { owner.window?.close() }
+        let target = try owner.createAutomationTab(selecting: false)
+        let source = TCPViewerWorkspaceAutomationSource(windowController: owner)
+        let router = TCPViewerMCPCommandRouter(dataSourceProvider: { source }, requiresAuthorizedLicense: false, redactionEnabled: { false })
+        var result: TCPViewerMCPResponse?
+        var completionCount = 0
+        router.route(.init(command: "import_capture", params: ["paths": .array([.string(file.path)]), "tab_id": .string(target.id.uuidString), "confirm": .bool(true)])) {
+            result = $0; completionCount += 1
+        }
+        owner.closeTab(target.id)
+        for _ in 0..<200 where result == nil { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(result?.success == false)
+        #expect(completionCount == 1)
+        await gate.open()
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(completionCount == 1)
+        #expect(owner.tabs.count == 1)
+    }
+
+    @Test func analysisUsesFixedWatermarkAndRepairsMetadataWhileRejectingConcurrentJobs() async throws {
+        let packet = PacketSummary(id: 1, packetNumber: 1, timestamp: .distantPast, source: .offline, transportHint: .unknown, protocolSummary: "TLS",
+                                   endpoints: .init(source: .init(address: "2001:db8::1"), destination: .init(address: "2001:db8::2")),
+                                   originalLength: 128, capturedLength: 128, infoSummary: "Synthetic packet", layers: [],
+                                   decodeStatus: .init(kind: .complete), captureMetadata: .init(linkType: .ethernet, isTruncated: false))
+        let document = FakeOfflineDocument(url: URL(fileURLWithPath: "/tmp/synthetic-analysis.pcapng"), metadata: .init(format: .pcapng),
+                                           openPlan: .completed([packet]))
+        let owner = TCPViewerWindowController(services: .init(core: FakeTCPViewerCore(interfaceInventories: [[]], documentFactory: { _ in document })),
+                                             configuration: AppConfiguration(defaults: UserDefaults(suiteName: "metadata-analysis-\(UUID())")!), isLicenseAuthorized: { true })
+        defer { owner.window?.close() }
+        let source = owner.makeOfflineWorkspace()
+        await withCheckedContinuation { continuation in
+            source.controller.openDocument(at: document.url) { continuation.resume() }
+        }
+        #expect(owner.placeImportedWorkspace(source, title: "Synthetic", replacing: owner.selectedTabID))
+        let model = owner.rootViewController.viewModel
+        let queue = DispatchQueue(label: "automation-analysis-metadata")
+        let gate = DispatchSemaphore(value: 0)
+        var response: TCPViewerMCPResponse?
+        let request = TCPViewerMCPRequest(command: "get_overview_statistics")
+        try TCPViewerAutomationAnalysisJob.start(request, model: model, isValid: { true }, queue: queue) { response = $0 }
+        #expect(throws: (any Error).self) {
+            try TCPViewerAutomationAnalysisJob.start(request, model: model, isValid: { true }) { _ in }
+        }
+        // The first chunk is copied before this metadata delta, while its worker is held.
+        queue.async {
+            DispatchQueue.main.async {
+                document.send(.packetSummaryUpdates([.init(packetID: 1, protocolSummary: "HTTP2", infoSummary: "Synthetic metadata")]))
+            }
+            gate.wait()
+        }
+        for _ in 0..<200 where source.controller.snapshot.packetIngestState.packets.first?.protocolSummary != "HTTP2" {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(source.controller.snapshot.packetIngestState.packets.first?.protocolSummary == "HTTP2")
+        gate.signal()
+        for _ in 0..<200 where response == nil { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(response?.success == true, "\(response?.error ?? "")")
+        #expect(response?.data?["packet_count"] == .int(1))
+        #expect(response?.data?["protocols"]?.arrayValue?.contains { value in
+            if case .object(let row) = value { return row["protocol"] == .string("HTTP2") }
+            return false
+        } == true)
+        #expect(!source.automationAnalysisIsRunning)
+        let ipv6 = await route(owner, .getEndpointStatistics, ["group": .string("ipv6")])
+        #expect(ipv6.data?["total_count"] == .int(2))
+        let emptyPage = await route(owner, .getEndpointStatistics, ["group": .string("ipv6"), "offset": .int(2)])
+        #expect(emptyPage.data?["returned_count"] == .int(0))
+        #expect(emptyPage.data?["next_offset"] == .null)
+    }
+
+    @Test(arguments: [FollowStreamProtocol.tcp, .udp])
+    func asynchronousDNSFollowRechecksRedactionAndPreservesSelection(transport: FollowStreamProtocol) async throws {
+        let document = FakeOfflineDocument(url: URL(fileURLWithPath: "/tmp/synthetic-dns.pcapng"), metadata: .init(format: .pcapng),
+                                           openPlan: .completed([makeMCPPacket(id: 1, protocolName: "DNS", destinationPort: 53)]))
+        let gate = AsyncGate()
+        document.followGate = gate
+        document.followResult = FollowStream(streamProtocol: transport, client: .init(address: "192.0.2.1", port: 1200), server: .init(address: "192.0.2.2", port: 53),
+                                            records: [.init(direction: .clientToServer, packetID: 1, timestamp: .distantPast, sequenceNumber: nil, data: Data("synthetic DNS payload".utf8))],
+                                            clientByteCount: 21, serverByteCount: 0, capturedThroughPacketID: 1, capturedAt: .distantPast, isTruncated: false)
+        let owner = TCPViewerWindowController(services: .init(core: FakeTCPViewerCore(interfaceInventories: [[]], documentFactory: { _ in document })),
+                                             configuration: AppConfiguration(defaults: UserDefaults(suiteName: "dns-follow-\(UUID())")!), isLicenseAuthorized: { true })
+        defer { owner.window?.close() }
+        let source = owner.makeOfflineWorkspace()
+        await withCheckedContinuation { continuation in
+            source.controller.importDocumentsWithResult(at: [document.url]) { _ in continuation.resume() }
+        }
+        #expect(owner.placeImportedWorkspace(source, title: "DNS", replacing: nil, selecting: false))
+        let tab = try #require(owner.tabs.first { $0.source === source })
+        let packet = try #require(source.controller.snapshot.packetIngestState.packets.first)
+        let selected = owner.selectedTabID
+        var redacts = false
+        var result: TCPViewerMCPResponse?
+        let bridgeSource = TCPViewerWorkspaceAutomationSource(windowController: owner)
+        let router = TCPViewerMCPCommandRouter(dataSourceProvider: { bridgeSource }, requiresAuthorizedLicense: false, redactionEnabled: { redacts })
+        router.route(.init(command: "follow_stream", params: ["tab_id": .string(tab.id.uuidString), "packet_id": .string(String(packet.id)),
+                                                            "protocol": .string(transport == .udp ? "auto" : "tcp")])) { result = $0 }
+        for _ in 0..<200 where document.followProtocols.isEmpty { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(document.followProtocols.count == 1)
+        #expect(document.followProtocols[0] == (transport == .udp ? nil : .tcp))
+        redacts = true
+        await gate.open()
+        for _ in 0..<200 where result == nil { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(result?.success == true)
+        #expect(result?.data?["protocol"] == .string(transport.rawValue))
+        #expect(result?.data?["payload_redacted"] == .bool(true))
+        if case .object(let record) = result?.data?["records"]?.arrayValue?.first { #expect(record["data"] == nil) }
+        else { Issue.record("Expected redacted record metadata") }
+        #expect(owner.selectedTabID == selected)
+        #expect(tab.contentController == nil)
+    }
+
+    @Test(arguments: [FollowStreamProtocol.tcp, .udp])
+    func streamSerializationPreservesTransportLimitsAndRedactsPayloads(transport: FollowStreamProtocol) {
+        let stream = FollowStream(streamProtocol: transport, client: .init(address: "192.0.2.1", port: 1200), server: .init(address: "192.0.2.2", port: 53),
+                                  records: [.init(direction: .clientToServer, packetID: 1, timestamp: .distantPast, sequenceNumber: nil, data: Data("secret-request".utf8)),
+                                            .init(direction: .serverToClient, packetID: 2, timestamp: .distantPast, sequenceNumber: nil, data: Data("response".utf8))],
+                                  clientByteCount: 14, serverByteCount: 8, capturedThroughPacketID: 2, capturedAt: .distantPast, isTruncated: false)
+        let plain = TCPViewerAutomationStreamSerializer.data(stream, direction: "server-to-client", encoding: "text", maximumBytes: 4, maximumRecords: 1)
+        #expect(plain["protocol"] == .string(transport.rawValue))
+        #expect(plain["returned_byte_count"] == .int(4))
+        #expect(plain["truncated"] == .bool(true))
+        let hidden = TCPViewerAutomationStreamSerializer.data(stream, direction: "both", encoding: "base64", maximumBytes: 100, maximumRecords: 10, redacted: true)
+        #expect(hidden["payload_redacted"] == .bool(true))
+        for value in hidden["records"]?.arrayValue ?? [] {
+            if case .object(let record) = value { #expect(record["data"] == nil) }
+            else { Issue.record("Expected stream record") }
+        }
     }
 }

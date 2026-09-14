@@ -140,10 +140,13 @@ enum StreamFollowEncoding: String, ExpressibleByArgument {
     case base64
 }
 
+enum StreamTransport: String, ExpressibleByArgument { case auto, tcp, udp }
+
 struct StreamFollowCommand: ParsableCommand, TCPViewerCLIRequestCommand {
     static let configuration = CommandConfiguration(commandName: "follow", abstract: "Follow the TCP or UDP stream containing one packet.")
     @OptionGroup var global: TCPViewerCLIGlobalOptions
     @Argument(help: "Packet ID in the TCP or UDP stream.") var packetID: String
+    @Option(name: .customLong("protocol")) var transport: StreamTransport = .auto
     @Option(name: .long) var direction: StreamFollowDirection = .both
     @Option(name: .long) var encoding: StreamFollowEncoding = .text
     @Option(name: .customLong("max-bytes")) var maxBytes = 4 * 1_024 * 1_024
@@ -158,6 +161,7 @@ struct StreamFollowCommand: ParsableCommand, TCPViewerCLIRequestCommand {
     func run() throws {
         try execute(.streamFollow, params: [
             "packet_id": .string(packetID),
+            "protocol": .string(transport.rawValue),
             "direction": .string(direction.rawValue),
             "encoding": .string(encoding.rawValue),
             "max_bytes": .int(maxBytes),
