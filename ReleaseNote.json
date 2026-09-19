@@ -301,6 +301,19 @@
       "bugs": [
         "Fixed: Can not activate the license key"
       ]
+    },
+    {
+      "version": "1.18.0",
+      "title": "TCP Viewer 1.18.0: Ready for macOS 27 Golden Gate, Split View and MCP/CLI v2",
+      "features": [
+        "Build for macOS 27 Golden Gate.",
+        "New Split View: able to see packets side by side for better comparison.",
+        "Use MCP and CLI to manage workspace tabs and Split View, query endpoint statistics, and follow streams."
+      ],
+      "improvements": [
+        "Ensure beta and production builds always connect to the production license server."
+      ],
+      "bugs": []
     }
   ]
 }

@@ -794,8 +794,8 @@ private final class TCPViewerToolbarStatusView: NSView {
     var onCheckForUpdates: (() -> Void)?
 
     private let dot = NSView()
-    private let statusLabel = TCPViewerUI.label("", font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium), color: .secondaryLabelColor)
-    private let emphasizedLabel = TCPViewerUI.label("", font: .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold))
+    private let statusLabel = TCPViewerUI.label("", font: .systemFont(ofSize: NSFont.smallSystemFontSize + 1, weight: .medium), color: .labelColor)
+    private let emphasizedLabel = TCPViewerUI.label("", font: .systemFont(ofSize: NSFont.smallSystemFontSize + 1, weight: .semibold))
     private let bpfFilterButton = NSButton(title: "", target: nil, action: nil)
     private let helperErrorButton = NSButton(title: "Error", target: nil, action: nil)
     private let updateBadgeButton = TCPViewerToolbarUpdateBadgeButton(title: "", target: nil, action: nil)
@@ -814,14 +814,15 @@ private final class TCPViewerToolbarStatusView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    // Refresh the capture status while preserving red text for helper errors.
     func render(viewModel: TCPViewerToolbarViewModel) {
         dot.layer?.backgroundColor = viewModel.statusTint.cgColor
         statusLabel.stringValue = viewModel.statusText
         statusLabel.font = .systemFont(
-            ofSize: NSFont.smallSystemFontSize,
+            ofSize: NSFont.smallSystemFontSize + 1,
             weight: viewModel.isShowingHelperError ? .semibold : .medium
         )
-        statusLabel.textColor = viewModel.isShowingHelperError ? .systemRed : .secondaryLabelColor
+        statusLabel.textColor = viewModel.isShowingHelperError ? .systemRed : .labelColor
         emphasizedLabel.stringValue = viewModel.emphasizedText ?? ""
         emphasizedLabel.isHidden = viewModel.isShowingHelperError || viewModel.emphasizedText == nil
         bpfCaptureFilter = viewModel.bpfCaptureFilter
