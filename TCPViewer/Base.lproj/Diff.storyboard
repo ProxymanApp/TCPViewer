@@ -310,12 +310,28 @@ CA
                                             <subviews>
                                                 <textField focusRingType="none" horizontalHuggingPriority="251" verticalHuggingPriority="750" translatesAutoresizingMaskIntoConstraints="NO" id="ht9-1G-XjE">
                                                     <rect key="frame" x="-2" y="2" width="49" height="16" />
-                                                    <textFieldCell key="cell" lineBreakMode="clipping" title="Diff on: Packet Details" id="YHR-0h-QW7">
+                                                    <textFieldCell key="cell" lineBreakMode="clipping" title="Diff on:" id="YHR-0h-QW7">
                                                         <font key="font" metaFont="system" />
                                                         <color key="textColor" name="labelColor" catalog="System" colorSpace="catalog" />
                                                         <color key="backgroundColor" name="textBackgroundColor" catalog="System" colorSpace="catalog" />
                                                     </textFieldCell>
                                                 </textField>
+                                                <popUpButton verticalHuggingPriority="750" translatesAutoresizingMaskIntoConstraints="NO" id="NQp-rX-bYt">
+                                                    <rect key="frame" x="65" y="-4" width="132" height="25" />
+                                                    <popUpButtonCell key="cell" type="push" title="Packet Details" bezelStyle="rounded" alignment="left" lineBreakMode="truncatingTail" state="on" borderStyle="borderAndBezel" imageScaling="proportionallyDown" inset="2" selectedItem="XnD-mG-aQp" id="LnR-jD-cKt">
+                                                        <behavior key="behavior" lightByBackground="YES" lightByGray="YES" />
+                                                        <font key="font" metaFont="message" />
+                                                        <menu key="menu" id="KqE-tS-dVn">
+                                                            <items>
+                                                                <menuItem title="Packet Details" state="on" id="XnD-mG-aQp" />
+                                                                <menuItem title="Packet Bytes" id="PbM-wR-vSe" />
+                                                            </items>
+                                                        </menu>
+                                                    </popUpButtonCell>
+                                                    <connections>
+                                                        <action selector="contentKindBtnOnChange:" target="FxF-kE-jk6" id="CbA-nU-zRp" />
+                                                    </connections>
+                                                </popUpButton>
                                                 <box horizontalHuggingPriority="750" boxType="separator" translatesAutoresizingMaskIntoConstraints="NO" id="BPI-LU-XoZ">
                                                     <rect key="frame" x="225" y="2" width="5" height="16" />
                                                     <constraints>
@@ -476,6 +492,7 @@ CA
                         <outlet property="backgroundBox" destination="yQV-wm-J4q" id="XLv-RQ-M7E" />
                         <outlet property="diffContainerView" destination="Phn-fo-DFK" id="fZH-Kl-tKc" />
                         <outlet property="diffModeBtn" destination="QDh-QM-Hyj" id="sMn-Pl-mZF" />
+                        <outlet property="contentKindBtn" destination="NQp-rX-bYt" id="CkO-pB-wAx" />
                         <outlet property="emptyLbl" destination="2e6-kk-e2b" id="CSO-kd-gDw" />
                         <outlet property="fileMergeMenuItem" destination="1a2-MC-EcO" id="sQ4-ov-fWv" />
                         <outlet property="helpLbl" destination="rzb-pb-k6O" id="KVK-Z2-r4w" />

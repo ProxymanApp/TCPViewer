@@ -66,6 +66,9 @@ final class DiffWindowController: NSWindowController, NSWindowDelegate, DiffPool
     func handleShortcut(_ event: NSEvent) -> Bool {
         guard window?.attachedSheet == nil else { return false }
         let flags = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        if event.keyCode == 98, flags.isEmpty || flags == [.shift] {
+            return contentController.navigateByteDifference(backwards: flags == [.shift])
+        }
         if flags == [.command, .shift], event.keyCode == 51 || event.keyCode == 117,
            window?.firstResponder === poolController.tableView {
             model.removeAll()

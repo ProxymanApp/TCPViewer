@@ -16,6 +16,11 @@ struct DiffPacketID: Hashable {
 
 enum DiffSide { case left, right }
 
+enum DiffContentKind: String, CaseIterable {
+    case packetDetails, packetBytes
+    var title: String { self == .packetDetails ? "Packet Details" : "Packet Bytes" }
+}
+
 enum DiffDisplayMode: String, CaseIterable {
     case sideBySide, unified
     var title: String { self == .sideBySide ? "Side By Side" : "Unified" }
@@ -26,11 +31,14 @@ enum DiffDisplayMode: String, CaseIterable {
 
 final class DiffPacketEntry {
     let id: DiffPacketID
+    // Re-added entries need fresh comparison keys even when their packet IDs are unchanged.
+    let snapshotIdentity = UUID()
     var row: PacketTableRow
     var side: DiffSide?
     private(set) var detailNodes: [PacketDetailNode] = []
     private var customValues: [String: String] = [:]
     private(set) var text: String?
+    private(set) var bytes: Data?
     private(set) var errorMessage: String?
     weak var workspace: TCPViewerCaptureWorkspace?
 
@@ -47,10 +55,11 @@ final class DiffPacketEntry {
         return workspace
     }
 
-    // Retain owned detail rows and text, rather than raw buffers or an entire capture document.
-    func finish(nodes: [PacketDetailNode], text: String) {
+    // Owned details and captured bytes keep comparisons usable after the source capture closes.
+    func finish(nodes: [PacketDetailNode], text: String, bytes: Data) {
         detailNodes = nodes
         self.text = text
+        self.bytes = bytes
     }
 
     func fail(_ error: Error) { errorMessage = error.localizedDescription }
@@ -87,10 +96,12 @@ final class DiffPoolModel {
     private let queue = DispatchQueue(label: "com.proxyman.tcpviewer.diff-content")
     private let defaults: UserDefaults
     private(set) var displayMode: DiffDisplayMode
+    private(set) var contentKind: DiffContentKind
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         displayMode = defaults.string(forKey: "TCPViewer.diff.displayMode").flatMap(DiffDisplayMode.init(rawValue:)) ?? .sideBySide
+        contentKind = defaults.string(forKey: "TCPViewer.diff.contentKind").flatMap(DiffContentKind.init(rawValue:)) ?? .packetDetails
     }
 
     var left: DiffPacketEntry? { entries.first { $0.side == .left } }
@@ -141,6 +152,12 @@ final class DiffPoolModel {
         notifyChange()
     }
 
+    func setContentKind(_ kind: DiffContentKind) {
+        contentKind = kind
+        defaults.set(kind.rawValue, forKey: "TCPViewer.diff.contentKind")
+        notifyChange()
+    }
+
     // Style mutations remain useful for snapshots after their original capture has closed.
     func apply(_ mutation: PacketTextStyleMutation, to ids: Set<DiffPacketID>) {
         for id in ids {
@@ -175,14 +192,15 @@ final class DiffPoolModel {
             work.inspect { [weak self, weak entry = work.entry] result in
                 guard let self else { return }
                 self.queue.async {
-                    let output = result.map { inspection -> ([PacketDetailNode], String) in
+                    let output = result.map { inspection -> ([PacketDetailNode], String, Data) in
                         let nodes = inspection.detailNodes.map(Self.ownedNode)
-                        return (nodes, DiffPacketTextBuilder.text(nodes: nodes))
+                        let bytes = inspection.rawBytes.withUnsafeBytes { Data($0) }
+                        return (nodes, DiffPacketTextBuilder.text(nodes: nodes), bytes)
                     }
                     DispatchQueue.main.async {
                         if let entry, self.entriesByID[entry.id] === entry {
                             switch output {
-                            case .success(let (nodes, text)): entry.finish(nodes: nodes, text: text)
+                            case .success(let (nodes, text, bytes)): entry.finish(nodes: nodes, text: text, bytes: bytes)
                             case .failure(let error): entry.fail(error)
                             }
                             self.notifyChange()

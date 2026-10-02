@@ -77,15 +77,16 @@ struct DiffPoolModelTests {
         #expect(callbacks.count == 1)
         model.remove([a.id])
         model.add([(replacement, inspect)])
-        callbacks[0](.success(inspection(1, value: "old")))
+        callbacks[0](.success(inspection(1, value: "old", bytes: Data([0xFF]))))
         await waitFor { callbacks.count == 2 }
-        #expect(replacement.text == nil)
+        #expect(replacement.text == nil && replacement.bytes == nil)
         callbacks[1](.success(inspection(2, value: "second")))
         await waitFor { callbacks.count == 3 }
-        callbacks[2](.success(inspection(1, value: "replacement")))
+        callbacks[2](.success(inspection(1, value: "replacement", bytes: Data([0, 0x80]))))
         await waitFor { replacement.text != nil }
         #expect(model.entries.map(\.id) == [b.id, replacement.id])
         #expect(replacement.text == "Field: replacement")
+        #expect(replacement.bytes == Data([0, 0x80]))
         #expect(b.text == "Field: second")
     }
 
@@ -95,7 +96,7 @@ struct DiffPoolModelTests {
         model.add([(a, { $0(.failure(NSError(domain: "Synthetic", code: 1, userInfo: [NSLocalizedDescriptionKey: "Decode unavailable"]))) }),
                    (b, { $0(.success(inspection(2, value: "decoded"))) })])
         await waitFor { b.text != nil }
-        #expect(a.errorMessage == "Decode unavailable" && a.text == nil)
+        #expect(a.errorMessage == "Decode unavailable" && a.text == nil && a.bytes == nil)
         #expect(b.text == "Field: decoded")
     }
 
@@ -122,10 +123,35 @@ struct DiffPoolModelTests {
         let defaults = isolatedDefaults()
         let model = DiffPoolModel(defaults: defaults)
         #expect(model.displayMode == .sideBySide)
+        #expect(model.contentKind == .packetDetails)
         model.setDisplayMode(.unified)
+        model.setContentKind(.packetBytes)
         #expect(DiffPoolModel(defaults: defaults).displayMode == .unified)
+        #expect(DiffPoolModel(defaults: defaults).contentKind == .packetBytes)
+        model.setContentKind(.packetDetails)
+        #expect(model.displayMode == .unified)
         #expect(model.displayMode.editorOptions["renderSideBySide"] as? Bool == false)
         #expect(model.displayMode.editorOptions["ignoreTrimWhitespace"] as? Bool == false)
+    }
+
+    @Test func byteSnapshotsOwnBorrowedStorageAndNeedNoFurtherInspection() async {
+        let storage = UnsafeMutableRawPointer.allocate(byteCount: 32, alignment: 1)
+        defer { storage.deallocate() }
+        storage.initializeMemory(as: UInt8.self, repeating: 0xFF, count: 32)
+        let borrowed = Data(bytesNoCopy: storage, count: 32, deallocator: .none)
+        let model = makeModel()
+        let a = entry(1)
+        var inspections = 0
+        model.add([(a, { completion in
+            inspections += 1
+            completion(.success(inspection(1, value: "owned", bytes: borrowed)))
+        })])
+        await waitFor { a.bytes != nil }
+        storage.initializeMemory(as: UInt8.self, repeating: 0, count: 32)
+        model.setContentKind(.packetBytes)
+        model.setContentKind(.packetDetails)
+        #expect(a.bytes == Data(repeating: 0xFF, count: 32))
+        #expect(inspections == 1)
     }
 
     @Test func tableLayoutUsesSharedDefinitionsAndIndependentSizing() {
@@ -163,6 +189,7 @@ struct DiffPoolModelTests {
         #expect(pool.tableView.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier("client"))?.dataCell is PacketClientCell)
         #expect(pool.mainMenu.items.filter { !$0.isSeparatorItem }.map(\.title) == ["Left Side", "Right Side", "Add Comment…", "Highlight", "Delete All", "Delete"])
         let content = try #require(split.splitViewItems[1].viewController as? DiffContentViewController)
+        #expect(content.contentKindBtn.itemTitles == ["Packet Details", "Packet Bytes"])
         #expect(content.diffModeBtn.menu?.items.filter { !$0.isSeparatorItem }.map(\.title) == ["Side By Side", "Unified"])
         #expect(content.diffModeBtn.menu?.items.filter(\.isSeparatorItem).count == 1)
         content.closeEditor()
@@ -195,6 +222,11 @@ struct DiffPoolModelTests {
         #expect(!addItem.isEnabled)
         pool.tableView.selectRowIndexes(IndexSet([0, 1]), byExtendingSelection: false)
         #expect(!controller.validateMenuItem(leftItem))
+        let f7 = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: controller.window?.windowNumber ?? 0, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 98))
+        #expect(!controller.handleShortcut(f7))
+        model.setContentKind(.packetBytes)
+        #expect(controller.handleShortcut(f7))
         app.updateDiffMenu(menu, window: nil)
         #expect(!leftItem.isEnabled && leftItem.state == .off)
         controller.window?.close()
@@ -211,8 +243,8 @@ struct DiffPoolModelTests {
             decodeStatus: PacketDecodeStatus(kind: .complete), captureMetadata: PacketCaptureMetadata(linkType: .ethernet, isTruncated: false)
         )))
     }
-    private func inspection(_ id: UInt64, value: String) -> PacketInspection {
-        PacketInspection(packetID: id, packetNumber: id, rawBytes: Data(), detailNodes: [PacketDetailNode(id: "field", name: "Field", fieldName: "test.field", value: value)], decodeStatus: PacketDecodeStatus(kind: .complete))
+    private func inspection(_ id: UInt64, value: String, bytes: Data = Data()) -> PacketInspection {
+        PacketInspection(packetID: id, packetNumber: id, rawBytes: bytes, detailNodes: [PacketDetailNode(id: "field", name: "Field", fieldName: "test.field", value: value)], decodeStatus: PacketDecodeStatus(kind: .complete))
     }
     private func waitFor(_ predicate: () -> Bool) async {
         for _ in 0..<200 {

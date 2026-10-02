@@ -29,12 +29,16 @@ struct WindowControllerTests {
             return
         }
         let model = DiffPoolModel(defaults: UserDefaults(suiteName: "diff-source-\(UUID())")!)
+        live.inspections[packet.id] = makeInspection(for: packet)
         let entry = DiffPacketEntry(id: DiffPacketID(capture: source.diffIdentity,
             lineage: source.controller.snapshot.packetIngestState.packetLineageRevision, packet: 1),
             row: PacketTableRow(packet: packet), workspace: source)
         model.add([(entry, { source.controller.inspectPacket(id: 1, completion: $0) })])
         await waitUntil { entry.text != nil }
         let text = entry.text
+        let bytes = entry.bytes
+        #expect(bytes == live.inspections[packet.id]?.rawBytes)
+        #expect(entry.text != nil && bytes != nil)
         model.setComment("Shared comment", on: [entry.id])
         model.apply(.setHighlightColor(.red), to: [entry.id])
         #expect(source.controller.snapshot.packetIngestState.packet(withID: 1)?.customComment == "Shared comment")
@@ -50,7 +54,7 @@ struct WindowControllerTests {
         await source.controller.stopLiveCapture()
         let closed = await withCheckedContinuation { continuation in source.close { continuation.resume(returning: $0) } }
         #expect(closed && entry.currentWorkspace == nil)
-        #expect(model.entries.first === entry && entry.text == text)
+        #expect(model.entries.first === entry && entry.text == text && entry.bytes == bytes)
     }
 
     @Test(arguments: [13, 14, 15, 26])
