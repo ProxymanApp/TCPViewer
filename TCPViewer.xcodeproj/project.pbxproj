@@ -1659,7 +1659,10 @@
 		D1FF00033000000000000001 /* XCRemoteSwiftPackageReference "monaco-editor" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "git@github.com:ProxymanApp/monaco-editor.git";
-			requirement = {kind = exactVersion; version = 2.17.0; };
+			requirement = {
+				kind = exactVersion;
+				version = 2.17.0;
+			};
 		};
 /* End XCRemoteSwiftPackageReference section */
 
