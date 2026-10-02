@@ -1434,7 +1434,12 @@ struct WindowControllerTests {
     }
 
     private func weakViews(in view: NSView) -> [WeakTabTestObject] {
-        view.subviews.flatMap { trackedView($0) + weakViews(in: $0) }
+        view.subviews.filter { !isAppKitOutlineControl($0) }.flatMap { trackedView($0) + weakViews(in: $0) }
+    }
+
+    // macOS 27 keeps NSOutlineView's own disclosure buttons alive through AppKit notification observers; the app never owns them.
+    private func isAppKitOutlineControl(_ view: NSView) -> Bool {
+        view.identifier == NSOutlineView.disclosureButtonIdentifier || view.identifier == NSOutlineView.showHideButtonIdentifier
     }
 
     // NSSplitView keeps private implementation views cached after its controller is gone; track every app-owned view around them.
