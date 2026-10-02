@@ -21,7 +21,8 @@ final class TCPViewerCLICommandRouter: TCPViewerCLICommandRouting {
         dataSourceProvider: { [weak self] in self?.dataSourceOverride?() ?? TCPViewerMCPServiceProvider.shared.activeSource() },
         isLicenseAuthorized: { [licenseService] in licenseService.isLicenseAuthorized },
         requiresAuthorizedLicense: false,
-        redactionEnabled: { false }
+        redactionEnabled: { false },
+        diffAutomation: { [weak self] in self?.appDelegate?.diffAutomation }
     )
 
     init(
@@ -116,6 +117,12 @@ final class TCPViewerCLICommandRouter: TCPViewerCLICommandRouting {
         case .sourcesList: .listSources
         case .overviewGet: .getOverviewStatistics
         case .statisticsEndpoints: .getEndpointStatistics
+        case .diffList: .getDiffPool
+        case .diffAdd: .addDiffPackets
+        case .diffSet: .updateDiffPool
+        case .diffRemove: .removeDiffPackets
+        case .diffCompare: .compareDiffPackets
+        case .diffOpen: .openDiffView
         case .appStatus: .getAppStatus
         case .interfacesList: .listInterfaces
         case .captureStatus: .getCaptureOverview

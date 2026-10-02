@@ -4529,4 +4529,150 @@ struct TCPViewerAutomationCommandTests {
             else { Issue.record("Expected stream record") }
         }
     }
+
+    // Three synthetic packets whose details and bytes differ, placed in an unselected offline tab.
+    private func makeDiffOwner() async throws -> (owner: TCPViewerWindowController, tab: TCPViewerWorkspaceTab) {
+        let payloads: [UInt64: [UInt8]] = [1: [0, 1, 2, 3], 2: [0, 9, 2, 3, 4], 3: [7]]
+        let inspections = Dictionary(uniqueKeysWithValues: payloads.map { id, bytes in
+            (id, PacketInspection(packetID: id, packetNumber: id, rawBytes: Data(bytes), detailNodes: [
+                PacketDetailNode(id: "tcp", name: "TCP", kind: .layer, children: [
+                    PacketDetailNode(id: "port", name: "Source Port", value: "1234"),
+                    PacketDetailNode(id: "seq", name: "Sequence", value: "\(id)"),
+                    PacketDetailNode(id: "auth", name: "Authorization", fieldName: "http.authorization", value: "Bearer synthetic-secret-\(id)"),
+                ]),
+            ], decodeStatus: PacketDecodeStatus(kind: .complete)))
+        })
+        let document = FakeOfflineDocument(url: URL(fileURLWithPath: "/tmp/synthetic-diff.pcapng"), metadata: .init(format: .pcapng),
+                                           openPlan: .completed(payloads.keys.sorted().map { makeMCPPacket(id: $0) }), inspections: inspections)
+        let owner = TCPViewerWindowController(services: .init(core: FakeTCPViewerCore(interfaceInventories: [[]], documentFactory: { _ in document })),
+                                             configuration: AppConfiguration(defaults: UserDefaults(suiteName: "automation-diff-\(UUID())")!), isLicenseAuthorized: { true })
+        let source = owner.makeOfflineWorkspace()
+        await withCheckedContinuation { continuation in
+            source.controller.importDocumentsWithResult(at: [document.url]) { _ in continuation.resume() }
+        }
+        #expect(owner.placeImportedWorkspace(source, title: "Diff", replacing: nil, selecting: false))
+        let tab = try #require(owner.tabs.first { $0.source === source })
+        return (owner, tab)
+    }
+
+    private func routeDiff(_ owner: TCPViewerWindowController, _ diff: DiffPoolAutomation, _ command: TCPViewerMCPCommand,
+                           _ params: [String: TCPViewerMCPValue] = [:], redaction: Bool = false) async -> TCPViewerMCPResponse {
+        let source = TCPViewerWorkspaceAutomationSource(windowController: owner)
+        let router = TCPViewerMCPCommandRouter(dataSourceProvider: { source }, requiresAuthorizedLicense: false,
+                                               redactionEnabled: { redaction }, diffAutomation: { diff })
+        return await withCheckedContinuation { continuation in
+            router.route(TCPViewerMCPRequest(command: command.rawValue, params: params)) { continuation.resume(returning: $0) }
+        }
+    }
+
+    @Test func diffCommandsSnapshotCompareAndUpdateThePoolWithoutLoadingViews() async throws {
+        let (owner, tab) = try await makeDiffOwner()
+        defer { owner.window?.close() }
+        let selected = owner.selectedTabID
+        let pool = DiffPoolModel(defaults: UserDefaults(suiteName: "automation-diff-pool-\(UUID())")!)
+        var openCount = 0
+        let diff = DiffPoolAutomation(pool: pool, isLicenseAuthorized: { true }, isWindowOpen: { openCount > 0 }, openWindow: { openCount += 1 })
+        let target: [String: TCPViewerMCPValue] = ["tab_id": .string(tab.id.uuidString)]
+
+        let added = await routeDiff(owner, diff, .addDiffPackets, target.merging(["packet_ids": .array([.string("1"), .string("2")])]) { _, new in new })
+        #expect(added.success, "\(added.error ?? "")")
+        let ids = (added.data?["entry_ids"]?.arrayValue ?? []).compactMap(\.stringValue)
+        try #require(ids.count == 2)
+        #expect(added.data?["added_count"] == .int(2))
+        #expect(added.data?["left_entry_id"] == .string(ids[0]) && added.data?["right_entry_id"] == .string(ids[1]))
+        #expect(tab.contentController == nil && owner.selectedTabID == selected && openCount == 0)
+        // Re-adding a pooled packet returns its existing snapshot instead of a duplicate.
+        let repeated = await routeDiff(owner, diff, .addDiffPackets, target.merging(["packet_ids": .array([.string("2")])]) { _, new in new })
+        #expect(repeated.data?["added_count"] == .int(0) && repeated.data?["entry_ids"] == .array([.string(ids[1])]))
+
+        let details = await routeDiff(owner, diff, .compareDiffPackets)
+        #expect(details.success, "\(details.error ?? "")")
+        #expect(details.data?["content"] == .string("details") && details.data?["identical"] == .bool(false))
+        #expect(details.data?["diff"] == .string("@@ -1,4 +1,4 @@\n TCP\n \tSource Port: 1234\n-\tSequence: 1\n-\tAuthorization: Bearer synthetic-secret-1\n+\tSequence: 2\n+\tAuthorization: Bearer synthetic-secret-2"))
+        #expect(details.data?["left"]?.objectValue?["status"] == .string("ready"))
+        #expect(details.data?["left"]?.objectValue?["packet_id"] == .string("1"))
+
+        let bytes = await routeDiff(owner, diff, .compareDiffPackets, ["content": .string("bytes")])
+        #expect(bytes.success, "\(bytes.error ?? "")")
+        #expect(bytes.data?["left_byte_count"] == .int(4) && bytes.data?["right_byte_count"] == .int(5))
+        let changes = (bytes.data?["changes"]?.arrayValue ?? []).compactMap(\.objectValue)
+        #expect(bytes.data?["change_count"] == .int(changes.count) && bytes.data?["identical"] == .bool(false))
+        #expect(changes.first?["left_offset"] == .int(1) && changes.first?["left_hex"] == .string("01") && changes.first?["right_hex"] == .string("09"))
+        #expect(changes.last?["kind"] == .string("added") && changes.last?["right_hex"] == .string("04"))
+
+        // Redaction scrubs decoded values before they are compared and blocks raw bytes entirely.
+        let redacted = await routeDiff(owner, diff, .compareDiffPackets, redaction: true)
+        #expect(redacted.success && redacted.data?["redacted"] == .bool(true))
+        let redactedDiff = try #require(redacted.data?["diff"]?.stringValue)
+        #expect(!redactedDiff.contains("synthetic-secret") && redactedDiff.contains("-\tSequence: 1"))
+        #expect(!(await routeDiff(owner, diff, .compareDiffPackets, ["content": .string("bytes")], redaction: true)).success)
+
+        // Invalid updates change nothing; valid ones move sides and modes for the Diff window.
+        #expect(!(await routeDiff(owner, diff, .updateDiffPool, ["left_entry_id": .string(ids[1]), "display_mode": .string("inline")])).success)
+        #expect(!(await routeDiff(owner, diff, .updateDiffPool, ["left_entry_id": .string(ids[0]), "right_entry_id": .string(ids[0])])).success)
+        #expect(pool.left?.id.packet == 1 && pool.displayMode == .sideBySide)
+        let swapped = await routeDiff(owner, diff, .updateDiffPool, ["left_entry_id": .string(ids[1]), "right_entry_id": .string(ids[0]),
+                                                                       "display_mode": .string("unified"), "content": .string("bytes")])
+        #expect(swapped.success, "\(swapped.error ?? "")")
+        #expect(pool.left?.id.packet == 2 && pool.right?.id.packet == 1)
+        #expect(swapped.data?["display_mode"] == .string("unified") && swapped.data?["content"] == .string("bytes"))
+        #expect((await routeDiff(owner, diff, .compareDiffPackets)).data?["content"] == .string("bytes"))
+        #expect((await routeDiff(owner, diff, .updateDiffPool, ["left_entry_id": .null])).data?["left_entry_id"] == .null)
+        #expect(!(await routeDiff(owner, diff, .compareDiffPackets)).success)
+        // Explicit entries are compared without restoring a side.
+        let explicit = await routeDiff(owner, diff, .compareDiffPackets, ["left_entry_id": .string(ids[0]), "right_entry_id": .string(ids[1]), "content": .string("details"), "context": .int(0)])
+        #expect(explicit.data?["removed_line_count"] == .int(2) && pool.left == nil)
+
+        let opened = await routeDiff(owner, diff, .openDiffView)
+        #expect(openCount == 1 && opened.data?["window_open"] == .bool(true))
+        #expect(!(await routeDiff(owner, diff, .getDiffPool, target)).success)
+
+        // A stale ID rejects the whole removal, and removing everything needs confirmation.
+        #expect(!(await routeDiff(owner, diff, .removeDiffPackets, ["entry_ids": .array([.string(ids[0]), .string(UUID().uuidString)])])).success)
+        #expect(!(await routeDiff(owner, diff, .removeDiffPackets, ["all": .bool(true)])).success)
+        #expect(pool.entries.count == 2)
+        let removed = await routeDiff(owner, diff, .removeDiffPackets, ["entry_ids": .array([.string(ids[0])])])
+        #expect(removed.data?["removed_count"] == .int(1) && removed.data?["entry_count"] == .int(1))
+        #expect(!(await routeDiff(owner, diff, .compareDiffPackets, ["left_entry_id": .string(ids[0]), "right_entry_id": .string(ids[1])])).success)
+        #expect((await routeDiff(owner, diff, .removeDiffPackets, ["all": .bool(true), "confirm": .bool(true)])).success)
+        #expect(pool.entries.isEmpty)
+    }
+
+    @Test func diffAddIsAllOrNothingAtTheFreeLimitAndCLIUsesTheSamePool() async throws {
+        let (owner, tab) = try await makeDiffOwner()
+        defer { owner.window?.close() }
+        let pool = DiffPoolModel(defaults: UserDefaults(suiteName: "automation-diff-free-\(UUID())")!)
+        let diff = DiffPoolAutomation(pool: pool, isLicenseAuthorized: { false })
+        func add(_ ids: [String]) async -> TCPViewerMCPResponse {
+            await routeDiff(owner, diff, .addDiffPackets, ["tab_id": .string(tab.id.uuidString), "packet_ids": .array(ids.map(TCPViewerMCPValue.string))])
+        }
+        #expect(!(await add(["1", "2", "3"])).success)
+        #expect(!(await add(["1", "99"])).success)
+        #expect(!(await add(["abc"])).success)
+        #expect(pool.entries.isEmpty)
+        let pair = await add(["1", "2", "1"])
+        #expect(pair.success && pair.data?["added_count"] == .int(2) && pair.data?["remaining_capacity"] == .int(0))
+        #expect(pair.data?["capacity"] == .int(DiffPoolModel.freeEntryLimit))
+        let rejected = await add(["3"])
+        #expect(!rejected.success && rejected.error?.contains("Free version") == true)
+        #expect(owner.window?.attachedSheet == nil && pool.entries.count == 2)
+
+        // The CLI maps onto the same commands and its app's own pool.
+        let app = AppDelegate()
+        let source = TCPViewerWorkspaceAutomationSource(windowController: owner)
+        let cli = TCPViewerCLICommandRouter(appDelegate: app, dataSourceProvider: { source })
+        func run(_ command: TCPViewerCLICommand, _ params: [String: TCPViewerCLIValue] = [:]) async -> TCPViewerCLIResponse {
+            await withCheckedContinuation { continuation in
+                cli.route(TCPViewerCLIRequest(command: command, params: params, expiresAt: Date().addingTimeInterval(120))) { continuation.resume(returning: $0) }
+            }
+        }
+        let cliAdded = await run(.diffAdd, ["tab_id": .string(tab.id.uuidString), "packet_ids": .array([.string("1"), .string("2")])])
+        #expect(cliAdded.ok, "\(cliAdded.error?.message ?? "")")
+        #expect((await run(.diffList)).data?["entry_count"] == .int(2))
+        let compared = await run(.diffCompare, ["content": .string("details")])
+        #expect(compared.ok && compared.data?["added_line_count"] == .int(2))
+        #expect((await run(.diffRemove, ["all": .bool(true), "confirm": .bool(true)])).data?["entry_count"] == .int(0))
+        // The CLI router holds its app weakly, so keep it alive until the last command returns.
+        withExtendedLifetime(app) {}
+    }
 }

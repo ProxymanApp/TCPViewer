@@ -25,6 +25,12 @@ enum TCPViewerMCPCommand: String, Codable, CaseIterable, Sendable {
     case followStream = "follow_stream"
     case importCapture = "import_capture"
     case exportSession = "export_session"
+    case getDiffPool = "get_diff_pool"
+    case addDiffPackets = "add_diff_packets"
+    case updateDiffPool = "update_diff_pool"
+    case removeDiffPackets = "remove_diff_packets"
+    case compareDiffPackets = "compare_diff_packets"
+    case openDiffView = "open_diff_view"
     case getAppStatus = "get_app_status"
     case getCaptureOverview = "get_capture_overview"
     case listInterfaces = "list_interfaces"
@@ -48,8 +54,21 @@ extension TCPViewerMCPCommand {
         case .listWorkspaces, .listTabs, .createTab, .selectTab, .moveTab, .closeTab,
              .getPane, .updatePane, .setSplitView, .focusPane, .listSources,
              .getOverviewStatistics, .getEndpointStatistics, .followStream, .importCapture, .exportSession: true
+        // Diff commands share the workspace router for its redaction and target handling.
+        default: isDiffCommand
+        }
+    }
+
+    var isDiffCommand: Bool {
+        switch self {
+        case .getDiffPool, .addDiffPackets, .updateDiffPool, .removeDiffPackets, .compareDiffPackets, .openDiffView: true
         default: false
         }
+    }
+
+    // The Diff pool is app-wide, so only adding packets resolves a workspace, tab, or pane.
+    var acceptsTarget: Bool {
+        self != .listWorkspaces && (!isDiffCommand || self == .addDiffPackets)
     }
 }
 

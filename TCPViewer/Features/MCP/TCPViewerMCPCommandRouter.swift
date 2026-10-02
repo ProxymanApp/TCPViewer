@@ -116,6 +116,7 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
     private let isLicenseAuthorized: () -> Bool
     private let requiresAuthorizedLicense: Bool
     private let redactionEnabled: () -> Bool
+    private let diffAutomation: () -> DiffPoolAutomation?
     private let versionProvider: () -> TCPViewerLicenseAppVersion
     private let exportPathPolicy: TCPViewerMCPExportPathPolicy
     private let workerQueue: DispatchQueue
@@ -133,6 +134,9 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
         redactionEnabled: @escaping () -> Bool = {
             (NSApp.delegate as? AppDelegate)?.appConfiguration.mcpRedactsSensitiveData ?? true
         },
+        diffAutomation: @escaping () -> DiffPoolAutomation? = {
+            (NSApp.delegate as? AppDelegate)?.diffAutomation
+        },
         versionProvider: @escaping () -> TCPViewerLicenseAppVersion = {
             TCPViewerLicenseAppVersion.current
         },
@@ -145,6 +149,7 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
         self.isLicenseAuthorized = isLicenseAuthorized
         self.requiresAuthorizedLicense = requiresAuthorizedLicense
         self.redactionEnabled = redactionEnabled
+        self.diffAutomation = diffAutomation
         self.versionProvider = versionProvider
         self.exportPathPolicy = exportPathPolicy
         self.workerQueue = workerQueue
@@ -173,7 +178,8 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
         if resolvesWorkspace, command != .getAppStatus || hasTarget,
            command.isWorkspaceCommand || preferredSource is TCPViewerWorkspaceAutomationSource || hasTarget {
             TCPViewerAutomationCommandRouter.route(request, preferredSource: preferredSource,
-                                                  redactionEnabled: redactionEnabled, completion: completion) { source, done in
+                                                  redactionEnabled: redactionEnabled, diff: diffAutomation(),
+                                                  completion: completion) { source, done in
                 let router = TCPViewerMCPCommandRouter(
                     resolvesWorkspace: false, dataSourceProvider: { source },
                     isLicenseAuthorized: self.isLicenseAuthorized,
@@ -189,7 +195,8 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
         switch command {
         case .listWorkspaces, .listTabs, .createTab, .selectTab, .moveTab, .closeTab,
              .getPane, .updatePane, .setSplitView, .focusPane, .listSources,
-             .getOverviewStatistics, .getEndpointStatistics, .followStream, .importCapture, .exportSession:
+             .getOverviewStatistics, .getEndpointStatistics, .followStream, .importCapture, .exportSession,
+             .getDiffPool, .addDiffPackets, .updateDiffPool, .removeDiffPackets, .compareDiffPackets, .openDiffView:
             completion(.failure("The workspace is unavailable."))
         case .getAppStatus:
             getAppStatus(completion: completion)

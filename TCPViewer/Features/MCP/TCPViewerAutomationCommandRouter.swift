@@ -14,7 +14,8 @@ enum TCPViewerAutomationCommandRouter {
     typealias Completion = (TCPViewerMCPResponse) -> Void
 
     static func route(_ request: TCPViewerMCPRequest, preferredSource: (any TCPViewerMCPDataSource)?,
-                      redactionEnabled: @escaping () -> Bool, completion: @escaping Completion,
+                      redactionEnabled: @escaping () -> Bool, diff: DiffPoolAutomation? = nil,
+                      completion: @escaping Completion,
                       legacy: @escaping (any TCPViewerMCPDataSource, @escaping Completion) -> Void) {
         let redactor = TCPViewerMCPSensitiveDataRedactor()
         let finish: Completion = { response in
@@ -44,9 +45,17 @@ enum TCPViewerAutomationCommandRouter {
             let workspaceID = try request.automationID("workspace_id")
             let tabID = try request.automationID("tab_id")
             let paneID = try request.automationID("pane_id")
+            if !command.acceptsTarget, workspaceID != nil || tabID != nil || paneID != nil {
+                throw invalid("\(command.rawValue) does not accept target selectors.")
+            }
             if command == .listWorkspaces {
-                guard workspaceID == nil, tabID == nil, paneID == nil else { throw invalid("list_workspaces does not accept target selectors.") }
                 finish(.success(["workspaces": .array(windows.map { .object(workspaceData($0)) })])); return
+            }
+            // The Diff pool is app-wide, so its commands work without resolving a window.
+            if command.isDiffCommand, command != .addDiffPackets {
+                try require(diff, "The Diff pool is unavailable.").route(command, request: request,
+                                                                        redactionEnabled: redactionEnabled, completion: finish)
+                return
             }
             let candidates = windows.filter { window in
                 (workspaceID == nil || window.automationID == workspaceID) &&
@@ -101,6 +110,10 @@ enum TCPViewerAutomationCommandRouter {
             case .focusPane:
                 window.focusAutomationPane(resolvedPaneID, tab: target)
                 finish(.success(tabData(target, window: window))); return
+            case .addDiffPackets:
+                // Both panes share the tab's capture, so the pool snapshots packets without loading a pane.
+                let workspace = try require(target.source, "The tab is closed.")
+                finish(.success(try require(diff, "The Diff pool is unavailable.").add(request, workspace: workspace))); return
             default: break
             }
             let model = try require(target.automationModel(id: resolvedPaneID, factory: window.makeAutomationModel), "The pane is closed.")

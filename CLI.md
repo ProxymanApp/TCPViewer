@@ -33,6 +33,8 @@ tcpviewer-cli packets reveal PACKET_ID
 tcpviewer-cli stream packets STREAM_ID [QUERY OPTIONS]
 tcpviewer-cli stream follow PACKET_ID [--direction both|client-to-server|server-to-client] [--encoding text|hex|base64]
 
+tcpviewer-cli diff list|add|compare|set|remove|open
+
 tcpviewer-cli file import PATH...
 tcpviewer-cli file export PATH --format pcap|pcapng (--all | QUERY SELECTOR) [--overwrite]
 tcpviewer-cli file export-session PATH [--overwrite]
@@ -222,3 +224,33 @@ tcpviewer-cli file export-session /tmp/example.tcpviewsession --tab-id "$TAB_ID"
 `stream follow --protocol auto|tcp|udp` defaults to automatic transport selection. DNS follows its underlying TCP or UDP stream. Direction and payload limits remain unchanged.
 
 Import defaults to creating and selecting an offline tab. `--select false` leaves the current selection unchanged. Supplying `--tab-id` explicitly replaces that tab, requires `--yes`, and preserves selection by default. An explicit `--select true` selects the imported replacement. Responses include the imported tab ID. Import failures return errors without opening sheets; partial imports retain their imported-file information in the error response.
+
+## Diff
+
+```text
+tcpviewer-cli diff list
+tcpviewer-cli diff add PACKET_ID... [--tab-id UUID]
+tcpviewer-cli diff compare [--left ENTRY_ID] [--right ENTRY_ID] [--content details|bytes]
+  [--context 0...20] [--limit 1...5000]
+tcpviewer-cli diff set [--left ENTRY_ID | --clear-left] [--right ENTRY_ID | --clear-right]
+  [--mode side-by-side|unified] [--content details|bytes]
+tcpviewer-cli diff remove ENTRY_ID...
+tcpviewer-cli diff remove --all --yes
+tcpviewer-cli diff open
+```
+
+These commands use the same app-wide pool as the Diff window. Only `diff add` accepts `--workspace-id`, `--tab-id`, and `--pane-id`; it reads packets from that tab's capture, or from the selected tab when they are omitted.
+
+```bash
+tcpviewer-cli diff add 12 40 --tab-id "$TAB_ID"
+tcpviewer-cli diff compare --output text
+tcpviewer-cli diff compare --left "$LEFT_ENTRY_ID" --right "$RIGHT_ENTRY_ID" --content bytes
+```
+
+`diff add` snapshots 1 to 500 packets without opening the Diff window and returns `entry_ids` in argument order. A packet already in the pool returns its existing entry. In an empty pool the first two packets become Left and Right; later additions keep the current sides. To compare across captures, add from one tab and then from another. Free allows 2 items and PRO 500. A call that would exceed the limit, or that names an unknown packet, adds nothing.
+
+`diff list` returns each item's `entry_id`, `packet_id`, `side`, `status` (`loading`, `ready`, or `failed`), and `source_available`, which is false once its capture closed or was replaced. Snapshots stay comparable after that. An entry ID is valid until its item is removed.
+
+`diff compare` is read-only. Omitted `--left`, `--right`, and `--content` use the pool's current Left, Right, and content. It waits up to 10 seconds for items that are still loading. `details` returns `diff`, a unified line diff of the decoded fields with `--context` unchanged lines around each change. `bytes` returns `changes` with offsets, lengths, and hex previews of up to 256 bytes per side. `--limit` caps the returned diff lines or byte changes, and `truncated` reports a capped result. Details compare the first 2,000 lines of each packet; `lines_truncated` reports a longer packet. Compare uses a 120-second CLI timeout.
+
+`diff set` changes what the Diff window compares and preserves omitted options. Each side holds one item, so assigning an item moves it. JSON reports the display mode as `side_by_side` or `unified`. `diff remove` never changes captured packets. `diff open` shows the Diff window without bringing TCP Viewer to the foreground.

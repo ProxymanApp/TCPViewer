@@ -50,6 +50,7 @@ struct TCPViewerCLI: ParsableCommand {
             InterfacesCommand.self,
             WorkspaceCommand.self, TabsCommand.self, PaneCommand.self, SplitCommand.self,
             SourcesCommand.self, OverviewCommand.self, StatisticsCommand.self,
+            DiffCommand.self,
             CaptureCommand.self,
             PacketsCommand.self,
             StreamCommand.self,
@@ -112,6 +113,10 @@ extension TCPViewerCLIRequestCommand {
         if [.licenseStatus, .licenseActivate, .licenseRevoke, .settingsList, .settingsGet, .settingsSet, .settingsReset].contains(command),
            !global.target.params.isEmpty {
             throw ValidationError("License and settings commands do not accept workspace, tab, pane, or scope options.")
+        }
+        // The Diff pool is app-wide; only `diff add` reads packets from a targeted tab.
+        if [.diffList, .diffSet, .diffRemove, .diffCompare, .diffOpen].contains(command), !global.target.params.isEmpty {
+            throw ValidationError("Only diff add accepts workspace, tab, or pane options.")
         }
         let params = params.merging(global.target.params) { existing, _ in existing }
         let timeout = try global.resolvedTimeout(default: defaultTimeout)
