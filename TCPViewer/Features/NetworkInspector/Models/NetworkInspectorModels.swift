@@ -247,11 +247,11 @@ struct PacketTableRow: Identifiable, Sendable, Hashable {
     let interfaceText: String
     let lengthText: String
     let summaryText: String
-    let comment: String?
-    let commentText: String
+    var comment: String?
+    var commentText: String
     let tags: [PacketTag]
     let severity: PacketSeverity
-    let textStyle: PacketTextStyle
+    var textStyle: PacketTextStyle
 
     init(packet: PacketSummary) {
         self.init(

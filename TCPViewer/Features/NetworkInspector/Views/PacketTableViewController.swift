@@ -10,6 +10,7 @@ import PcapPlusPlusCore
 import QuartzCore
 
 protocol PacketTableViewControllerDelegate: AnyObject {
+    func packetTableViewController(_ controller: PacketTableViewController, didRequestDiff rows: [PacketTableRow], layout: PacketTableColumnLayout)
     func packetTableViewController(_ controller: PacketTableViewController, didSelectPacket identifier: PacketSummary.ID?)
     func packetTableViewController(
         _ controller: PacketTableViewController,
@@ -63,15 +64,16 @@ enum PacketTableSelectionSyncPlanner {
     }
 }
 
-fileprivate protocol PacketTableKeyboardActionHandling: AnyObject {
+protocol PacketTableKeyboardActionHandling: AnyObject {
     func packetTableViewDidRequestCopyRowsFromKeyboard(_ tableView: PacketTableView)
     func packetTableViewDidRequestDeleteFromKeyboard(_ tableView: PacketTableView)
     func packetTableViewDidRequestAddCommentFromKeyboard(_ tableView: PacketTableView)
     func packetTableView(_ tableView: PacketTableView, didRequestTextStyle mutation: PacketTextStyleMutation)
 }
 
-fileprivate final class PacketTableView: NSTableView {
+final class PacketTableView: NSTableView {
     weak var keyboardActionHandler: PacketTableKeyboardActionHandling?
+    var keyboardHighlightColors = PacketHighlightColor.allCases
     var highlightColorProvider: ((Int) -> PacketHighlightColor?)?
 
     @objc func copy(_ sender: Any?) {
@@ -102,10 +104,10 @@ fileprivate final class PacketTableView: NSTableView {
                 keyboardActionHandler?.packetTableView(self, didRequestTextStyle: .toggleStrikethrough)
                 return
             }
-            if let index = Int(character), (1...9).contains(index) {
+            if let index = Int(character), index > 0, index <= min(9, keyboardHighlightColors.count) {
                 keyboardActionHandler?.packetTableView(
                     self,
-                    didRequestTextStyle: .setHighlightColor(PacketHighlightColor.allCases[index - 1])
+                    didRequestTextStyle: .setHighlightColor(keyboardHighlightColors[index - 1])
                 )
                 return
             }
@@ -459,17 +461,7 @@ final class PacketTableViewController: NSViewController {
             }
             return self.rows[row].textStyle.highlightColor
         }
-        tableView.usesAlternatingRowBackgroundColors = true
-        tableView.allowsEmptySelection = true
-        tableView.allowsMultipleSelection = true
-        tableView.rowHeight = configuration.packetRowHeight
-        tableView.intercellSpacing = NSSize(width: 0, height: 0)
-        tableView.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
-        tableView.allowsColumnReordering = true
-        tableView.allowsColumnResizing = true
-        tableView.selectionHighlightStyle = .regular
-        tableView.style = .fullWidth
-        tableView.focusRingType = .none
+        PacketTablePresentation.configure(tableView, configuration: configuration)
         contextMenuController.actionHandler = self
         contextMenuController.stateProvider = self
         tableView.menu = contextMenuController.makeMenu()
@@ -505,14 +497,7 @@ final class PacketTableViewController: NSViewController {
     }
 
     private func addColumn(_ definition: PacketTableColumnDefinition) {
-        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(definition.identifier))
-        column.title = definition.tableTitle
-        column.width = CGFloat(definition.defaultWidth)
-        column.minWidth = CGFloat(definition.minimumWidth)
-        column.resizingMask = definition.role == .comment
-            ? [.userResizingMask, .autoresizingMask]
-            : .userResizingMask
-        column.dataCell = cell(for: definition.cellKind)
+        let column = PacketTablePresentation.column(definition)
         column.isHidden = !columnService.isColumnVisible(identifier: definition.identifier)
         tableView.addTableColumn(column)
     }
@@ -535,17 +520,6 @@ final class PacketTableViewController: NSViewController {
             return
         }
         tableView.moveColumn(commentIndex, toColumn: tableView.tableColumns.count - 1)
-    }
-
-    private func cell(for kind: PacketTableColumnCellKind) -> NSCell {
-        switch kind {
-        case .text:
-            PacketTextCell()
-        case .client:
-            PacketClientCell()
-        case .protocol:
-            PacketProtocolCell()
-        }
     }
 
     private func applyColumnVisibility(identifier: String) {
@@ -775,33 +749,6 @@ final class PacketTableViewController: NSViewController {
         }
 
         return row.text(for: PacketTableColumnRole(columnIdentifier: column))
-    }
-
-    private func textStyle(for column: String, in row: PacketTableRow) -> PacketTextCell.Style {
-        if column == "summary", row.severity != .normal {
-            return .warning
-        }
-
-        if column == "number" ||
-            column == "time" ||
-            column == "sourcePort" ||
-            column == "destinationPort" ||
-            column == "streamID" ||
-            column == "direction" ||
-            column == "deltaTime" ||
-            column == "streamDeltaTime" ||
-            column == "tcpFlags" ||
-            column == "tcpPayloadBytes" ||
-            column == "pid" ||
-            column == "bundleIdentifier" ||
-            column == "decodeStatus" ||
-            column == "interface" ||
-            column == "length" ||
-            column == "tags" {
-            return .secondary
-        }
-
-        return .primary
     }
 
     private func updateClickedPositionFromCurrentEvent() {
@@ -1058,6 +1005,20 @@ final class PacketTableViewController: NSViewController {
         menuState().targetRows.compactMap { rows.indices.contains($0) ? rows[$0] : nil }
     }
 
+    var hasDiffSelection: Bool { !tableView.selectedRowIndexes.isEmpty }
+
+    // System-menu commands use the selection, independently of the last context-menu click.
+    func addSelectedPacketsToDiff() {
+        requestDiff(tableView.selectedRowIndexes.compactMap { rows.indices.contains($0) ? rows[$0] : nil })
+    }
+
+    @objc func diffRowsFromMenu(_ sender: Any?) { requestDiff(targetRows()) }
+
+    private func requestDiff(_ selectedRows: [PacketTableRow]) {
+        guard !selectedRows.isEmpty else { return }
+        delegate?.packetTableViewController(self, didRequestDiff: selectedRows, layout: currentColumnLayout())
+    }
+
     private func targetPacketIDs() -> [PacketSummary.ID] {
         targetRows().map(\.id)
     }
@@ -1256,28 +1217,7 @@ extension PacketTableViewController: NSTableViewDataSource, NSTableViewDelegate 
             return
         }
 
-        let packetRow = rows[row]
-        if let cell = cell as? PacketProtocolCell {
-            cell.configure(
-                protocolText: packetRow.protocolText,
-                severity: packetRow.severity,
-                textStyle: packetRow.textStyle,
-                configuration: configuration
-            )
-        } else if let cell = cell as? PacketClientCell {
-            cell.configure(
-                displayName: packetRow.clientText,
-                iconFilePath: packetRow.clientIconFilePath,
-                textStyle: packetRow.textStyle,
-                configuration: configuration
-            )
-        } else if let cell = cell as? PacketTextCell {
-            cell.configure(
-                style: textStyle(for: column, in: packetRow),
-                textStyle: packetRow.textStyle,
-                configuration: configuration
-            )
-        }
+        PacketTablePresentation.configure(cell, column: column, row: rows[row], configuration: configuration)
     }
 
     func tableViewColumnDidMove(_ notification: Notification) {
@@ -1320,25 +1260,25 @@ extension PacketTableViewController: NSTableViewDataSource, NSTableViewDelegate 
 }
 
 extension PacketTableViewController: PacketTableKeyboardActionHandling {
-    fileprivate func packetTableViewDidRequestCopyRowsFromKeyboard(_ tableView: PacketTableView) {
+    func packetTableViewDidRequestCopyRowsFromKeyboard(_ tableView: PacketTableView) {
         clickedRowIndex = nil
         clickedColumnIdentifier = nil
         copyTargetRows(format: .csv)
     }
 
-    fileprivate func packetTableViewDidRequestDeleteFromKeyboard(_ tableView: PacketTableView) {
+    func packetTableViewDidRequestDeleteFromKeyboard(_ tableView: PacketTableView) {
         clickedRowIndex = nil
         clickedColumnIdentifier = nil
         deleteTargetRows()
     }
 
-    fileprivate func packetTableViewDidRequestAddCommentFromKeyboard(_ tableView: PacketTableView) {
+    func packetTableViewDidRequestAddCommentFromKeyboard(_ tableView: PacketTableView) {
         clickedRowIndex = nil
         clickedColumnIdentifier = nil
         addPacketCommentFromMenu(nil)
     }
 
-    fileprivate func packetTableView(_ tableView: PacketTableView, didRequestTextStyle mutation: PacketTextStyleMutation) {
+    func packetTableView(_ tableView: PacketTableView, didRequestTextStyle mutation: PacketTextStyleMutation) {
         clickedRowIndex = nil
         clickedColumnIdentifier = nil
         applyTextStyle(mutation)

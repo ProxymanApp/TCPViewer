@@ -23,6 +23,7 @@
 		BAPM00072F9D00000070BE17 /* PcapPlusPlusCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BA4D26B42F9A2F760070BE17 /* PcapPlusPlusCore.framework */; };
 		BAPM00082F9D00000070BE17 /* HexFiend.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BA7A10022F9B00000070BE17 /* HexFiend.framework */; };
 		D0C6D1832B761CD2FBBD11A7 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 24AFD2DE681080973988FA47 /* Sparkle */; };
+		D1FF00013000000000000001 /* MonacoEditor in Frameworks */ = {isa = PBXBuildFile; productRef = D1FF00023000000000000001 /* MonacoEditor */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -276,6 +277,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D1FF00013000000000000001 /* MonacoEditor in Frameworks */,
 				BAPM00012F9D00000070BE17 /* PcapPlusPlusCore.framework in Frameworks */,
 				BAPM00022F9D00000070BE17 /* HexFiend.framework in Frameworks */,
 				D0C6D1832B761CD2FBBD11A7 /* Sparkle in Frameworks */,
@@ -506,6 +508,7 @@
 			);
 			name = TCPViewer;
 			packageProductDependencies = (
+				D1FF00023000000000000001 /* MonacoEditor */,
 				24AFD2DE681080973988FA47 /* Sparkle */,
 				BA5E00032FA800000070BE17 /* Sentry */,
 				BA9F00032FBF00000070BE17 /* ZIPFoundation */,
@@ -601,6 +604,7 @@
 			mainGroup = BA4D267C2F9A2F490070BE17;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				D1FF00033000000000000001 /* XCRemoteSwiftPackageReference "monaco-editor" */,
 				47F2E4C3668133A54F097208 /* XCRemoteSwiftPackageReference "Sparkle" */,
 				BA5E00022FA800000070BE17 /* XCRemoteSwiftPackageReference "sentry-cocoa" */,
 				BA9F00022FBF00000070BE17 /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
@@ -1652,6 +1656,11 @@
 				version = 0.12.1;
 			};
 		};
+		D1FF00033000000000000001 /* XCRemoteSwiftPackageReference "monaco-editor" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "git@github.com:ProxymanApp/monaco-editor.git";
+			requirement = {kind = exactVersion; version = 2.17.0; };
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -1679,6 +1688,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = BAMC0008300F00000070BE17 /* XCRemoteSwiftPackageReference "swift-sdk" */;
 			productName = MCP;
+		};
+		D1FF00023000000000000001 /* MonacoEditor */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D1FF00033000000000000001 /* XCRemoteSwiftPackageReference "monaco-editor" */;
+			productName = MonacoEditor;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

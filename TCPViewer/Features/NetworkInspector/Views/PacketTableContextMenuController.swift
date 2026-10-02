@@ -28,6 +28,7 @@ enum PacketCommentShortcut {
     func copyRowsAsCSVFromMenu(_ sender: Any?)
     func copyRowsAsCSVWithHeaderFromMenu(_ sender: Any?)
     func copyCellFromMenu(_ sender: Any?)
+    func diffRowsFromMenu(_ sender: Any?)
     func followStreamFromMenu(_ sender: Any?)
     func pinRowsFromMenu(_ sender: Any?)
     func saveRowsFromMenu(_ sender: Any?)
@@ -83,6 +84,14 @@ final class PacketTableContextMenuController: NSObject {
             isEnabled: state.followStreamEnabled,
             toolTip: "Follow the selected \((state.followStreamProtocol ?? .tcp).displayName) conversation in both directions.",
             systemSymbolName: "arrow.left.arrow.right"
+        ))
+
+        menu.addItem(item(
+            title: "Diff",
+            action: #selector(PacketTableContextMenuActionHandling.diffRowsFromMenu(_:)),
+            keyEquivalent: "y",
+            isEnabled: !state.targetRows.isEmpty,
+            toolTip: "Compare the selected packets’ details."
         ))
 
         menu.addItem(.separator())

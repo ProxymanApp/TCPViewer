@@ -16,6 +16,43 @@ import PcapPlusPlusCore
 @MainActor
 struct WindowControllerTests {
 
+    @Test func diffSnapshotsMirrorEditsOnlyWhileTheirCaptureLineageIsAvailable() async {
+        let live = FakeLiveSession()
+        let source = TCPViewerCaptureWorkspace(services: .init(core: FakeTCPViewerCore(
+            interfaceInventories: [[makeInterface(id: "en0", displayName: "Synthetic interface")]], liveSession: live)))
+        await source.controller.refreshInterfaces()
+        await source.controller.startLiveCapture()
+        live.send(.packetBatch([makePacket(packetNumber: 1, source: .live, transportHint: .tcp)], disposition: .append))
+        await waitUntil { source.controller.snapshot.packetIngestState.totalPacketCount == 1 }
+        guard let packet = source.controller.snapshot.packetIngestState.packet(withID: 1) else {
+            Issue.record("The synthetic packet must be ingested before diffing.")
+            return
+        }
+        let model = DiffPoolModel(defaults: UserDefaults(suiteName: "diff-source-\(UUID())")!)
+        let entry = DiffPacketEntry(id: DiffPacketID(capture: source.diffIdentity,
+            lineage: source.controller.snapshot.packetIngestState.packetLineageRevision, packet: 1),
+            row: PacketTableRow(packet: packet), workspace: source)
+        model.add([(entry, { source.controller.inspectPacket(id: 1, completion: $0) })])
+        await waitUntil { entry.text != nil }
+        let text = entry.text
+        model.setComment("Shared comment", on: [entry.id])
+        model.apply(.setHighlightColor(.red), to: [entry.id])
+        #expect(source.controller.snapshot.packetIngestState.packet(withID: 1)?.customComment == "Shared comment")
+        #expect(source.controller.snapshot.packetIngestState.packet(withID: 1)?.resolvedTextStyle.highlightColor == .red)
+        source.controller.clearPackets()
+        live.send(.packetBatch([makePacket(packetNumber: 1, source: .live, transportHint: .tcp)], disposition: .append))
+        await waitUntil { source.controller.snapshot.packetIngestState.totalPacketCount == 1 }
+        #expect(entry.currentWorkspace == nil)
+        model.setComment("Snapshot comment", on: [entry.id])
+        model.apply(.reset, to: [entry.id])
+        #expect(source.controller.snapshot.packetIngestState.packet(withID: 1)?.customComment == nil)
+        #expect(entry.row.comment == "Snapshot comment" && entry.text == text)
+        await source.controller.stopLiveCapture()
+        let closed = await withCheckedContinuation { continuation in source.close { continuation.resume(returning: $0) } }
+        #expect(closed && entry.currentWorkspace == nil)
+        #expect(model.entries.first === entry && entry.text == text)
+    }
+
     @Test(arguments: [13, 14, 15, 26])
     func focusedPaneCornerRadiusMatchesTheMacOSDesign(macOSMajorVersion: Int) {
         #expect(TCPViewerRootViewController.focusedPaneCornerRadius(macOSMajorVersion: macOSMajorVersion) ==

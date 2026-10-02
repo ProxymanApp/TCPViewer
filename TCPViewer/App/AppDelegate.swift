@@ -15,6 +15,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let appConfiguration = AppConfiguration()
 
     private(set) var mainWindowController: TCPViewerWindowController?
+    private var diffWindowController: DiffWindowController?
+    private lazy var diffPoolModel = DiffPoolModel(defaults: appConfiguration.userDefaults)
+    private let diffExternalComparison = DiffExternalComparison()
     private var aboutWindowController: TCPViewerAboutWindowController?
     private var settingsWindowController: NSWindowController?
     private var licenseWindowController: TCPViewerLicenseWindowController?
@@ -49,6 +52,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         observeLicenseStatusChanges()
         observeConfigurationChanges()
         wireWorkspaceMenus()
+        wireDiffMenu()
         wireAboutMenu()
         wirePreferencesMenu()
         wireUpdatesMenu()
@@ -91,6 +95,45 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if self?.mainWindowController === controller { self?.mainWindowController = nil }
         }
         return controller
+    }
+
+    @IBAction func openDiffView(_ sender: Any?) {
+        presentDiff(layout: PacketTableColumnLayoutStore(defaults: appConfiguration.userDefaults).load())
+    }
+
+    private func presentDiff(layout: PacketTableColumnLayout?) {
+        if diffWindowController == nil {
+            let storyboard = NSStoryboard(name: "Diff", bundle: nil)
+            guard let controller = storyboard.instantiateController(withIdentifier: "DiffWindowController") as? DiffWindowController else { return }
+            _ = controller.window
+            controller.configure(model: diffPoolModel, configuration: appConfiguration, layout: layout)
+            if let split = controller.contentViewController as? DiffSplitViewController,
+               let content = split.splitViewItems[1].viewController as? DiffContentViewController {
+                content.externalComparison = diffExternalComparison
+            }
+            controller.closeHandler = { [weak self] in self?.diffWindowController = nil }
+            diffWindowController = controller
+        }
+        diffWindowController?.present()
+    }
+
+    // Capture identity and lineage prevent equal packet numbers from different files from colliding.
+    func addPacketsToDiff(rows: [PacketTableRow], workspace: TCPViewerCaptureWorkspace, layout: PacketTableColumnLayout) {
+        let lineage = workspace.controller.snapshot.packetIngestState.packetLineageRevision
+        let additions = rows.map { row -> (DiffPacketEntry, DiffPoolModel.Inspect) in
+            let id = DiffPacketID(capture: workspace.diffIdentity, lineage: lineage, packet: row.id)
+            let entry = DiffPacketEntry(id: id, row: row, workspace: workspace)
+            return (entry, { [weak workspace] completion in
+                guard let workspace, !workspace.isClosed,
+                      workspace.controller.snapshot.packetIngestState.packetLineageRevision == lineage else {
+                    completion(.failure(TCPViewerCoreError(code: .offlineFileOpenFailed, message: "The original capture is no longer available.")))
+                    return
+                }
+                workspace.controller.inspectPacket(id: row.id, completion: completion)
+            })
+        }
+        diffPoolModel.add(additions)
+        presentDiff(layout: layout)
     }
 
     @IBAction func newWorkspaceTab(_ sender: Any?) {
@@ -140,6 +183,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         if menu.title == "Open Recent" { updateRecentCaptureMenu(menu); return }
         updateFollowStreamMenu(menu, window: NSApp.mainWindow)
+        updateDiffMenu(menu, window: NSApp.keyWindow ?? NSApp.mainWindow)
     }
 
     // Keep menu validation independent of the application focus used to choose the window.
@@ -177,6 +221,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ aNotification: Notification) {
+        diffExternalComparison.cleanUp()
         cliCoordinator.stop()
         TCPViewerMCPHTTPServer.shared.stop()
         if let licenseStatusObserver {

@@ -19,6 +19,7 @@ final class TCPViewerCaptureWorkspace: TCPViewerWorkspaceControllerDelegate {
 
     var automationAnalysisIsRunning = false
     var suppressesImportPresentation = false
+    let diffIdentity = UUID()
     let kind: Kind
     let controller: TCPViewerWorkspaceController
     let sourceListService = PacketSourceListService()
