@@ -150,7 +150,8 @@ struct PacketTableColumnLayout: Codable, Equatable {
 }
 
 struct PacketTableColumnLayoutStore {
-    private static let defaultKey = "TCPViewer.packetTable.columnLayout.v1"
+    static let didChangeNotification = Notification.Name("PacketTableColumnLayoutDidChange")
+    static let defaultKey = "TCPViewer.packetTable.columnLayout.v1"
 
     private let defaults: UserDefaults
     private let key: String
@@ -176,10 +177,12 @@ struct PacketTableColumnLayoutStore {
         }
 
         defaults.set(data, forKey: key)
+        NotificationCenter.default.post(name: Self.didChangeNotification, object: defaults, userInfo: ["key": key])
     }
 
     func clear() {
         defaults.removeObject(forKey: key)
+        NotificationCenter.default.post(name: Self.didChangeNotification, object: defaults, userInfo: ["key": key])
     }
 }
 

@@ -16,6 +16,51 @@ import PcapPlusPlusCore
 @MainActor
 struct WindowControllerTests {
 
+    @Test func diffSnapshotsMirrorEditsOnlyWhileTheirCaptureLineageIsAvailable() async {
+        let live = FakeLiveSession()
+        let source = TCPViewerCaptureWorkspace(services: .init(core: FakeTCPViewerCore(
+            interfaceInventories: [[makeInterface(id: "en0", displayName: "Synthetic interface")]], liveSession: live)))
+        await source.controller.refreshInterfaces()
+        await source.controller.startLiveCapture()
+        live.send(.packetBatch([makePacket(packetNumber: 1, source: .live, transportHint: .tcp)], disposition: .append))
+        await waitUntil { source.controller.snapshot.packetIngestState.totalPacketCount == 1 }
+        guard let packet = source.controller.snapshot.packetIngestState.packet(withID: 1) else {
+            Issue.record("The synthetic packet must be ingested before diffing.")
+            return
+        }
+        let model = DiffPoolModel(defaults: UserDefaults(suiteName: "diff-source-\(UUID())")!)
+        live.inspections[packet.id] = makeInspection(for: packet)
+        let entry = DiffPacketEntry(id: DiffPacketID(capture: source.diffIdentity,
+            lineage: source.controller.snapshot.packetIngestState.packetLineageRevision, packet: 1),
+            row: PacketTableRow(packet: packet), workspace: source)
+        model.add([(entry, { source.controller.inspectPacket(id: 1, completion: $0) })])
+        await waitUntil { entry.text != nil }
+        let text = entry.text
+        let bytes = entry.bytes
+        #expect(bytes == live.inspections[packet.id]?.rawBytes)
+        #expect(entry.text != nil && bytes != nil)
+        model.setComment("Shared comment", on: [entry.id])
+        // A style set in the main window after the snapshot must survive a later Diff edit.
+        source.controller.applyTextStyleMutation(.toggleStrikethrough, packetIDs: [1])
+        model.apply(.setHighlightColor(.red), to: [entry.id])
+        let mirrored = PacketTextStyle(highlightColor: .red, isStrikethrough: true)
+        #expect(source.controller.snapshot.packetIngestState.packet(withID: 1)?.customComment == "Shared comment")
+        #expect(source.controller.snapshot.packetIngestState.packet(withID: 1)?.resolvedTextStyle == mirrored)
+        #expect(entry.row.textStyle == mirrored)
+        source.controller.clearPackets()
+        live.send(.packetBatch([makePacket(packetNumber: 1, source: .live, transportHint: .tcp)], disposition: .append))
+        await waitUntil { source.controller.snapshot.packetIngestState.totalPacketCount == 1 }
+        #expect(entry.currentWorkspace == nil)
+        model.setComment("Snapshot comment", on: [entry.id])
+        model.apply(.reset, to: [entry.id])
+        #expect(source.controller.snapshot.packetIngestState.packet(withID: 1)?.customComment == nil)
+        #expect(entry.row.comment == "Snapshot comment" && entry.text == text)
+        await source.controller.stopLiveCapture()
+        let closed = await withCheckedContinuation { continuation in source.close { continuation.resume(returning: $0) } }
+        #expect(closed && entry.currentWorkspace == nil)
+        #expect(model.entries.first === entry && entry.text == text && entry.bytes == bytes)
+    }
+
     @Test(arguments: [13, 14, 15, 26])
     func focusedPaneCornerRadiusMatchesTheMacOSDesign(macOSMajorVersion: Int) {
         #expect(TCPViewerRootViewController.focusedPaneCornerRadius(macOSMajorVersion: macOSMajorVersion) ==
@@ -1288,6 +1333,14 @@ struct WindowControllerTests {
         #expect(owner.selectedTabID == ids[2])
         #expect(owner.handleTabShortcut(key(kVK_ANSI_LeftBracket, [.command, .shift])))
         #expect(owner.selectedTabID == ids[1])
+        func typed(_ character: String, code: Int) -> NSEvent {
+            NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
+                             windowNumber: owner.window?.windowNumber ?? 0, context: nil,
+                             characters: character, charactersIgnoringModifiers: character, isARepeat: false, keyCode: UInt16(code))!
+        }
+        // QWERTZ swaps Y and Z: Diff follows the typed letter, so the physical Y key stays Undo.
+        #expect(owner.handleTabShortcut(typed("y", code: kVK_ANSI_Z)))
+        #expect(!owner.handleTabShortcut(typed("z", code: kVK_ANSI_Y)))
         func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }
         let items = descendants(owner.workspaceViewController.tabBar).filter { String(describing: type(of: $0)) == "TCPViewerWorkspaceTabItem" }
         let clicked = try #require(items.first)
@@ -1381,7 +1434,12 @@ struct WindowControllerTests {
     }
 
     private func weakViews(in view: NSView) -> [WeakTabTestObject] {
-        view.subviews.flatMap { trackedView($0) + weakViews(in: $0) }
+        view.subviews.filter { !isAppKitOutlineControl($0) }.flatMap { trackedView($0) + weakViews(in: $0) }
+    }
+
+    // macOS 27 keeps NSOutlineView's own disclosure buttons alive through AppKit notification observers; the app never owns them.
+    private func isAppKitOutlineControl(_ view: NSView) -> Bool {
+        view.identifier == NSOutlineView.disclosureButtonIdentifier || view.identifier == NSOutlineView.showHideButtonIdentifier
     }
 
     // NSSplitView keeps private implementation views cached after its controller is gone; track every app-owned view around them.

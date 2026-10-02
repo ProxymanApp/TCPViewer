@@ -461,6 +461,9 @@ struct PacketTableMenuLogicTests {
         #expect(highlightSubmenu.items.first { $0.title == "Gray" }?.keyEquivalent == "")
         #expect(highlightSubmenu.items.first { $0.title == "Strikethrough" }?.keyEquivalent == "/")
         #expect(highlightSubmenu.items.first { $0.title == "Reset" }?.keyEquivalent == "0")
+        let diffItem = try #require(menu.items.first { $0.title == "Diff" })
+        #expect(diffItem.isEnabled && diffItem.submenu == nil && diffItem.keyEquivalent == "y")
+        #expect(diffItem.action == #selector(PacketTableContextMenuActionHandling.diffRowsFromMenu(_:)))
         #expect(menu.items.contains { $0.title == "Pin" && $0.submenu == nil })
         #expect(menu.items.contains { $0.title == "Follow TCP Stream" && $0.isEnabled })
         #expect(commentItem.isEnabled)
@@ -774,6 +777,7 @@ private final class MenuStateProvider: PacketTableContextMenuStateProviding {
 }
 
 private final class MenuActionHandler: NSObject, PacketTableContextMenuActionHandling {
+    func diffRowsFromMenu(_ sender: Any?) {}
     func copyRowsFromMenu(_ sender: Any?) {}
     func copyRowsAsPlainTextFromMenu(_ sender: Any?) {}
     func copyRowsAsJSONFromMenu(_ sender: Any?) {}

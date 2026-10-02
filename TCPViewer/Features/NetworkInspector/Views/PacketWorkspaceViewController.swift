@@ -9,6 +9,7 @@ import AppKit
 import PcapPlusPlusCore
 
 protocol PacketWorkspaceViewControllerDelegate: AnyObject {
+    func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestDiff rows: [PacketTableRow], layout: PacketTableColumnLayout)
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didSelectPacket identifier: PacketSummary.ID?)
     func packetWorkspaceViewController(
         _ controller: PacketWorkspaceViewController,
@@ -129,6 +130,8 @@ final class PacketWorkspaceViewController: NSViewController {
     private let endpointFilterLabel = NSTextField(labelWithString: "")
     private let structuredFilterController = PacketStructuredFilterViewController()
     private let structuredFilterScrollView = NSScrollView()
+    var hasDiffSelection: Bool { tableController.hasDiffSelection }
+    func addSelectedPacketsToDiff() { tableController.addSelectedPacketsToDiff() }
     var selectedFollowRow: PacketTableRow? { tableController.selectedFollowRow }
 
     private let tableController: PacketTableViewController
@@ -485,6 +488,10 @@ extension PacketWorkspaceViewController {
 #endif
 
 extension PacketWorkspaceViewController: PacketTableViewControllerDelegate {
+    func packetTableViewController(_ controller: PacketTableViewController, didRequestDiff rows: [PacketTableRow], layout: PacketTableColumnLayout) {
+        delegate?.packetWorkspaceViewController(self, didRequestDiff: rows, layout: layout)
+    }
+
     func packetTableViewController(_ controller: PacketTableViewController, didSelectPacket identifier: PacketSummary.ID?) {
         delegate?.packetWorkspaceViewController(self, didSelectPacket: identifier)
     }

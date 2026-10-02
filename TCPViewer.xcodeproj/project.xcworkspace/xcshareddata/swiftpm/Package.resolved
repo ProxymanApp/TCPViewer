@@ -2,6 +2,15 @@
   "originHash" : "67711479b7260c8002ef9c8ebaa7681e2e76cde77db8c1961e464adfc7fca33a",
   "pins" : [
     {
+      "identity" : "monaco-editor",
+      "kind" : "remoteSourceControl",
+      "location" : "git@github.com:ProxymanApp/monaco-editor.git",
+      "state" : {
+        "revision" : "ecb0eba310d0da6ed73ed01cd6e7a41e572f9179",
+        "version" : "2.17.0"
+      }
+    },
+    {
       "identity" : "eventsource",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/mattt/eventsource.git",

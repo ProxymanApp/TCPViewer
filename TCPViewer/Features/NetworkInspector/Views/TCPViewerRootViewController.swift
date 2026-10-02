@@ -438,6 +438,8 @@ final class TCPViewerRootViewController: NSViewController {
         viewModel.clearPackets()
     }
 
+    var hasDiffSelection: Bool { workspaceViewController.hasDiffSelection }
+    func addSelectedPacketsToDiff() { workspaceViewController.addSelectedPacketsToDiff() }
     var selectedFollowRow: PacketTableRow? { workspaceViewController.selectedFollowRow }
 
     // Both menus open the same follow workspace; the menu bar uses only the current table selection.
@@ -1643,6 +1645,10 @@ extension TCPViewerRootViewController: CaptureOverviewViewControllerDelegate {
 }
 
 extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
+    func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didRequestDiff rows: [PacketTableRow], layout: PacketTableColumnLayout) {
+        (NSApp.delegate as? AppDelegate)?.addPacketsToDiff(rows: rows, workspace: viewModel.captureWorkspace, layout: layout)
+    }
+
     func packetWorkspaceViewController(_ controller: PacketWorkspaceViewController, didSelectPacket identifier: PacketSummary.ID?) {
         viewModel.selectPacket(identifier)
     }

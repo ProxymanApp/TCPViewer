@@ -1,0 +1,277 @@
+//
+//  DiffPoolModel.swift
+//  TCPViewer
+//
+//  Created by Proxyman LLC on 2/10/26.
+//
+
+import Foundation
+import PcapPlusPlusCore
+
+struct DiffPacketID: Hashable {
+    let capture: UUID
+    let lineage: UInt64
+    let packet: PacketSummary.ID
+}
+
+enum DiffSide { case left, right }
+
+enum DiffContentKind: String, CaseIterable {
+    case packetDetails, packetBytes
+    var title: String { self == .packetDetails ? "Packet Details" : "Packet Bytes" }
+}
+
+enum DiffDisplayMode: String, CaseIterable {
+    case sideBySide, unified
+    var title: String { self == .sideBySide ? "Side By Side" : "Unified" }
+    var editorOptions: [String: Any] {
+        ["renderSideBySide": self == .sideBySide, "ignoreTrimWhitespace": false]
+    }
+}
+
+final class DiffPacketEntry {
+    let id: DiffPacketID
+    // Re-added entries need fresh comparison keys even when their packet IDs are unchanged.
+    let snapshotIdentity = UUID()
+    var row: PacketTableRow
+    var side: DiffSide?
+    private(set) var detailNodes: [PacketDetailNode] = []
+    private var customValues: [String: String] = [:]
+    private(set) var text: String?
+    private(set) var bytes: Data?
+    private(set) var errorMessage: String?
+    weak var workspace: TCPViewerCaptureWorkspace?
+
+    init(id: DiffPacketID, row: PacketTableRow, workspace: TCPViewerCaptureWorkspace? = nil) {
+        self.id = id
+        self.row = row
+        self.workspace = workspace
+    }
+
+    var currentWorkspace: TCPViewerCaptureWorkspace? {
+        guard let workspace, workspace.diffIdentity == id.capture, !workspace.isClosed,
+              workspace.controller.snapshot.packetIngestState.packetLineageRevision == id.lineage,
+              workspace.controller.snapshot.packetIngestState.packet(withID: id.packet) != nil else { return nil }
+        return workspace
+    }
+
+    // Owned details and captured bytes keep comparisons usable after the source capture closes.
+    func finish(nodes: [PacketDetailNode], text: String, bytes: Data) {
+        detailNodes = nodes
+        self.text = text
+        self.bytes = bytes
+    }
+
+    func fail(_ error: Error) { errorMessage = error.localizedDescription }
+
+    func customValue(_ column: PacketCustomColumn) -> String {
+        guard text != nil else { return "" }
+        if let cached = customValues[column.fieldName] { return cached }
+        let value = PacketCustomColumnService.resolvedValue(fieldName: column.fieldName, in: PacketInspection(
+            packetID: id.packet, packetNumber: id.packet, rawBytes: Data(), detailNodes: detailNodes, decodeStatus: PacketDecodeStatus(kind: .complete)
+        ))
+        customValues[column.fieldName] = value
+        return value
+    }
+}
+
+protocol DiffPoolModelDelegate: AnyObject {
+    func diffPoolModelDidChange(_ model: DiffPoolModel)
+}
+
+final class DiffPoolModel {
+    static let freeEntryLimit = 2
+    // Every entry retains a full dissection, so even a licensed pool must stay bounded.
+    static let maximumEntryCount = 500
+    typealias Inspect = (@escaping TCPViewerCompletion<PacketInspection>) -> Void
+    private struct PendingInspection {
+        let entry: DiffPacketEntry
+        let inspect: Inspect
+    }
+
+    weak var delegate: DiffPoolModelDelegate?
+    private(set) var entries: [DiffPacketEntry] = []
+    private var entriesByID: [DiffPacketID: DiffPacketEntry] = [:]
+    private var pending: [PendingInspection] = []
+    private var pendingIndex = 0
+    private var isInspecting = false
+    private var changeWork: DispatchWorkItem?
+    private let queue = DispatchQueue(label: "com.proxyman.tcpviewer.diff-content")
+    private let defaults: UserDefaults
+    private(set) var displayMode: DiffDisplayMode
+    private(set) var contentKind: DiffContentKind
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        displayMode = defaults.string(forKey: "TCPViewer.diff.displayMode").flatMap(DiffDisplayMode.init(rawValue:)) ?? .sideBySide
+        contentKind = defaults.string(forKey: "TCPViewer.diff.contentKind").flatMap(DiffContentKind.init(rawValue:)) ?? .packetDetails
+    }
+
+    var left: DiffPacketEntry? { entries.first { $0.side == .left } }
+    var right: DiffPacketEntry? { entries.first { $0.side == .right } }
+
+    func contains(_ id: DiffPacketID) -> Bool { entriesByID[id] != nil }
+
+    // Callers use the remaining room to avoid building entries for a selection the pool cannot hold.
+    func remainingCapacity(isLicenseAuthorized: Bool) -> Int {
+        max(0, (isLicenseAuthorized ? Self.maximumEntryCount : Self.freeEntryLimit) - entries.count)
+    }
+
+    // Apply the pool limit before queuing inspections, preserving selection order and existing sides.
+    @discardableResult
+    func add(_ additions: [(DiffPacketEntry, Inspect)], isLicenseAuthorized: Bool = true) -> Int {
+        let wasEmpty = entries.isEmpty
+        let hadOne = entries.count == 1
+        let originalCount = entries.count
+        var seen: Set<DiffPacketID> = []
+        var rejectedCount = 0
+        for (entry, inspect) in additions {
+            guard entriesByID[entry.id] == nil, seen.insert(entry.id).inserted else { continue }
+            guard remainingCapacity(isLicenseAuthorized: isLicenseAuthorized) > 0 else {
+                rejectedCount += 1
+                continue
+            }
+            entries.append(entry)
+            entriesByID[entry.id] = entry
+            pending.append(PendingInspection(entry: entry, inspect: inspect))
+        }
+        guard entries.count > originalCount else { return rejectedCount }
+        if wasEmpty {
+            if let first = entries.first { assign(.left, to: first.id, notify: false) }
+            if entries.count > 1 { assign(.right, to: entries[1].id, notify: false) }
+        } else if hadOne, entries.count > 1, entries[1].side == nil {
+            assign(.right, to: entries[1].id, notify: false)
+        }
+        notifyChange()
+        drain()
+        return rejectedCount
+    }
+
+    func assign(_ side: DiffSide?, to id: DiffPacketID, notify: Bool = true) {
+        guard let entry = entriesByID[id] else { return }
+        if let side {
+            entries.filter { $0 !== entry && $0.side == side }.forEach { $0.side = nil }
+        }
+        entry.side = side
+        if notify { notifyChange() }
+    }
+
+    func remove(_ ids: Set<DiffPacketID>) {
+        entries.removeAll { ids.contains($0.id) }
+        ids.forEach {
+            entriesByID[$0]?.side = nil
+            entriesByID.removeValue(forKey: $0)
+        }
+        notifyChange()
+    }
+
+    func removeAll() { remove(Set(entriesByID.keys)) }
+
+    func setDisplayMode(_ mode: DiffDisplayMode) {
+        displayMode = mode
+        defaults.set(mode.rawValue, forKey: "TCPViewer.diff.displayMode")
+        notifyChange()
+    }
+
+    func setContentKind(_ kind: DiffContentKind) {
+        contentKind = kind
+        defaults.set(kind.rawValue, forKey: "TCPViewer.diff.contentKind")
+        notifyChange()
+    }
+
+    // Style mutations remain useful for snapshots after their original capture has closed.
+    func apply(_ mutation: PacketTextStyleMutation, to ids: Set<DiffPacketID>) {
+        for id in ids {
+            guard let entry = entriesByID[id] else { continue }
+            // Start from the capture's current style so edits made in the main window after the snapshot survive.
+            let workspace = entry.currentWorkspace
+            let current = workspace?.controller.snapshot.packetIngestState.packet(withID: id.packet)?.resolvedTextStyle
+            entry.row.textStyle = mutation.applying(to: current ?? entry.row.textStyle)
+            workspace?.controller.applyTextStyleMutation(mutation, packetIDs: [id.packet])
+        }
+        notifyChange()
+    }
+
+    func setComment(_ comment: String, on ids: Set<DiffPacketID>) {
+        let comment = PacketComment.sanitized(comment)
+        for id in ids {
+            guard let entry = entriesByID[id] else { continue }
+            entry.row.comment = comment
+            entry.row.commentText = comment.components(separatedBy: .newlines).joined(separator: " ")
+            entry.currentWorkspace?.controller.setCustomComment(comment, packetIDs: [id.packet])
+        }
+        notifyChange()
+    }
+
+    // One native inspection at a time prevents large selections from flooding the capture decoder.
+    private func drain() {
+        guard !isInspecting else { return }
+        while pendingIndex < pending.count {
+            let work = pending[pendingIndex]
+            pendingIndex += 1
+            guard entriesByID[work.entry.id] === work.entry else { continue }
+            isInspecting = true
+            work.inspect { [weak self, weak entry = work.entry] result in
+                guard let self else { return }
+                self.queue.async {
+                    let output = result.map { inspection -> ([PacketDetailNode], String, Data) in
+                        let nodes = inspection.detailNodes.map(Self.ownedNode)
+                        let bytes = inspection.rawBytes.withUnsafeBytes { Data($0) }
+                        return (nodes, DiffPacketTextBuilder.text(nodes: nodes), bytes)
+                    }
+                    DispatchQueue.main.async {
+                        if let entry, self.entriesByID[entry.id] === entry {
+                            switch output {
+                            case .success(let (nodes, text, bytes)): entry.finish(nodes: nodes, text: text, bytes: bytes)
+                            case .failure(let error): entry.fail(error)
+                            }
+                            self.notifyChange()
+                        }
+                        self.isInspecting = false
+                        self.drain()
+                    }
+                }
+            }
+            return
+        }
+        pending.removeAll()
+        pendingIndex = 0
+    }
+
+    // Native decode strings must outlive the source that originally owned their backing storage.
+    private static func ownedNode(_ node: PacketDetailNode) -> PacketDetailNode {
+        func owned(_ string: String) -> String { String(decoding: string.utf8, as: UTF8.self) }
+        return PacketDetailNode(
+            id: owned(node.id), name: owned(node.name), fieldName: owned(node.fieldName),
+            value: node.value.map(owned), rawValue: node.rawValue.map(owned),
+            displayFilterExpression: node.displayFilterExpression.map(owned), kind: node.kind,
+            severity: node.severity, byteRange: node.byteRange, jumpTargetPacketID: node.jumpTargetPacketID,
+            children: node.children.map(ownedNode)
+        )
+    }
+
+    private func notifyChange() {
+        guard changeWork == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.changeWork = nil
+            self.delegate?.diffPoolModelDidChange(self)
+        }
+        changeWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: work)
+    }
+
+    deinit { changeWork?.cancel() }
+}
+
+enum DiffPacketTextBuilder {
+    // The inspector's Copy All path includes generated summary rows and every collapsed child.
+    static func text(nodes: [PacketDetailNode]) -> String {
+        let model = PacketInspectorTreeViewModel()
+        var state = PacketInspectionState.empty
+        state.selectedPacketID = 0
+        state.inspection = PacketInspection(packetID: 0, packetNumber: 0, rawBytes: Data(), detailNodes: nodes, decodeStatus: PacketDecodeStatus(kind: .complete))
+        model.render(inspectionState: state)
+        return PacketInspectorCopyFormatter.text(for: model.copyRowsForAllDetails())
+    }
+}

@@ -15,6 +15,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let appConfiguration = AppConfiguration()
 
     private(set) var mainWindowController: TCPViewerWindowController?
+    private var diffWindowController: DiffWindowController?
+    private lazy var diffPoolModel = DiffPoolModel(defaults: appConfiguration.userDefaults)
+    private let diffExternalComparison = DiffExternalComparison()
+    private var diffLimitAlert: NSAlert?
     private var aboutWindowController: TCPViewerAboutWindowController?
     private var settingsWindowController: NSWindowController?
     private var licenseWindowController: TCPViewerLicenseWindowController?
@@ -49,6 +53,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         observeLicenseStatusChanges()
         observeConfigurationChanges()
         wireWorkspaceMenus()
+        wireDiffMenu()
         wireAboutMenu()
         wirePreferencesMenu()
         wireUpdatesMenu()
@@ -91,6 +96,92 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if self?.mainWindowController === controller { self?.mainWindowController = nil }
         }
         return controller
+    }
+
+    @IBAction func openDiffView(_ sender: Any?) {
+        presentDiff(layout: PacketTableColumnLayoutStore(defaults: appConfiguration.userDefaults).load())
+    }
+
+    private func presentDiff(layout: PacketTableColumnLayout?) {
+        if diffWindowController == nil {
+            let storyboard = NSStoryboard(name: "Diff", bundle: nil)
+            guard let controller = storyboard.instantiateController(withIdentifier: "DiffWindowController") as? DiffWindowController else { return }
+            _ = controller.window
+            controller.configure(model: diffPoolModel, configuration: appConfiguration, layout: layout)
+            if let split = controller.contentViewController as? DiffSplitViewController,
+               let content = split.splitViewItems[1].viewController as? DiffContentViewController {
+                content.externalComparison = diffExternalComparison
+            }
+            controller.closeHandler = { [weak self] in self?.diffWindowController = nil }
+            diffWindowController = controller
+        }
+        diffWindowController?.present()
+    }
+
+    // Capture identity and lineage prevent equal packet numbers from different files from colliding.
+    func addPacketsToDiff(rows: [PacketTableRow], workspace: TCPViewerCaptureWorkspace, layout: PacketTableColumnLayout) {
+        let lineage = workspace.controller.snapshot.packetIngestState.packetLineageRevision
+        let isLicenseAuthorized = TCPViewerLicenseService.shared.isLicenseAuthorized
+        let capacity = diffPoolModel.remainingCapacity(isLicenseAuthorized: isLicenseAuthorized)
+        var additions: [(DiffPacketEntry, DiffPoolModel.Inspect)] = []
+        var rejectedCount = 0
+        // A huge selection only allocates entries the pool can accept; the overflow is counted, not built.
+        for row in rows {
+            let id = DiffPacketID(capture: workspace.diffIdentity, lineage: lineage, packet: row.id)
+            guard !diffPoolModel.contains(id) else { continue }
+            guard additions.count < capacity else { rejectedCount += 1; continue }
+            let entry = DiffPacketEntry(id: id, row: row, workspace: workspace)
+            additions.append((entry, { [weak workspace] completion in
+                guard let workspace, !workspace.isClosed,
+                      workspace.controller.snapshot.packetIngestState.packetLineageRevision == lineage else {
+                    completion(.failure(TCPViewerCoreError(code: .offlineFileOpenFailed, message: "The original capture is no longer available.")))
+                    return
+                }
+                workspace.controller.inspectPacket(id: row.id, completion: completion)
+            }))
+        }
+        let originalCount = diffPoolModel.entries.count
+        rejectedCount += diffPoolModel.add(additions, isLicenseAuthorized: isLicenseAuthorized)
+        presentDiff(layout: layout)
+        guard rejectedCount > 0, diffLimitAlert == nil else { return }
+        let addedCount = diffPoolModel.entries.count - originalCount
+        if isLicenseAuthorized { showDiffLimitAlert(Self.makeDiffCapacityAlert(addedCount: addedCount), offersPaywall: false) }
+        else if addedCount == 0 { showPaywall(nil) }
+        else { showDiffLimitAlert(Self.makeDiffLimitAlert(addedCount: addedCount), offersPaywall: true) }
+    }
+
+    // Explain partial additions without interrupting the comparison that was just created.
+    static func makeDiffLimitAlert(addedCount: Int) -> NSAlert {
+        let alert = NSAlert()
+        alert.messageText = "The Free version allows \(DiffPoolModel.freeEntryLimit) Diff items"
+        let added = addedCount == 1 ? "1 item was added." : "The first \(addedCount) items were added."
+        alert.informativeText = "\(added) Upgrade to TCP Viewer PRO or activate an existing license for unlimited items in the Diff pool."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Upgrade to PRO")
+        alert.addButton(withTitle: "Not Now")
+        return alert
+    }
+
+    // Licensed users hit the pool's memory bound rather than a plan limit, so there is nothing to upgrade.
+    static func makeDiffCapacityAlert(addedCount: Int) -> NSAlert {
+        let alert = NSAlert()
+        alert.messageText = "The Diff pool holds up to \(DiffPoolModel.maximumEntryCount) items"
+        let added = addedCount == 0 ? "No items were added." : addedCount == 1 ? "1 item was added." : "The first \(addedCount) items were added."
+        alert.informativeText = "\(added) Delete items from the Diff pool to add more."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        return alert
+    }
+
+    // Present the batch result once, then open the paywall after its alert sheet has finished.
+    private func showDiffLimitAlert(_ alert: NSAlert, offersPaywall: Bool) {
+        guard diffLimitAlert == nil, let window = diffWindowController?.window else { return }
+        diffLimitAlert = alert
+        alert.beginSheetModal(for: window) { [weak self, weak alert] response in
+            guard let self, let alert, self.diffLimitAlert === alert else { return }
+            self.diffLimitAlert = nil
+            if offersPaywall, response == .alertFirstButtonReturn { self.showPaywall(nil) }
+        }
     }
 
     @IBAction func newWorkspaceTab(_ sender: Any?) {
@@ -140,6 +231,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         if menu.title == "Open Recent" { updateRecentCaptureMenu(menu); return }
         updateFollowStreamMenu(menu, window: NSApp.mainWindow)
+        updateDiffMenu(menu, window: NSApp.keyWindow ?? NSApp.mainWindow)
     }
 
     // Keep menu validation independent of the application focus used to choose the window.
@@ -177,6 +269,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ aNotification: Notification) {
+        diffExternalComparison.cleanUp()
         cliCoordinator.stop()
         TCPViewerMCPHTTPServer.shared.stop()
         if let licenseStatusObserver {

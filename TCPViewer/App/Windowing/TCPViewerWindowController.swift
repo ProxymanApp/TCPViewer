@@ -452,6 +452,8 @@ final class TCPViewerWindowController: NSWindowController {
         guard window?.attachedSheet == nil, !isClosingWorkspace else { return false }
         let flags = event.modifierFlags.intersection([.command, .shift, .control, .option])
         if flags == [.command] {
+            // Match the typed character: on QWERTZ the physical Y key is ⌘Z and must stay Undo.
+            if event.charactersIgnoringModifiers?.lowercased() == "y" { addSelectedPacketsToDiff(nil); return true }
             if event.keyCode == kVK_ANSI_T { newWorkspaceTab(nil); return true }
             if event.keyCode == kVK_ANSI_W { closeSelectedTab(nil); return true }
             if event.keyCode == kVK_ANSI_LeftBracket { navigateBackInTabHistory(nil); return true }
@@ -522,6 +524,11 @@ final class TCPViewerWindowController: NSWindowController {
 
     @IBAction func clearAllPackets(_ sender: Any?) {
         rootViewController.clearAllPackets()
+    }
+
+    // Add the main table's current selection through the same path as its Diff context menu.
+    @IBAction func addSelectedPacketsToDiff(_ sender: Any?) {
+        selectedTab?.pane?.addSelectedPacketsToDiff()
     }
 
     // Route the Tools action through the same root controller used by the packet context menu.
@@ -776,6 +783,9 @@ extension TCPViewerWindowController: PacketQuickFilterViewControllerDelegate {
 
 extension TCPViewerWindowController: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(addSelectedPacketsToDiff(_:)) {
+            return window?.attachedSheet == nil && !isClosingWorkspace && selectedTab?.pane?.hasDiffSelection == true
+        }
         if menuItem.action == #selector(newWorkspaceTab(_:)) { return !isClosingWorkspace }
         guard selectedTab?.pane != nil, !isClosingWorkspace else { return false }
         if menuItem.action == #selector(toggleSplitView(_:)) {
