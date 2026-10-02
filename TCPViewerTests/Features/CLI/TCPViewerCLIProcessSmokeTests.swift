@@ -20,6 +20,7 @@ struct TCPViewerCLIProcessSmokeTests {
             ["workspace", "list"], ["tabs", "list"], ["tabs", "create"], ["tabs", "select"], ["tabs", "move"], ["tabs", "close"],
             ["pane", "get"], ["pane", "update"], ["pane", "focus"], ["split", "set"], ["sources", "list"],
             ["overview", "get"], ["statistics", "endpoints"],
+            ["diff", "list"], ["diff", "add"], ["diff", "set"], ["diff", "remove"], ["diff", "compare"], ["diff", "open"],
             ["app", "status"], ["interfaces", "list"],
             ["capture", "status"], ["capture", "start"], ["capture", "pause"], ["capture", "resume"], ["capture", "stop"],
             ["packets", "list"], ["packets", "summary"], ["packets", "details"], ["packets", "bytes"], ["packets", "clear"], ["packets", "reveal"],
@@ -66,6 +67,13 @@ struct TCPViewerCLIProcessSmokeTests {
             ["app", "status", "--timeout", "0"],
             ["settings", "list", "--scope", "displayed"],
             ["pane", "update", "--clear-endpoint", "--endpoint-group", "ipv6", "--endpoint-key", "2001:db8::1"],
+            ["diff", "add"], ["diff", "add", "abc"], ["diff", "add", "1", "--scope", "displayed"],
+            ["diff", "set", "--left", "not-a-uuid"], ["diff", "set", "--mode", "inline"],
+            ["diff", "set", "--left", "00000000-0000-0000-0000-000000000001", "--clear-left"],
+            ["diff", "remove"], ["diff", "remove", "--all"],
+            ["diff", "remove", "00000000-0000-0000-0000-000000000001", "--all", "--yes"],
+            ["diff", "compare", "--context", "21"], ["diff", "compare", "--limit", "0"], ["diff", "compare", "--content", "text"],
+            ["diff", "list", "--tab-id", "00000000-0000-0000-0000-000000000001"],
         ]
         for arguments in cases {
             let result = try run(arguments)

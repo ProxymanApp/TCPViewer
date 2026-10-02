@@ -111,10 +111,37 @@ final class DiffPoolModel {
     var right: DiffPacketEntry? { entries.first { $0.side == .right } }
 
     func contains(_ id: DiffPacketID) -> Bool { entriesByID[id] != nil }
+    func entry(_ id: DiffPacketID) -> DiffPacketEntry? { entriesByID[id] }
 
     // Callers use the remaining room to avoid building entries for a selection the pool cannot hold.
     func remainingCapacity(isLicenseAuthorized: Bool) -> Int {
         max(0, (isLicenseAuthorized ? Self.maximumEntryCount : Self.freeEntryLimit) - entries.count)
+    }
+
+    // Capture identity and lineage prevent equal packet numbers from different files from colliding.
+    @discardableResult
+    func add(rows: [PacketTableRow], from workspace: TCPViewerCaptureWorkspace, isLicenseAuthorized: Bool) -> Int {
+        let lineage = workspace.controller.snapshot.packetIngestState.packetLineageRevision
+        let capacity = remainingCapacity(isLicenseAuthorized: isLicenseAuthorized)
+        var additions: [(DiffPacketEntry, Inspect)] = []
+        var seen: Set<DiffPacketID> = []
+        var rejectedCount = 0
+        // A huge selection only allocates entries the pool can accept; the overflow is counted, not built.
+        for row in rows {
+            let id = DiffPacketID(capture: workspace.diffIdentity, lineage: lineage, packet: row.id)
+            guard !contains(id), seen.insert(id).inserted else { continue }
+            guard additions.count < capacity else { rejectedCount += 1; continue }
+            let entry = DiffPacketEntry(id: id, row: row, workspace: workspace)
+            additions.append((entry, { [weak workspace] completion in
+                guard let workspace, !workspace.isClosed,
+                      workspace.controller.snapshot.packetIngestState.packetLineageRevision == lineage else {
+                    completion(.failure(TCPViewerCoreError(code: .offlineFileOpenFailed, message: "The original capture is no longer available.")))
+                    return
+                }
+                workspace.controller.inspectPacket(id: row.id, completion: completion)
+            }))
+        }
+        return rejectedCount + add(additions, isLicenseAuthorized: isLicenseAuthorized)
     }
 
     // Apply the pool limit before queuing inspections, preserving selection order and existing sides.

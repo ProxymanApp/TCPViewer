@@ -15,6 +15,9 @@ Start with `list_workspaces` or `list_tabs` to discover `workspace_id`, `tab_id`
 | `get_endpoint_statistics` | Read Apps, Domains, IPv4, IPv6, TCP, or UDP endpoint statistics |
 | `follow_stream` | Read the TCP/UDP stream containing a packet, including DNS traffic |
 | `import_capture`, `export_session` | Import capture files into offline tabs and export targeted sessions |
+| `get_diff_pool`, `add_diff_packets`, `remove_diff_packets` | Read the Diff pool, snapshot packets into it, and remove items |
+| `update_diff_pool`, `open_diff_view` | Choose the Left/Right items, display mode, and content the Diff window shows, and open that window |
+| `compare_diff_packets` | Read the differences between two pool items as a unified text diff or byte ranges |
 
 Existing tools remain available. `get_capture_overview` still returns capture status and controls. `query_packets` remains a read-only packet query; `update_pane` changes the app's display filters. `start_capture.capture_filter` is the separate persistent BPF filter controlling future collection.
 
@@ -96,9 +99,41 @@ Replace UUID placeholders with discovery results and packet IDs with query resul
 
 Pane updates preserve omitted fields. `packet_id=null` clears selection. Empty display/Wireshark strings or an empty structured-filter group clear those filters. `quick_filters=[]` clears protocol quick filters. Endpoint statistics rows return an `endpoint` object that can be passed unchanged to `update_pane`; `endpoint=null` clears that drill-down filter. See [CLI command reference](CLI.md) for filter fields, groups, sorting, limits, and equivalent shell commands.
 
+## Diff
+
+The Diff pool is the same app-wide pool the Diff window shows, so items added here appear there and the reverse. Only `add_diff_packets` accepts `workspace_id`, `tab_id`, and `pane_id`; the other Diff tools reject target selectors.
+
+```json
+{"name":"add_diff_packets","arguments":{"tab_id":"TAB_UUID","packet_ids":["12","40"]}}
+```
+
+```json
+{"name":"compare_diff_packets","arguments":{"left_entry_id":"ENTRY_UUID","right_entry_id":"ENTRY_UUID","content":"details","context":3}}
+```
+
+```json
+{"name":"update_diff_pool","arguments":{"left_entry_id":"ENTRY_UUID","right_entry_id":"ENTRY_UUID","display_mode":"unified","content":"details"}}
+```
+
+```json
+{"name":"open_diff_view","arguments":{}}
+```
+
+```json
+{"name":"remove_diff_packets","arguments":{"entry_ids":["ENTRY_UUID"]}}
+```
+
+`add_diff_packets` snapshots packets without opening the Diff window and returns `entry_ids` in request order. A packet already in the pool returns its existing entry. In an empty pool the first two packets become Left and Right; later additions keep the current sides. To compare across captures, add from one tab and then from another. Free allows 2 items and PRO 500. A call that would exceed the limit, or that names an unknown packet, adds nothing.
+
+Each item reports `status` as `loading`, `ready`, or `failed`, its `side`, and `source_available`, which is false once its capture closed or was replaced. Snapshots stay comparable after that. An `entry_id` is valid until its item is removed; adding the same packet again creates a new one.
+
+`compare_diff_packets` is read-only. Omitted `left_entry_id`, `right_entry_id`, and `content` use the pool's current Left, Right, and content, so a call without arguments returns what the Diff window shows. It waits up to 10 seconds for items that are still loading. `details` returns `diff`, a unified line diff of the decoded fields, with `context` unchanged lines (0 to 20, default 3) around each change. `bytes` returns `changes` with offsets, lengths, and hex previews of up to 256 bytes per side. `limit` caps the returned diff lines or byte changes at 1 to 5,000, default 1,000, and `truncated` reports a capped result. Details compare the first 2,000 lines of each packet; `lines_truncated` reports a longer packet.
+
+`update_diff_pool` preserves omitted fields. `left_entry_id` and `right_entry_id` accept an entry ID or `null` to clear that side. Each side holds one item, so assigning an item moves it. `display_mode` is `side_by_side` or `unified`; `content` is `details` or `bytes`. `remove_diff_packets` takes `entry_ids`, or `all=true` with `confirm=true`, and never changes captured packets. `open_diff_view` shows the Diff window without activating the app.
+
 ## Privacy and bounded work
 
-All new MCP responses honor the current redaction setting. Follow Stream returns record metadata with `payload_redacted=true` and omits each record's `data` field while redaction is enabled. Raw stream payloads require redaction to be disabled in settings. Privacy is checked again before asynchronous results are returned.
+All new MCP responses honor the current redaction setting. With redaction enabled, `compare_diff_packets` scrubs decoded values before comparing them and sets `redacted=true`, so differences inside scrubbed values are not reported; byte comparison is blocked, like `get_packet_bytes`. Follow Stream returns record metadata with `payload_redacted=true` and omits each record's `data` field while redaction is enabled. Raw stream payloads require redaction to be disabled in settings. Privacy is checked again before asynchronous results are returned.
 
 Follow Stream retains the 250,000-candidate, 4 MiB, and 10,000-record limits. Endpoint and source lists return at most 500 rows per page. Overview uses the same bounded top lists and timeline as the dashboard. Complete-source analysis reads bounded packet chunks through a fixed watermark and permits one analysis per source at a time. It does not install recurring full-capture scans or open Statistics/Follow windows.
 

@@ -195,6 +195,34 @@ enum TCPViewerMCPToolCatalog {
                 "select": boolean, "confirm": boolean,
             ], required: ["paths"], destructive: true),
             controlTool(.exportSession, title: "Export Session", description: "Export the targeted pane's source to an explicit absolute tcpviewsession path. Existing destinations require overwrite=true.", properties: ["path": stringProperty("Absolute destination path."), "overwrite": boolean], required: ["path"], destructive: true),
+        ] + diffTools
+    }
+
+    private static var diffTools: [Tool] {
+        let boolean: MCP.Value = .object(["type": "boolean"])
+        let entryID = stringProperty("entry_id from get_diff_pool or add_diff_packets.", maximumLength: 36)
+        let side: MCP.Value = .object(["type": ["string", "null"], "description": "entry_id to place on this side; null clears the side."])
+        let content = enumProperty(["details", "bytes"], description: "Compare decoded packet details or captured bytes.")
+        return [
+            readOnlyTool(.getDiffPool, title: "Get Diff Pool", description: "List the app-wide Diff pool shared with the Diff window: packet snapshots with their entry_id, Left/Right side and load status, plus the display mode, content, and remaining capacity.", properties: [:]),
+            controlTool(.addDiffPackets, title: "Add Diff Packets", description: "Snapshot packets from the targeted tab's capture into the Diff pool without opening the Diff window. Returns entry_ids in request order. In an empty pool the first two packets become Left and Right; later additions keep the current sides. Add from another tab to compare across captures. Free allows 2 items and PRO 500; a call that exceeds the limit adds nothing.", properties: [
+                "packet_ids": stringArrayProperty("Packet IDs as unsigned decimal strings.", maximumItems: 500, maximumStringLength: 20),
+            ], required: ["packet_ids"]),
+            controlTool(.updateDiffPool, title: "Update Diff Pool", description: "Change what the Diff window compares. Omitted fields are preserved. Each side holds one item, so assigning an item to a side moves it there.", properties: [
+                "left_entry_id": side, "right_entry_id": side,
+                "display_mode": enumProperty(["side_by_side", "unified"], description: "Packet Details layout. Packet Bytes always uses two panes."),
+                "content": content,
+            ]),
+            controlTool(.removeDiffPackets, title: "Remove Diff Packets", description: "Remove snapshots from the Diff pool by entry_ids, or every item with all=true and confirm=true. Captured packets are not affected.", properties: [
+                "entry_ids": stringArrayProperty("entry_id values to remove.", maximumItems: 500, maximumStringLength: 36),
+                "all": boolean, "confirm": boolean,
+            ], destructive: true),
+            readOnlyTool(.compareDiffPackets, title: "Compare Diff Packets", description: "Compare two Diff pool items without changing the Diff window. Omitted sides and content use the pool's current Left, Right, and content. details returns a unified line diff of decoded fields, scrubbed when redaction is enabled. bytes returns differing byte ranges with hex previews and is blocked while redaction is enabled.", properties: [
+                "left_entry_id": entryID, "right_entry_id": entryID, "content": content,
+                "context": integerProperty("Unchanged lines around each details change, defaults to 3.", minimum: 0, maximum: 20),
+                "limit": integerProperty("Maximum returned diff lines or byte changes, defaults to 1000.", minimum: 1, maximum: 5000),
+            ]),
+            controlTool(.openDiffView, title: "Open Diff View", description: "Show the Diff window for the user without activating TCP Viewer.", properties: [:]),
         ]
     }
 
@@ -224,7 +252,7 @@ enum TCPViewerMCPToolCatalog {
             name: command.rawValue,
             title: title,
             description: description,
-            inputSchema: objectSchema(properties: properties, required: required, includesTarget: command != .listWorkspaces),
+            inputSchema: objectSchema(properties: properties, required: required, includesTarget: command.acceptsTarget),
             annotations: readOnlyAnnotations,
             outputSchema: objectOutputSchema
         )
@@ -242,7 +270,7 @@ enum TCPViewerMCPToolCatalog {
             name: command.rawValue,
             title: title,
             description: description,
-            inputSchema: objectSchema(properties: properties, required: required, includesTarget: command != .listWorkspaces),
+            inputSchema: objectSchema(properties: properties, required: required, includesTarget: command.acceptsTarget),
             annotations: .init(
                 title: title,
                 readOnlyHint: false,

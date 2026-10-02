@@ -18,6 +18,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var diffWindowController: DiffWindowController?
     private lazy var diffPoolModel = DiffPoolModel(defaults: appConfiguration.userDefaults)
     private let diffExternalComparison = DiffExternalComparison()
+    // MCP and CLI share the Diff window's pool, so automation and the UI always show the same items.
+    private(set) lazy var diffAutomation = DiffPoolAutomation(
+        pool: diffPoolModel,
+        isLicenseAuthorized: { TCPViewerLicenseService.shared.isLicenseAuthorized },
+        isWindowOpen: { [weak self] in self?.diffWindowController != nil },
+        openWindow: { [weak self] in self?.openDiffView(nil) }
+    )
     private var diffLimitAlert: NSAlert?
     private var aboutWindowController: TCPViewerAboutWindowController?
     private var settingsWindowController: NSWindowController?
@@ -118,30 +125,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         diffWindowController?.present()
     }
 
-    // Capture identity and lineage prevent equal packet numbers from different files from colliding.
+    // Add the table selection, then explain any items the pool limit turned away.
     func addPacketsToDiff(rows: [PacketTableRow], workspace: TCPViewerCaptureWorkspace, layout: PacketTableColumnLayout) {
-        let lineage = workspace.controller.snapshot.packetIngestState.packetLineageRevision
         let isLicenseAuthorized = TCPViewerLicenseService.shared.isLicenseAuthorized
-        let capacity = diffPoolModel.remainingCapacity(isLicenseAuthorized: isLicenseAuthorized)
-        var additions: [(DiffPacketEntry, DiffPoolModel.Inspect)] = []
-        var rejectedCount = 0
-        // A huge selection only allocates entries the pool can accept; the overflow is counted, not built.
-        for row in rows {
-            let id = DiffPacketID(capture: workspace.diffIdentity, lineage: lineage, packet: row.id)
-            guard !diffPoolModel.contains(id) else { continue }
-            guard additions.count < capacity else { rejectedCount += 1; continue }
-            let entry = DiffPacketEntry(id: id, row: row, workspace: workspace)
-            additions.append((entry, { [weak workspace] completion in
-                guard let workspace, !workspace.isClosed,
-                      workspace.controller.snapshot.packetIngestState.packetLineageRevision == lineage else {
-                    completion(.failure(TCPViewerCoreError(code: .offlineFileOpenFailed, message: "The original capture is no longer available.")))
-                    return
-                }
-                workspace.controller.inspectPacket(id: row.id, completion: completion)
-            }))
-        }
         let originalCount = diffPoolModel.entries.count
-        rejectedCount += diffPoolModel.add(additions, isLicenseAuthorized: isLicenseAuthorized)
+        let rejectedCount = diffPoolModel.add(rows: rows, from: workspace, isLicenseAuthorized: isLicenseAuthorized)
         presentDiff(layout: layout)
         guard rejectedCount > 0, diffLimitAlert == nil else { return }
         let addedCount = diffPoolModel.entries.count - originalCount
