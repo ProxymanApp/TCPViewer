@@ -80,6 +80,7 @@ protocol DiffPoolModelDelegate: AnyObject {
 }
 
 final class DiffPoolModel {
+    static let freeEntryLimit = 2
     typealias Inspect = (@escaping TCPViewerCompletion<PacketInspection>) -> Void
     private struct PendingInspection {
         let entry: DiffPacketEntry
@@ -107,15 +108,25 @@ final class DiffPoolModel {
     var left: DiffPacketEntry? { entries.first { $0.side == .left } }
     var right: DiffPacketEntry? { entries.first { $0.side == .right } }
 
-    // Preserve Proxyman's pool ordering and its empty-pool/one-item auto-selection rules.
-    func add(_ additions: [(DiffPacketEntry, Inspect)]) {
+    // Apply the Free limit before queuing inspections, preserving selection order and existing sides.
+    @discardableResult
+    func add(_ additions: [(DiffPacketEntry, Inspect)], isLicenseAuthorized: Bool = true) -> Int {
         let wasEmpty = entries.isEmpty
         let hadOne = entries.count == 1
-        for (entry, inspect) in additions where entriesByID[entry.id] == nil {
+        let originalCount = entries.count
+        var seen: Set<DiffPacketID> = []
+        var rejectedCount = 0
+        for (entry, inspect) in additions {
+            guard entriesByID[entry.id] == nil, seen.insert(entry.id).inserted else { continue }
+            guard isLicenseAuthorized || entries.count < Self.freeEntryLimit else {
+                rejectedCount += 1
+                continue
+            }
             entries.append(entry)
             entriesByID[entry.id] = entry
             pending.append(PendingInspection(entry: entry, inspect: inspect))
         }
+        guard entries.count > originalCount else { return rejectedCount }
         if wasEmpty {
             if let first = entries.first { assign(.left, to: first.id, notify: false) }
             if entries.count > 1 { assign(.right, to: entries[1].id, notify: false) }
@@ -124,6 +135,7 @@ final class DiffPoolModel {
         }
         notifyChange()
         drain()
+        return rejectedCount
     }
 
     func assign(_ side: DiffSide?, to id: DiffPacketID, notify: Bool = true) {

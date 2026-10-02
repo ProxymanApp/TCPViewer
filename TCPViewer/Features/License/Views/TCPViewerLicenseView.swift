@@ -111,6 +111,7 @@ struct TCPViewerLicenseView: View {
                     }
                 }
 
+                planComparison
                 featureChecklist
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -276,19 +277,19 @@ struct TCPViewerLicenseView: View {
 
     private var headerSubtitle: String {
         if isPaywallMode {
-            return "Unlock native packet capture and inspection for focused TCP/UDP workflows."
+            return "Unlock unlimited Diff items, multiple tabs, and Split View."
         }
 
         return "Native packet capture and inspection for focused TCP/UDP workflows."
     }
 
     private var unauthorizedTitle: String {
-        isPaywallMode ? "You're using the trial version." : "You're using the free version."
+        "You're using the free version."
     }
 
     private var unauthorizedMessage: String {
         if isPaywallMode {
-            return "Upgrade to TCP Viewer PRO or activate an existing license to remove trial limits."
+            return "Upgrade to TCP Viewer PRO or activate an existing license to unlock all PRO features."
         }
 
         return "Activate TCP Viewer PRO to register this Mac with your license."
@@ -296,6 +297,29 @@ struct TCPViewerLicenseView: View {
 
     private var purchaseButtonTitle: String {
         isPaywallMode ? "Upgrade Now" : "Buy License"
+    }
+
+    private var planComparison: some View {
+        VStack(spacing: 10) {
+            comparisonRow("Compare plans", free: "Free", pro: "PRO")
+                .font(.system(size: 13, weight: .semibold))
+            Divider()
+            comparisonRow("Diff pool", free: "\(DiffPoolModel.freeEntryLimit) items", pro: "Unlimited")
+            comparisonRow("Tabs", free: "1", pro: "Unlimited")
+            comparisonRow("Split View", free: "—", pro: "✓")
+        }
+        .font(.system(size: 13))
+        .padding(14)
+        .background(Color.primary.opacity(0.04))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func comparisonRow(_ title: String, free: String, pro: String) -> some View {
+        HStack(spacing: 12) {
+            Text(title).frame(maxWidth: .infinity, alignment: .leading)
+            Text(free).frame(width: 70)
+            Text(pro).frame(width: 80)
+        }
     }
 
     private var featureChecklist: some View {

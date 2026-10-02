@@ -18,6 +18,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var diffWindowController: DiffWindowController?
     private lazy var diffPoolModel = DiffPoolModel(defaults: appConfiguration.userDefaults)
     private let diffExternalComparison = DiffExternalComparison()
+    private var diffLimitAlert: NSAlert?
     private var aboutWindowController: TCPViewerAboutWindowController?
     private var settingsWindowController: NSWindowController?
     private var licenseWindowController: TCPViewerLicenseWindowController?
@@ -132,8 +133,37 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 workspace.controller.inspectPacket(id: row.id, completion: completion)
             })
         }
-        diffPoolModel.add(additions)
+        let originalCount = diffPoolModel.entries.count
+        let rejectedCount = diffPoolModel.add(additions, isLicenseAuthorized: TCPViewerLicenseService.shared.isLicenseAuthorized)
         presentDiff(layout: layout)
+        guard rejectedCount > 0, diffLimitAlert == nil else { return }
+        let addedCount = diffPoolModel.entries.count - originalCount
+        if addedCount == 0 { showPaywall(nil) }
+        else { showDiffLimitAlert(addedCount: addedCount) }
+    }
+
+    // Explain partial additions without interrupting the comparison that was just created.
+    static func makeDiffLimitAlert(addedCount: Int) -> NSAlert {
+        let alert = NSAlert()
+        alert.messageText = "The Free version allows \(DiffPoolModel.freeEntryLimit) Diff items"
+        let added = addedCount == 1 ? "1 item was added." : "The first \(addedCount) items were added."
+        alert.informativeText = "\(added) Upgrade to TCP Viewer PRO or activate an existing license for unlimited items in the Diff pool."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Upgrade to PRO")
+        alert.addButton(withTitle: "Not Now")
+        return alert
+    }
+
+    // Present the batch result once, then open the paywall after its alert sheet has finished.
+    private func showDiffLimitAlert(addedCount: Int) {
+        guard diffLimitAlert == nil, let window = diffWindowController?.window else { return }
+        let alert = Self.makeDiffLimitAlert(addedCount: addedCount)
+        diffLimitAlert = alert
+        alert.beginSheetModal(for: window) { [weak self, weak alert] response in
+            guard let self, let alert, self.diffLimitAlert === alert else { return }
+            self.diffLimitAlert = nil
+            if response == .alertFirstButtonReturn { self.showPaywall(nil) }
+        }
     }
 
     @IBAction func newWorkspaceTab(_ sender: Any?) {

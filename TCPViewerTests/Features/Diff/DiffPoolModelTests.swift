@@ -23,6 +23,74 @@ struct DiffPoolModelTests {
         #expect(c.side == nil)
     }
 
+    @Test func freeBatchAddsOnlyFirstTwoUniqueItemsAndSelectsBothSides() {
+        let model = makeModel()
+        let batch = (1...10).reversed().map { entry(UInt64($0)) }
+        let rejected = model.add(batch.map { ($0, loading) }, isLicenseAuthorized: false)
+        #expect(rejected == 8)
+        #expect(model.entries.map(\.id) == Array(batch.prefix(2)).map(\.id))
+        #expect(model.left === batch[0] && model.right === batch[1])
+    }
+
+    @Test func freeLimitCountsExistingItemsAndIgnoresRepeatedAdditions() {
+        let model = makeModel()
+        let a = entry(1), b = entry(2), c = entry(3)
+        #expect(model.add([(a, loading)], isLicenseAuthorized: false) == 0)
+        let rejected = model.add([(entry(1), loading), (b, loading), (c, loading), (entry(3), loading)], isLicenseAuthorized: false)
+        #expect(rejected == 1)
+        #expect(model.entries.map(\.id) == [a.id, b.id])
+        #expect(model.left === a && model.right === b)
+        model.assign(nil, to: a.id)
+        #expect(model.add([(entry(1), loading), (entry(2), loading)], isLicenseAuthorized: false) == 0)
+        #expect(model.left == nil && model.right === b)
+    }
+
+    @Test func freeLimitCountsCrossCaptureItemsAndRemovalFreesCapacity() {
+        let model = makeModel()
+        let a = entry(1), b = entry(1, capture: UUID()), c = entry(1, lineage: 2)
+        #expect(model.add([(a, loading), (b, loading), (c, loading)], isLicenseAuthorized: false) == 1)
+        model.remove([a.id])
+        #expect(model.add([(c, loading)], isLicenseAuthorized: false) == 0)
+        #expect(model.entries.map(\.id) == [b.id, c.id])
+        model.removeAll()
+        #expect(model.add([(a, loading), (b, loading)], isLicenseAuthorized: false) == 0)
+        #expect(model.left === a && model.right === b)
+    }
+
+    @Test func proAllowsUnlimitedAdditionsAndLicenseChangesApplyOnNextAdd() {
+        let model = makeModel()
+        let batch = (1...10).map { entry(UInt64($0)) }
+        #expect(model.add(Array(batch.prefix(3)).map { ($0, loading) }, isLicenseAuthorized: false) == 1)
+        #expect(model.add(batch.map { ($0, loading) }, isLicenseAuthorized: true) == 0)
+        #expect(model.entries.count == 10)
+        #expect(model.left === batch[0] && model.right === batch[1])
+        #expect(model.add([(entry(11), loading)], isLicenseAuthorized: false) == 1)
+        #expect(model.entries.count == 10)
+    }
+
+    @Test func freeLimitNeverQueuesRejectedInspections() async {
+        let model = makeModel()
+        var inspected: [UInt64] = []
+        let additions: [(DiffPacketEntry, DiffPoolModel.Inspect)] = (1...10).map { number in
+            let id = UInt64(number)
+            return (entry(id), { completion in
+                inspected.append(id)
+                completion(.success(inspection(id, value: "synthetic")))
+            })
+        }
+        #expect(model.add(additions, isLicenseAuthorized: false) == 8)
+        await waitFor { model.right?.text != nil }
+        #expect(inspected == [1, 2])
+    }
+
+    @Test(arguments: [1, 2]) func partialBatchAlertExplainsLimitAndOffersPaywall(addedCount: Int) {
+        let alert = AppDelegate.makeDiffLimitAlert(addedCount: addedCount)
+        #expect(alert.messageText == "The Free version allows 2 Diff items")
+        #expect(alert.informativeText.contains(addedCount == 1 ? "1 item was added." : "The first 2 items were added."))
+        #expect(alert.informativeText.contains("unlimited items in the Diff pool"))
+        #expect(alert.buttons.map(\.title) == ["Upgrade to PRO", "Not Now"])
+    }
+
     @Test func addingSecondEntryFillsRightButLaterAddsPreserveChoice() {
         let model = makeModel()
         let a = entry(1), b = entry(2), c = entry(3)
