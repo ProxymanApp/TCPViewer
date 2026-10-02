@@ -15,6 +15,139 @@ import PcapPlusPlusCore
 @MainActor
 struct NetworkInspectorViewModelTests {
 
+    // Clear must release the hidden AppKit table's store, not just empty the capture-model counters.
+    @Test func clearAllReleasesHiddenTableRowsAndRendersNewPackets() async throws {
+        let defaults = isolatedDefaults()
+        let liveSession = InspectorFakeLiveSession()
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Synthetic interface")],
+                liveSession: liveSession
+            )),
+            userDefaults: defaults
+        )
+        await viewModel.performInitialLoadIfNeeded()
+        let root = TCPViewerRootViewController(viewModel: viewModel, configuration: AppConfiguration(defaults: defaults))
+        root.loadViewIfNeeded()
+        defer { root.close() }
+
+        // Find the actual retained table through AppKit's child-controller ownership tree.
+        func findTable(in controller: NSViewController) -> PacketTableViewController? {
+            if let table = controller as? PacketTableViewController { return table }
+            return controller.children.lazy.compactMap { findTable(in: $0) }.first
+        }
+        let tableController = try #require(findTable(in: root))
+        let scrollView = try #require(tableController.view as? NSScrollView)
+        let table = try #require(scrollView.documentView as? NSTableView)
+        await viewModel.toggleLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        let packets = (1...128).map { makePacket(packetNumber: UInt64($0), source: .live, transportHint: .tcp) }
+        liveSession.send(.packetBatch(packets, disposition: .append))
+        await waitUntil { table.numberOfRows == packets.count }
+        weak var oldStore = viewModel.snapshot.packetTableRowStore
+        try #require(oldStore?.rows.count == packets.count)
+        liveSession.inspections[packets[0].id] = makeInspection(for: packets[0])
+        viewModel.selectPacket(packets[0].id)
+        await waitUntil { table.selectedRow == 0 }
+        let selectionRecorder = ClearTableSelectionRecorder()
+        tableController.delegate = selectionRecorder
+
+        viewModel.clearPackets()
+
+        #expect(viewModel.snapshot.totalPacketCount == 0)
+        #expect(oldStore == nil)
+        #expect(table.numberOfRows == 0)
+        #expect(table.selectedRowIndexes.isEmpty)
+        #expect(viewModel.snapshot.selectedPacketID == nil)
+        #expect(selectionRecorder.selections.isEmpty)
+
+        let nextPacket = makePacket(packetNumber: 1, source: .live, transportHint: .udp)
+        liveSession.send(.packetBatch([nextPacket], disposition: .append))
+        await waitUntil { table.numberOfRows == 1 }
+        #expect(viewModel.snapshot.packetRows.map(\.id) == [nextPacket.id])
+        #expect(viewModel.snapshot.packetRows.first?.protocolText == "UDP")
+        #expect(table.selectedRowIndexes.isEmpty)
+        #expect(selectionRecorder.selections.isEmpty)
+        await viewModel.toggleLiveCapture()
+    }
+
+    // A held native clear prevents a timer-independent memory refresh from sampling too early.
+    @Test(arguments: [false, true])
+    func clearAllRefreshesMemoryOnlyAfterNativeCleanup(fails: Bool) async throws {
+        let memory = Protected<UInt64>(2_000_000_000)
+        let metrics = TCPViewerStatusMetricsService(timerInterval: 3_600, memorySampler: { memory.read { $0 } })
+        let liveSession = InspectorFakeLiveSession()
+        liveSession.holdsClearCompletion = true
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Synthetic interface")],
+                liveSession: liveSession
+            )),
+            userDefaults: isolatedDefaults(),
+            statusMetricsService: metrics
+        )
+        defer { viewModel.close(); metrics.stop() }
+        await viewModel.performInitialLoadIfNeeded()
+        await viewModel.toggleLiveCapture()
+        liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+        liveSession.send(.packetBatch([makePacket(packetNumber: 1, source: .live, transportHint: .tcp)], disposition: .append))
+        await waitUntil { viewModel.snapshot.totalPacketCount == 1 && viewModel.statusMetricsSnapshot.memoryBytes == 2_000_000_000 }
+
+        viewModel.clearPackets()
+        let finishClear = try #require(liveSession.pendingClearCompletion)
+        #expect(metrics.snapshot.memoryBytes == 2_000_000_000)
+        memory.write { $0 = 100_000_000 }
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        #expect(metrics.snapshot.memoryBytes == 2_000_000_000)
+        let error = TCPViewerCoreError(code: .liveSessionControlFailed, message: "Synthetic clear failure")
+        finishClear(fails ? .failure(error) : .success(()))
+        liveSession.pendingClearCompletion = nil
+
+        await waitUntil { viewModel.statusMetricsSnapshot.memoryBytes == 100_000_000 }
+        #expect(metrics.snapshot.memoryBytes == 100_000_000)
+        #expect(viewModel.statusMetricsSnapshot.memoryBytes == 100_000_000)
+        if fails {
+            await waitUntil { viewModel.snapshot.base.sessionState.lastError?.message == error.message }
+            #expect(viewModel.snapshot.base.sessionState.lastError?.message == error.message)
+        }
+        await viewModel.toggleLiveCapture()
+    }
+
+    // Ready and stopped captures have no asynchronous native clear, but still need a fresh reading.
+    @Test(arguments: [false, true])
+    func clearAllRefreshesMemoryWithoutRunningCapture(stopped: Bool) async {
+        let memory = Protected<UInt64>(2_000_000_000)
+        let metrics = TCPViewerStatusMetricsService(timerInterval: 3_600, memorySampler: { memory.read { $0 } })
+        let liveSession = InspectorFakeLiveSession()
+        let viewModel = NetworkInspectorViewModel(
+            services: TCPViewerServiceRegistry(core: InspectorFakeCore(
+                interfaces: [makeInterface(id: "en0", displayName: "Synthetic interface")], liveSession: liveSession
+            )),
+            userDefaults: isolatedDefaults(), statusMetricsService: metrics
+        )
+        defer { viewModel.close(); metrics.stop() }
+        await viewModel.performInitialLoadIfNeeded()
+        if stopped {
+            await viewModel.toggleLiveCapture()
+            liveSession.send(.liveStateChanged(phase: .running, message: "Capture running."))
+            await waitUntil { viewModel.snapshot.base.sessionState.phase == .running }
+            await viewModel.toggleLiveCapture()
+            liveSession.send(.liveStateChanged(phase: .stopped, message: "Capture stopped."))
+            await waitUntil { viewModel.snapshot.base.sessionState.phase == .stopped }
+        }
+        await waitUntil { viewModel.statusMetricsSnapshot.memoryBytes == 2_000_000_000 }
+        memory.write { $0 = 100_000_000 }
+
+        viewModel.clearPackets()
+
+        #expect(metrics.snapshot.memoryBytes == 2_000_000_000)
+        await waitUntil { viewModel.statusMetricsSnapshot.memoryBytes == 100_000_000 }
+        #expect(metrics.snapshot.memoryBytes == 100_000_000)
+        #expect(viewModel.statusMetricsSnapshot.memoryBytes == 100_000_000)
+    }
+
     @Test func overviewPacketActionsPreserveNormalFiltersAndClearEndpointDrillDown() async {
         let client = PacketClient(
             pid: 123,
@@ -4545,6 +4678,27 @@ private func frame(_ lowerFrame: NSRect, isVisuallyBelow upperFrame: NSRect, in 
     return lowerFrame.maxY <= upperFrame.minY + tolerance
 }
 
+// Record user selections so clearing a hidden table cannot silently act like a user click.
+private final class ClearTableSelectionRecorder: PacketTableViewControllerDelegate {
+    var selections: [PacketSummary.ID?] = []
+
+    func packetTableViewController(_ controller: PacketTableViewController, didSelectPacket identifier: PacketSummary.ID?) {
+        selections.append(identifier)
+    }
+
+    func packetTableViewController(_ controller: PacketTableViewController, didRequestDiff rows: [PacketTableRow], layout: PacketTableColumnLayout) {}
+    func packetTableViewController(_ controller: PacketTableViewController, didRequestPinPackets identifiers: [PacketSummary.ID]) {}
+    func packetTableViewController(_ controller: PacketTableViewController, didRequestSavePackets identifiers: [PacketSummary.ID]) {}
+    func packetTableViewController(_ controller: PacketTableViewController, didRequestFollowStream packetID: PacketSummary.ID) {}
+    func packetTableViewController(_ controller: PacketTableViewController, didRequestSetComment comment: String, onPackets identifiers: [PacketSummary.ID]) {}
+    func packetTableViewController(_ controller: PacketTableViewController, didRequestApplyTextStyle mutation: PacketTextStyleMutation, toPackets identifiers: [PacketSummary.ID]) {}
+    func packetTableViewController(_ controller: PacketTableViewController, didRequestExportPackets identifiers: [PacketSummary.ID], format: CaptureFileFormat) {}
+    func packetTableViewController(_ controller: PacketTableViewController, didRequestDeletePackets identifiers: [PacketSummary.ID]) {}
+    func packetTableViewController(_ controller: PacketTableViewController, inspectPacket identifier: PacketSummary.ID, completion: @escaping TCPViewerCompletion<PacketInspection>) {
+        completion(.failure(TCPViewerCoreError(code: .liveSessionControlFailed, message: "Unexpected inspection")))
+    }
+}
+
 private final class StatusStripDelegateSpy: StatusStripViewControllerDelegate {
     private(set) var toggleFilterRequestCount = 0
 
@@ -4735,6 +4889,8 @@ private final class InspectorFakeLiveSession: LiveCaptureSessionProviding, @unch
     var eventHandler: PacketIngestEventHandler?
     var inspections: [PacketSummary.ID: PacketInspection] = [:]
     var holdsDisplayFilterEvaluations = false
+    var holdsClearCompletion = false
+    var pendingClearCompletion: TCPViewerVoidCompletion?
     private(set) var startCount = 0
     private(set) var stopCount = 0
     private(set) var exportRequests: [([PacketSummary.ID], URL, CaptureFileFormat)] = []
@@ -4765,7 +4921,11 @@ private final class InspectorFakeLiveSession: LiveCaptureSessionProviding, @unch
     }
 
     func clearCapturedPackets(completion: @escaping TCPViewerVoidCompletion) {
-        completion(.success(()))
+        if holdsClearCompletion {
+            pendingClearCompletion = completion
+        } else {
+            completion(.success(()))
+        }
     }
 
     func inspectPacket(id: PacketSummary.ID, completion: @escaping TCPViewerCompletion<PacketInspection>) {

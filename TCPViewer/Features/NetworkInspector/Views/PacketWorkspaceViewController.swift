@@ -179,6 +179,8 @@ final class PacketWorkspaceViewController: NSViewController {
         renderEndpointFilterBar(label: viewModel.endpointStatisticsFilterLabel)
 
         if viewModel.isEmpty {
+            // Hiding the table alone leaves its previous packet rows and column values retained.
+            tableController.releasePresentation(snapshot: snapshot)
             showPlaceholder(
                 title: viewModel.emptyTitle,
                 message: viewModel.emptyMessage,
