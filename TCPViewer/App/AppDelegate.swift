@@ -121,25 +121,33 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // Capture identity and lineage prevent equal packet numbers from different files from colliding.
     func addPacketsToDiff(rows: [PacketTableRow], workspace: TCPViewerCaptureWorkspace, layout: PacketTableColumnLayout) {
         let lineage = workspace.controller.snapshot.packetIngestState.packetLineageRevision
-        let additions = rows.map { row -> (DiffPacketEntry, DiffPoolModel.Inspect) in
+        let isLicenseAuthorized = TCPViewerLicenseService.shared.isLicenseAuthorized
+        let capacity = diffPoolModel.remainingCapacity(isLicenseAuthorized: isLicenseAuthorized)
+        var additions: [(DiffPacketEntry, DiffPoolModel.Inspect)] = []
+        var rejectedCount = 0
+        // A huge selection only allocates entries the pool can accept; the overflow is counted, not built.
+        for row in rows {
             let id = DiffPacketID(capture: workspace.diffIdentity, lineage: lineage, packet: row.id)
+            guard !diffPoolModel.contains(id) else { continue }
+            guard additions.count < capacity else { rejectedCount += 1; continue }
             let entry = DiffPacketEntry(id: id, row: row, workspace: workspace)
-            return (entry, { [weak workspace] completion in
+            additions.append((entry, { [weak workspace] completion in
                 guard let workspace, !workspace.isClosed,
                       workspace.controller.snapshot.packetIngestState.packetLineageRevision == lineage else {
                     completion(.failure(TCPViewerCoreError(code: .offlineFileOpenFailed, message: "The original capture is no longer available.")))
                     return
                 }
                 workspace.controller.inspectPacket(id: row.id, completion: completion)
-            })
+            }))
         }
         let originalCount = diffPoolModel.entries.count
-        let rejectedCount = diffPoolModel.add(additions, isLicenseAuthorized: TCPViewerLicenseService.shared.isLicenseAuthorized)
+        rejectedCount += diffPoolModel.add(additions, isLicenseAuthorized: isLicenseAuthorized)
         presentDiff(layout: layout)
         guard rejectedCount > 0, diffLimitAlert == nil else { return }
         let addedCount = diffPoolModel.entries.count - originalCount
-        if addedCount == 0 { showPaywall(nil) }
-        else { showDiffLimitAlert(addedCount: addedCount) }
+        if isLicenseAuthorized { showDiffLimitAlert(Self.makeDiffCapacityAlert(addedCount: addedCount), offersPaywall: false) }
+        else if addedCount == 0 { showPaywall(nil) }
+        else { showDiffLimitAlert(Self.makeDiffLimitAlert(addedCount: addedCount), offersPaywall: true) }
     }
 
     // Explain partial additions without interrupting the comparison that was just created.
@@ -154,15 +162,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return alert
     }
 
+    // Licensed users hit the pool's memory bound rather than a plan limit, so there is nothing to upgrade.
+    static func makeDiffCapacityAlert(addedCount: Int) -> NSAlert {
+        let alert = NSAlert()
+        alert.messageText = "The Diff pool holds up to \(DiffPoolModel.maximumEntryCount) items"
+        let added = addedCount == 0 ? "No items were added." : addedCount == 1 ? "1 item was added." : "The first \(addedCount) items were added."
+        alert.informativeText = "\(added) Delete items from the Diff pool to add more."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        return alert
+    }
+
     // Present the batch result once, then open the paywall after its alert sheet has finished.
-    private func showDiffLimitAlert(addedCount: Int) {
+    private func showDiffLimitAlert(_ alert: NSAlert, offersPaywall: Bool) {
         guard diffLimitAlert == nil, let window = diffWindowController?.window else { return }
-        let alert = Self.makeDiffLimitAlert(addedCount: addedCount)
         diffLimitAlert = alert
         alert.beginSheetModal(for: window) { [weak self, weak alert] response in
             guard let self, let alert, self.diffLimitAlert === alert else { return }
             self.diffLimitAlert = nil
-            if response == .alertFirstButtonReturn { self.showPaywall(nil) }
+            if offersPaywall, response == .alertFirstButtonReturn { self.showPaywall(nil) }
         }
     }
 

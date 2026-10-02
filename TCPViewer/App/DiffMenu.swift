@@ -37,7 +37,7 @@ extension AppDelegate {
             if item.action == #selector(TCPViewerWindowController.addSelectedPacketsToDiff(_:)) {
                 let controller = window?.windowController as? TCPViewerWindowController
                 item.target = controller
-                item.isEnabled = controller?.rootViewController.hasDiffSelection == true && window?.attachedSheet == nil
+                item.isEnabled = controller?.validateMenuItem(item) ?? false
             } else if item.action == #selector(DiffWindowController.selectDiffLeft(_:)) || item.action == #selector(DiffWindowController.selectDiffRight(_:)) {
                 let controller = window?.windowController as? DiffWindowController
                 item.target = controller

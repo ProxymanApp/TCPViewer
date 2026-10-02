@@ -81,6 +81,8 @@ protocol DiffPoolModelDelegate: AnyObject {
 
 final class DiffPoolModel {
     static let freeEntryLimit = 2
+    // Every entry retains a full dissection, so even a licensed pool must stay bounded.
+    static let maximumEntryCount = 500
     typealias Inspect = (@escaping TCPViewerCompletion<PacketInspection>) -> Void
     private struct PendingInspection {
         let entry: DiffPacketEntry
@@ -108,7 +110,14 @@ final class DiffPoolModel {
     var left: DiffPacketEntry? { entries.first { $0.side == .left } }
     var right: DiffPacketEntry? { entries.first { $0.side == .right } }
 
-    // Apply the Free limit before queuing inspections, preserving selection order and existing sides.
+    func contains(_ id: DiffPacketID) -> Bool { entriesByID[id] != nil }
+
+    // Callers use the remaining room to avoid building entries for a selection the pool cannot hold.
+    func remainingCapacity(isLicenseAuthorized: Bool) -> Int {
+        max(0, (isLicenseAuthorized ? Self.maximumEntryCount : Self.freeEntryLimit) - entries.count)
+    }
+
+    // Apply the pool limit before queuing inspections, preserving selection order and existing sides.
     @discardableResult
     func add(_ additions: [(DiffPacketEntry, Inspect)], isLicenseAuthorized: Bool = true) -> Int {
         let wasEmpty = entries.isEmpty
@@ -118,7 +127,7 @@ final class DiffPoolModel {
         var rejectedCount = 0
         for (entry, inspect) in additions {
             guard entriesByID[entry.id] == nil, seen.insert(entry.id).inserted else { continue }
-            guard isLicenseAuthorized || entries.count < Self.freeEntryLimit else {
+            guard remainingCapacity(isLicenseAuthorized: isLicenseAuthorized) > 0 else {
                 rejectedCount += 1
                 continue
             }
@@ -174,10 +183,11 @@ final class DiffPoolModel {
     func apply(_ mutation: PacketTextStyleMutation, to ids: Set<DiffPacketID>) {
         for id in ids {
             guard let entry = entriesByID[id] else { continue }
-            entry.row.textStyle = mutation.applying(to: entry.row.textStyle)
-            if let workspace = entry.currentWorkspace {
-                workspace.controller.applyTextStyleMutation(.replace(entry.row.textStyle), packetIDs: [id.packet])
-            }
+            // Start from the capture's current style so edits made in the main window after the snapshot survive.
+            let workspace = entry.currentWorkspace
+            let current = workspace?.controller.snapshot.packetIngestState.packet(withID: id.packet)?.resolvedTextStyle
+            entry.row.textStyle = mutation.applying(to: current ?? entry.row.textStyle)
+            workspace?.controller.applyTextStyleMutation(mutation, packetIDs: [id.packet])
         }
         notifyChange()
     }

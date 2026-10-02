@@ -32,6 +32,20 @@ enum DiffTableLayout {
         })
         return PacketTableColumnLayout(columns: columns, customColumns: custom)
     }
+
+    // AppKit first probes with a destination of -1 to ask whether the column may be dragged at all.
+    static func allowsReorder(from column: Int, to destination: Int) -> Bool {
+        column >= sideColumnCount && (destination == -1 || destination >= sideColumnCount)
+    }
+
+    // A third click on the same header removes sorting; clicking another header sorts by that column.
+    static func clearsSort(previous: NSSortDescriptor?, current: NSSortDescriptor?) -> Bool {
+        guard let previous, let current else { return false }
+        return !previous.ascending && previous.key == current.key
+    }
+
+    // Left and Right stay pinned ahead of the shared packet columns.
+    private static let sideColumnCount = 2
 }
 
 final class DiffPoolViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate, NSUserInterfaceValidations, PacketTableKeyboardActionHandling, PacketTableColumnVisibilityMenuActionHandling {
@@ -248,13 +262,15 @@ final class DiffPoolViewController: NSViewController, NSTableViewDataSource, NST
         tableColumn?.identifier.rawValue == "diffLeft" || tableColumn?.identifier.rawValue == "diffRight"
     }
     func tableView(_ tableView: NSTableView, shouldReorderColumn columnIndex: Int, toColumn newColumnIndex: Int) -> Bool {
-        columnIndex >= 2 && newColumnIndex >= 2
+        DiffTableLayout.allowsReorder(from: columnIndex, to: newColumnIndex)
     }
     func tableViewColumnDidMove(_ notification: Notification) { saveLayout() }
     func tableViewColumnDidResize(_ notification: Notification) { saveLayout() }
     func tableView(_ tableView: NSTableView, sortDescriptorsDidChange oldDescriptors: [NSSortDescriptor]) {
-        if oldDescriptors.first?.ascending == false { tableView.sortDescriptors = []; sort = nil }
-        else { sort = tableView.sortDescriptors.first }
+        if DiffTableLayout.clearsSort(previous: oldDescriptors.first, current: tableView.sortDescriptors.first) {
+            tableView.sortDescriptors = []
+            sort = nil
+        } else { sort = tableView.sortDescriptors.first }
         render()
     }
 

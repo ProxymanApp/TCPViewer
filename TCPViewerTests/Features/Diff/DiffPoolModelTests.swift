@@ -91,6 +91,48 @@ struct DiffPoolModelTests {
         #expect(alert.buttons.map(\.title) == ["Upgrade to PRO", "Not Now"])
     }
 
+    @Test func licensedPoolStopsAtItsMemoryBoundAndRemovalFreesCapacity() {
+        let model = makeModel()
+        let limit = DiffPoolModel.maximumEntryCount
+        let batch = (1...(limit + 5)).map { entry(UInt64($0)) }
+        #expect(model.add(batch.map { ($0, loading) }, isLicenseAuthorized: true) == 5)
+        #expect(model.entries.count == limit && model.remainingCapacity(isLicenseAuthorized: true) == 0)
+        #expect(model.contains(batch[limit - 1].id) && !model.contains(batch[limit].id))
+        #expect(model.add([(batch[limit], loading), (entry(1), loading)], isLicenseAuthorized: true) == 1)
+        model.remove([batch[0].id])
+        #expect(model.remainingCapacity(isLicenseAuthorized: true) == 1)
+        #expect(model.remainingCapacity(isLicenseAuthorized: false) == 0)
+        #expect(model.add([(batch[limit], loading)], isLicenseAuthorized: true) == 0)
+        #expect(model.entries.count == limit && model.entries.last === batch[limit])
+    }
+
+    @Test(arguments: [0, 1, 3]) func capacityAlertReportsTheBoundWithoutOfferingPaywall(addedCount: Int) {
+        let alert = AppDelegate.makeDiffCapacityAlert(addedCount: addedCount)
+        #expect(alert.messageText == "The Diff pool holds up to \(DiffPoolModel.maximumEntryCount) items")
+        let added = ["No items were added.", "1 item was added.", "", "The first 3 items were added."][addedCount]
+        #expect(alert.informativeText == "\(added) Delete items from the Diff pool to add more.")
+        #expect(alert.buttons.map(\.title) == ["OK"])
+    }
+
+    @Test func packetColumnsReorderBehindThePinnedSideColumns() {
+        #expect(DiffTableLayout.allowsReorder(from: 2, to: -1))
+        #expect(DiffTableLayout.allowsReorder(from: 5, to: 2))
+        #expect(!DiffTableLayout.allowsReorder(from: 0, to: -1))
+        #expect(!DiffTableLayout.allowsReorder(from: 1, to: 4))
+        #expect(!DiffTableLayout.allowsReorder(from: 3, to: 1))
+    }
+
+    @Test func sortClearsOnlyWhenTheDescendingColumnIsClickedAgain() {
+        let numberAscending = NSSortDescriptor(key: "number", ascending: true)
+        let numberDescending = NSSortDescriptor(key: "number", ascending: false)
+        let protocolAscending = NSSortDescriptor(key: "protocol", ascending: true)
+        #expect(DiffTableLayout.clearsSort(previous: numberDescending, current: numberAscending))
+        #expect(!DiffTableLayout.clearsSort(previous: numberDescending, current: protocolAscending))
+        #expect(!DiffTableLayout.clearsSort(previous: numberAscending, current: numberDescending))
+        #expect(!DiffTableLayout.clearsSort(previous: nil, current: numberAscending))
+        #expect(!DiffTableLayout.clearsSort(previous: numberAscending, current: nil))
+    }
+
     @Test func addingSecondEntryFillsRightButLaterAddsPreserveChoice() {
         let model = makeModel()
         let a = entry(1), b = entry(2), c = entry(3)

@@ -40,9 +40,13 @@ struct WindowControllerTests {
         #expect(bytes == live.inspections[packet.id]?.rawBytes)
         #expect(entry.text != nil && bytes != nil)
         model.setComment("Shared comment", on: [entry.id])
+        // A style set in the main window after the snapshot must survive a later Diff edit.
+        source.controller.applyTextStyleMutation(.toggleStrikethrough, packetIDs: [1])
         model.apply(.setHighlightColor(.red), to: [entry.id])
+        let mirrored = PacketTextStyle(highlightColor: .red, isStrikethrough: true)
         #expect(source.controller.snapshot.packetIngestState.packet(withID: 1)?.customComment == "Shared comment")
-        #expect(source.controller.snapshot.packetIngestState.packet(withID: 1)?.resolvedTextStyle.highlightColor == .red)
+        #expect(source.controller.snapshot.packetIngestState.packet(withID: 1)?.resolvedTextStyle == mirrored)
+        #expect(entry.row.textStyle == mirrored)
         source.controller.clearPackets()
         live.send(.packetBatch([makePacket(packetNumber: 1, source: .live, transportHint: .tcp)], disposition: .append))
         await waitUntil { source.controller.snapshot.packetIngestState.totalPacketCount == 1 }
@@ -1329,6 +1333,14 @@ struct WindowControllerTests {
         #expect(owner.selectedTabID == ids[2])
         #expect(owner.handleTabShortcut(key(kVK_ANSI_LeftBracket, [.command, .shift])))
         #expect(owner.selectedTabID == ids[1])
+        func typed(_ character: String, code: Int) -> NSEvent {
+            NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
+                             windowNumber: owner.window?.windowNumber ?? 0, context: nil,
+                             characters: character, charactersIgnoringModifiers: character, isARepeat: false, keyCode: UInt16(code))!
+        }
+        // QWERTZ swaps Y and Z: Diff follows the typed letter, so the physical Y key stays Undo.
+        #expect(owner.handleTabShortcut(typed("y", code: kVK_ANSI_Z)))
+        #expect(!owner.handleTabShortcut(typed("z", code: kVK_ANSI_Y)))
         func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }
         let items = descendants(owner.workspaceViewController.tabBar).filter { String(describing: type(of: $0)) == "TCPViewerWorkspaceTabItem" }
         let clicked = try #require(items.first)
