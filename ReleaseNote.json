@@ -314,6 +314,18 @@
         "Ensure beta and production builds always connect to the production license server."
       ],
       "bugs": []
+    },
+    {
+      "version": "1.19.0",
+      "title": "TCP Viewer 1.19.0: Introduce the Packet Diff View 🔎",
+      "features": [
+        "Compare packet details and raw bytes side by side in the new Packet Diff window.",
+        "Use MCP and CLI to manage the Diff pool and compare packets."
+      ],
+      "improvements": [],
+      "bugs": [
+        "Fixed: high memory usage after clearing captured packets."
+      ]
     }
   ]
 }
