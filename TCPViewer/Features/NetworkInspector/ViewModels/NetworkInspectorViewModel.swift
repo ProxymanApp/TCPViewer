@@ -2498,6 +2498,7 @@ final class NetworkInspectorViewModel {
         }
     }
 
+    // Clear the capture and presentation caches, then refresh memory after native cleanup finishes.
     func clearPackets() {
         paneSelection.select(nil)
         #if DEBUG
@@ -2506,7 +2507,13 @@ final class NetworkInspectorViewModel {
         cancelWiresharkFilterEvaluation(clearMembership: true)
         cancelActivePacketTableFilterJob()
         endpointStatisticsFilter = nil
-        controller.clearPackets()
+        controller.clearPackets { [weak self] in
+            // Even synchronous clears must wait for the empty snapshot to release the table's rows.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, !self.isClosed else { return }
+                self.statusMetricsService.sampleNow()
+            }
+        }
         packetTableContentCache.reset()
         sourceListService.reset()
         rebuildSnapshot()

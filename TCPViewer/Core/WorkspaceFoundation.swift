@@ -3029,7 +3029,8 @@ final class TCPViewerWorkspaceController {
         completion?()
     }
 
-    func clearPackets() {
+    // Complete after native cleanup so callers can sample memory once capture storage is released.
+    func clearPackets(completion: @escaping () -> Void = {}) {
         let source = snapshot.packetIngestState.source
         let shouldReleaseStoppedLiveSession = snapshot.sessionState.phase == .stopped ||
             snapshot.sessionState.phase == .failed
@@ -3047,21 +3048,20 @@ final class TCPViewerWorkspaceController {
         services.packetMetadataEnricher.reset()
         if shouldReleaseStoppedLiveSession {
             releaseLiveSession()
-        } else if shouldClearRunningLiveSession {
-            liveSession?.clearCapturedPackets { [weak self] result in
-                guard case .failure(let error) = result else {
-                    return
-                }
+        } else if shouldClearRunningLiveSession, let liveSession {
+            liveSession.clearCapturedPackets { [weak self] result in
                 DispatchQueue.main.async {
-                    guard let self else {
-                        return
+                    if let self, case .failure(let error) = result {
+                        let tcpviewerError = self.tcpviewerError(from: error, defaultCode: .liveSessionControlFailed)
+                        self.snapshot.sessionState.lastError = tcpviewerError
+                        self.snapshot.sessionState.statusMessage = tcpviewerError.message
                     }
-                    let tcpviewerError = self.tcpviewerError(from: error, defaultCode: .liveSessionControlFailed)
-                    self.snapshot.sessionState.lastError = tcpviewerError
-                    self.snapshot.sessionState.statusMessage = tcpviewerError.message
+                    completion()
                 }
             }
+            return
         }
+        completion()
     }
 
     func deletePackets(_ packetIDs: Set<PacketSummary.ID>) {
