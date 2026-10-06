@@ -32,6 +32,9 @@ final class TCPViewerWindowController: NSWindowController {
     private var isClosingWorkspace = false
     private var isReadyToClose = false
     var closeHandler: (() -> Void)?
+    // Reports each in-place re-dissection of the visible capture: its title and how many rows changed.
+    var redissectionHandler: ((String, Result<Int, Error>) -> Void)?
+    private var dissectionInputRevision = 0
     var upgradeAlertPresenter: ((NSAlert, @escaping (NSApplication.ModalResponse) -> Void) -> Void)?
     var paywallHandler: (() -> Void)?
     private var upgradeAlert: NSAlert?
@@ -161,6 +164,26 @@ final class TCPViewerWindowController: NSWindowController {
         updateTabBar()
         renderToolbar()
         window?.makeFirstResponder(pane.view)
+        redissectSelectedWorkspaceIfStale()
+    }
+
+    // Called when the TLS key log changes. Only the visible capture is dissected again now; hidden
+    // tabs catch up when selected, because each pass takes Wireshark's single session from the last.
+    func dissectionInputsDidChange() {
+        dissectionInputRevision += 1
+        for workspace in tabs.compactMap(\.source) + [liveWorkspace] {
+            workspace.dissectionInputRevision = dissectionInputRevision
+            workspace.controller.markDissectionStale()
+        }
+        redissectSelectedWorkspaceIfStale()
+    }
+
+    func redissectSelectedWorkspaceIfStale() {
+        guard let tab = selectedTab, let controller = tab.source?.controller else { return }
+        let title = tab.displayTitle
+        controller.redissectPacketsIfStale { [weak self] result in
+            self?.redissectionHandler?(title, result)
+        }
     }
 
     private func makePane(
@@ -289,13 +312,20 @@ final class TCPViewerWindowController: NSWindowController {
 
     func makeOfflineWorkspace() -> TCPViewerCaptureWorkspace {
         let offlineServices = TCPViewerServiceRegistry(core: services.core, networkHelperTool: services.networkHelperTool)
-        return TCPViewerCaptureWorkspace(services: offlineServices, kind: .offline, userDefaults: configuration.userDefaults)
+        let workspace = TCPViewerCaptureWorkspace(services: offlineServices, kind: .offline, userDefaults: configuration.userDefaults)
+        workspace.dissectionInputRevision = dissectionInputRevision
+        return workspace
     }
 
     // Placement commits only after import succeeds; replacement retains the destination's position.
     func placeImportedWorkspace(_ source: TCPViewerCaptureWorkspace, title: String, replacing id: UUID?, selecting: Bool = true, allowsPrompt: Bool = true) -> Bool {
         guard !isClosingWorkspace, id != nil || (allowsPrompt ? authorizeAdditionalTab() : canCreateAdditionalTab) else { return false }
         let replacesSelection = id != nil && selectedTabID == id
+        // An import that began before the TLS key log changed was dissected with the old keys.
+        if source.dissectionInputRevision != dissectionInputRevision {
+            source.dissectionInputRevision = dissectionInputRevision
+            source.controller.markDissectionStale()
+        }
         let tab = TCPViewerWorkspaceTab(id: id ?? UUID(), source: source, title: title)
         if let id {
             guard let index = tabs.firstIndex(where: { $0.id == id }) else { return false }

@@ -193,11 +193,18 @@ final class PCPPNativePacketSummaryUpdateDescriptor {
     let packetIdentifier: UInt64
     let protocolSummary: String?
     let infoSummary: String
+    let transportHint: PCPPNativeTransportHint?
 
-    init(packetIdentifier: UInt64, protocolSummary: String?, infoSummary: String) {
+    init(
+        packetIdentifier: UInt64,
+        protocolSummary: String?,
+        infoSummary: String,
+        transportHint: PCPPNativeTransportHint? = nil
+    ) {
         self.packetIdentifier = packetIdentifier
         self.protocolSummary = protocolSummary
         self.infoSummary = infoSummary
+        self.transportHint = transportHint
     }
 }
 

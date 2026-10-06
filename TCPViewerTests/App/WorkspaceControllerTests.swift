@@ -406,6 +406,198 @@ struct WindowControllerTests {
         #expect(core.liveSessionRequests.count == 1)
     }
 
+    // Re-dissection must update rows in place: a reopen would drop the user's selection and annotations.
+    @Test func redissectUpdatesRowsWithoutLosingSelectionCommentsStylesOrDeletions() async throws {
+        let url = TCPViewerCaptureFileImportPolicy.standardizedFileURL(URL(fileURLWithPath: "/tmp/redissect-single.pcapng"))
+        let document = FakeOfflineDocument(
+            url: url,
+            metadata: CaptureDocumentMetadata(format: .pcapng),
+            openPlan: .completed((1...4).map { makePacket(packetNumber: $0, source: .offline, transportHint: .tls) })
+        )
+        document.redissectUpdates = [
+            PacketSummaryUpdate(packetID: 2, protocolSummary: "HTTP", infoSummary: "GET / HTTP/1.1", transportHint: .http1),
+            PacketSummaryUpdate(packetID: 3, protocolSummary: "HTTP", infoSummary: "HTTP/1.1 200 OK", transportHint: .http1),
+            PacketSummaryUpdate(packetID: 4, protocolSummary: "HTTP", infoSummary: "Row the user deleted", transportHint: .http1),
+        ]
+        let controller = TCPViewerWorkspaceController(services: TCPViewerServiceRegistry(core: FakeTCPViewerCore(
+            interfaceInventories: [[]],
+            documentFactory: { _ in document }
+        )))
+        await controller.importDocuments(at: [url])
+        await waitUntil { controller.snapshot.packetIngestState.totalPacketCount == 4 }
+        controller.selectPacket(2)
+        controller.setCustomComment("keep me", packetIDs: [2])
+        controller.applyTextStyleMutation(.toggleStrikethrough, packetIDs: [3])
+        controller.deletePackets([4])
+        let before = controller.snapshot.packetIngestState
+
+        // Rows that are current are left alone.
+        #expect(!controller.redissectPacketsIfStale())
+        #expect(document.redissectCount == 0)
+
+        controller.markDissectionStale()
+        let changedRowCount = try await redissect(controller).get()
+
+        let after = controller.snapshot.packetIngestState
+        #expect(changedRowCount == 2)
+        #expect(document.redissectCount == 1)
+        #expect(after.packet(withID: 2)?.protocolSummary == "HTTP")
+        #expect(after.packet(withID: 2)?.transportHint == .http1)
+        #expect(after.packet(withID: 2)?.customComment == "keep me")
+        #expect(after.packet(withID: 3)?.infoSummary == "HTTP/1.1 200 OK")
+        #expect(after.packet(withID: 3)?.textStyle == before.packet(withID: 3)?.textStyle)
+        #expect(before.packet(withID: 3)?.textStyle != nil)
+        #expect(after.packet(withID: 4) == nil)
+        #expect(controller.snapshot.selectedPacketID == 2)
+        #expect(after.backingIdentity == before.backingIdentity)
+        #expect(after.packetLineageRevision == before.packetLineageRevision)
+        #expect(after.dissectionRevision == before.dissectionRevision + 1)
+        #expect(!controller.redissectPacketsIfStale())
+
+        await tearDown(controller)
+    }
+
+    // Each imported file numbers its own packets from 1, so its updates must land on workspace IDs.
+    @Test func redissectTranslatesImportedCapturePacketIDs() async throws {
+        let firstURL = TCPViewerCaptureFileImportPolicy.standardizedFileURL(URL(fileURLWithPath: "/tmp/redissect-first.pcapng"))
+        let secondURL = TCPViewerCaptureFileImportPolicy.standardizedFileURL(URL(fileURLWithPath: "/tmp/redissect-second.pcapng"))
+        let makeDocument: (URL) -> FakeOfflineDocument = { url in
+            FakeOfflineDocument(
+                url: url,
+                metadata: CaptureDocumentMetadata(format: .pcapng),
+                openPlan: .completed((1...2).map { self.makePacket(packetNumber: $0, source: .offline, transportHint: .tls) })
+            )
+        }
+        let firstDocument = makeDocument(firstURL)
+        let secondDocument = makeDocument(secondURL)
+        secondDocument.redissectUpdates = [
+            PacketSummaryUpdate(packetID: 1, protocolSummary: "HTTP", infoSummary: "GET /second HTTP/1.1", transportHint: .http1)
+        ]
+        let controller = TCPViewerWorkspaceController(services: TCPViewerServiceRegistry(core: FakeTCPViewerCore(
+            interfaceInventories: [[]],
+            documentFactory: { $0 == secondURL ? secondDocument : firstDocument }
+        )))
+        await controller.importDocuments(at: [firstURL, secondURL])
+        await waitUntil { controller.snapshot.packetIngestState.totalPacketCount == 4 }
+
+        controller.markDissectionStale()
+        let changedRowCount = try await redissect(controller).get()
+
+        #expect(changedRowCount == 1)
+        #expect(firstDocument.redissectCount == 1)
+        #expect(secondDocument.redissectCount == 1)
+        #expect(controller.snapshot.packetIngestState.packet(withID: 1)?.protocolSummary != "HTTP")
+        #expect(controller.snapshot.packetIngestState.packet(withID: 3)?.infoSummary == "GET /second HTTP/1.1")
+
+        await tearDown(controller)
+    }
+
+    // A capture that fails stays stale so the next request retries it, and rows are left untouched.
+    @Test func failedRedissectLeavesRowsUntouchedAndRetriesLater() async throws {
+        let url = TCPViewerCaptureFileImportPolicy.standardizedFileURL(URL(fileURLWithPath: "/tmp/redissect-busy.pcapng"))
+        let document = FakeOfflineDocument(
+            url: url,
+            metadata: CaptureDocumentMetadata(format: .pcapng),
+            openPlan: .completed([makePacket(packetNumber: 1, source: .offline, transportHint: .tls)])
+        )
+        document.redissectUpdates = [
+            PacketSummaryUpdate(packetID: 1, protocolSummary: "HTTP", infoSummary: "GET / HTTP/1.1", transportHint: .http1)
+        ]
+        document.redissectError = TCPViewerCoreError(code: .unavailableFeature, message: "Wireshark is busy with another capture.")
+        let controller = TCPViewerWorkspaceController(services: TCPViewerServiceRegistry(core: FakeTCPViewerCore(
+            interfaceInventories: [[]],
+            documentFactory: { _ in document }
+        )))
+        await controller.importDocuments(at: [url])
+        await waitUntil { controller.snapshot.packetIngestState.totalPacketCount == 1 }
+        let before = controller.snapshot.packetIngestState
+
+        controller.markDissectionStale()
+        let failure = await redissect(controller)
+
+        #expect(throws: TCPViewerCoreError.self) { try failure.get() }
+        #expect(controller.snapshot.packetIngestState.packet(withID: 1) == before.packet(withID: 1))
+        #expect(controller.snapshot.packetIngestState.dissectionRevision == before.dissectionRevision)
+
+        document.redissectError = nil
+        #expect(try await redissect(controller).get() == 1)
+        #expect(controller.snapshot.packetIngestState.packet(withID: 1)?.protocolSummary == "HTTP")
+
+        await tearDown(controller)
+    }
+
+    // Replaying a running capture would be O(captured packets) work racing the capture loop.
+    @Test func redissectWaitsUntilTheLiveCaptureStops() async throws {
+        let live = FakeLiveSession()
+        live.redissectUpdates = [
+            PacketSummaryUpdate(packetID: 1, protocolSummary: "HTTP", infoSummary: "GET / HTTP/1.1", transportHint: .http1)
+        ]
+        let core = FakeTCPViewerCore(interfaceInventories: [[makeInterface(id: "en0", displayName: "Test")]], liveSession: live)
+        let controller = TCPViewerWorkspaceController(services: TCPViewerServiceRegistry(core: core))
+        await controller.performInitialLoadIfNeeded()
+        await controller.startLiveCapture()
+        live.send(.liveStateChanged(phase: .running, message: "Running"))
+        live.send(.packetBatch([makePacket(packetNumber: 1, source: .live, transportHint: .tls)], disposition: .append))
+        await waitUntil { controller.snapshot.packetIngestState.totalPacketCount == 1 }
+        let stopObserver = WorkspaceNotificationCounter(
+            name: TCPViewerWorkspaceController.liveCaptureDidStopNotification,
+            object: controller
+        )
+
+        controller.markDissectionStale()
+        let refusal = await redissect(controller)
+
+        #expect(throws: TCPViewerCoreError.self) { try refusal.get() }
+        #expect(live.redissectCount == 0)
+        #expect(stopObserver.count == 0)
+
+        live.send(.liveStateChanged(phase: .stopped, message: "Stopped"))
+        await waitUntil { controller.snapshot.sessionState.phase == .stopped }
+        #expect(stopObserver.count == 1)
+
+        #expect(try await redissect(controller).get() == 1)
+        #expect(live.redissectCount == 1)
+        #expect(controller.snapshot.packetIngestState.packet(withID: 1)?.protocolSummary == "HTTP")
+
+        await tearDown(controller)
+    }
+
+    // The same packet decodes differently after re-dissection, so the pane must inspect it again.
+    @Test func paneKeepsSelectionAndInspectsAgainAfterRedissect() async {
+        let url = TCPViewerCaptureFileImportPolicy.standardizedFileURL(URL(fileURLWithPath: "/tmp/redissect-pane.pcapng"))
+        let document = FakeOfflineDocument(
+            url: url,
+            metadata: CaptureDocumentMetadata(format: .pcapng),
+            openPlan: .completed((1...2).map { makePacket(packetNumber: $0, source: .offline, transportHint: .tls) })
+        )
+        document.redissectUpdates = [
+            PacketSummaryUpdate(packetID: 2, protocolSummary: "HTTP", infoSummary: "GET / HTTP/1.1", transportHint: .http1)
+        ]
+        let core = FakeTCPViewerCore(interfaceInventories: [[]], documentFactory: { _ in document })
+        let source = TCPViewerCaptureWorkspace(services: .init(core: core), kind: .offline)
+        let defaults = UserDefaults(suiteName: "redissect-pane-\(UUID())")!
+        let pane = NetworkInspectorViewModel(services: source.controller.services, captureWorkspace: source, userDefaults: defaults)
+        defer { pane.close(); source.close() }
+        await pane.performInitialLoadIfNeeded()
+        await source.controller.importDocuments(at: [url])
+        await waitUntil { pane.snapshot.totalPacketCount == 2 }
+        pane.selectPacket(2)
+        await waitUntil { pane.snapshot.base.inspectionState.inspection?.packetID == 2 }
+        let inspectionCountBefore = document.inspectedPacketIDs.count
+
+        source.controller.markDissectionStale()
+        _ = await redissect(source.controller)
+        await waitUntil {
+            document.inspectedPacketIDs.count > inspectionCountBefore
+                && pane.snapshot.base.inspectionState.inspection?.packetID == 2
+                && pane.snapshot.packetRows.first { $0.id == 2 }?.protocolText == "HTTP"
+        }
+
+        #expect(document.inspectedPacketIDs.count > inspectionCountBefore)
+        #expect(pane.snapshot.base.inspectionState.selectedPacketID == 2)
+        #expect(pane.snapshot.packetRows.first { $0.id == 2 }?.protocolText == "HTTP")
+    }
+
     // Opening a capture at launch must expose interfaces without constructing a live pane or session.
     @Test func offlineOnlyWindowDiscoversInterfacesOnceWithoutCreatingLivePane() async {
         let core = FakeTCPViewerCore(interfaceInventories: [[makeInterface(id: "en0", displayName: "Test")]], documentFactory: { url in
@@ -3331,6 +3523,16 @@ struct WindowControllerTests {
         }
     }
 
+    // Run a pending re-dissection and report how many rows changed (0 when the rows were current).
+    private func redissect(_ controller: TCPViewerWorkspaceController) async -> Result<Int, Error> {
+        await withCheckedContinuation { continuation in
+            let started = controller.redissectPacketsIfStale { continuation.resume(returning: $0) }
+            if !started {
+                continuation.resume(returning: .success(0))
+            }
+        }
+    }
+
     private func tearDown(_ controller: TCPViewerWorkspaceController) async {
         controller.cancelBackgroundWork()
         await settleEventLoop()
@@ -3617,6 +3819,8 @@ private final class FakeLiveSession: LiveCaptureSessionProviding, @unchecked Sen
     var inspectionGate: AsyncGate?
     var exportGate: AsyncGate?
     var stopError: Error?
+    var redissectUpdates: [PacketSummaryUpdate] = []
+    private(set) var redissectCount = 0
     private(set) var startCount = 0
     private(set) var pauseCount = 0
     private(set) var resumeCount = 0
@@ -3685,6 +3889,15 @@ private final class FakeLiveSession: LiveCaptureSessionProviding, @unchecked Sen
 
     func healthSnapshot(completion: @escaping (CaptureHealthSnapshot) -> Void) {
         completion(latestHealthSnapshot)
+    }
+
+    func redissectPackets(
+        updateHandler: @escaping ([PacketSummaryUpdate]) -> Void,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        redissectCount += 1
+        updateHandler(redissectUpdates)
+        completion(.success(()))
     }
 
     func send(_ event: PacketIngestEvent) {
@@ -3767,6 +3980,10 @@ private final class FakeOfflineDocument: OfflineCaptureDocumentProviding, @unche
     var filterEvaluationGate: AsyncGate?
     var followGate: AsyncGate?
     var followResult: FollowStream?
+    var redissectUpdates: [PacketSummaryUpdate] = []
+    var redissectError: TCPViewerCoreError?
+    private(set) var redissectCount = 0
+    private(set) var inspectedPacketIDs: [PacketSummary.ID] = []
     private(set) var followProtocols: [FollowStreamProtocol?] = []
     private(set) var displayFilterActivationGenerations: [UInt64] = []
     private(set) var saveCount = 0
@@ -3805,7 +4022,21 @@ private final class FakeOfflineDocument: OfflineCaptureDocumentProviding, @unche
         completion?()
     }
 
+    func redissectPackets(
+        updateHandler: @escaping ([PacketSummaryUpdate]) -> Void,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        redissectCount += 1
+        if let redissectError {
+            completion(.failure(redissectError))
+            return
+        }
+        updateHandler(redissectUpdates)
+        completion(.success(()))
+    }
+
     func inspectPacket(id: PacketSummary.ID, completion: @escaping TCPViewerCompletion<PacketInspection>) {
+        inspectedPacketIDs.append(id)
         if let inspection = inspections[id] {
             completion(.success(inspection))
             return
@@ -4012,6 +4243,30 @@ private final class FakeOfflineDocument: OfflineCaptureDocumentProviding, @unche
 
     func send(_ event: PacketIngestEvent) {
         eventHandler?(.success(event))
+    }
+}
+
+// Counts posts of one notification without capturing mutable state in the observer block.
+private final class WorkspaceNotificationCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var observedCount = 0
+    private var token: NSObjectProtocol?
+
+    init(name: Notification.Name, object: AnyObject) {
+        token = NotificationCenter.default.addObserver(forName: name, object: object, queue: nil) { [weak self] _ in
+            guard let self else { return }
+            self.lock.withLock { self.observedCount += 1 }
+        }
+    }
+
+    deinit {
+        if let token {
+            NotificationCenter.default.removeObserver(token)
+        }
+    }
+
+    var count: Int {
+        lock.withLock { observedCount }
     }
 }
 
