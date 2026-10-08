@@ -18,8 +18,6 @@ final class TCPViewerCaptureWorkspace: TCPViewerWorkspaceControllerDelegate {
     }
 
     var automationAnalysisIsRunning = false
-    // Window-level dissection input revision (the TLS key log) that was current when loading began.
-    var dissectionInputRevision = 0
     var suppressesImportPresentation = false
     let diffIdentity = UUID()
     let kind: Kind

@@ -233,13 +233,6 @@ TCPViewerDisplayFilterMatchResult *TCPViewerWiresharkSessionEvaluateDisplayFilte
     uint64_t generation
 );
 void TCPViewerWiresharkSessionClearDisplayFilter(TCPViewerWiresharkSession *session);
-// Replace the process-wide NSS key log lines that every session loads when its dissection state is created.
-// Sessions that already ran their first pass keep the keys they started with; re-dissect to apply new ones.
-void TCPViewerWiresharkSetTLSKeyLog(const uint8_t *bytes, size_t length);
-// Add key log lines without replacing the stored ones, and hand them to the session that currently
-// owns Wireshark so handshakes it dissects from now on can use them.
-void TCPViewerWiresharkAppendTLSKeyLog(const uint8_t *bytes, size_t length);
-bool TCPViewerWiresharkHasTLSKeyLog(void);
 void TCPViewerWiresharkSummaryResultDestroy(TCPViewerWiresharkSummaryResult *result);
 void TCPViewerWiresharkInspectionResultDestroy(TCPViewerWiresharkInspectionResult *result);
 void TCPViewerWiresharkStreamIndexResultDestroy(TCPViewerWiresharkStreamIndexResult *result);

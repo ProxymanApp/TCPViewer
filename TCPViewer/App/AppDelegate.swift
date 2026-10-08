@@ -26,9 +26,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         openWindow: { [weak self] in self?.openDiffView(nil) }
     )
     private var diffLimitAlert: NSAlert?
-    // TLS key logs apply to every capture, because the dissector keeps one key map for the whole app.
-    private(set) lazy var tlsDecryptionStore = TLSDecryptionStore(defaults: appConfiguration.userDefaults)
-    var tlsDecryptionWindowController: TLSDecryptionWindowController?
     private var aboutWindowController: TCPViewerAboutWindowController?
     private var settingsWindowController: NSWindowController?
     private var licenseWindowController: TCPViewerLicenseWindowController?
@@ -74,9 +71,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             toolsMenu.autoenablesItems = false
             toolsMenu.delegate = self
         }
-        wireTLSDecryptionMenu()
         wireHelpMenu()
-        startTLSDecryption()
         verifyLicenseAtLaunch()
         updateMCPServerAvailability()
         networkHelperToolManager.refreshStatusForLaunch()
@@ -107,7 +102,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controller.closeHandler = { [weak self, weak controller] in
             if self?.mainWindowController === controller { self?.mainWindowController = nil }
         }
-        observeRedissection(in: controller)
         return controller
     }
 

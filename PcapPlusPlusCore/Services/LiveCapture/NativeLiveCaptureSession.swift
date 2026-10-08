@@ -73,13 +73,6 @@ public final class NativeLiveCaptureSession: LiveCaptureSessionProviding, @unche
         state.clearDisplayFilter(completion: completion)
     }
 
-    public func redissectPackets(
-        updateHandler: @escaping ([PacketSummaryUpdate]) -> Void,
-        completion: @escaping TCPViewerVoidCompletion
-    ) {
-        state.redissectPackets(updateHandler: updateHandler, completion: completion)
-    }
-
     public func followStream(
         containing packetID: PacketSummary.ID,
         streamProtocol: FollowStreamProtocol? = nil,
@@ -381,7 +374,6 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     private var packetReanalysisWorkItem: DispatchWorkItem?
     private var packetReanalysisQueue = LivePacketReanalysisQueue<PacketSummary.ID>(maxPendingCount: maxLiveReanalysisPendingCount)
     private var packetSummaryTextByID: [PacketSummary.ID: LivePacketSummaryText] = [:]
-    private var redissectGeneration: UInt64 = 0
     private var durationStopWorkItem: DispatchWorkItem?
     private var durationStopTimer: LiveCaptureDurationStopTimer?
 
@@ -499,77 +491,6 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
             completion(Result {
                 try self.inspectPacketOnQueue(id: id)
             })
-        }
-    }
-
-    // Re-dissect a stopped capture: one replay of the retained packets, then row refreshes in bounded
-    // chunks so inspect and follow requests can interleave. A running capture is refused, because a
-    // replay there would be O(captured packets) work competing with the capture loop.
-    func redissectPackets(
-        updateHandler: @escaping ([PacketSummaryUpdate]) -> Void,
-        completion: @escaping TCPViewerVoidCompletion
-    ) {
-        queue.async {
-            self.redissectGeneration &+= 1
-            let generation = self.redissectGeneration
-            do {
-                let packetIDs = try self.nativeSession.rebuildStoppedDissectionSession()
-                self.redissectNextChunk(
-                    of: packetIDs[...],
-                    generation: generation,
-                    updateHandler: updateHandler,
-                    completion: completion
-                )
-            } catch {
-                completion(.failure(NativeBridgeMapper.coreError(error, defaultCode: .unavailableFeature)))
-            }
-        }
-    }
-
-    private func redissectNextChunk(
-        of packetIDs: ArraySlice<PacketSummary.ID>,
-        generation: UInt64,
-        updateHandler: @escaping ([PacketSummaryUpdate]) -> Void,
-        completion: @escaping TCPViewerVoidCompletion
-    ) {
-        guard let firstPacketID = packetIDs.first else {
-            completion(.success(()))
-            return
-        }
-        // A restart, a clear or another capture taking Wireshark invalidates the rebuilt session;
-        // continuing would overwrite good rows with single-packet fallback text.
-        guard generation == redissectGeneration,
-              nativeSession.canRedissectPacket(withIdentifier: firstPacketID) else {
-            completion(.failure(TCPViewerCoreError(
-                code: .operationCancelled,
-                message: "Re-dissecting packets was interrupted."
-            )))
-            return
-        }
-
-        let chunk = Array(packetIDs.prefix(Self.maxLiveReanalysisBatchSize))
-        do {
-            let descriptors = try autoreleasepool {
-                try nativeSession.reanalyzePacketSummaryUpdates(withIdentifiers: chunk)
-            }
-            updateHandler(descriptors.map(NativeBridgeMapper.packetSummaryUpdate))
-        } catch {
-            completion(.failure(NativeBridgeMapper.coreError(error, defaultCode: .unavailableFeature)))
-            return
-        }
-
-        let remainingPacketIDs = packetIDs.dropFirst(chunk.count)
-        queue.async { [weak self] in
-            guard let self else {
-                completion(.failure(TCPViewerCoreError(code: .operationCancelled, message: "The capture was closed.")))
-                return
-            }
-            self.redissectNextChunk(
-                of: remainingPacketIDs,
-                generation: generation,
-                updateHandler: updateHandler,
-                completion: completion
-            )
         }
     }
 

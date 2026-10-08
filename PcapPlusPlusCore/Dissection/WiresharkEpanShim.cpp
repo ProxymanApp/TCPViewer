@@ -33,13 +33,11 @@
 #include <epan/packet.h>
 #include <epan/prefs.h>
 #include <epan/proto.h>
-#include <epan/secrets.h>
 #include <epan/tap.h>
 #include <epan/timestamp.h>
 #include <epan/to_str.h>
 #include <epan/tvbuff.h>
 #include <wiretap/pcap-encap.h>
-#include <wiretap/secrets-types.h>
 #include <wiretap/wtap.h>
 #include <wiretap/wtap_opttypes.h>
 #include <wsutil/buffer.h>
@@ -76,8 +74,6 @@ constexpr size_t kMaximumInspectorDisplayFilterValueBytes = 4 * 1024;
 constexpr size_t kMaximumInspectorNodes = 20 * 1024;
 constexpr size_t kMaximumInspectorDepth = 128;
 constexpr size_t kMaximumInspectorTextLength = 16 * 1024;
-// Wireshark takes the key log length as `unsigned`, and every new session parses the whole buffer.
-constexpr size_t kMaximumTLSKeyLogBytes = 256 * 1024 * 1024;
 
 enum class NodeKind {
     Layer,
@@ -183,14 +179,6 @@ std::mutex &WiresharkAPIMutex()
     // Keep the lock alive until process exit; test runners can tear down Swift objects late.
     static auto *mutex = new std::mutex();
     return *mutex;
-}
-
-std::string &TLSKeyLogStorage()
-{
-    // Wireshark keeps one TLS key map per process and empties it with each epan session,
-    // so the lines that refill it are process-wide too. Guarded by WiresharkAPIMutex.
-    static auto *storage = new std::string();
-    return *storage;
 }
 
 #if DEBUG
@@ -514,18 +502,6 @@ std::optional<WiresharkCriticalException> CatchWiresharkException(const char *op
     except_free(catcher.except_obj.except_dyndata);
     except_pop();
     return report;
-}
-
-// Hand key log lines to the TLS dissector. Only valid while an epan session exists,
-// because Wireshark allocates its key tables in epan_new and frees them in epan_free.
-std::optional<WiresharkCriticalException> LoadTLSKeyLogIntoActiveEpanLocked(const char *bytes, size_t length)
-{
-    if (bytes == nullptr || length == 0) {
-        return std::nullopt;
-    }
-    return CatchWiresharkException("loading TLS key log", std::nullopt, [bytes, length] {
-        secrets_wtap_callback(SECRETS_TYPE_TLS, bytes, static_cast<unsigned>(length));
-    });
 }
 
 using WiresharkCriticalExceptionReports = std::vector<WiresharkCriticalException>;
@@ -1923,12 +1899,6 @@ struct TCPViewerWiresharkSession {
             return false;
         }
 
-        // A missing key log only leaves TLS encrypted, so a failed load must not take dissection down.
-        const std::string &keyLog = TLSKeyLogStorage();
-        if (auto report = LoadTLSKeyLogIntoActiveEpanLocked(keyLog.data(), keyLog.size())) {
-            recordCriticalExceptionLocked(std::move(*report), false);
-        }
-
         epan_dissect_t *firstPass = nullptr;
         auto *currentEpan = epan;
         if (auto report = CatchWiresharkException("creating Wireshark first-pass dissector", std::nullopt, [&firstPass, currentEpan] {
@@ -2780,47 +2750,6 @@ void TCPViewerWiresharkSessionReleaseResources(TCPViewerWiresharkSession *sessio
     std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
     std::lock_guard<std::mutex> sessionLock(session->mutex);
     session->releaseWiresharkResourcesLocked("", false);
-}
-
-void TCPViewerWiresharkSetTLSKeyLog(const uint8_t *bytes, size_t length)
-{
-    std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
-    std::string &storage = TLSKeyLogStorage();
-    if (bytes == nullptr || length == 0) {
-        storage.clear();
-        return;
-    }
-    storage.assign(reinterpret_cast<const char *>(bytes), std::min(length, kMaximumTLSKeyLogBytes));
-}
-
-void TCPViewerWiresharkAppendTLSKeyLog(const uint8_t *bytes, size_t length)
-{
-    std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
-    std::string &storage = TLSKeyLogStorage();
-    if (bytes == nullptr || length == 0 || length > kMaximumTLSKeyLogBytes - storage.size()) {
-        return;
-    }
-    const auto *lines = reinterpret_cast<const char *>(bytes);
-    storage.append(lines, length);
-
-    // Feed only the new lines: re-parsing the whole log on every append would grow with its size.
-    auto *session = TCPViewerWiresharkSession::activeSession();
-    if (session == nullptr) {
-        return;
-    }
-    std::lock_guard<std::mutex> sessionLock(session->mutex);
-    if (!session->hasSession()) {
-        return;
-    }
-    if (auto report = LoadTLSKeyLogIntoActiveEpanLocked(lines, length)) {
-        session->recordCriticalExceptionLocked(std::move(*report), false);
-    }
-}
-
-bool TCPViewerWiresharkHasTLSKeyLog(void)
-{
-    std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
-    return !TLSKeyLogStorage().empty();
 }
 
 bool TCPViewerWiresharkSessionIsAvailable(TCPViewerWiresharkSession *session)

@@ -117,24 +117,6 @@ final class WiresharkEpanSession {
         TCPViewerWiresharkSessionDestroy(handle)
     }
 
-    // Replace the key log lines that sessions load when they start; existing first passes are untouched.
-    static func setTLSKeyLog(_ lines: Data) {
-        lines.withUnsafeBytes { buffer in
-            TCPViewerWiresharkSetTLSKeyLog(buffer.bindMemory(to: UInt8.self).baseAddress, buffer.count)
-        }
-    }
-
-    // Add key log lines and make them available to the session that currently owns Wireshark.
-    static func appendTLSKeyLog(_ lines: Data) {
-        lines.withUnsafeBytes { buffer in
-            TCPViewerWiresharkAppendTLSKeyLog(buffer.bindMemory(to: UInt8.self).baseAddress, buffer.count)
-        }
-    }
-
-    static var hasTLSKeyLog: Bool {
-        TCPViewerWiresharkHasTLSKeyLog()
-    }
-
     static func validateDisplayFilter(
         _ expression: String,
         runtimeConfiguration: WiresharkRuntimeConfiguration = WiresharkRuntimeConfiguration()
