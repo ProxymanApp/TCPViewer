@@ -70,6 +70,26 @@ struct DNSResolutionCacheTests {
         #expect(cache.domain(forIPAddress: "192.0.2.5", at: time(2)) == "new.example")
     }
 
+    // Earlier lookups must leave future evidence available at and after its observation time.
+    @Test func ignoresFutureObservationWithoutDiscardingIt() {
+        var cache = DNSResolutionCache()
+        cache.observe([observation("future.example", "192.0.2.1", ttl: 60)], at: time(100))
+
+        #expect(cache.domain(forIPAddress: "192.0.2.1", at: time(99)) == nil)
+        #expect(cache.domain(forIPAddress: "192.0.2.1", at: time(100)) == "future.example")
+        #expect(cache.domain(forIPAddress: "192.0.2.1", at: time(101)) == "future.example")
+    }
+
+    // Select the newest eligible candidate even when newer evidence is already cached.
+    @Test func returnsNewestObservationAtOrBeforeLookupTime() {
+        var cache = DNSResolutionCache()
+        cache.observe([observation("old.example", "192.0.2.1", ttl: 60)], at: time(80))
+        cache.observe([observation("current.example", "192.0.2.1", ttl: 60)], at: time(90))
+        cache.observe([observation("future.example", "192.0.2.1", ttl: 60)], at: time(100))
+
+        #expect(cache.domain(forIPAddress: "192.0.2.1", at: time(99)) == "current.example")
+    }
+
     @Test func capsCandidatesPerIPAddress() {
         var cache = DNSResolutionCache(maximumDomainsPerIPAddress: 2)
         cache.observe([observation("one.example", "192.0.2.6", ttl: 60)], at: time(0))

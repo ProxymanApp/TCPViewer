@@ -101,6 +101,19 @@ struct PacketMetadataDNSAttributionTests {
         #expect(result.packets[1].domainName == nil)
     }
 
+    // Imported packets can arrive in file order with timestamps that move backwards.
+    @Test func doesNotAttributeFutureDNSObservationToOutOfOrderPacket() throws {
+        let service = makeService()
+        let result = service.enrich([
+            dnsPacket(domain: "future.example", address: "192.0.2.1", ttl: 60, timestamp: 100),
+            flowPacket(number: 2, destination: "192.0.2.1", direction: .outbound, timestamp: 99),
+            flowPacket(number: 3, destination: "192.0.2.1", direction: .outbound, timestamp: 101),
+        ], source: .offline)
+
+        #expect(result.packets[1].domainName == nil)
+        #expect(result.packets[2].dnsDomainName == "future.example")
+    }
+
     @Test func resetClearsDNSObservations() throws {
         let service = makeService()
         _ = service.enrich([

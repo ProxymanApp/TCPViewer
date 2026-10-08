@@ -79,7 +79,7 @@ struct DNSResolutionCache {
         evictIfNeeded()
     }
 
-    // Return the newest unexpired observation for an IP in average O(1) time.
+    // Return the newest observation valid at lookup time, preserving future evidence for later packets.
     mutating func domain(forIPAddress address: String, at timestamp: Date) -> String? {
         guard let ipAddress = Self.normalizedIPAddress(address) else {
             return nil
@@ -95,7 +95,9 @@ struct DNSResolutionCache {
             return nil
         }
         entriesByIPAddress[ipAddress] = entries
-        return entries.max { $0.observedAt < $1.observedAt }?.domainName
+        return entries.lazy
+            .filter { $0.observedAt <= timestamp }
+            .max { $0.observedAt < $1.observedAt }?.domainName
     }
 
     mutating func reset() {
