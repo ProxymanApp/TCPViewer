@@ -1139,6 +1139,7 @@ final class NetworkInspectorViewModel {
     private var pendingInspectorFilterBackingIdentity: String?
     private var pendingInspectorFilterPacketLineageRevision: UInt64?
     private var displayFilterResultCache = PacketDisplayFilterResultCache()
+    private var observedDissectionRevision: UInt64?
 
     // Trailing-edge debounce for delegate-driven rebuilds. Live ingest fires the controller delegate
     // up to ~10 Hz; coalescing to ~12 Hz keeps the UI feeling live without burning CPU on redundant
@@ -1377,6 +1378,7 @@ final class NetworkInspectorViewModel {
         captureWorkspace.subscribe(self)
         paneSelection.refreshSource()
         if let selectedID = paneSelection.state.selectedPacketID { paneSelection.select(selectedID) }
+        observedDissectionRevision = controller.snapshot.packetIngestState.dissectionRevision
         reapplyWiresharkFilterIfNeeded()
         rebuildSnapshot()
     }
@@ -3963,7 +3965,16 @@ extension NetworkInspectorViewModel: TCPViewerWorkspaceControllerDelegate {
         if pendingInspectorCaptureChanged || activeEvaluationCaptureChanged {
             cancelWiresharkFilterEvaluation(clearMembership: false)
         }
-        if let lineageRevision = wiresharkFilterMembershipLineageRevision,
+        let wasRedissected = observedDissectionRevision.map { $0 != ingestState.dissectionRevision } ?? false
+        observedDissectionRevision = ingestState.dissectionRevision
+        if wasRedissected {
+            // The same packets now decode differently (e.g. TLS became HTTP), so cached filter
+            // matches and the open inspection are stale even though no row was added or removed.
+            displayFilterResultCache.removeAll()
+            cancelWiresharkFilterEvaluation(clearMembership: true)
+            reapplyWiresharkFilterIfNeeded()
+            if let selectedID = paneSelection.state.selectedPacketID { paneSelection.select(selectedID) }
+        } else if let lineageRevision = wiresharkFilterMembershipLineageRevision,
            lineageRevision != ingestState.packetLineageRevision {
             cancelWiresharkFilterEvaluation(clearMembership: true)
             reapplyWiresharkFilterIfNeeded()

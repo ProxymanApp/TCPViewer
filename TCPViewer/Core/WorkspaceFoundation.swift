@@ -50,6 +50,9 @@ struct PacketIngestState: Sendable, Equatable {
     var sessionClientIconFilePathByClientID: [String: String]
     var packetRevision: UInt64
     var packetLineageRevision: UInt64
+    // Bumped when existing packets were dissected again (e.g. new TLS keys), so decoded views refresh
+    // without the selection reset that a lineage change causes.
+    var dissectionRevision: UInt64 = 0
     var lastMutation: PacketIngestMutation
     var lastBatchCount: Int
     var truncatedPacketCount: Int
@@ -267,7 +270,9 @@ struct PacketIngestState: Sendable, Equatable {
         lastMutation = .metadataUpdate(packetIDs: updatedIDs)
     }
 
-    mutating func applySummaryUpdates(_ updates: [PacketSummaryUpdate]) {
+    // Returns how many rows actually changed.
+    @discardableResult
+    mutating func applySummaryUpdates(_ updates: [PacketSummaryUpdate]) -> Int {
         var updatedIDs: [PacketSummary.ID] = []
         for update in updates {
             guard let packetIndex = packetIndexByID[update.packetID] else {
@@ -285,11 +290,12 @@ struct PacketIngestState: Sendable, Equatable {
         }
 
         guard !updatedIDs.isEmpty else {
-            return
+            return 0
         }
 
         packetRevision &+= 1
         lastMutation = .metadataUpdate(packetIDs: updatedIDs)
+        return updatedIDs.count
     }
 
     // Update only indexed packet IDs so styling remains bounded for large live captures.
@@ -450,6 +456,7 @@ struct PacketIngestState: Sendable, Equatable {
         lhs.source == rhs.source &&
             lhs.packetRevision == rhs.packetRevision &&
             lhs.packetLineageRevision == rhs.packetLineageRevision &&
+            lhs.dissectionRevision == rhs.dissectionRevision &&
             lhs.lastMutation == rhs.lastMutation &&
             lhs.lastBatchCount == rhs.lastBatchCount &&
             lhs.truncatedPacketCount == rhs.truncatedPacketCount &&
@@ -1109,6 +1116,41 @@ final class TCPViewerWorkspaceController {
         var matchingPacketIDs: [PacketSummary.ID] = []
     }
 
+    private struct RedissectJob {
+        let source: any PacketRedissecting
+        // Workspace packet IDs keyed by the backing capture's IDs; nil when both are the same.
+        let workspaceIDByBackingID: [PacketSummary.ID: PacketSummary.ID]?
+    }
+
+    // Collects row updates that the core delivers on its own queues.
+    private final class RedissectUpdateCollector: @unchecked Sendable {
+        private let lock = NSLock()
+        private let workspaceIDByBackingID: [PacketSummary.ID: PacketSummary.ID]?
+        private var collectedUpdates: [PacketSummaryUpdate] = []
+
+        init(workspaceIDByBackingID: [PacketSummary.ID: PacketSummary.ID]?) {
+            self.workspaceIDByBackingID = workspaceIDByBackingID
+        }
+
+        var updates: [PacketSummaryUpdate] {
+            lock.withLock { collectedUpdates }
+        }
+
+        func append(_ updates: [PacketSummaryUpdate]) {
+            let workspaceUpdates: [PacketSummaryUpdate]
+            if let workspaceIDByBackingID {
+                workspaceUpdates = updates.compactMap { update in
+                    workspaceIDByBackingID[update.packetID].map(update.tcpviewerRemapping(packetID:))
+                }
+            } else {
+                workspaceUpdates = updates
+            }
+            lock.withLock { collectedUpdates.append(contentsOf: workspaceUpdates) }
+        }
+    }
+
+    static let liveCaptureDidStopNotification = Notification.Name("TCPViewer.workspace.liveCaptureDidStop")
+
     private struct ImportedSessionCaptureExportGroup {
         let fileID: ImportedCaptureFileID
         var originalPacketIDs: [PacketSummary.ID]
@@ -1152,6 +1194,8 @@ final class TCPViewerWorkspaceController {
     private var sessionImportGeneration = 0
     private var pendingSessionImportCompletion: (() -> Void)?
     private var inspectionGeneration = 0
+    private var hasStaleDissection = false
+    private var redissectGeneration = 0
     private var filterValidationGeneration = 0
     private var nextDisplayFilterGeneration: UInt64 = 0
     private var pendingDisplayFilterRequests: [() -> Void] = []
@@ -2177,6 +2221,132 @@ final class TCPViewerWorkspaceController {
                 completion?()
             }
         }
+    }
+
+    // Remember that dissection inputs (the TLS key log) changed after the loaded rows were produced.
+    func markDissectionStale() {
+        hasStaleDissection = snapshot.packetIngestState.totalPacketCount > 0 || isDissectionSourceBusy
+    }
+
+    // Dissect the loaded packets again when their rows predate the current dissection inputs.
+    // Rows keep their identity, so selection, comments, text styles and deletions survive, which a
+    // reopen would lose. Returns false when the rows are current; otherwise `completion` reports
+    // how many rows changed.
+    @discardableResult
+    func redissectPacketsIfStale(completion: ((Result<Int, Error>) -> Void)? = nil) -> Bool {
+        guard hasStaleDissection else {
+            return false
+        }
+        // Replaying a running capture or a half-loaded file would race the packets still arriving;
+        // the owner asks again once the capture stops or the load finishes.
+        guard !isDissectionSourceBusy else {
+            completion?(.failure(TCPViewerCoreError(
+                code: .unavailableFeature,
+                message: "Packets are dissected again once the capture stops or finishes loading."
+            )))
+            return true
+        }
+
+        hasStaleDissection = false
+        redissectGeneration += 1
+        runRedissectJobs(makeRedissectJobs()[...], generation: redissectGeneration, updates: [], completion: completion)
+        return true
+    }
+
+    private var isDissectionSourceBusy: Bool {
+        switch snapshot.sessionState.phase {
+        case .starting, .running, .paused, .stopping:
+            return true
+        case .idle, .ready, .stopped, .failed:
+            return snapshot.documentState.phase == .opening || snapshot.documentState.phase == .reopening
+        }
+    }
+
+    // List every capture behind this workspace with the mapping from its packet IDs to workspace IDs.
+    private func makeRedissectJobs() -> [RedissectJob] {
+        switch snapshot.packetIngestState.source {
+        case .live:
+            return liveSession.map { [RedissectJob(source: $0, workspaceIDByBackingID: nil)] } ?? []
+        case .offline:
+            guard !importedDocumentsByFileID.isEmpty else {
+                return document.map { [RedissectJob(source: $0, workspaceIDByBackingID: nil)] } ?? []
+            }
+            var workspaceIDsByFileID: [ImportedCaptureFileID: [PacketSummary.ID: PacketSummary.ID]] = [:]
+            for (workspaceID, reference) in snapshot.packetIngestState.importedPacketReferenceByID {
+                workspaceIDsByFileID[reference.fileID, default: [:]][reference.originalPacketID] = workspaceID
+            }
+            return snapshot.packetIngestState.importedFiles.compactMap { file in
+                importedDocumentsByFileID[file.id].map {
+                    RedissectJob(source: $0, workspaceIDByBackingID: workspaceIDsByFileID[file.id] ?? [:])
+                }
+            }
+        case nil:
+            return []
+        @unknown default:
+            return []
+        }
+    }
+
+    // Run one capture at a time: each re-dissection takes Wireshark's single session from the previous one.
+    private func runRedissectJobs(
+        _ jobs: ArraySlice<RedissectJob>,
+        generation: Int,
+        updates: [PacketSummaryUpdate],
+        completion: ((Result<Int, Error>) -> Void)?
+    ) {
+        guard let job = jobs.first else {
+            completion?(.success(applyRedissectedUpdates(updates)))
+            return
+        }
+
+        let collector = RedissectUpdateCollector(workspaceIDByBackingID: job.workspaceIDByBackingID)
+        job.source.redissectPackets(updateHandler: collector.append) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self else {
+                    return
+                }
+                let collectedUpdates = updates + collector.updates
+                if case .success = result, self.redissectGeneration == generation {
+                    self.runRedissectJobs(
+                        jobs.dropFirst(),
+                        generation: generation,
+                        updates: collectedUpdates,
+                        completion: completion
+                    )
+                    return
+                }
+
+                // The core already replaced these packets' dissection, so their rows must follow even
+                // when the chain stops early; otherwise a later pass would see nothing left to report.
+                let changedRowCount = self.applyRedissectedUpdates(collectedUpdates)
+                switch result {
+                case .success:
+                    completion?(.success(changedRowCount))
+                case .failure(let error):
+                    if self.redissectGeneration == generation {
+                        self.hasStaleDissection = true
+                    }
+                    completion?(.failure(error))
+                }
+            }
+        }
+    }
+
+    // Apply every changed row in one mutation so the table and filters refresh once.
+    private func applyRedissectedUpdates(_ updates: [PacketSummaryUpdate]) -> Int {
+        var changedRowCount = 0
+        batchSnapshotUpdates {
+            changedRowCount = snapshot.packetIngestState.applySummaryUpdates(updates)
+            guard changedRowCount > 0 else {
+                return
+            }
+            snapshot.packetIngestState.dissectionRevision &+= 1
+            synchronizeVisiblePackets(message: "Updated \(changedRowCount) packet summaries.")
+        }
+        if changedRowCount > 0, let selectedPacketID = snapshot.selectedPacketID {
+            scheduleInspection(for: selectedPacketID)
+        }
+        return changedRowCount
     }
 
     func saveDocument(completion: (() -> Void)? = nil) {
@@ -3708,10 +3878,16 @@ final class TCPViewerWorkspaceController {
     private func applyPacketIngestEvent(_ event: PacketIngestEvent) {
         switch event {
         case .liveStateChanged(let phase, let message):
+            let didStop = mappedPhase(phase) == .stopped && snapshot.sessionState.phase != .stopped
             snapshot.sessionState.phase = mappedPhase(phase)
             snapshot.sessionState.statusMessage = message
             if mappedPhase(phase) != .failed {
                 snapshot.sessionState.lastError = nil
+            }
+            // Stop is the first moment a capture can be dissected again (e.g. with TLS keys that
+            // arrived late), and duration or packet-count limits reach it without a user action.
+            if didStop {
+                NotificationCenter.default.post(name: Self.liveCaptureDidStopNotification, object: self)
             }
         case .documentStateChanged(let phase, let message):
             snapshot.documentState.phase = mappedPhase(phase)

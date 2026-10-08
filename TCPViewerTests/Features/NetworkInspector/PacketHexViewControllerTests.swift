@@ -173,6 +173,150 @@ struct PacketHexViewControllerTests {
         #expect(clearedRange.hfRange().length == 0)
     }
 
+    @MainActor
+    @Test func rawTabLeadsTheSegmentsForKeyLogDecryptedHTTP() throws {
+        let packet = makePacket(packetNumber: 1)
+        let controller = PacketHexViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        controller.loadViewIfNeeded()
+
+        controller.render(snapshot: makeSnapshot(packet: packet, inspection: makeDecryptedHTTPInspection(for: packet, path: "/first")))
+
+        let segmentedControl = try #require(firstSubview(ofType: NSSegmentedControl.self, in: controller.view))
+        let rawTextView = try #require(firstSubview(ofType: NSTextView.self, in: controller.view))
+        #expect(segmentLabels(of: segmentedControl) == ["Raw", "Frame", "Decrypted TLS"])
+        #expect(segmentedControl.selectedSegment == 0)
+        #expect(rawTextView.string == "GET /first HTTP/1.1\nHost: example.com")
+        #expect(rawTextView.enclosingScrollView?.isHidden == false)
+    }
+
+    // Plain HTTP was always readable in the tree and hex, so the tab is reserved for decrypted traffic.
+    @MainActor
+    @Test func packetsWithoutDecryptedTLSHaveNoRawTab() throws {
+        let packet = makePacket(packetNumber: 1)
+        let controller = PacketHexViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        controller.loadViewIfNeeded()
+
+        controller.render(snapshot: makeSnapshot(packet: packet, inspection: makeInspection(for: packet)))
+
+        let segmentedControl = try #require(firstSubview(ofType: NSSegmentedControl.self, in: controller.view))
+        let rawTextView = try #require(firstSubview(ofType: NSTextView.self, in: controller.view))
+        #expect(segmentLabels(of: segmentedControl) == ["Frame", "Reassembled TCP"])
+        #expect(rawTextView.enclosingScrollView?.isHidden == true)
+        #expect(PacketRawMessageText.make(for: makeInspection(for: packet)) == nil)
+    }
+
+    @MainActor
+    @Test func choiceBetweenRawAndBytesCarriesOverToLaterPackets() throws {
+        let controller = PacketHexViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        controller.loadViewIfNeeded()
+        let packets = (1...3).map { makePacket(packetNumber: UInt64($0)) }
+        controller.render(snapshot: makeSnapshot(packet: packets[0], inspection: makeDecryptedHTTPInspection(for: packets[0], path: "/1")))
+        let segmentedControl = try #require(firstSubview(ofType: NSSegmentedControl.self, in: controller.view))
+        let rawTextView = try #require(firstSubview(ofType: NSTextView.self, in: controller.view))
+        let action = try #require(segmentedControl.action)
+
+        segmentedControl.selectedSegment = 2
+        _ = NSApp.sendAction(action, to: segmentedControl.target, from: segmentedControl)
+        controller.render(snapshot: makeSnapshot(packet: packets[1], inspection: makeDecryptedHTTPInspection(for: packets[1], path: "/2")))
+
+        #expect(segmentedControl.label(forSegment: segmentedControl.selectedSegment) == "Decrypted TLS")
+        #expect(rawTextView.enclosingScrollView?.isHidden == true)
+
+        segmentedControl.selectedSegment = 0
+        _ = NSApp.sendAction(action, to: segmentedControl.target, from: segmentedControl)
+        controller.render(snapshot: makeSnapshot(packet: packets[2], inspection: makeDecryptedHTTPInspection(for: packets[2], path: "/3")))
+
+        #expect(segmentedControl.selectedSegment == 0)
+        #expect(rawTextView.string == "GET /3 HTTP/1.1\nHost: example.com")
+        #expect(rawTextView.enclosingScrollView?.isHidden == false)
+    }
+
+    @MainActor
+    @Test func protocolTreeSelectionShowsItsBytesInsteadOfRaw() throws {
+        let packet = makePacket(packetNumber: 1)
+        let controller = PacketHexViewController(configuration: AppConfiguration(defaults: isolatedDefaults()))
+        controller.loadViewIfNeeded()
+        let inspection = makeDecryptedHTTPInspection(for: packet, path: "/first")
+
+        controller.render(snapshot: makeSnapshot(
+            packet: packet,
+            inspection: inspection,
+            highlightedByteRange: PacketByteRange(offset: 0, length: 3, sourceID: "decrypted-tls")
+        ))
+
+        let segmentedControl = try #require(firstSubview(ofType: NSSegmentedControl.self, in: controller.view))
+        let rawTextView = try #require(firstSubview(ofType: NSTextView.self, in: controller.view))
+        #expect(segmentedControl.label(forSegment: segmentedControl.selectedSegment) == "Decrypted TLS")
+        #expect(rawTextView.enclosingScrollView?.isHidden == true)
+
+        // Clearing the tree selection returns to the tab the user prefers.
+        controller.render(snapshot: makeSnapshot(packet: packet, inspection: inspection))
+        #expect(segmentedControl.selectedSegment == 0)
+    }
+
+    @Test func rawTextSummarisesBinaryBodiesAndSeparatesMessages() throws {
+        let packet = makePacket(packetNumber: 1)
+        let head = "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n\r\n"
+        let png = Data([0x89, 0x50, 0x4E, 0x47, 0x00, 0x01])
+        let second = "HTTP/1.1 204 No Content\r\n\r\n"
+        let decrypted = Data(head.utf8) + png + Data(second.utf8)
+        let secondOffset = head.utf8.count + png.count
+        let inspection = PacketInspection(
+            packetID: packet.id,
+            packetNumber: packet.packetNumber,
+            rawBytes: Data([0x01]),
+            byteViews: [
+                PacketByteView(id: "frame", label: "Frame", bytes: Data([0x01])),
+                PacketByteView(id: "decrypted-tls", label: "Decrypted TLS", bytes: decrypted),
+            ],
+            detailNodes: [
+                makeHTTPNode(offset: 0, length: secondOffset, marker: "http.response.code"),
+                makeHTTPNode(offset: secondOffset, length: second.utf8.count, marker: "http.response.code"),
+            ],
+            decodeStatus: PacketDecodeStatus(kind: .complete)
+        )
+
+        let text = try #require(PacketRawMessageText.make(for: inspection))
+
+        #expect(text == [
+            "HTTP/1.1 200 OK",
+            "Content-Type: image/png",
+            "",
+            "[6 bytes of binary data]",
+            "",
+            String(repeating: "─", count: 24),
+            "",
+            "HTTP/1.1 204 No Content",
+        ].joined(separator: "\n"))
+    }
+
+    private func segmentLabels(of control: NSSegmentedControl) -> [String?] {
+        (0..<control.segmentCount).map { control.label(forSegment: $0) }
+    }
+
+    // A request the way Wireshark reports it after a key log decrypted the TLS record.
+    private func makeDecryptedHTTPInspection(for packet: PacketSummary, path: String) -> PacketInspection {
+        let request = "GET \(path) HTTP/1.1\r\nHost: example.com\r\n\r\n"
+        return PacketInspection(
+            packetID: packet.id,
+            packetNumber: packet.packetNumber,
+            rawBytes: Data([0x16, UInt8(packet.packetNumber)]),
+            byteViews: [
+                PacketByteView(id: "frame", label: "Frame", bytes: Data([0x16, UInt8(packet.packetNumber)])),
+                PacketByteView(id: "decrypted-tls", label: "Decrypted TLS", bytes: Data(request.utf8)),
+            ],
+            detailNodes: [makeHTTPNode(offset: 0, length: request.utf8.count, marker: "http.request.method")],
+            decodeStatus: PacketDecodeStatus(kind: .complete)
+        )
+    }
+
+    private func makeHTTPNode(offset: Int, length: Int, marker: String) -> PacketDetailNode {
+        let range = PacketByteRange(offset: offset, length: length, sourceID: "decrypted-tls")
+        return PacketDetailNode(id: "http.\(offset)", name: "Hypertext Transfer Protocol", fieldName: "http", kind: .layer, byteRange: range, children: [
+            PacketDetailNode(id: "\(marker).\(offset)", name: marker, fieldName: marker, byteRange: range),
+        ])
+    }
+
     private func isolatedDefaults() -> UserDefaults {
         let suiteName = "TCPViewer.PacketHexViewControllerTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -202,7 +346,11 @@ struct PacketHexViewControllerTests {
         return matches
     }
 
-    private func makeSnapshot(packet: PacketSummary, inspection: PacketInspection) -> NetworkInspectorSnapshot {
+    private func makeSnapshot(
+        packet: PacketSummary,
+        inspection: PacketInspection,
+        highlightedByteRange: PacketByteRange? = nil
+    ) -> NetworkInspectorSnapshot {
         var base = TCPViewerWindowSnapshot.foundation
         base.packetIngestState.replace(with: [packet], source: packet.source)
         base.navigationState.visiblePacketIDs = [packet.id]
@@ -210,7 +358,7 @@ struct PacketHexViewControllerTests {
             selectedPacketID: packet.id,
             inspection: inspection,
             selectedDetailNodeID: nil,
-            highlightedByteRange: nil,
+            highlightedByteRange: highlightedByteRange,
             isLoading: false,
             statusMessage: "Inspecting packet \(packet.packetNumber)."
         )

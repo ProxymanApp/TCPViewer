@@ -178,6 +178,59 @@ struct DNSMessageParserTests {
         #expect(observations.isEmpty)
     }
 
+    // MARK: - EDNS records
+
+    // OPT metadata must not discard address observations, with or without EDNS options.
+    @Test(arguments: [UInt16(1), UInt16(28)], [[UInt8](), [0, 12, 0, 2, 0, 0]])
+    func preservesAddressResponseWithOPTRecord(type: UInt16, options: [UInt8]) {
+        let address = type == 1 ? "192.0.2.1" : "2001:db8::1"
+        let addressBytes: [UInt8] = type == 1 ? [192, 0, 2, 1] : ipv6(address)
+        let observations = parse(response(
+            questions: [("example.com", type)],
+            answers: [record(owner: .pointer(12), type: type, ttl: 60, data: addressBytes)],
+            additionalRecords: [record(owner: .name(""), type: 41, recordClass: 1232, ttl: 0, data: options)]
+        ))
+
+        #expect(observations == [DNSResolutionObservation(domainName: "example.com", ipAddress: address, timeToLive: 60)])
+    }
+
+    // Skipping OPT must advance past its options so subsequent records still parse.
+    @Test func parsesAddressRecordAfterOPTRecord() {
+        let observations = parse(response(
+            questions: [("example.com", 1)],
+            answers: [],
+            additionalRecords: [
+                record(owner: .name(""), type: 41, recordClass: 1232, ttl: 0, data: [0, 12, 0, 2, 0, 0]),
+                record(owner: .pointer(12), type: 1, ttl: 60, data: [192, 0, 2, 1]),
+            ]
+        ))
+
+        #expect(observations == [DNSResolutionObservation(domainName: "example.com", ipAddress: "192.0.2.1", timeToLive: 60)])
+    }
+
+    // Both the fixed OPT header and its declared payload must remain bounds-checked.
+    @Test(arguments: [[UInt8](), [0, 12, 0, 2, 0, 0]])
+    func rejectsTruncatedOPTRecord(options: [UInt8]) {
+        var message = response(
+            questions: [("example.com", 1)],
+            answers: [record(owner: .pointer(12), type: 1, ttl: 60, data: [192, 0, 2, 1])],
+            additionalRecords: [record(owner: .name(""), type: 41, recordClass: 1232, ttl: 0, data: options)]
+        )
+        message.removeLast()
+
+        #expect(parse(message).isEmpty)
+    }
+
+    // Accepting the OPT root owner must not create empty hostname observations.
+    @Test func rejectsRootOwnerForAddressRecord() {
+        let observations = parse(response(
+            questions: [],
+            answers: [record(owner: .name(""), type: 1, ttl: 60, data: [192, 0, 2, 1])]
+        ))
+
+        #expect(observations.isEmpty)
+    }
+
     // MARK: - Invalid and unsupported messages
 
     @Test func ignoresDNSQueries() throws {
@@ -252,22 +305,25 @@ private func record(
     EncodedDNSRecord(owner: owner, type: type, recordClass: recordClass, ttl: ttl, data: data)
 }
 
+// Encode answer and additional sections using the same resource-record layout.
 private func response(
     flags: UInt16 = 0x8180,
     questions: [(String, UInt16)],
-    answers: [EncodedDNSRecord]
+    answers: [EncodedDNSRecord],
+    additionalRecords: [EncodedDNSRecord] = []
 ) -> Data {
     var data = header(
         flags: flags,
         questionCount: UInt16(questions.count),
-        answerCount: UInt16(answers.count)
+        answerCount: UInt16(answers.count),
+        additionalCount: UInt16(additionalRecords.count)
     )
     for (name, type) in questions {
         data.append(contentsOf: encodedName(name))
         data.appendBigEndian(type)
         data.appendBigEndian(UInt16(1))
     }
-    for answer in answers {
+    for answer in answers + additionalRecords {
         switch answer.owner {
         case .name(let value):
             data.append(contentsOf: encodedName(value))
@@ -283,14 +339,15 @@ private func response(
     return data
 }
 
-private func header(flags: UInt16, questionCount: UInt16, answerCount: UInt16) -> Data {
+// Keep section counts explicit so fixtures exercise the real DNS record loop.
+private func header(flags: UInt16, questionCount: UInt16, answerCount: UInt16, additionalCount: UInt16 = 0) -> Data {
     var data = Data()
     data.appendBigEndian(UInt16(0x1234))
     data.appendBigEndian(flags)
     data.appendBigEndian(questionCount)
     data.appendBigEndian(answerCount)
     data.appendBigEndian(UInt16(0))
-    data.appendBigEndian(UInt16(0))
+    data.appendBigEndian(additionalCount)
     return data
 }
 

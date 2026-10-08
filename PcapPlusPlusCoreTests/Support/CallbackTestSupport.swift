@@ -186,6 +186,19 @@ extension OfflineCaptureDocumentProviding {
     }
 }
 
+extension PacketRedissecting {
+    func redissectPackets() async throws -> [PacketSummaryUpdate] {
+        let collectedUpdates = Protected<[PacketSummaryUpdate]>([])
+        try await waitForResult { completion in
+            redissectPackets(
+                updateHandler: { updates in collectedUpdates.write { $0.append(contentsOf: updates) } },
+                completion: completion
+            )
+        }
+        return collectedUpdates.wrappedValue
+    }
+}
+
 private func waitForResult<Value>(
     _ start: (@escaping TCPViewerCompletion<Value>) -> Void
 ) async throws -> Value {
