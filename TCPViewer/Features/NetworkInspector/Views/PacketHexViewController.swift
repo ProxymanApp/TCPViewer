@@ -110,66 +110,12 @@ enum FollowStreamPayloadMatcher {
     }
 }
 
-// Builds the text of the inspector's Raw tab from the HTTP messages a packet carries.
-enum PacketRawMessageText {
-    static let maximumBodyCharacters = 512 * 1024
-    private static let messageSeparator = "\n\n" + String(repeating: "─", count: 24) + "\n\n"
-
-    // Returns nil unless the packet's HTTP came out of TLS that a key log decrypted, so the tab
-    // appears exactly when decryption gave the user something new to read.
-    static func make(for inspection: PacketInspection) -> String? {
-        guard PacketHTTPMessageExtractor.hasDecryptedTLS(inspection) else {
-            return nil
-        }
-        let messages = PacketHTTPMessageExtractor.messages(in: inspection)
-        guard !messages.isEmpty else {
-            return nil
-        }
-        return messages.map(text).joined(separator: messageSeparator)
-    }
-
-    private static func text(for message: PacketHTTPMessage) -> String {
-        var parts: [String] = []
-        if !message.head.isEmpty {
-            parts.append(message.head)
-        }
-        if !message.body.isEmpty {
-            parts.append(bodyText(for: message.body))
-        }
-        return parts.joined(separator: "\n\n")
-    }
-
-    // Images and other binary payloads would render as noise, so they are summarised instead.
-    private static func bodyText(for body: Data) -> String {
-        guard let text = String(data: body, encoding: .utf8),
-              !text.unicodeScalars.contains(where: isBinary) else {
-            return "[\(body.count) bytes of binary data]"
-        }
-        guard text.count > maximumBodyCharacters else {
-            return text
-        }
-        return String(text.prefix(maximumBodyCharacters)) + "\n… [\(body.count) bytes in total]"
-    }
-
-    private static func isBinary(_ scalar: Unicode.Scalar) -> Bool {
-        (scalar.value < 0x20 && scalar != "\n" && scalar != "\r" && scalar != "\t") || scalar.value == 0x7F
-    }
-}
-
 final class PacketHexViewController: NSViewController {
-    private static let rawSegmentID = "tcpviewer.raw"
-    private static let prefersRawTabKey = "TCPViewer.inspector.prefersRawTab"
-
     private let configuration: AppConfiguration
     private let stackView = NSStackView()
     private let byteViewSegmentedControl = NSSegmentedControl()
     private let revealStatusLabel = NSTextField(labelWithString: "")
     private let hexTextView = HFTextView()
-    private let rawScrollView = NSTextView.scrollableTextView()
-    private var rawText: String?
-    private var rawTextSignature: [String] = []
-    private var isShowingRaw = false
-    private var renderedSegmentIDs: [String] = []
     private var renderedPacketID: PacketSummary.ID?
     private var renderedByteViewID: String?
     private var renderedBytes: Data?
@@ -196,7 +142,6 @@ final class PacketHexViewController: NSViewController {
         setupByteViewControl()
         setupRevealStatusLabel()
         setupHexTextView()
-        setupRawTextView()
     }
 
     // Forward snapshot callers to the narrow inspection-state renderer.
@@ -224,11 +169,8 @@ final class PacketHexViewController: NSViewController {
             clearManualReveal()
         }
 
-        updateRawText(for: inspection)
-        let requestedRange = inspectionState.highlightedByteRange ?? manualRevealRange
-        // A tree selection or a Follow Stream reveal points at bytes, so it takes over from the Raw tab.
-        setShowsRaw(rawText != nil && prefersRawTab && requestedRange == nil && manualRevealPacketID == nil)
         renderByteViewControl(byteViews: byteViews)
+        let requestedRange = inspectionState.highlightedByteRange ?? manualRevealRange
         let selectedByteView = selectedByteView(in: byteViews, highlightedRange: requestedRange)
         let contentChanged = renderedPacketID != inspection?.packetID ||
             renderedByteViewID != selectedByteView?.id ||
@@ -319,60 +261,6 @@ final class PacketHexViewController: NSViewController {
         hexTextView.widthAnchor.constraint(equalTo: stackView.widthAnchor).isActive = true
     }
 
-    private func setupRawTextView() {
-        rawTextView?.isEditable = false
-        rawTextView?.isRichText = false
-        rawTextView?.drawsBackground = false
-        rawTextView?.textContainerInset = NSSize(width: 4, height: 6)
-        rawTextView?.isAutomaticLinkDetectionEnabled = false
-        rawScrollView.drawsBackground = false
-        rawScrollView.borderType = .noBorder
-        rawScrollView.translatesAutoresizingMaskIntoConstraints = false
-        rawScrollView.isHidden = true
-
-        stackView.addArrangedSubview(rawScrollView)
-        rawScrollView.widthAnchor.constraint(equalTo: stackView.widthAnchor).isActive = true
-    }
-
-    private var rawTextView: NSTextView? {
-        rawScrollView.documentView as? NSTextView
-    }
-
-    // The user's last choice between the Raw tab and a byte source carries over to later packets.
-    private var prefersRawTab: Bool {
-        get { configuration.userDefaults.object(forKey: Self.prefersRawTabKey) as? Bool ?? true }
-        set { configuration.userDefaults.set(newValue, forKey: Self.prefersRawTabKey) }
-    }
-
-    // Rebuild the Raw text only when the packet or its byte sources change; render runs on every
-    // snapshot, and re-dissection can decrypt a packet without changing its ID.
-    private func updateRawText(for inspection: PacketInspection?) {
-        guard let inspection else {
-            rawText = nil
-            rawTextSignature = []
-            return
-        }
-        let signature = ["\(inspection.packetID)", "\(inspection.detailNodes.count)"] + inspection.byteViews.map(\.id)
-        guard signature != rawTextSignature else {
-            return
-        }
-        rawTextSignature = signature
-        rawText = PacketRawMessageText.make(for: inspection)
-    }
-
-    private func setShowsRaw(_ showsRaw: Bool) {
-        isShowingRaw = showsRaw
-        rawScrollView.isHidden = !showsRaw
-        hexTextView.isHidden = showsRaw
-        guard showsRaw, let rawTextView, rawTextView.string != rawText else {
-            return
-        }
-        rawTextView.font = configuration.packetFont(sizeDelta: -1)
-        rawTextView.textColor = .labelColor
-        rawTextView.string = rawText ?? ""
-        rawTextView.scrollToBeginningOfDocument(nil)
-    }
-
     private func configureReadOnlyController() {
         let controller = hexTextView.controller
         controller.editable = false
@@ -411,73 +299,51 @@ final class PacketHexViewController: NSViewController {
         return byteViews.first { $0.id == requestedID } ?? byteViews.first { $0.id == "frame" } ?? byteViews[0]
     }
 
-    // The Raw tab, when the packet has one, is the leading segment in front of the byte sources.
-    private var rawSegmentCount: Int {
-        rawText == nil ? 0 : 1
-    }
-
     private func renderByteViewControl(byteViews: [PacketByteView]) {
-        let rawSegment = rawText == nil ? [] : [(id: Self.rawSegmentID, label: "Raw")]
-        let segments = rawSegment + byteViews.map { (id: $0.id, label: $0.label) }
-        guard segments.map(\.id) != renderedSegmentIDs else {
+        let identifiers = byteViews.map(\.id)
+        guard identifiers != renderedByteViews.map(\.id) else {
             renderedByteViews = byteViews
             selectRenderedSegment()
             return
         }
 
-        renderedSegmentIDs = segments.map(\.id)
         renderedByteViews = byteViews
-        byteViewSegmentedControl.segmentCount = segments.count
-        for (index, segment) in segments.enumerated() {
-            byteViewSegmentedControl.setLabel(segment.label, forSegment: index)
+        byteViewSegmentedControl.segmentCount = byteViews.count
+        for (index, byteView) in byteViews.enumerated() {
+            byteViewSegmentedControl.setLabel(byteView.label, forSegment: index)
             byteViewSegmentedControl.setWidth(0, forSegment: index)
             byteViewSegmentedControl.setEnabled(true, forSegment: index)
         }
-        byteViewSegmentedControl.isHidden = segments.count <= 1
+        byteViewSegmentedControl.isHidden = byteViews.count <= 1
         selectRenderedSegment()
     }
 
     private func selectRenderedSegment() {
-        if isShowingRaw {
-            byteViewSegmentedControl.selectedSegment = 0
-            return
-        }
         guard !renderedByteViews.isEmpty else {
             byteViewSegmentedControl.selectedSegment = -1
             return
         }
         guard let renderedByteViewID,
               let index = renderedByteViews.firstIndex(where: { $0.id == renderedByteViewID }) else {
-            byteViewSegmentedControl.selectedSegment = rawSegmentCount + (renderedByteViews.firstIndex(where: { $0.id == "frame" }) ?? 0)
+            byteViewSegmentedControl.selectedSegment = renderedByteViews.firstIndex(where: { $0.id == "frame" }) ?? 0
             return
         }
-        byteViewSegmentedControl.selectedSegment = rawSegmentCount + index
+        byteViewSegmentedControl.selectedSegment = index
     }
 
     @objc private func byteViewSelectionChanged() {
         let selectedIndex = byteViewSegmentedControl.selectedSegment
-        if rawText != nil, selectedIndex == 0 {
-            prefersRawTab = true
-            clearManualReveal()
-            setShowsRaw(true)
-            return
-        }
-        let byteViewIndex = selectedIndex - rawSegmentCount
-        guard renderedByteViews.indices.contains(byteViewIndex) else {
+        guard renderedByteViews.indices.contains(selectedIndex) else {
             return
         }
 
-        if rawText != nil {
-            prefersRawTab = false
-        }
-        let byteView = renderedByteViews[byteViewIndex]
+        let byteView = renderedByteViews[selectedIndex]
         manualByteViewID = byteView.id
         clearManualReveal()
         display(byteView: byteView, highlight: nil)
     }
 
     private func display(byteView: PacketByteView, highlight: PacketHexHighlight?) {
-        setShowsRaw(false)
         renderedByteViewID = byteView.id
         renderedBytes = byteView.bytes
         renderedHighlight = nil

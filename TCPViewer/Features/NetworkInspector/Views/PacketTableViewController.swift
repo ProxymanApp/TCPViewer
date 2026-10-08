@@ -271,7 +271,6 @@ final class PacketTableViewController: NSViewController {
     private var pendingCustomColumnReloadIndexes = IndexSet()
     private var pendingCustomColumnReloadWorkItem: DispatchWorkItem?
     private var renderedPacketLineageRevision: UInt64?
-    private var renderedDissectionRevision: UInt64?
 
     private var suspendedScrollPosition: NSPoint?
     private var suspendedSelection: [PacketSummary.ID]?
@@ -375,13 +374,10 @@ final class PacketTableViewController: NSViewController {
     func render(snapshot: NetworkInspectorSnapshot) {
         isPresentationSuspended = false
         defer { restoreScrollPosition() }
-        // Custom columns are resolved from packet inspections, which re-dissection also invalidates.
-        if renderedPacketLineageRevision != snapshot.base.packetIngestState.packetLineageRevision
-            || renderedDissectionRevision != snapshot.base.packetIngestState.dissectionRevision {
+        if renderedPacketLineageRevision != snapshot.base.packetIngestState.packetLineageRevision {
             customColumnService.clearValues()
             resetCustomColumnResolutionQueue()
             renderedPacketLineageRevision = snapshot.base.packetIngestState.packetLineageRevision
-            renderedDissectionRevision = snapshot.base.packetIngestState.dissectionRevision
         }
 
         let previousRowCount = rows.count

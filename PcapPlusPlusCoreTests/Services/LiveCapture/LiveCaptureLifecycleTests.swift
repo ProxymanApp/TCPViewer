@@ -290,60 +290,6 @@ struct LiveCaptureLifecycleTests {
         #expect(backend.closeCount == 1)
     }
 
-    @Test func liveCaptureDecryptsTLSWhenTheKeyLogIsLoadedBeforeTheHandshake() throws {
-        let fixture = try loadTLS13Fixture()
-        WiresharkEpanSession.setTLSKeyLog(fixture.keyLogLines)
-        defer { WiresharkEpanSession.setTLSKeyLog(Data()) }
-        let session = makeWiresharkSession(reads: fixture.reads)
-        defer { session.shutdown() }
-        let packetDelivered = DispatchSemaphore(value: 0)
-        let protocolByPacketID = Protected<[UInt64: String]>([:])
-        session.packetHandler = { summaries in
-            protocolByPacketID.write { protocols in
-                for summary in summaries { protocols[summary.identifier] = summary.protocolSummary }
-            }
-            packetDelivered.signal()
-        }
-
-        try session.start()
-        for _ in fixture.reads {
-            #expect(packetDelivered.wait(timeout: .now() + 2) == .success)
-        }
-        #expect(protocolByPacketID.wrappedValue.filter { $0.value == "HTTP" }.keys.sorted() == [5, 6, 8, 10, 12, 13])
-
-        try session.stop()
-
-        // Stop releases the live Wireshark session; inspection replays the capture to stay decrypted.
-        let inspection = try session.inspectPacket(withIdentifier: 6)
-        #expect(inspection.byteViews.contains { $0.identifier.hasPrefix("decrypted-tls") })
-    }
-
-    @Test func stoppedLiveCaptureDecryptsOnceKeysArriveAndPacketsAreRedissected() throws {
-        let fixture = try loadTLS13Fixture()
-        defer { WiresharkEpanSession.setTLSKeyLog(Data()) }
-        let session = makeWiresharkSession(reads: fixture.reads)
-        defer { session.shutdown() }
-        let packetDelivered = DispatchSemaphore(value: 0)
-        session.packetHandler = { _ in packetDelivered.signal() }
-        try session.start()
-        for _ in fixture.reads {
-            #expect(packetDelivered.wait(timeout: .now() + 2) == .success)
-        }
-
-        // A running capture must not replay its packets; that work grows with the capture.
-        WiresharkEpanSession.setTLSKeyLog(fixture.keyLogLines)
-        #expect(throws: NSError.self) { try session.rebuildStoppedDissectionSession() }
-        try session.stop()
-
-        let packetIDs = try session.rebuildStoppedDissectionSession()
-        #expect(packetIDs == Array(1...13))
-        #expect(session.canRedissectPacket(withIdentifier: 13))
-        let updates = try session.reanalyzePacketSummaryUpdates(withIdentifiers: packetIDs)
-        let httpUpdates = updates.filter { $0.protocolSummary == "HTTP" }
-        #expect(httpUpdates.map(\.packetIdentifier) == [5, 6, 8, 10, 12, 13])
-        #expect(httpUpdates.allSatisfy { $0.transportHint == .http1 })
-    }
-
     @Test func runningAndStoppedLiveCaptureFollowUDPWithoutLosingNewPackets() throws {
         // A controllable backend proves following does not consume or finish the active first pass.
         func read(_ number: Int, response: Bool, payload: String) -> LibpcapPacketReadResult {
@@ -399,38 +345,6 @@ struct LiveCaptureLifecycleTests {
         #expect(throws: TCPViewerCoreError.self) {
             try oversizedTimeout.validated()
         }
-    }
-
-    private func makeWiresharkSession(reads: [LibpcapPacketReadResult]) -> PCPPNativeLiveSession {
-        PCPPNativeLiveSession(
-            interfaceIdentifier: "test0",
-            options: makeOptions(),
-            captureBackend: TestLiveCaptureBackend(queuedReads: reads),
-            dissectionSessionFactory: { try WiresharkEpanSession(purpose: .live) }
-        )
-    }
-
-    // Replay Wireshark's RFC 8446 sample as live reads, with the key log that unlocks it.
-    private func loadTLS13Fixture() throws -> (reads: [LibpcapPacketReadResult], keyLogLines: Data) {
-        let directory = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Vendor/Wireshark/test")
-        let capture = try NativeCaptureFile.load(from: directory.appendingPathComponent("captures/tls13-rfc8446.pcap"))
-        let reads = capture.records.enumerated().map { index, record in
-            LibpcapPacketReadResult.packet(
-                header: pcap_pkthdr(
-                    ts: timeval(tv_sec: index + 1, tv_usec: 0),
-                    caplen: UInt32(record.rawBytes.count),
-                    len: UInt32(record.rawBytes.count)
-                ),
-                bytes: record.rawBytes
-            )
-        }
-        let keyLog = TLSKeyLogParser.parse(try Data(contentsOf: directory.appendingPathComponent("keys/tls13-rfc8446.keys")))
-        return (reads, keyLog.lines)
     }
 
     private func makeSession(backend: TestLiveCaptureBackend) -> PCPPNativeLiveSession {

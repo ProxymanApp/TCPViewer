@@ -102,11 +102,9 @@ struct DNSMessageParser {
         return buildResolutions(questions: questions, records: records)
     }
 
-    // Only OPT may use a root owner here; its payload follows the normal bounded skip path.
     private func readResourceRecord(cursor: inout Int) -> ResourceRecord? {
-        guard let ownerName = readName(cursor: &cursor, allowRoot: true),
+        guard let ownerName = readName(cursor: &cursor),
               let type = readUInt16(at: cursor),
-              !ownerName.isEmpty || type == 41,
               let recordClass = readUInt16(at: cursor + 2),
               let timeToLive = readUInt32(at: cursor + 4),
               let dataLength = readUInt16(at: cursor + 8) else {
@@ -251,8 +249,7 @@ struct DNSMessageParser {
         )
     }
 
-    // Allow the wire-format root only when the caller explicitly handles an empty name.
-    private func readName(cursor: inout Int, allowRoot: Bool = false) -> String? {
+    private func readName(cursor: inout Int) -> String? {
         let originalCursor = cursor
         var readCursor = cursor
         var nextCursor: Int?
@@ -266,7 +263,6 @@ struct DNSMessageParser {
             let length = bytes[readCursor]
             if length == 0 {
                 cursor = nextCursor ?? (readCursor + 1)
-                if labels.isEmpty && allowRoot { return "" }
                 return normalizedName(labels.joined(separator: "."))
             }
 

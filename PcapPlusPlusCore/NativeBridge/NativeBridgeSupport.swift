@@ -405,8 +405,7 @@ enum NativeBridgeMapper {
         PacketSummaryUpdate(
             packetID: descriptor.packetIdentifier,
             protocolSummary: descriptor.protocolSummary,
-            infoSummary: descriptor.infoSummary,
-            transportHint: descriptor.transportHint.map(transportHint)
+            infoSummary: descriptor.infoSummary
         )
     }
 
