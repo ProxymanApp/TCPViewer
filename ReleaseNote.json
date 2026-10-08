@@ -326,6 +326,16 @@
       "bugs": [
         "Fixed: high memory usage after clearing captured packets."
       ]
+    },
+    {
+      "version": "1.20.0",
+      "title": "TCP Viewer 1.20.0: DNS Resolution Fixes",
+      "features": [],
+      "improvements": [],
+      "bugs": [
+        "Fixed: missing domain names when DNS responses include EDNS records.",
+        "Fixed: incorrect domain names for packets with out-of-order timestamps."
+      ]
     }
   ]
 }
