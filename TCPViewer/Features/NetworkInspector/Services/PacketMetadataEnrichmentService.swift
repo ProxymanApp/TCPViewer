@@ -812,6 +812,18 @@ private extension MacOSPacketClientResolver.SocketTransport {
     }
 }
 
+extension PacketSummaryUpdate {
+    // Re-key an update when a backing capture numbers its packets differently from the workspace.
+    func tcpviewerRemapping(packetID: PacketSummary.ID) -> PacketSummaryUpdate {
+        PacketSummaryUpdate(
+            packetID: packetID,
+            protocolSummary: protocolSummary,
+            infoSummary: infoSummary,
+            transportHint: transportHint
+        )
+    }
+}
+
 extension PacketSummary {
     func tcpviewerApplying(summaryUpdate: PacketSummaryUpdate) -> PacketSummary {
         PacketSummary(
@@ -820,7 +832,7 @@ extension PacketSummary {
             timestamp: timestamp,
             source: source,
             interfaceID: interfaceID,
-            transportHint: transportHint,
+            transportHint: summaryUpdate.transportHint ?? transportHint,
             protocolSummary: summaryUpdate.protocolSummary,
             endpoints: endpoints,
             originalLength: originalLength,

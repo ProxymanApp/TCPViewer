@@ -132,6 +132,10 @@ final class NativeLivePacketDiskStore {
         entries.count
     }
 
+    var identifiers: [UInt64] {
+        entries.map(\.identifier)
+    }
+
     var fileExists: Bool {
         fileManager.fileExists(atPath: backingFileURL.path)
     }

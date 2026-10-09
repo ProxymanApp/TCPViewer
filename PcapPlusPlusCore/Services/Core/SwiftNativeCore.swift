@@ -249,6 +249,7 @@ final class PCPPNativeOfflineDocument {
                 throw NativeNSError(.fileReadFailed, "Packet \(identifier) is not available in the backing store.")
             }
             let record = state.file.records[index]
+            restoreFirstPassForTLSDecryptionIfNeeded(for: identifier, in: &state)
             return try autoreleasepool {
                 try self.makePacketInspectionDescriptorSafely(record: record, state: &state)
             }
@@ -257,7 +258,7 @@ final class PCPPNativeOfflineDocument {
 
     func activateDisplayFilter(_ expression: String, generation: UInt64) throws -> DisplayFilterValidation {
         try state.write { state in
-            let session = try prepareDisplayFilterSession(in: &state)
+            let session = try prepareCompleteFirstPassSession(in: &state)
             return session.activateDisplayFilter(expression, generation: generation)
         }
     }
@@ -395,6 +396,47 @@ final class PCPPNativeOfflineDocument {
         )
     }
 
+    // Run a fresh first pass over the loaded records without re-reading the file.
+    // Wireshark applies TLS keys only while it first sees a handshake, so new keys need a new session.
+    func redissectPacketSummaries(
+        cancellationCheck: PCPPNativeCancellationHandler?
+    ) throws -> [PCPPNativePacketSummaryDescriptor] {
+        let records = state.read { $0.file.records }
+        let session = try WiresharkEpanSession(disabled: disablesWireshark)
+        // While a live capture owns Wireshark every row would silently fall back to the Swift dissector,
+        // so prove the new session works before any existing row is replaced.
+        if let firstRecord = records.first {
+            try session.observe(firstRecord)
+            guard session.canFollowObservedPacket(withIdentifier: firstRecord.identifier) else {
+                throw NativeNSError(.unavailableFeature, "Wireshark is busy with another capture.")
+            }
+        }
+        state.write { $0.dissectionSession = session }
+
+        var summaries: [PCPPNativePacketSummaryDescriptor] = []
+        summaries.reserveCapacity(records.count)
+        var dnsTCPStreamParser = DNSTCPStreamParser()
+        for record in records {
+            if cancellationCheck?() == true {
+                throw NativeNSError(.operationCancelled, "Re-dissecting packets was cancelled.")
+            }
+            let summary = try autoreleasepool {
+                try state.write {
+                    try self.makePacketSummaryDescriptorSafely(
+                        record: record,
+                        state: &$0,
+                        dnsTCPStreamParser: &dnsTCPStreamParser
+                    )
+                }
+            }
+            summaries.append(summary)
+        }
+        state.write {
+            try? requireDissectionSession(in: $0).finishFirstPass()
+        }
+        return summaries
+    }
+
     private func loadIncrementally(
         reload: Bool,
         batchSize: Int,
@@ -512,8 +554,23 @@ final class PCPPNativeOfflineDocument {
         return dissectionSession
     }
 
+    // Decrypted TLS depends on the whole conversation, so rebuild the first pass when another capture
+    // took Wireshark. Without a key log a lone packet still dissects usefully, so that path stays cheap.
+    private func restoreFirstPassForTLSDecryptionIfNeeded(
+        for identifier: UInt64,
+        in state: inout PCPPNativeOfflineDocumentState
+    ) {
+        guard WiresharkEpanSession.hasTLSKeyLog,
+              let session = state.dissectionSession,
+              !session.canFollowObservedPacket(withIdentifier: identifier) else {
+            return
+        }
+        // On failure (e.g. a live capture owns Wireshark) inspection keeps today's single-packet result.
+        _ = try? prepareCompleteFirstPassSession(in: &state)
+    }
+
     // Rebuild a complete first pass when another document previously owned process-global EPAN state.
-    private func prepareDisplayFilterSession(
+    private func prepareCompleteFirstPassSession(
         in state: inout PCPPNativeOfflineDocumentState
     ) throws -> WiresharkEpanSession {
         let identifiers = state.file.records.map(\.identifier)
@@ -853,17 +910,13 @@ final class PCPPNativeLiveSession {
             let record = try state.packetStore.record(withIdentifier: identifier)
             return autoreleasepool {
                 let session: WiresharkEpanSession
-                if let activeSession = state.dissectionSession {
-                    session = activeSession
-                } else if state.phase == .stopped && state.hadWorkingDissectionSession {
-                    // Stop releases live EPAN ownership, so inspect retained packets in a temporary session.
-                    do {
-                        session = try WiresharkEpanSession()
-                    } catch {
-                        disableWiresharkAfterFailure(error, state: &state)
+                do {
+                    guard let inspectionSession = try inspectionSession(for: identifier, in: &state) else {
                         return SwiftPacketDissector.dissect(record: record, disablesWireshark: true).inspection
                     }
-                } else {
+                    session = inspectionSession
+                } catch {
+                    disableWiresharkAfterFailure(error, state: &state)
                     return SwiftPacketDissector.dissect(record: record, disablesWireshark: true).inspection
                 }
 
@@ -881,8 +934,27 @@ final class PCPPNativeLiveSession {
 
     func activateDisplayFilter(_ expression: String, generation: UInt64) throws -> DisplayFilterValidation {
         try state.write { state in
-            let session = try prepareDisplayFilterSession(in: &state)
+            let session = try prepareCompleteFirstPassSession(in: &state)
             return session.activateDisplayFilter(expression, generation: generation)
+        }
+    }
+
+    // Replay a stopped capture's retained packets into a fresh session so new TLS keys reach every
+    // handshake. Returns the packet identifiers so the caller can refresh rows in bounded chunks.
+    func rebuildStoppedDissectionSession() throws -> [UInt64] {
+        try state.write { state in
+            guard state.phase == .stopped, state.hadWorkingDissectionSession else {
+                throw NativeNSError(.unavailableFeature, "Packets can only be re-dissected after the capture stops.")
+            }
+            _ = try prepareCompleteFirstPassSession(in: &state, forcesRebuild: true)
+            return state.packetStore.identifiers
+        }
+    }
+
+    // Report whether the stopped capture's session still holds Wireshark state for a packet.
+    func canRedissectPacket(withIdentifier identifier: UInt64) -> Bool {
+        state.read {
+            $0.phase == .stopped && $0.dissectionSession?.canFollowObservedPacket(withIdentifier: identifier) == true
         }
     }
 
@@ -990,7 +1062,8 @@ final class PCPPNativeLiveSession {
             PCPPNativePacketSummaryUpdateDescriptor(
                 packetIdentifier: $0.identifier,
                 protocolSummary: $0.protocolSummary,
-                infoSummary: $0.infoSummary
+                infoSummary: $0.infoSummary,
+                transportHint: $0.transportHint
             )
         }
     }
@@ -1000,7 +1073,8 @@ final class PCPPNativeLiveSession {
             PCPPNativePacketSummaryUpdateDescriptor(
                 packetIdentifier: $0.identifier,
                 protocolSummary: $0.protocolSummary,
-                infoSummary: $0.infoSummary
+                infoSummary: $0.infoSummary,
+                transportHint: $0.transportHint
             )
         }
     }
@@ -1202,11 +1276,34 @@ final class PCPPNativeLiveSession {
         state.statusMessage = "Wireshark details are unavailable; capture continues with the Swift dissector. \(message)"
     }
 
-    // Rehydrate stopped live captures once, while active captures keep their incremental first pass.
-    private func prepareDisplayFilterSession(
+    // Pick the session that can inspect a retained packet. Decrypted TLS depends on the whole
+    // conversation, so with a key log a stopped capture replays its packets once instead of
+    // dissecting the packet alone.
+    private func inspectionSession(
+        for identifier: UInt64,
         in state: inout PCPPNativeLiveSessionState
+    ) throws -> WiresharkEpanSession? {
+        let needsWholeCapture = state.phase == .stopped && WiresharkEpanSession.hasTLSKeyLog
+        if let activeSession = state.dissectionSession,
+           !needsWholeCapture || activeSession.canFollowObservedPacket(withIdentifier: identifier) {
+            return activeSession
+        }
+        guard state.phase == .stopped && state.hadWorkingDissectionSession else {
+            return nil
+        }
+        if needsWholeCapture, let rebuiltSession = try? prepareCompleteFirstPassSession(in: &state, forcesRebuild: true) {
+            return rebuiltSession
+        }
+        // Stop releases live EPAN ownership, so inspect retained packets in a temporary session.
+        return try state.dissectionSession ?? WiresharkEpanSession()
+    }
+
+    // Rehydrate stopped live captures once, while active captures keep their incremental first pass.
+    private func prepareCompleteFirstPassSession(
+        in state: inout PCPPNativeLiveSessionState,
+        forcesRebuild: Bool = false
     ) throws -> WiresharkEpanSession {
-        if let session = state.dissectionSession {
+        if !forcesRebuild, let session = state.dissectionSession {
             return session
         }
 
