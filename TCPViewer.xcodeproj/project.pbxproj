@@ -7,7 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		D1FF00113000000000000001 /* MonacoDiff in Resources */ = {isa = PBXBuildFile; fileRef = D1FF00123000000000000001 /* MonacoDiff */; };
 		BA2DCC0030440B6800487713 /* ArgumentParser in Frameworks */ = {isa = PBXBuildFile; productRef = BA2DCBFF30440B6800487713 /* ArgumentParser */; };
 		BA4D26BD2F9A2F770070BE17 /* PcapPlusPlusCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BA4D26B42F9A2F760070BE17 /* PcapPlusPlusCore.framework */; };
 		BA5E00012FA800000070BE17 /* Sentry in Frameworks */ = {isa = PBXBuildFile; productRef = BA5E00032FA800000070BE17 /* Sentry */; };
@@ -25,6 +24,7 @@
 		BAPM00082F9D00000070BE17 /* HexFiend.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BA7A10022F9B00000070BE17 /* HexFiend.framework */; };
 		BATH00012F9D00000070BE17 /* HexFiend.framework in Copy Vendored HexFiend For Test Host */ = {isa = PBXBuildFile; fileRef = BA7A10022F9B00000070BE17 /* HexFiend.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 		D0C6D1832B761CD2FBBD11A7 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 24AFD2DE681080973988FA47 /* Sparkle */; };
+		D1FF00113000000000000001 /* Vendor/MonacoDiff/MonacoDiff in Resources */ = {isa = PBXBuildFile; fileRef = D1FF00123000000000000001 /* Vendor/MonacoDiff/MonacoDiff */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -168,7 +168,6 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		D1FF00123000000000000001 /* MonacoDiff */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Vendor/MonacoDiff/MonacoDiff; sourceTree = SOURCE_ROOT; };
 		BA2DC1D830440ACB00487713 /* tcpviewer-cli */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "tcpviewer-cli"; sourceTree = BUILT_PRODUCTS_DIR; };
 		BA4D26B42F9A2F760070BE17 /* PcapPlusPlusCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = PcapPlusPlusCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		BA4D26BC2F9A2F770070BE17 /* PcapPlusPlusCoreTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PcapPlusPlusCoreTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -181,6 +180,7 @@
 		BACE00042F9C00000070BE17 /* NetworkHelperLaunchDaemons/com.proxyman.tcpviewer.helpertool.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = NetworkHelperLaunchDaemons/com.proxyman.tcpviewer.helpertool.plist; sourceTree = "<group>"; };
 		BACE00062F9C00000070BE17 /* TCPViewerHelperTool/TCPViewerNetworkHelperCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TCPViewerHelperTool/TCPViewerNetworkHelperCore.swift; sourceTree = "<group>"; };
 		BAE100012FA300000070BE17 /* TCPViewer.shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = TCPViewer.shared.xcconfig; sourceTree = "<group>"; };
+		D1FF00123000000000000001 /* Vendor/MonacoDiff/MonacoDiff */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Vendor/MonacoDiff/MonacoDiff; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -323,7 +323,7 @@
 				BAE100032FA300000070BE17 /* Config */,
 				BA4D2DD82F9B3EF50070BE17 /* PcapPlusPlusCore.xctestplan */,
 				BAAE975E2F9B815F00C52A7C /* TCPViewer */,
-				D1FF00123000000000000001 /* MonacoDiff */,
+				D1FF00123000000000000001 /* Vendor/MonacoDiff/MonacoDiff */,
 				BAAE97722F9B816000C52A7C /* TCPViewerTests */,
 				BA4D26B52F9A2F760070BE17 /* PcapPlusPlusCore */,
 				BA4D26C22F9A2F770070BE17 /* PcapPlusPlusCoreTests */,
@@ -658,7 +658,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				D1FF00113000000000000001 /* MonacoDiff in Resources */,
+				D1FF00113000000000000001 /* Vendor/MonacoDiff/MonacoDiff in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1351,7 +1351,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 80;
+				CURRENT_PROJECT_VERSION = 90;
 				DEVELOPMENT_TEAM = "$(TCPVIEWER_DEVELOPMENT_TEAM)";
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -1374,7 +1374,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 1.20.0;
+				MARKETING_VERSION = 1.21.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.proxyman.tcpviewer;
 				PRODUCT_MODULE_NAME = TCPViewer;
 				PRODUCT_NAME = "TCP Viewer";
@@ -1397,7 +1397,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 80;
+				CURRENT_PROJECT_VERSION = 90;
 				DEVELOPMENT_TEAM = "$(TCPVIEWER_DEVELOPMENT_TEAM)";
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -1420,7 +1420,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 1.20.0;
+				MARKETING_VERSION = 1.21.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.proxyman.tcpviewer;
 				PRODUCT_MODULE_NAME = TCPViewer;
 				PRODUCT_NAME = "TCP Viewer";
