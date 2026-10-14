@@ -290,6 +290,57 @@ struct LiveCaptureLifecycleTests {
         #expect(backend.closeCount == 1)
     }
 
+    @Test func stoppedLiveCaptureInspectsSegmentWithReassembledRequest() throws {
+        let request = Data("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n".utf8)
+        let firstSegmentLength = 20
+        let packets = [
+            makeLiveTCPPacket(identifier: 1, sourceIsClient: true, sequence: 100, acknowledgment: 0, flags: 0x02),
+            makeLiveTCPPacket(identifier: 2, sourceIsClient: false, sequence: 900, acknowledgment: 101, flags: 0x12),
+            makeLiveTCPPacket(
+                identifier: 3,
+                sourceIsClient: true,
+                sequence: 101,
+                acknowledgment: 901,
+                flags: 0x10,
+                payload: request.prefix(firstSegmentLength)
+            ),
+            makeLiveTCPPacket(
+                identifier: 4,
+                sourceIsClient: true,
+                sequence: 101 + UInt32(firstSegmentLength),
+                acknowledgment: 901,
+                flags: 0x18,
+                payload: request.dropFirst(firstSegmentLength)
+            ),
+        ]
+        let reads = packets.enumerated().map { index, packet in
+            let header = pcap_pkthdr(
+                ts: timeval(tv_sec: index + 1, tv_usec: 0),
+                caplen: UInt32(packet.count),
+                len: UInt32(packet.count)
+            )
+            return LibpcapPacketReadResult.packet(header: header, bytes: packet)
+        }
+        let session = PCPPNativeLiveSession(
+            interfaceIdentifier: "test0",
+            options: makeOptions(),
+            captureBackend: TestLiveCaptureBackend(queuedReads: reads),
+            dissectionSessionFactory: { try WiresharkEpanSession(purpose: .live) }
+        )
+        let packetDelivered = DispatchSemaphore(value: 0)
+        session.packetHandler = { _ in packetDelivered.signal() }
+
+        try session.start()
+        for _ in packets {
+            #expect(packetDelivered.wait(timeout: .now() + 2) == .success)
+        }
+        try session.stop()
+
+        // The last segment completes the request only when the retained earlier segment is dissected first.
+        let inspection = try session.inspectPacket(withIdentifier: 4)
+        #expect(findNode(in: inspection.detailNodes, fieldName: "http.host") != nil)
+    }
+
     @Test func runningAndStoppedLiveCaptureFollowUDPWithoutLosingNewPackets() throws {
         // A controllable backend proves following does not consume or finish the active first pass.
         func read(_ number: Int, response: Bool, payload: String) -> LibpcapPacketReadResult {
@@ -426,6 +477,21 @@ struct LiveCaptureLifecycleTests {
         packet.append(contentsOf: [0x50, flags, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00])
         packet.append(payload)
         return packet
+    }
+
+    private func findNode(
+        in nodes: [PCPPNativePacketDetailNodeDescriptor],
+        fieldName: String
+    ) -> PCPPNativePacketDetailNodeDescriptor? {
+        for node in nodes {
+            if node.fieldName == fieldName {
+                return node
+            }
+            if let match = findNode(in: node.children, fieldName: fieldName) {
+                return match
+            }
+        }
+        return nil
     }
 
     private func bytes(_ value: UInt16) -> [UInt8] {

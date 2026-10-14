@@ -521,7 +521,11 @@ final class PCPPNativeOfflineDocument {
            identifiers.isEmpty || session.canFollowObservedPackets(withIdentifiers: identifiers) {
             return session
         }
+        return try replayFirstPass(in: &state)
+    }
 
+    // Replay every record in capture order so reassembly and conversation state match the original load.
+    private func replayFirstPass(in state: inout PCPPNativeOfflineDocumentState) throws -> WiresharkEpanSession {
         let session = try WiresharkEpanSession(disabled: disablesWireshark)
         for record in state.file.records {
             try session.observe(record)
@@ -575,7 +579,12 @@ final class PCPPNativeOfflineDocument {
     ) throws -> PCPPNativePacketInspectionDescriptor {
         do {
             let analyzer = PacketAnalyzer(record: record).analyze()
-            let inspection = try requireDissectionSession(in: state).inspect(record)
+            var session = try requireDissectionSession(in: state)
+            // Another capture may have taken EPAN; dissecting this packet alone would lose earlier TCP segments.
+            if !session.canFollowObservedPacket(withIdentifier: record.identifier) {
+                session = try replayFirstPass(in: &state)
+            }
+            let inspection = try session.inspect(record)
             return makePacketInspectionDescriptor(record: record, analyzed: analyzer, wireshark: inspection)
         } catch {
             if NativeErrorIsCriticalWiresharkException(error) {
@@ -853,12 +862,13 @@ final class PCPPNativeLiveSession {
             let record = try state.packetStore.record(withIdentifier: identifier)
             return autoreleasepool {
                 let session: WiresharkEpanSession
-                if let activeSession = state.dissectionSession {
+                if let activeSession = state.dissectionSession,
+                   state.phase != .stopped || activeSession.canFollowObservedPacket(withIdentifier: identifier) {
                     session = activeSession
                 } else if state.phase == .stopped && state.hadWorkingDissectionSession {
-                    // Stop releases live EPAN ownership, so inspect retained packets in a temporary session.
+                    // Stop releases live EPAN ownership; replay retained packets so reassembly sees earlier segments.
                     do {
-                        session = try WiresharkEpanSession()
+                        session = try replayRetainedPackets(in: &state)
                     } catch {
                         disableWiresharkAfterFailure(error, state: &state)
                         return SwiftPacketDissector.dissect(record: record, disablesWireshark: true).inspection
@@ -1209,7 +1219,11 @@ final class PCPPNativeLiveSession {
         if let session = state.dissectionSession {
             return session
         }
+        return try replayRetainedPackets(in: &state)
+    }
 
+    // Rebuild a stopped capture's first pass from the retained packets, in capture order.
+    private func replayRetainedPackets(in state: inout PCPPNativeLiveSessionState) throws -> WiresharkEpanSession {
         let session = try WiresharkEpanSession()
         try state.packetStore.forEachRecord { record in
             try session.observe(record)
