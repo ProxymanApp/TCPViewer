@@ -2381,6 +2381,17 @@ struct WindowControllerTests {
         #expect(!TCPViewerCaptureFileImportPolicy.allowedContentTypes.isEmpty)
     }
 
+    // Finder lists the app for capture files owned by another app's UTI only through an extension claim.
+    @Test func appBundleClaimsCaptureFilesByExtension() {
+        let documentTypes = Bundle.main.object(forInfoDictionaryKey: "CFBundleDocumentTypes") as? [[String: Any]] ?? []
+        // LaunchServices ignores CFBundleTypeExtensions in entries that also declare LSItemContentTypes.
+        let claimedExtensions = documentTypes
+            .filter { $0["LSItemContentTypes"] == nil }
+            .flatMap { $0["CFBundleTypeExtensions"] as? [String] ?? [] }
+
+        #expect(TCPViewerCaptureFileImportPolicy.captureFilenameExtensions.isSubset(of: Set(claimedExtensions)))
+    }
+
     @Test func exportPacketsPausesAndResumesRunningLiveCapture() async {
         let exportURL = URL(fileURLWithPath: "/tmp/live-export.pcapng")
         let packets = [

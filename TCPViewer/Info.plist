@@ -48,6 +48,18 @@
 				<string>org.tcpdump.pcapng</string>
 			</array>
 		</dict>
+		<!-- Other capture apps can export their own UTI for .pcap/.pcapng, so also claim by extension. LaunchServices ignores extensions in an entry that has LSItemContentTypes, hence the separate entry. -->
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleTypeName</key>
+			<string>Packet Capture File</string>
+			<key>CFBundleTypeExtensions</key>
+			<array>
+				<string>pcap</string>
+				<string>pcapng</string>
+			</array>
+		</dict>
 		<dict>
 			<key>CFBundleTypeIconFile</key>
 			<string>TCPViewSessionDocumentIcon.icns</string>
