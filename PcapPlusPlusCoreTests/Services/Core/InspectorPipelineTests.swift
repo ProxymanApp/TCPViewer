@@ -729,6 +729,27 @@ struct InspectorPipelineTests {
         #expect(findNode(in: inspection.detailNodes, fieldName: "tls.handshake.extensions_server_name")?.value == hostName)
     }
 
+    @Test func splitTLSClientHelloStaysReassembledAfterAnotherDocumentTakesWireshark() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let captureURL = directory.appendingPathComponent("split-client-hello.pcap")
+        let otherCaptureURL = directory.appendingPathComponent("other.pcap")
+        let hostName = "split.example.com"
+        try writePCAP(to: captureURL, packets: makeIPv4TLSSplitClientHelloPackets(hostName: hostName))
+        try writePCAP(to: otherCaptureURL, packets: [makeIPv4UDPPayloadPacket()])
+
+        let core = NativeTCPViewerCore()
+        let document = try await core.openOfflineCaptureDocument(at: captureURL)
+        let packets = try await document.open()
+        let packetWithSNI = try #require(packets.first { $0.sniDomainName == hostName })
+        // Loading another capture releases this document's process-global Wireshark state.
+        _ = try await core.openOfflineCaptureDocument(at: otherCaptureURL).open()
+
+        let inspection = try await document.inspectPacket(id: packetWithSNI.id)
+        #expect(findNode(in: inspection.detailNodes, fieldName: "tls.handshake.extensions_server_name")?.value == hostName)
+    }
+
     @Test func tcpSynInspectionExpandsFlagsAndOptions() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
