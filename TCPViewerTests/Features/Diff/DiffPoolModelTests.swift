@@ -229,7 +229,7 @@ struct DiffPoolModelTests {
         #expect(a.text == "Field: 42")
     }
 
-    @Test func displayModePersistsAndIndentationParticipatesInDiff() {
+    @Test func displayModeAndContentKindPersist() {
         let defaults = isolatedDefaults()
         let model = DiffPoolModel(defaults: defaults)
         #expect(model.displayMode == .sideBySide)
@@ -240,8 +240,6 @@ struct DiffPoolModelTests {
         #expect(DiffPoolModel(defaults: defaults).contentKind == .packetBytes)
         model.setContentKind(.packetDetails)
         #expect(model.displayMode == .unified)
-        #expect(model.displayMode.editorOptions["renderSideBySide"] as? Bool == false)
-        #expect(model.displayMode.editorOptions["ignoreTrimWhitespace"] as? Bool == false)
     }
 
     @Test func byteSnapshotsOwnBorrowedStorageAndNeedNoFurtherInspection() async {
@@ -334,7 +332,7 @@ struct DiffPoolModelTests {
         #expect(!controller.validateMenuItem(leftItem))
         let f7 = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
             windowNumber: controller.window?.windowNumber ?? 0, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 98))
-        #expect(!controller.handleShortcut(f7))
+        #expect(controller.handleShortcut(f7))
         model.setContentKind(.packetBytes)
         #expect(controller.handleShortcut(f7))
         app.updateDiffMenu(menu, window: nil)

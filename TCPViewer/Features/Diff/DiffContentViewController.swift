@@ -126,10 +126,13 @@ final class DiffContentViewController: NSViewController, NSUserInterfaceValidati
         else { editor.showSearchBar() }
     }
 
-    func navigateByteDifference(backwards: Bool) -> Bool {
-        guard model.contentKind == .packetBytes else { return false }
-        if backwards { binary?.previousChange(nil) } else { binary?.nextChange(nil) }
-        return true
+    // Both text and byte comparisons use the same window-level change-navigation shortcut.
+    func navigateDifference(backwards: Bool) {
+        if model.contentKind == .packetBytes {
+            if backwards { binary?.previousChange(nil) } else { binary?.nextChange(nil) }
+        } else {
+            editor.navigateDifference(backwards: backwards)
+        }
     }
 
     func closeEditor() {
