@@ -67,7 +67,8 @@ final class DiffWindowController: NSWindowController, NSWindowDelegate, DiffPool
         guard window?.attachedSheet == nil else { return false }
         let flags = event.modifierFlags.intersection([.command, .option, .control, .shift])
         if event.keyCode == 98, flags.isEmpty || flags == [.shift] {
-            return contentController.navigateByteDifference(backwards: flags == [.shift])
+            contentController.navigateDifference(backwards: flags == [.shift])
+            return true
         }
         if flags == [.command, .shift], event.keyCode == 51 || event.keyCode == 117,
            window?.firstResponder === poolController.tableView {

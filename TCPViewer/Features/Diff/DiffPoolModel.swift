@@ -24,9 +24,6 @@ enum DiffContentKind: String, CaseIterable {
 enum DiffDisplayMode: String, CaseIterable {
     case sideBySide, unified
     var title: String { self == .sideBySide ? "Side By Side" : "Unified" }
-    var editorOptions: [String: Any] {
-        ["renderSideBySide": self == .sideBySide, "ignoreTrimWhitespace": false]
-    }
 }
 
 final class DiffPacketEntry {

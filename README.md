@@ -201,6 +201,11 @@ xcodebuild -project TCPViewer.xcodeproj -scheme TCPViewer build
 
 If Xcode asks for signing, select a development team for `TCPViewer` and `PcapPlusPlusCore`.
 
+Packet Details Diff uses a small, locally bundled build of Microsoft's open-source
+Monaco editor. No private MonacoEditor Swift package, Node.js, or CDN is needed
+to build or run the app. See [Vendor/MonacoDiff](Vendor/MonacoDiff/README.md) to
+rebuild the checked-in web assets when changing the diff integration.
+
 ## Test
 
 ```bash

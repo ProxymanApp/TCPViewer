@@ -1,0 +1,4 @@
+# Preserve significant template-literal whitespace and upstream notices verbatim.
+MonacoDiff/diff.js linguist-generated=true -whitespace
+MonacoDiff/diff.css linguist-generated=true
+MonacoDiff/ThirdPartyNotices.txt -whitespace

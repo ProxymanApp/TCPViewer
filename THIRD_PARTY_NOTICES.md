@@ -33,6 +33,19 @@ still GPL-covered and are not LGPL.
 
 HexFiend provides the embedded packet hex viewer framework.
 
+## Monaco Editor
+
+- Source: https://github.com/microsoft/monaco-editor
+- Pinned npm version: `0.57.0`
+- License: MIT
+- License and upstream notices: `Vendor/MonacoDiff/MonacoDiff/LICENSE.txt` and `ThirdPartyNotices.txt`
+- Local source and reproducible build: `Vendor/MonacoDiff`
+
+Only the plaintext diff editor, its worker, Find, clipboard, and context
+menu support are bundled. The app includes these notices in its `MonacoDiff`
+resource folder. The Swift/WebKit integration belongs to TCP Viewer and does
+not use the private Proxyman MonacoEditor package.
+
 ## Model Context Protocol Swift SDK
 
 - Source: https://github.com/modelcontextprotocol/swift-sdk
