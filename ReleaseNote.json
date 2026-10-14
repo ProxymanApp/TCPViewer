@@ -336,6 +336,19 @@
         "Fixed: missing domain names when DNS responses include EDNS records.",
         "Fixed: incorrect domain names for packets with out-of-order timestamps."
       ]
+    },
+    {
+      "version": "1.21.0",
+      "title": "TCP Viewer 1.21.0: Packet Diff and Capture File Fixes",
+      "features": [],
+      "improvements": [
+        "Include the Packet Diff editor in the project so TCP Viewer is easier to build from source.",
+        "Use F7 and Shift-F7 to jump between changes in Packet Details Diff."
+      ],
+      "bugs": [
+        "Fixed: TCP Viewer missing from Finder's Open With menu for some PCAP and PCAPNG files.",
+        "Fixed: missing TLS and other packet details after stopping a capture or switching between captures."
+      ]
     }
   ]
 }
