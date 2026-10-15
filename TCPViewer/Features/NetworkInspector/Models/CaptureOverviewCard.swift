@@ -99,14 +99,19 @@ final class CaptureOverviewCardLayoutStore {
         return cards
     }
 
-    // Hide a visible card, or append a hidden one at the end of the grid.
+    // Show a card at the end of the grid or hide it. Idempotent, so a window with a stale grid can't invert
+    // a change another window already saved.
     @discardableResult
-    func toggle(_ card: CaptureOverviewCard) -> [CaptureOverviewCard] {
+    func setVisible(_ card: CaptureOverviewCard, _ isVisible: Bool) -> [CaptureOverviewCard] {
         var cards = cards
-        if let index = cards.firstIndex(of: card) {
-            cards.remove(at: index)
-        } else {
+        let isAlreadyVisible = cards.contains(card)
+        guard isVisible != isAlreadyVisible else {
+            return cards
+        }
+        if isVisible {
             cards.append(card)
+        } else {
+            cards.removeAll { $0 == card }
         }
         defaults.set(cards.map(\.rawValue), forKey: Self.storageKey)
         return cards

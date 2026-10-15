@@ -223,7 +223,7 @@ struct CaptureOverviewDashboardActions {
     let viewPackets: () -> Void
     let showEndpoints: () -> Void
     let performRowAction: (CaptureOverviewRowAction) -> Void
-    let toggleCard: (CaptureOverviewCard) -> Void
+    let setCardVisible: (CaptureOverviewCard, Bool) -> Void
     let restoreDefaultCards: () -> Void
     let copyMarkdown: () -> Void
     let saveMarkdown: () -> Void
@@ -549,13 +549,13 @@ private struct CaptureOverviewCardGrid: View {
                     .frame(height: CaptureOverviewStyle.cardHeight)
                     .contextMenu {
                         Button("Remove from Overview", systemImage: "minus.circle") {
-                            actions.toggleCard(card)
+                            actions.setCardVisible(card, false)
                         }
                     }
             }
             CaptureOverviewAddCardCell(
                 visibleCards: model.cards,
-                onToggle: actions.toggleCard,
+                onSetVisible: actions.setCardVisible,
                 onRestoreDefaults: actions.restoreDefaultCards
             )
             .frame(height: CaptureOverviewStyle.cardHeight)
@@ -646,7 +646,7 @@ struct CaptureOverviewCardView<Content: View>: View {
 // The last cell of the grid. Its popover lists every card with a checkmark to show or hide it.
 private struct CaptureOverviewAddCardCell: View {
     let visibleCards: [CaptureOverviewCard]
-    let onToggle: (CaptureOverviewCard) -> Void
+    let onSetVisible: (CaptureOverviewCard, Bool) -> Void
     let onRestoreDefaults: () -> Void
 
     @State private var isPickerShown = false
@@ -697,7 +697,7 @@ private struct CaptureOverviewAddCardCell: View {
         .popover(isPresented: $isPickerShown, attachmentAnchor: .point(.center)) {
             CaptureOverviewCardPicker(
                 visibleCards: visibleCards,
-                onToggle: onToggle,
+                onSetVisible: onSetVisible,
                 onRestoreDefaults: onRestoreDefaults
             )
         }
@@ -709,7 +709,7 @@ private struct CaptureOverviewAddCardCell: View {
 // Every card with a checkmark; clicking a row shows or hides that card without closing the popover.
 private struct CaptureOverviewCardPicker: View {
     let visibleCards: [CaptureOverviewCard]
-    let onToggle: (CaptureOverviewCard) -> Void
+    let onSetVisible: (CaptureOverviewCard, Bool) -> Void
     let onRestoreDefaults: () -> Void
 
     var body: some View {
@@ -722,8 +722,10 @@ private struct CaptureOverviewCardPicker: View {
 
             VStack(spacing: 2) {
                 ForEach(CaptureOverviewCard.allCases) { card in
-                    CaptureOverviewCardPickerRow(card: card, isVisible: visibleCards.contains(card)) {
-                        onToggle(card)
+                    let isVisible = visibleCards.contains(card)
+                    // Send the state the row asks for, not a flip, in case another window changed the layout.
+                    CaptureOverviewCardPickerRow(card: card, isVisible: isVisible) {
+                        onSetVisible(card, !isVisible)
                     }
                 }
             }

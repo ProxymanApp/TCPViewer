@@ -8,7 +8,7 @@
 import Foundation
 import PcapPlusPlusCore
 
-// Wireshark TCP expert flags grouped for the Overview, most severe first so one packet counts once.
+// Wireshark expert flags grouped for the Overview, most severe first. Each maps to one display filter.
 enum CaptureOverviewTCPIssueKind: Int, CaseIterable, Sendable {
     case malformed
     case lostSegment
@@ -17,6 +17,24 @@ enum CaptureOverviewTCPIssueKind: Int, CaseIterable, Sendable {
     case zeroWindow
     case duplicateAck
     case reset
+}
+
+// The flags of one packet; a packet can carry several, e.g. a duplicate ACK of an unseen segment.
+struct CaptureOverviewTCPIssueSet: OptionSet, Equatable, Sendable {
+    let rawValue: UInt8
+
+    init(rawValue: UInt8) {
+        self.rawValue = rawValue
+    }
+
+    init(_ kind: CaptureOverviewTCPIssueKind) {
+        rawValue = 1 << UInt8(kind.rawValue)
+    }
+
+    // Malformed packets can be any protocol, so only the other flags count as TCP issues.
+    var hasTCPIssue: Bool {
+        !subtracting(CaptureOverviewTCPIssueSet(.malformed)).isEmpty
+    }
 }
 
 extension CaptureOverviewTCPIssueKind {
@@ -38,7 +56,7 @@ extension CaptureOverviewTCPIssueKind {
         case .lostSegment: "A previous segment was not captured, or an ACK covers data that was never seen."
         case .retransmission: "Segments sent again, including fast and spurious retransmissions."
         case .outOfOrder: "Segments that arrived after a later segment."
-        case .zeroWindow: "The receiver's buffer was full: zero window or window full."
+        case .zeroWindow: "The receiver's buffer was full: zero window, window probes or window full."
         case .duplicateAck: "Repeated ACKs, usually a sign of loss or reordering."
         case .reset: "Connections closed abruptly with the RST flag."
         }
@@ -98,42 +116,42 @@ enum CaptureOverviewClassifier {
         }
     }
 
-    // Wireshark's TCP analysis prepends fenced markers such as "[TCP Retransmission] " to the Info column.
-    static func tcpIssue(for packet: PacketSummary, isTCP: Bool) -> CaptureOverviewTCPIssueKind? {
+    // Read the markers Wireshark writes to the Info column; each flag matches its row's display filter.
+    static func tcpIssues(for packet: PacketSummary, isTCP: Bool) -> CaptureOverviewTCPIssueSet {
         let info = packet.infoSummary
-        // Wireshark appends "[Malformed Packet]" or "[Malformed Packet: reason]" to the Info column.
-        if packet.decodeStatus.kind == .malformed ||
-            (info.hasSuffix("]") && info.suffix(160).contains("[Malformed Packet")) {
-            return .malformed
+        var issues: CaptureOverviewTCPIssueSet = []
+        // Wireshark appends "[Malformed Packet]" or "[Malformed Packet: reason]", exactly when it sets _ws.malformed.
+        if info.hasSuffix("]"), info.suffix(160).contains("[Malformed Packet") {
+            issues.insert(CaptureOverviewTCPIssueSet(.malformed))
         }
         guard isTCP else {
-            return nil
+            return issues
         }
+        // TCP analysis prepends fenced markers such as "[TCP Retransmission] ", so long Info text is never scanned.
         if info.hasPrefix("[TCP ") {
-            // Only the leading markers matter, so long Info text is never scanned.
             let markers = info.prefix(200)
             if markers.contains("segment not captured") ||
                 markers.contains("unseen segment") ||
                 markers.contains("segment lost") {
-                return .lostSegment
+                issues.insert(CaptureOverviewTCPIssueSet(.lostSegment))
             }
             if markers.contains("Retransmission]") {
-                return .retransmission
+                issues.insert(CaptureOverviewTCPIssueSet(.retransmission))
             }
             if markers.contains("[TCP Out-Of-Order]") {
-                return .outOfOrder
+                issues.insert(CaptureOverviewTCPIssueSet(.outOfOrder))
             }
             if markers.contains("[TCP ZeroWindow") || markers.contains("[TCP Window Full]") {
-                return .zeroWindow
+                issues.insert(CaptureOverviewTCPIssueSet(.zeroWindow))
             }
             if markers.contains("[TCP Dup ACK") {
-                return .duplicateAck
+                issues.insert(CaptureOverviewTCPIssueSet(.duplicateAck))
             }
         }
         if packet.tcpFlags?.contains("RST") == true {
-            return .reset
+            issues.insert(CaptureOverviewTCPIssueSet(.reset))
         }
-        return nil
+        return issues
     }
 
     // The lower port of a TCP or UDP packet is almost always the server's service port.
@@ -189,7 +207,8 @@ enum CaptureOverviewClassifier {
         case .outOfOrder:
             return "tcp.analysis.out_of_order"
         case .zeroWindow:
-            return "tcp.analysis.zero_window || tcp.analysis.window_full"
+            return "tcp.analysis.zero_window || tcp.analysis.zero_window_probe || " +
+                "tcp.analysis.zero_window_probe_ack || tcp.analysis.window_full"
         case .duplicateAck:
             return "tcp.analysis.duplicate_ack"
         case .reset:

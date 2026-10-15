@@ -52,6 +52,30 @@ struct CaptureOverviewMarkdownTests {
         #expect(!markdown.contains("<script>"))
     }
 
+    @Test func capturedNamesCannotBecomeLinksOrImages() {
+        let markdown = CaptureOverviewMarkdown.render(
+            makeSnapshot(appTitle: "![x](https://attacker.example/pixel) [click](https://attacker.example)"),
+            source: "capture.pcapng",
+            cards: [.topApps],
+            generatedAt: generatedAt
+        )
+
+        #expect(markdown.contains("!\\[x\\](https://attacker.example/pixel) \\[click\\](https://attacker.example)"))
+        #expect(!markdown.contains("![x]("))
+        #expect(!markdown.contains("[click]("))
+    }
+
+    @Test func summaryReportsTCPIssuesAsAShareOfTCPPackets() {
+        let markdown = CaptureOverviewMarkdown.render(
+            makeSnapshot(tcpIssues: [CaptureOverviewTCPIssueRow(kind: .retransmission, packets: 2)]),
+            source: "capture.pcapng",
+            cards: [],
+            generatedAt: generatedAt
+        )
+
+        #expect(markdown.contains("| TCP issues | 2 (25% of TCP packets) |"))
+    }
+
     @Test func tcpAnalysisRowsCarryTheirWiresharkFilter() {
         let flagged = CaptureOverviewMarkdown.render(
             makeSnapshot(tcpIssues: [CaptureOverviewTCPIssueRow(kind: .retransmission, packets: 2)]),
@@ -81,7 +105,8 @@ struct CaptureOverviewMarkdownTests {
             generatedAt: generatedAt
         )
 
-        #expect(markdown.contains("| 1 | [fe80::1]:51000 | [2001:db8::1]:443 | TCP | api.example | Browser | 10 |"))
+        // Escaped brackets still render as "[fe80::1]:51000".
+        #expect(markdown.contains("| 1 | \\[fe80::1\\]:51000 | \\[2001:db8::1\\]:443 | TCP | api.example | Browser | 10 |"))
     }
 
     @Test func fileNameUsesAFixedDatePattern() throws {

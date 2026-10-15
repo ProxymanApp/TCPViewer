@@ -91,9 +91,11 @@ enum CaptureOverviewMarkdown {
             : bytes(totals.bytes)
         rows.append(["Data transferred", data])
         rows.append(["TCP packets", CaptureOverviewFormat.count(snapshot.tcpPacketCount)])
+        // Same share as the Overview tile: issue packets out of TCP packets.
         rows.append([
             "TCP issues",
-            "\(CaptureOverviewFormat.count(totals.issuePackets)) (\(CaptureOverviewFormat.percent(totals.issuePackets, of: totals.packets)))",
+            "\(CaptureOverviewFormat.count(totals.issuePackets)) " +
+                "(\(CaptureOverviewFormat.percent(totals.issuePackets, of: snapshot.tcpPacketCount)) of TCP packets)",
         ])
         rows.append(["Apps", CaptureOverviewFormat.count(UInt64(snapshot.appCount))])
         rows.append(["Domains", CaptureOverviewFormat.count(UInt64(snapshot.domainCount))])
@@ -262,11 +264,14 @@ enum CaptureOverviewMarkdown {
         return lines
     }
 
-    // Keep untrusted text inside its table cell, and never let it become HTML.
+    // Keep untrusted text inside its table cell as plain text: no HTML, and no Markdown links or images
+    // that could load a remote URL when the report is pasted into an issue or chat.
     static func escape(_ text: String) -> String {
         text
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "|", with: "\\|")
+            .replacingOccurrences(of: "[", with: "\\[")
+            .replacingOccurrences(of: "]", with: "\\]")
             .replacingOccurrences(of: "<", with: "&lt;")
             .replacingOccurrences(of: ">", with: "&gt;")
             .replacingOccurrences(of: "\r\n", with: " ")

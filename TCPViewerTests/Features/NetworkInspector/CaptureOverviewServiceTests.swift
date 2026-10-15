@@ -173,34 +173,90 @@ struct CaptureOverviewServiceTests {
         #expect(CaptureOverviewChartHoverSelection.tooltipX(slot: 9, slotCount: 10, width: 300, tooltipWidth: 100) == 162)
     }
 
-    @Test func tcpIssuesReadWiresharkInfoMarkersBySeverity() {
-        func issue(_ info: String, tcpFlags: String? = "ACK", decodeStatus: PacketDecodeStatus.Kind = .complete) -> CaptureOverviewTCPIssueKind? {
+    @Test func tcpIssuesReadEveryWiresharkInfoMarker() {
+        func issues(
+            _ info: String,
+            tcpFlags: String? = "ACK",
+            transportHint: TransportProtocolHint = .tcp,
+            decodeStatus: PacketDecodeStatus.Kind = .complete
+        ) -> CaptureOverviewTCPIssueSet {
             let packet = makePacket(
                 id: 1,
+                transportHint: transportHint,
                 info: info,
                 tcpFlags: tcpFlags,
                 decodeStatus: PacketDecodeStatus(kind: decodeStatus)
             )
-            return CaptureOverviewClassifier.tcpIssue(for: packet, isTCP: CaptureOverviewClassifier.isTCP(packet))
+            return CaptureOverviewClassifier.tcpIssues(for: packet, isTCP: CaptureOverviewClassifier.isTCP(packet))
         }
 
-        #expect(issue("[TCP Retransmission] 51000 → 443 [PSH, ACK]") == .retransmission)
-        #expect(issue("[TCP Fast Retransmission] 51000 → 443") == .retransmission)
-        #expect(issue("[TCP Spurious Retransmission] 51000 → 443") == .retransmission)
-        #expect(issue("[TCP Dup ACK 12#1] 443 → 51000 [ACK]") == .duplicateAck)
-        #expect(issue("[TCP Out-Of-Order] 443 → 51000") == .outOfOrder)
-        #expect(issue("[TCP ZeroWindow] 443 → 51000") == .zeroWindow)
-        #expect(issue("[TCP Window Full] 443 → 51000") == .zeroWindow)
-        #expect(issue("[TCP Previous segment not captured] 443 → 51000") == .lostSegment)
-        // A packet with several markers counts once, as its most severe problem.
-        #expect(issue("[TCP Dup ACK 5#1] [TCP ACKed unseen segment] 443 → 51000") == .lostSegment)
-        #expect(issue("443 → 51000 [RST, ACK]", tcpFlags: "RST, ACK") == .reset)
-        #expect(issue("Ignored [Malformed Packet]") == .malformed)
-        #expect(issue("Response [Malformed Packet: length of contained item exceeds length of containing item]") == .malformed)
-        #expect(issue("Client Hello", decodeStatus: .malformed) == .malformed)
-        #expect(issue("[TCP Keep-Alive] 51000 → 443") == nil)
-        #expect(issue("[TCP Window Update] 51000 → 443") == nil)
-        #expect(issue("Application Data") == nil)
+        #expect(issues("[TCP Retransmission] 51000 → 443 [PSH, ACK]") == CaptureOverviewTCPIssueSet(.retransmission))
+        #expect(issues("[TCP Fast Retransmission] 51000 → 443") == CaptureOverviewTCPIssueSet(.retransmission))
+        #expect(issues("[TCP Spurious Retransmission] 51000 → 443") == CaptureOverviewTCPIssueSet(.retransmission))
+        #expect(issues("[TCP Dup ACK 12#1] 443 → 51000 [ACK]") == CaptureOverviewTCPIssueSet(.duplicateAck))
+        #expect(issues("[TCP Out-Of-Order] 443 → 51000") == CaptureOverviewTCPIssueSet(.outOfOrder))
+        #expect(issues("[TCP ZeroWindow] 443 → 51000") == CaptureOverviewTCPIssueSet(.zeroWindow))
+        #expect(issues("[TCP ZeroWindowProbe] 443 → 51000") == CaptureOverviewTCPIssueSet(.zeroWindow))
+        #expect(issues("[TCP Window Full] 443 → 51000") == CaptureOverviewTCPIssueSet(.zeroWindow))
+        #expect(issues("[TCP Previous segment not captured] 443 → 51000") == CaptureOverviewTCPIssueSet(.lostSegment))
+        // Every marker counts, so each row matches the packets its display filter shows.
+        #expect(issues("[TCP Dup ACK 5#1] [TCP ACKed unseen segment] 443 → 51000") ==
+            [CaptureOverviewTCPIssueSet(.duplicateAck), CaptureOverviewTCPIssueSet(.lostSegment)])
+        #expect(issues("[TCP Retransmission] 443 → 51000 [RST, ACK]", tcpFlags: "RST, ACK") ==
+            [CaptureOverviewTCPIssueSet(.retransmission), CaptureOverviewTCPIssueSet(.reset)])
+        #expect(issues("Ignored [Malformed Packet]") == CaptureOverviewTCPIssueSet(.malformed))
+        #expect(issues("Response [Malformed Packet: length of contained item exceeds length of containing item]") ==
+            CaptureOverviewTCPIssueSet(.malformed))
+        // Only Wireshark's marker counts, because the row filters on _ws.malformed.
+        #expect(issues("Client Hello", decodeStatus: .malformed).isEmpty)
+        #expect(issues("[TCP Keep-Alive] 51000 → 443").isEmpty)
+        #expect(issues("[TCP Window Update] 51000 → 443").isEmpty)
+        #expect(issues("Application Data").isEmpty)
+        #expect(!CaptureOverviewTCPIssueSet(.malformed).hasTCPIssue)
+        #expect(issues("Standard query [Malformed Packet]", tcpFlags: nil, transportHint: .dns) ==
+            CaptureOverviewTCPIssueSet(.malformed))
+    }
+
+    @Test func malformedPacketsAreNotTCPIssuesAndMultiFlagPacketsCountOnce() {
+        let snapshot = replacementSnapshot([
+            makePacket(id: 1, transportHint: .dns, info: "Standard query [Malformed Packet]"),
+            makePacket(id: 2, info: "[TCP Dup ACK 5#1] [TCP ACKed unseen segment] 443 → 51000", tcpFlags: "ACK"),
+            makePacket(id: 3, info: "51000 → 443 [ACK]", tcpFlags: "ACK"),
+        ])
+
+        #expect(snapshot.tcpPacketCount == 2)
+        #expect(snapshot.totals.issuePackets == 1)
+        #expect(snapshot.tcpIssues == [
+            CaptureOverviewTCPIssueRow(kind: .malformed, packets: 1),
+            CaptureOverviewTCPIssueRow(kind: .lostSegment, packets: 1),
+            CaptureOverviewTCPIssueRow(kind: .duplicateAck, packets: 1),
+        ])
+    }
+
+    @Test func conversationBucketsStayBoundedAndPrunedOnesNeverUnderflow() {
+        var accumulator = CaptureOverviewAccumulator()
+        let limit = CaptureOverviewAccumulator.maximumConversationBucketCount
+        accumulator.appendReplacementChunk([
+            makePacket(id: 1, length: 100, sourcePort: 40_000),
+            makePacket(id: 2, length: 50, sourcePort: 40_001),
+        ])
+        // A DNS-like burst of one-packet conversations, each bigger than the first two.
+        accumulator.appendReplacementChunk((0..<(limit * 2)).map { index in
+            makePacket(id: UInt64(index + 10), length: 200, sourcePort: UInt16(10_000 + index))
+        })
+        #expect(accumulator.conversationBucketCountForTesting <= limit * 2)
+        #expect(!accumulator.snapshot().topConversations.contains { $0.key.clientPort == 40_000 })
+
+        // The pruned conversation comes back; reclassifying packet 1 must not subtract its old bytes from the
+        // new bucket, which never contained them.
+        accumulator.appendReplacementChunk([makePacket(id: 3, length: 1_000, sourcePort: 40_000)])
+        let client = makeClient(name: "App", bundleIdentifier: "com.example.app")
+        accumulator.applyMetadata([makePacket(id: 1, length: 100, client: client, sourcePort: 40_000)])
+
+        let snapshot = accumulator.snapshot()
+        #expect(snapshot.topConversations.first?.key.clientPort == 40_000)
+        #expect(snapshot.topConversations.first?.totals.bytes == 1_100)
+        #expect(snapshot.totals.packets == UInt64(limit * 2 + 3))
     }
 
     @Test func tcpIssuesFollowSummaryUpdatesAndRollUpPerApp() throws {

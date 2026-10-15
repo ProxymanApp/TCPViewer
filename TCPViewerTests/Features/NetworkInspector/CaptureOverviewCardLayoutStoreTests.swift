@@ -19,22 +19,35 @@ struct CaptureOverviewCardLayoutStoreTests {
         #expect(!store.cards.contains(.packetLengths))
     }
 
-    @Test func toggleHidesVisibleCardsAndAppendsHiddenOnes() {
+    @Test func showingAppendsAndHidingRemoves() {
         let defaults = makeDefaults()
         let store = CaptureOverviewCardLayoutStore(defaults: defaults)
 
-        store.toggle(.protocols)
-        store.toggle(.packetLengths)
-        let cards = store.toggle(.protocols)
+        store.setVisible(.protocols, false)
+        store.setVisible(.packetLengths, true)
+        let cards = store.setVisible(.protocols, true)
 
         #expect(cards == [.packets, .throughput, .topApps, .topDestinations, .tcpAnalysis, .packetLengths, .protocols])
         #expect(CaptureOverviewCardLayoutStore(defaults: defaults).cards == cards)
     }
 
+    @Test func aStaleWindowRepeatingAChangeCannotInvertIt() {
+        let defaults = makeDefaults()
+        let firstWindow = CaptureOverviewCardLayoutStore(defaults: defaults)
+        let staleWindow = CaptureOverviewCardLayoutStore(defaults: defaults)
+
+        firstWindow.setVisible(.protocols, false)
+        // The stale window still shows Protocols checked, so its click asks to hide it again.
+        let cards = staleWindow.setVisible(.protocols, false)
+
+        #expect(!cards.contains(.protocols))
+        #expect(firstWindow.cards == cards)
+    }
+
     @Test func hidingEveryCardIsKeptAndRestoreDefaultsBringsThemBack() {
         let store = CaptureOverviewCardLayoutStore(defaults: makeDefaults())
         for card in CaptureOverviewCard.defaults {
-            store.toggle(card)
+            store.setVisible(card, false)
         }
         #expect(store.cards.isEmpty)
 

@@ -167,8 +167,8 @@ final class CaptureOverviewViewController: NSViewController {
                 performRowAction: { [weak self] action in
                     self?.perform(action)
                 },
-                toggleCard: { [weak self] card in
-                    self?.cardLayoutStore.toggle(card)
+                setCardVisible: { [weak self] card, isVisible in
+                    self?.cardLayoutStore.setVisible(card, isVisible)
                     self?.renderDashboard()
                 },
                 restoreDefaultCards: { [weak self] in
@@ -275,10 +275,11 @@ final class CaptureOverviewViewController: NSViewController {
             : "Original packet bytes"
         let tcpPackets = overviewSnapshot.tcpPacketCount
         let issuesDetail: String
+        // Issue packets are always TCP packets, so the share stays within the TCP traffic.
         if totals.issuePackets > 0 {
-            issuesDetail = "\(CaptureOverviewFormat.percent(totals.issuePackets, of: max(tcpPackets, 1))) of TCP packets"
+            issuesDetail = "\(CaptureOverviewFormat.percent(totals.issuePackets, of: tcpPackets)) of TCP packets"
         } else {
-            issuesDetail = tcpPackets > 0 ? "No problems detected" : "No TCP traffic"
+            issuesDetail = tcpPackets > 0 ? "No TCP problems detected" : "No TCP traffic"
         }
         let domainCount = overviewSnapshot.domainCount
 
@@ -443,7 +444,7 @@ final class CaptureOverviewViewController: NSViewController {
             )
         }
         let subtitle = totals.issuePackets > 0
-            ? "\(CaptureOverviewFormat.count(totals.issuePackets)) of \(CaptureOverviewFormat.count(totals.packets)) packets flagged"
+            ? "\(CaptureOverviewFormat.count(totals.issuePackets)) of \(CaptureOverviewFormat.count(tcpPackets)) TCP packets flagged"
             : "\(CaptureOverviewFormat.count(tcpPackets)) TCP packets analyzed"
         return CaptureOverviewTCPAnalysisPresentation(
             subtitle: subtitle,
