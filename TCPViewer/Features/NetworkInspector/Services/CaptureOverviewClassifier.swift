@@ -73,8 +73,8 @@ struct CaptureOverviewServiceKey: Hashable, Sendable {
     let port: UInt16
 }
 
-// A conversation is direction-independent: the server side is the endpoint with the lower (service) port.
-struct CaptureOverviewConversationKey: Hashable, Sendable {
+// The two sides of a conversation as shown in the Overview.
+struct CaptureOverviewConversationEndpoints: Hashable, Sendable {
     let transport: CaptureOverviewTransport
     let clientAddress: String
     let clientPort: UInt16
@@ -82,15 +82,32 @@ struct CaptureOverviewConversationKey: Hashable, Sendable {
     let serverPort: UInt16
 }
 
+// Wireshark's stream index tells apart connections that reuse the same ports; packets it hasn't indexed yet
+// fall back to their direction-independent address and port pair.
+enum CaptureOverviewConversationKey: Hashable, Sendable {
+    case stream(FollowStreamID)
+    case endpoints(CaptureOverviewConversationEndpoints)
+}
+
+// One packet's view of its conversation: the identity to group by and the sides to display.
+struct CaptureOverviewConversationSample: Sendable {
+    let key: CaptureOverviewConversationKey
+    let endpoints: CaptureOverviewConversationEndpoints
+    // True when a SYN shows which side opened the connection, rather than guessing from the ports.
+    let isClientConfirmed: Bool
+}
+
 enum CaptureOverviewClassifier {
     // Wireshark's Statistics › Packet Lengths ranges; the ranges below 80 bytes are merged.
     static let packetLengthUpperBounds = [80, 160, 320, 640, 1_280, 2_560]
     static let packetLengthBucketCount = packetLengthUpperBounds.count + 1
 
+    // Index of the Packet Lengths range that holds a frame of this length.
     static func packetLengthBucket(for length: Int) -> Int {
         packetLengthUpperBounds.firstIndex { length < $0 } ?? packetLengthUpperBounds.count
     }
 
+    // Full range label for tooltips and the Markdown report.
     static func packetLengthTitle(forBucket index: Int) -> String {
         let lowerBound = index == 0 ? 0 : packetLengthUpperBounds[index - 1]
         guard index < packetLengthUpperBounds.count else {
@@ -104,6 +121,7 @@ enum CaptureOverviewClassifier {
         index == 0 ? "<\(packetLengthUpperBounds[0])" : "\(packetLengthUpperBounds[index - 1])+"
     }
 
+    // TCP flags are the most reliable sign; the transport hint covers packets the dissector summarized.
     static func isTCP(_ packet: PacketSummary) -> Bool {
         if packet.tcpFlags != nil {
             return true
@@ -116,36 +134,34 @@ enum CaptureOverviewClassifier {
         }
     }
 
+    // The Info column text Wireshark's TCP analysis prepends for each flag (epan/dissectors/packet-tcp.c).
+    // The EPAN summary pass exposes these flags only as text; a unit test pins every marker to the vendored
+    // Wireshark sources, so an upgrade that rewords one fails loudly instead of silently zeroing a row.
+    static let tcpInfoMarkers: [(kind: CaptureOverviewTCPIssueKind, markers: [String])] = [
+        (.lostSegment, ["[TCP Previous segment not captured]", "[TCP ACKed unseen segment]"]),
+        (.retransmission, ["[TCP Retransmission]", "[TCP Fast Retransmission]", "[TCP Spurious Retransmission]"]),
+        (.outOfOrder, ["[TCP Out-Of-Order]"]),
+        (.zeroWindow, ["[TCP ZeroWindow]", "[TCP ZeroWindowProbe]", "[TCP ZeroWindowProbeAck]", "[TCP Window Full]"]),
+        (.duplicateAck, ["[TCP Dup ACK "]),
+    ]
+    // Appended by epan/show_exception.c whenever it also sets _ws.malformed.
+    static let malformedInfoMarker = "[Malformed Packet"
+
     // Read the markers Wireshark writes to the Info column; each flag matches its row's display filter.
     static func tcpIssues(for packet: PacketSummary, isTCP: Bool) -> CaptureOverviewTCPIssueSet {
         let info = packet.infoSummary
         var issues: CaptureOverviewTCPIssueSet = []
-        // Wireshark appends "[Malformed Packet]" or "[Malformed Packet: reason]", exactly when it sets _ws.malformed.
-        if info.hasSuffix("]"), info.suffix(160).contains("[Malformed Packet") {
+        if info.hasSuffix("]"), info.suffix(160).contains(malformedInfoMarker) {
             issues.insert(CaptureOverviewTCPIssueSet(.malformed))
         }
         guard isTCP else {
             return issues
         }
-        // TCP analysis prepends fenced markers such as "[TCP Retransmission] ", so long Info text is never scanned.
+        // TCP markers are fenced at the start of the column, so long Info text is never scanned.
         if info.hasPrefix("[TCP ") {
-            let markers = info.prefix(200)
-            if markers.contains("segment not captured") ||
-                markers.contains("unseen segment") ||
-                markers.contains("segment lost") {
-                issues.insert(CaptureOverviewTCPIssueSet(.lostSegment))
-            }
-            if markers.contains("Retransmission]") {
-                issues.insert(CaptureOverviewTCPIssueSet(.retransmission))
-            }
-            if markers.contains("[TCP Out-Of-Order]") {
-                issues.insert(CaptureOverviewTCPIssueSet(.outOfOrder))
-            }
-            if markers.contains("[TCP ZeroWindow") || markers.contains("[TCP Window Full]") {
-                issues.insert(CaptureOverviewTCPIssueSet(.zeroWindow))
-            }
-            if markers.contains("[TCP Dup ACK") {
-                issues.insert(CaptureOverviewTCPIssueSet(.duplicateAck))
+            let leadingText = info.prefix(200)
+            for (kind, markers) in tcpInfoMarkers where markers.contains(where: { leadingText.contains($0) }) {
+                issues.insert(CaptureOverviewTCPIssueSet(kind))
             }
         }
         if packet.tcpFlags?.contains("RST") == true {
@@ -167,28 +183,65 @@ enum CaptureOverviewClassifier {
         )
     }
 
-    static func conversationKey(for packet: PacketSummary, isTCP: Bool) -> CaptureOverviewConversationKey? {
+    // Group by Wireshark's stream index when present; a SYN, when seen, decides which side is the client.
+    static func conversation(for packet: PacketSummary, isTCP: Bool) -> CaptureOverviewConversationSample? {
         guard let sourceAddress = packet.endpoints.source.address, !sourceAddress.isEmpty,
               let destinationAddress = packet.endpoints.destination.address, !destinationAddress.isEmpty,
               let sourcePort = packet.endpoints.source.port,
               let destinationPort = packet.endpoints.destination.port else {
             return nil
         }
+        let transport: CaptureOverviewTransport = isTCP ? .tcp : .udp
+        let source = (address: sourceAddress, port: sourcePort)
+        let destination = (address: destinationAddress, port: destinationPort)
+        // Without a handshake, the endpoint with the lower port is almost always the server.
         let sourceIsServer = (sourcePort, sourceAddress) < (destinationPort, destinationAddress)
-        return CaptureOverviewConversationKey(
-            transport: isTCP ? .tcp : .udp,
-            clientAddress: sourceIsServer ? destinationAddress : sourceAddress,
-            clientPort: sourceIsServer ? destinationPort : sourcePort,
-            serverAddress: sourceIsServer ? sourceAddress : destinationAddress,
-            serverPort: sourceIsServer ? sourcePort : destinationPort
+        let guessed = endpoints(transport, client: sourceIsServer ? destination : source, server: sourceIsServer ? source : destination)
+
+        // tcpFlags reads like "SYN, ACK"; no other flag name contains "SYN" or "ACK".
+        let displayed: CaptureOverviewConversationEndpoints
+        let isClientConfirmed: Bool
+        if isTCP, let flags = packet.tcpFlags, flags.contains("SYN") {
+            // The SYN comes from the client and the SYN-ACK from the server.
+            displayed = flags.contains("ACK")
+                ? endpoints(transport, client: destination, server: source)
+                : endpoints(transport, client: source, server: destination)
+            isClientConfirmed = true
+        } else {
+            displayed = guessed
+            isClientConfirmed = false
+        }
+        let key: CaptureOverviewConversationKey = packet.followStreamID.map { .stream($0) } ?? .endpoints(guessed)
+        return CaptureOverviewConversationSample(key: key, endpoints: displayed, isClientConfirmed: isClientConfirmed)
+    }
+
+    // Endpoints with the given client and server sides.
+    private static func endpoints(
+        _ transport: CaptureOverviewTransport,
+        client: (address: String, port: UInt16),
+        server: (address: String, port: UInt16)
+    ) -> CaptureOverviewConversationEndpoints {
+        CaptureOverviewConversationEndpoints(
+            transport: transport,
+            clientAddress: client.address,
+            clientPort: client.port,
+            serverAddress: server.address,
+            serverPort: server.port
         )
     }
 
-    // IPv6 literals need brackets before the port.
-    static func endpointText(address: String, port: UInt16) -> String {
-        address.contains(":") ? "[\(address)]:\(port)" : "\(address):\(port)"
+    // Stable text identity for presentation rows and ForEach.
+    static func identifier(for key: CaptureOverviewConversationKey) -> String {
+        switch key {
+        case .stream(let stream):
+            return "\(stream.streamProtocol.rawValue).stream:\(stream.streamID)"
+        case .endpoints(let endpoints):
+            return "\(endpoints.transport.rawValue)|\(endpoints.clientAddress)|\(endpoints.clientPort)|" +
+                "\(endpoints.serverAddress)|\(endpoints.serverPort)"
+        }
     }
 
+    // Common port names; UDP 443 is QUIC rather than HTTPS.
     static func serviceName(for key: CaptureOverviewServiceKey) -> String? {
         if key.transport == .udp, key.port == 443 {
             return "QUIC"
@@ -196,6 +249,7 @@ enum CaptureOverviewClassifier {
         return wellKnownServiceNames[key.port]
     }
 
+    // The Wireshark filter that shows exactly the packets counted for this flag.
     static func displayFilter(for issue: CaptureOverviewTCPIssueKind) -> String {
         switch issue {
         case .malformed:
@@ -216,21 +270,29 @@ enum CaptureOverviewClassifier {
         }
     }
 
+    // Every TCP or UDP packet to or from this port.
     static func displayFilter(for key: CaptureOverviewServiceKey) -> String {
         "\(portField(for: key.transport)) == \(key.port)"
     }
 
-    // Addresses come from capture data, so only plain IPv4/IPv6 literals become filter text.
+    // A stream index filters one connection exactly; addresses come from capture data, so only plain
+    // IPv4/IPv6 literals become filter text.
     static func displayFilter(for key: CaptureOverviewConversationKey) -> String? {
-        guard isFilterSafeAddress(key.clientAddress), isFilterSafeAddress(key.serverAddress) else {
-            return nil
+        switch key {
+        case .stream(let stream):
+            return "\(stream.streamProtocol == .udp ? "udp" : "tcp").stream eq \(stream.streamID)"
+        case .endpoints(let endpoints):
+            guard isFilterSafeAddress(endpoints.clientAddress), isFilterSafeAddress(endpoints.serverAddress) else {
+                return nil
+            }
+            let addressField = endpoints.serverAddress.contains(":") ? "ipv6.addr" : "ip.addr"
+            let portField = portField(for: endpoints.transport)
+            return "\(addressField) == \(endpoints.clientAddress) && \(portField) == \(endpoints.clientPort) && " +
+                "\(addressField) == \(endpoints.serverAddress) && \(portField) == \(endpoints.serverPort)"
         }
-        let addressField = key.serverAddress.contains(":") ? "ipv6.addr" : "ip.addr"
-        let portField = portField(for: key.transport)
-        return "\(addressField) == \(key.clientAddress) && \(portField) == \(key.clientPort) && " +
-            "\(addressField) == \(key.serverAddress) && \(portField) == \(key.serverPort)"
     }
 
+    // Only hex digits, dots and colons, so capture data can't inject filter syntax.
     static func isFilterSafeAddress(_ address: String) -> Bool {
         !address.isEmpty && address.utf8.count <= 45 && address.unicodeScalars.allSatisfy {
             filterSafeAddressCharacters.contains($0)
@@ -239,6 +301,7 @@ enum CaptureOverviewClassifier {
 
     private static let filterSafeAddressCharacters = CharacterSet(charactersIn: "0123456789abcdefABCDEF.:")
 
+    // Wireshark's port field for the transport.
     private static func portField(for transport: CaptureOverviewTransport) -> String {
         transport == .tcp ? "tcp.port" : "udp.port"
     }

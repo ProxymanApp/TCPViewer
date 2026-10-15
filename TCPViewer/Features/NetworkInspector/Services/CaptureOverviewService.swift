@@ -84,6 +84,7 @@ struct CaptureOverviewServiceRow: Identifiable, Equatable, Sendable {
 
 struct CaptureOverviewConversationRow: Identifiable, Equatable, Sendable {
     let key: CaptureOverviewConversationKey
+    let endpoints: CaptureOverviewConversationEndpoints
     let domainName: String?
     let appName: String?
     let appIconFilePath: String?
@@ -143,14 +144,16 @@ private struct CaptureOverviewContribution: Equatable {
     let isTCP: Bool
     let tcpIssues: CaptureOverviewTCPIssueSet
     let service: CaptureOverviewServiceKey?
-    let conversation: CaptureOverviewConversationKey?
-    let packetLengthBucket: Int
-    // The bucket this packet was added to; a pruned and recreated bucket never had it.
+    let packetLengthBucket: UInt8
+    // The conversation bucket this packet was added to. A small ID instead of the key keeps per-packet memory
+    // low, and a pruned then recreated bucket gets a new ID, so it is never charged for packets it never had.
     var conversationGeneration: UInt64?
 }
 
 private struct CaptureOverviewConversationBucket {
     let generation: UInt64
+    var endpoints: CaptureOverviewConversationEndpoints
+    var isClientConfirmed: Bool
     var domainName: String?
     var app: PacketSourceClientIdentity?
     var totals = CaptureOverviewTrafficTotals()
@@ -204,6 +207,7 @@ struct CaptureOverviewAccumulator {
     private var protocolBuckets: [String: CaptureOverviewProtocolBucket] = [:]
     private var serviceBuckets: [CaptureOverviewServiceKey: CaptureOverviewTrafficTotals] = [:]
     private var conversationBuckets: [CaptureOverviewConversationKey: CaptureOverviewConversationBucket] = [:]
+    private var conversationKeysByGeneration: [UInt64: CaptureOverviewConversationKey] = [:]
     private var nextConversationGeneration: UInt64 = 0
     private var tcpIssueCounts = Array(repeating: UInt64(0), count: CaptureOverviewTCPIssueKind.allCases.count)
     private var packetLengthCounts = Array(repeating: UInt64(0), count: CaptureOverviewClassifier.packetLengthBucketCount)
@@ -224,6 +228,7 @@ struct CaptureOverviewAccumulator {
         protocolBuckets.removeAll(keepingCapacity: false)
         serviceBuckets.removeAll(keepingCapacity: false)
         conversationBuckets.removeAll(keepingCapacity: false)
+        conversationKeysByGeneration.removeAll(keepingCapacity: false)
         nextConversationGeneration = 0
         tcpIssueCounts = Array(repeating: 0, count: CaptureOverviewTCPIssueKind.allCases.count)
         packetLengthCounts = Array(repeating: 0, count: CaptureOverviewClassifier.packetLengthBucketCount)
@@ -325,11 +330,16 @@ struct CaptureOverviewAccumulator {
             remove(oldContribution)
         }
         var contribution = Self.contribution(for: packet)
-        add(&contribution)
+        let conversation = CaptureOverviewClassifier.conversation(for: packet, isTCP: contribution.isTCP)
+        add(&contribution, conversation: conversation)
         contributionsByPacketID[packet.id] = contribution
     }
 
-    private mutating func add(_ contribution: inout CaptureOverviewContribution) {
+    // Count one packet everywhere it belongs; the conversation sample is used once and never stored.
+    private mutating func add(
+        _ contribution: inout CaptureOverviewContribution,
+        conversation: CaptureOverviewConversationSample?
+    ) {
         totals.add(contribution.totals)
         if contribution.isMalformed {
             malformedPacketCount += 1
@@ -340,7 +350,7 @@ struct CaptureOverviewAccumulator {
         for kind in CaptureOverviewTCPIssueKind.allCases where contribution.tcpIssues.contains(CaptureOverviewTCPIssueSet(kind)) {
             tcpIssueCounts[kind.rawValue] += 1
         }
-        packetLengthCounts[contribution.packetLengthBucket] += 1
+        packetLengthCounts[Int(contribution.packetLengthBucket)] += 1
         if let app = contribution.app {
             var bucket = appBuckets[app.key] ?? CaptureOverviewAppBucket(identity: app)
             bucket.identity = app
@@ -366,9 +376,14 @@ struct CaptureOverviewAccumulator {
         if let service = contribution.service {
             serviceBuckets[service, default: CaptureOverviewTrafficTotals()].add(contribution.totals)
         }
-        if let conversation = contribution.conversation {
+        if let conversation {
+            var bucket = conversationBuckets[conversation.key] ?? makeConversationBucket(for: conversation)
+            // A handshake packet settles which side is the client for the rest of the conversation.
+            if conversation.isClientConfirmed, !bucket.isClientConfirmed {
+                bucket.endpoints = conversation.endpoints
+                bucket.isClientConfirmed = true
+            }
             // Keep the last known names: SNI and DNS names only arrive on some packets of a conversation.
-            var bucket = conversationBuckets[conversation] ?? makeConversationBucket()
             if let domain = contribution.domain, !domain.key.isMissingDomain {
                 bucket.domainName = domain.displayName
             }
@@ -376,7 +391,7 @@ struct CaptureOverviewAccumulator {
                 bucket.app = app
             }
             bucket.totals.add(contribution.totals)
-            conversationBuckets[conversation] = bucket
+            conversationBuckets[conversation.key] = bucket
             contribution.conversationGeneration = bucket.generation
             pruneConversationsIfNeeded()
         }
@@ -399,7 +414,7 @@ struct CaptureOverviewAccumulator {
         for kind in CaptureOverviewTCPIssueKind.allCases where contribution.tcpIssues.contains(CaptureOverviewTCPIssueSet(kind)) {
             tcpIssueCounts[kind.rawValue] -= 1
         }
-        packetLengthCounts[contribution.packetLengthBucket] -= 1
+        packetLengthCounts[Int(contribution.packetLengthBucket)] -= 1
         if let app = contribution.app, var bucket = appBuckets[app.key] {
             bucket.totals.remove(contribution.totals)
             if bucket.totals.isEmpty {
@@ -441,11 +456,16 @@ struct CaptureOverviewAccumulator {
             bucket.remove(contribution.totals)
             serviceBuckets[service] = bucket.isEmpty ? nil : bucket
         }
-        if let conversation = contribution.conversation,
-           var bucket = conversationBuckets[conversation],
-           bucket.generation == contribution.conversationGeneration {
+        if let generation = contribution.conversationGeneration,
+           let conversation = conversationKeysByGeneration[generation],
+           var bucket = conversationBuckets[conversation] {
             bucket.totals.remove(contribution.totals)
-            conversationBuckets[conversation] = bucket.totals.isEmpty ? nil : bucket
+            if bucket.totals.isEmpty {
+                conversationBuckets.removeValue(forKey: conversation)
+                conversationKeysByGeneration.removeValue(forKey: generation)
+            } else {
+                conversationBuckets[conversation] = bucket
+            }
         }
 
         let timelineKey = self.timelineKey(for: contribution.timestamp)
@@ -459,6 +479,7 @@ struct CaptureOverviewAccumulator {
         }
     }
 
+    // Everything one packet adds to the Overview, kept so a later summary update can be undone exactly.
     private static func contribution(for packet: PacketSummary) -> CaptureOverviewContribution {
         let isTCP = CaptureOverviewClassifier.isTCP(packet)
         let tcpIssues = CaptureOverviewClassifier.tcpIssues(for: packet, isTCP: isTCP)
@@ -477,8 +498,7 @@ struct CaptureOverviewAccumulator {
             isTCP: isTCP,
             tcpIssues: tcpIssues,
             service: CaptureOverviewClassifier.serviceKey(for: packet, isTCP: isTCP),
-            conversation: CaptureOverviewClassifier.conversationKey(for: packet, isTCP: isTCP),
-            packetLengthBucket: CaptureOverviewClassifier.packetLengthBucket(for: length)
+            packetLengthBucket: UInt8(CaptureOverviewClassifier.packetLengthBucket(for: length))
         )
     }
 
@@ -501,6 +521,7 @@ struct CaptureOverviewAccumulator {
         return value
     }
 
+    // The apps with the most bytes.
     private func topAppRows() -> [CaptureOverviewTopRow] {
         var result: [CaptureOverviewTopRow] = []
         result.reserveCapacity(Self.maximumTopRowCount)
@@ -540,6 +561,7 @@ struct CaptureOverviewAccumulator {
         return result
     }
 
+    // The server ports with the most bytes; ties keep well-known low ports first.
     private func topServiceRows() -> [CaptureOverviewServiceRow] {
         var result: [CaptureOverviewServiceRow] = []
         result.reserveCapacity(Self.maximumTopRowCount)
@@ -557,12 +579,14 @@ struct CaptureOverviewAccumulator {
         return result
     }
 
+    // The conversations with the most bytes, from the bounded set the accumulator keeps.
     private func topConversationRows() -> [CaptureOverviewConversationRow] {
         var result: [CaptureOverviewConversationRow] = []
         result.reserveCapacity(Self.maximumTopRowCount)
         for (key, bucket) in conversationBuckets {
             let row = CaptureOverviewConversationRow(
                 key: key,
+                endpoints: bucket.endpoints,
                 domainName: bucket.domainName,
                 appName: bucket.app?.displayName,
                 appIconFilePath: bucket.app?.iconFilePath,
@@ -575,16 +599,21 @@ struct CaptureOverviewAccumulator {
                 if lhs.totals.packets != rhs.totals.packets {
                     return lhs.totals.packets > rhs.totals.packets
                 }
-                return (lhs.key.serverAddress, lhs.key.serverPort, lhs.key.clientAddress, lhs.key.clientPort) <
-                    (rhs.key.serverAddress, rhs.key.serverPort, rhs.key.clientAddress, rhs.key.clientPort)
+                return CaptureOverviewClassifier.identifier(for: lhs.key) < CaptureOverviewClassifier.identifier(for: rhs.key)
             }
         }
         return result
     }
 
-    private mutating func makeConversationBucket() -> CaptureOverviewConversationBucket {
+    // A new bucket gets a fresh generation, so packets added to an earlier, pruned bucket never match it.
+    private mutating func makeConversationBucket(for sample: CaptureOverviewConversationSample) -> CaptureOverviewConversationBucket {
         nextConversationGeneration &+= 1
-        return CaptureOverviewConversationBucket(generation: nextConversationGeneration)
+        conversationKeysByGeneration[nextConversationGeneration] = sample.key
+        return CaptureOverviewConversationBucket(
+            generation: nextConversationGeneration,
+            endpoints: sample.endpoints,
+            isClientConfirmed: sample.isClientConfirmed
+        )
     }
 
     // Prune in batches to the busiest half, so each snapshot scans a bounded number of conversations.
@@ -596,8 +625,10 @@ struct CaptureOverviewAccumulator {
             .sorted { $0.value.totals.bytes > $1.value.totals.bytes }
             .prefix(Self.maximumConversationBucketCount)
         conversationBuckets = Dictionary(uniqueKeysWithValues: busiest.map { ($0.key, $0.value) })
+        conversationKeysByGeneration = Dictionary(uniqueKeysWithValues: busiest.map { ($0.value.generation, $0.key) })
     }
 
+    // One row per flag that occurred, in severity order.
     private func tcpIssueRows() -> [CaptureOverviewTCPIssueRow] {
         CaptureOverviewTCPIssueKind.allCases.compactMap { kind in
             let packets = tcpIssueCounts[kind.rawValue]
@@ -700,6 +731,7 @@ struct CaptureOverviewAccumulator {
         return (points, interval)
     }
 
+    // The smallest round slot width that fits the span in the slot budget and merges whole storage buckets.
     static func renderedTimelineWidth(
         span: TimeInterval,
         storageWidth: TimeInterval,
@@ -715,6 +747,7 @@ struct CaptureOverviewAccumulator {
         return roundWidth ?? (span / maximumSlots / storageWidth).rounded(.up) * storageWidth
     }
 
+    // Integer division rounded toward negative infinity, like floor() for bucket keys.
     private static func floorDivide(_ value: Int64, by divisor: Int64) -> Int64 {
         let quotient = value / divisor
         return value % divisor < 0 ? quotient - 1 : quotient

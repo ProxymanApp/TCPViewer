@@ -245,7 +245,7 @@ struct CaptureOverviewServiceTests {
             makePacket(id: UInt64(index + 10), length: 200, sourcePort: UInt16(10_000 + index))
         })
         #expect(accumulator.conversationBucketCountForTesting <= limit * 2)
-        #expect(!accumulator.snapshot().topConversations.contains { $0.key.clientPort == 40_000 })
+        #expect(!accumulator.snapshot().topConversations.contains { $0.endpoints.clientPort == 40_000 })
 
         // The pruned conversation comes back; reclassifying packet 1 must not subtract its old bytes from the
         // new bucket, which never contained them.
@@ -254,7 +254,7 @@ struct CaptureOverviewServiceTests {
         accumulator.applyMetadata([makePacket(id: 1, length: 100, client: client, sourcePort: 40_000)])
 
         let snapshot = accumulator.snapshot()
-        #expect(snapshot.topConversations.first?.key.clientPort == 40_000)
+        #expect(snapshot.topConversations.first?.endpoints.clientPort == 40_000)
         #expect(snapshot.topConversations.first?.totals.bytes == 1_100)
         #expect(snapshot.totals.packets == UInt64(limit * 2 + 3))
     }
@@ -319,13 +319,15 @@ struct CaptureOverviewServiceTests {
 
         let conversation = try #require(snapshot.topConversations.first)
         #expect(snapshot.topConversations.count == 2)
-        #expect(conversation.key == CaptureOverviewConversationKey(
+        let endpoints = CaptureOverviewConversationEndpoints(
             transport: .tcp,
             clientAddress: "10.0.0.2",
             clientPort: 51_000,
             serverAddress: "93.184.216.34",
             serverPort: 443
-        ))
+        )
+        #expect(conversation.key == .endpoints(endpoints))
+        #expect(conversation.endpoints == endpoints)
         #expect(conversation.domainName == "api.example")
         #expect(conversation.totals.bytes == 400)
         #expect(conversation.totals.sentBytes == 100)
@@ -340,35 +342,109 @@ struct CaptureOverviewServiceTests {
     }
 
     @Test func displayFiltersOnlyUsePlainAddressLiterals() {
-        let conversation = CaptureOverviewConversationKey(
+        let conversation = CaptureOverviewConversationKey.endpoints(CaptureOverviewConversationEndpoints(
             transport: .tcp,
             clientAddress: "10.0.0.2",
             clientPort: 51_000,
             serverAddress: "93.184.216.34",
             serverPort: 443
-        )
+        ))
         #expect(CaptureOverviewClassifier.displayFilter(for: conversation) ==
             "ip.addr == 10.0.0.2 && tcp.port == 51000 && ip.addr == 93.184.216.34 && tcp.port == 443")
 
-        let ipv6 = CaptureOverviewConversationKey(
+        let ipv6 = CaptureOverviewConversationKey.endpoints(CaptureOverviewConversationEndpoints(
             transport: .udp,
             clientAddress: "fe80::1",
             clientPort: 5_353,
             serverAddress: "ff02::fb",
             serverPort: 5_353
-        )
+        ))
         #expect(CaptureOverviewClassifier.displayFilter(for: ipv6) ==
             "ipv6.addr == fe80::1 && udp.port == 5353 && ipv6.addr == ff02::fb && udp.port == 5353")
 
-        let injected = CaptureOverviewConversationKey(
+        let injected = CaptureOverviewConversationKey.endpoints(CaptureOverviewConversationEndpoints(
             transport: .tcp,
             clientAddress: "10.0.0.2 || frame",
             clientPort: 1,
             serverAddress: "10.0.0.3",
             serverPort: 2
-        )
+        ))
         #expect(CaptureOverviewClassifier.displayFilter(for: injected) == nil)
+        #expect(CaptureOverviewClassifier.displayFilter(for: .stream(FollowStreamID(streamProtocol: .udp, streamID: 7))) ==
+            "udp.stream eq 7")
         #expect(CaptureOverviewClassifier.displayFilter(for: CaptureOverviewServiceKey(transport: .udp, port: 53)) == "udp.port == 53")
+    }
+
+    @Test func wiresharkStreamIndexSeparatesReusedPortsAndTheSYNNamesTheClient() throws {
+        let firstConnection = FollowStreamID(streamProtocol: .tcp, streamID: 3)
+        let secondConnection = FollowStreamID(streamProtocol: .tcp, streamID: 9)
+        // The server here uses a higher port than its client, so only the handshake tells them apart.
+        let snapshot = replacementSnapshot([
+            makePacket(
+                id: 1,
+                length: 300,
+                tcpFlags: "SYN",
+                sourceAddress: "10.0.0.2",
+                sourcePort: 1_024,
+                destinationAddress: "10.0.0.9",
+                destinationPort: 8_080,
+                followStreamID: firstConnection
+            ),
+            makePacket(
+                id: 2,
+                length: 200,
+                tcpFlags: "ACK",
+                sourceAddress: "10.0.0.9",
+                sourcePort: 8_080,
+                destinationAddress: "10.0.0.2",
+                destinationPort: 1_024,
+                followStreamID: firstConnection
+            ),
+            // A later connection reusing the same ports is its own stream.
+            makePacket(
+                id: 3,
+                length: 100,
+                tcpFlags: "ACK",
+                sourceAddress: "10.0.0.2",
+                sourcePort: 1_024,
+                destinationAddress: "10.0.0.9",
+                destinationPort: 8_080,
+                followStreamID: secondConnection
+            ),
+        ])
+
+        let first = try #require(snapshot.topConversations.first)
+        #expect(snapshot.topConversations.count == 2)
+        #expect(first.key == .stream(firstConnection))
+        #expect(first.totals.bytes == 500)
+        #expect(first.endpoints.clientPort == 1_024)
+        #expect(first.endpoints.serverPort == 8_080)
+        #expect(CaptureOverviewClassifier.displayFilter(for: first.key) == "tcp.stream eq 3")
+        #expect(snapshot.topConversations.last?.key == .stream(secondConnection))
+    }
+
+    // The classifier reads Info text, so every marker must still exist in the pinned Wireshark sources.
+    @Test func tcpInfoMarkersMatchTheVendoredWireshark() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let tcpDissector = try String(
+            contentsOf: root.appendingPathComponent("Vendor/Wireshark/epan/dissectors/packet-tcp.c"),
+            encoding: .utf8
+        )
+        let exceptions = try String(
+            contentsOf: root.appendingPathComponent("Vendor/Wireshark/epan/show_exception.c"),
+            encoding: .utf8
+        )
+
+        for (kind, markers) in CaptureOverviewClassifier.tcpInfoMarkers {
+            for marker in markers {
+                #expect(tcpDissector.contains("\"\(marker)"), "\(kind) marker \(marker) is missing from packet-tcp.c")
+            }
+        }
+        #expect(exceptions.contains("\"\(CaptureOverviewClassifier.malformedInfoMarker)"))
     }
 
     @Test func packetLengthsUseWiresharkRanges() {
@@ -530,6 +606,7 @@ struct CaptureOverviewServiceTests {
         sourcePort: UInt16 = 51_000,
         destinationAddress: String = "93.184.216.34",
         destinationPort: UInt16 = 443,
+        followStreamID: FollowStreamID? = nil,
         decodeStatus: PacketDecodeStatus = PacketDecodeStatus(kind: .complete)
     ) -> PacketSummary {
         PacketSummary(
@@ -545,6 +622,7 @@ struct CaptureOverviewServiceTests {
             ),
             originalLength: length,
             capturedLength: min(length, 64),
+            followStreamID: followStreamID,
             direction: direction,
             tcpFlags: tcpFlags,
             infoSummary: info ?? "Packet \(id)",

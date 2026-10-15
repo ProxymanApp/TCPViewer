@@ -224,7 +224,7 @@ struct CaptureOverviewDashboardActions {
     let showEndpoints: () -> Void
     let performRowAction: (CaptureOverviewRowAction) -> Void
     let setCardVisible: (CaptureOverviewCard, Bool) -> Void
-    let restoreDefaultCards: () -> Void
+    let showCardPicker: () -> Void
     let copyMarkdown: () -> Void
     let saveMarkdown: () -> Void
     let shareMarkdown: () -> Void
@@ -258,6 +258,7 @@ enum CaptureOverviewFormat {
         return formatter
     }()
 
+    // File-style byte count; zero reads "0 bytes" instead of "Zero KB".
     static func bytes(_ value: UInt64) -> String {
         guard value > 0 else {
             return "0 bytes"
@@ -265,6 +266,7 @@ enum CaptureOverviewFormat {
         return byteFormatter.string(fromByteCount: Int64(clamping: value))
     }
 
+    // Byte count for chart values, which can be fractional.
     static func bytes(_ value: Double) -> String {
         guard value.isFinite, value > 0 else {
             return "0 bytes"
@@ -276,14 +278,17 @@ enum CaptureOverviewFormat {
         return bytes(UInt64(min(value, Double(Int64.max))))
     }
 
+    // A speed such as "57.2 KB/s".
     static func rate(_ bytesPerSecond: Double) -> String {
         "\(bytes(bytesPerSecond))/s"
     }
 
+    // A grouped count such as "4,709".
     static func count(_ value: UInt64) -> String {
         numberFormatter.string(from: NSNumber(value: value)) ?? String(value)
     }
 
+    // The share of a total from 0 to 1, safe for a zero total.
     static func fraction(_ value: UInt64, of total: UInt64) -> Double {
         guard total > 0 else {
             return 0
@@ -291,6 +296,7 @@ enum CaptureOverviewFormat {
         return min(1, Double(value) / Double(total))
     }
 
+    // A whole percentage, with "<1%" for tiny non-zero shares.
     static func percent(_ value: UInt64, of total: UInt64) -> String {
         let percentage = fraction(value, of: total) * 100
         if value > 0, percentage < 1 {
@@ -299,6 +305,7 @@ enum CaptureOverviewFormat {
         return "\(Int(percentage.rounded()))%"
     }
 
+    // A duration such as "2m 3s", or milliseconds under a second.
     static func span(_ interval: TimeInterval) -> String {
         guard interval >= 1 else {
             return interval > 0 ? "\(Int((interval * 1_000).rounded())) ms" : "0s"
@@ -347,6 +354,7 @@ enum CaptureOverviewStyle {
     static let unknownDirection = Color.gray
     static let issue = Color.red
 
+    // A color that follows the light or dark appearance.
     private static func dynamicColor(light: NSColor, dark: NSColor) -> Color {
         Color(nsColor: NSColor(name: nil) { appearance in
             appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
@@ -553,16 +561,13 @@ private struct CaptureOverviewCardGrid: View {
                         }
                     }
             }
-            CaptureOverviewAddCardCell(
-                visibleCards: model.cards,
-                onSetVisible: actions.setCardVisible,
-                onRestoreDefaults: actions.restoreDefaultCards
-            )
+            CaptureOverviewAddCardCell(visibleCards: model.cards, onShowPicker: actions.showCardPicker)
             .frame(height: CaptureOverviewStyle.cardHeight)
         }
     }
 
     @ViewBuilder
+    // The view for one card in the grid.
     private func cardView(for card: CaptureOverviewCard) -> some View {
         switch card {
         case .packets:
@@ -643,13 +648,11 @@ struct CaptureOverviewCardView<Content: View>: View {
 
 // MARK: - Add Card
 
-// The last cell of the grid. Its popover lists every card with a checkmark to show or hide it.
+// The last cell of the grid. The controller presents the card picker in an AppKit popover when it's clicked.
 private struct CaptureOverviewAddCardCell: View {
     let visibleCards: [CaptureOverviewCard]
-    let onSetVisible: (CaptureOverviewCard, Bool) -> Void
-    let onRestoreDefaults: () -> Void
+    let onShowPicker: () -> Void
 
-    @State private var isPickerShown = false
     @State private var isHovered = false
 
     private var hiddenCards: [CaptureOverviewCard] {
@@ -666,9 +669,7 @@ private struct CaptureOverviewAddCardCell: View {
     }
 
     var body: some View {
-        Button {
-            isPickerShown = true
-        } label: {
+        Button(action: onShowPicker) {
             VStack(spacing: 10) {
                 Image(systemName: "plus")
                     .font(.system(size: 20, weight: .semibold))
@@ -694,20 +695,13 @@ private struct CaptureOverviewAddCardCell: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
-        .popover(isPresented: $isPickerShown, attachmentAnchor: .point(.center)) {
-            CaptureOverviewCardPicker(
-                visibleCards: visibleCards,
-                onSetVisible: onSetVisible,
-                onRestoreDefaults: onRestoreDefaults
-            )
-        }
         .help("Show or hide Overview charts")
         .accessibilityLabel("Add Chart")
     }
 }
 
 // Every card with a checkmark; clicking a row shows or hides that card without closing the popover.
-private struct CaptureOverviewCardPicker: View {
+struct CaptureOverviewCardPicker: View {
     let visibleCards: [CaptureOverviewCard]
     let onSetVisible: (CaptureOverviewCard, Bool) -> Void
     let onRestoreDefaults: () -> Void
@@ -1065,6 +1059,7 @@ private struct CaptureOverviewTrafficBar: View {
         .accessibilityHidden(true)
     }
 
+    // One part's width share of the filled bar.
     private func share(_ value: Double, of total: Double) -> CGFloat {
         total > 0 ? CGFloat(value / total) : 0
     }
@@ -1116,6 +1111,7 @@ private struct CaptureOverviewEmptyStateView: View {
 }
 
 extension View {
+    // The rounded card fill, border and light shadow.
     func captureOverviewCardBackground(cornerRadius: CGFloat = CaptureOverviewStyle.cornerRadius) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         return background(shape.fill(CaptureOverviewStyle.card))

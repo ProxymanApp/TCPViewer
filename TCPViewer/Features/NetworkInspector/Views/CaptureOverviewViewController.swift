@@ -67,6 +67,8 @@ final class CaptureOverviewViewController: NSViewController {
     private var renderedNetworkFingerprint: CaptureOverviewNetworkFingerprint?
     private var renderedDashboardModel: CaptureOverviewDashboardModel?
     private var iconCache: [String: NSImage] = [:]
+    private var cardPickerPopover: NSPopover?
+    private var cardPickerController: NSHostingController<CaptureOverviewCardPicker>?
 
     init(
         latestIngestStateProvider: @escaping () -> PacketIngestState,
@@ -150,8 +152,10 @@ final class CaptureOverviewViewController: NSViewController {
         overviewSnapshot = .empty
         renderedDashboardModel = nil
         iconCache.removeAll()
+        cardPickerPopover?.close()
     }
 
+    // The SwiftUI root with every user action routed back to this controller.
     private func makeDashboardView(model: CaptureOverviewDashboardModel) -> CaptureOverviewDashboardView {
         CaptureOverviewDashboardView(
             model: model,
@@ -168,12 +172,10 @@ final class CaptureOverviewViewController: NSViewController {
                     self?.perform(action)
                 },
                 setCardVisible: { [weak self] card, isVisible in
-                    self?.cardLayoutStore.setVisible(card, isVisible)
-                    self?.renderDashboard()
+                    self?.setCard(card, isVisible: isVisible)
                 },
-                restoreDefaultCards: { [weak self] in
-                    self?.cardLayoutStore.restoreDefaults()
-                    self?.renderDashboard()
+                showCardPicker: { [weak self] in
+                    self?.showCardPicker()
                 },
                 copyMarkdown: { [weak self] in
                     self?.copyMarkdown()
@@ -188,6 +190,54 @@ final class CaptureOverviewViewController: NSViewController {
         )
     }
 
+    // MARK: - Card Picker
+
+    // Present the picker from AppKit at the pointer, so the SwiftUI grid needs no presentation binding.
+    private func showCardPicker() {
+        guard cardPickerPopover == nil,
+              let anchorView = hostingController?.view,
+              let window = anchorView.window else {
+            return
+        }
+        let pickerController = NSHostingController(rootView: makeCardPicker())
+        pickerController.sizingOptions = [.preferredContentSize]
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = pickerController
+        popover.delegate = self
+        let location = anchorView.convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        popover.show(relativeTo: NSRect(x: location.x, y: location.y, width: 1, height: 1), of: anchorView, preferredEdge: .maxY)
+        cardPickerPopover = popover
+        cardPickerController = pickerController
+    }
+
+    // The picker reads the saved layout, so it is current even if another window changed it.
+    private func makeCardPicker() -> CaptureOverviewCardPicker {
+        CaptureOverviewCardPicker(
+            visibleCards: cardLayoutStore.cards,
+            onSetVisible: { [weak self] card, isVisible in
+                self?.setCard(card, isVisible: isVisible)
+            },
+            onRestoreDefaults: { [weak self] in
+                self?.cardLayoutStore.restoreDefaults()
+                self?.refreshCards()
+            }
+        )
+    }
+
+    // Save one card's visibility and redraw.
+    private func setCard(_ card: CaptureOverviewCard, isVisible: Bool) {
+        cardLayoutStore.setVisible(card, isVisible)
+        refreshCards()
+    }
+
+    // Redraw the grid and any open picker after the saved layout changes.
+    private func refreshCards() {
+        cardPickerController?.rootView = makeCardPicker()
+        renderDashboard()
+    }
+
+    // Route a row click to the sidebar scope or to a Wireshark filter on all packets.
     private func perform(_ action: CaptureOverviewRowAction) {
         switch action {
         case .selection(let selection):
@@ -210,6 +260,7 @@ final class CaptureOverviewViewController: NSViewController {
         hostingController?.rootView = makeDashboardView(model: model)
     }
 
+    // Turn the latest aggregate and capture state into preformatted card values.
     private func makeDashboardModel(network: NetworkInspectorSnapshot) -> CaptureOverviewDashboardModel {
         let snapshot = overviewSnapshot
         let totals = snapshot.totals
@@ -257,6 +308,7 @@ final class CaptureOverviewViewController: NSViewController {
 
     // MARK: - Metrics
 
+    // The five summary tiles above the card grid.
     private func metricPresentations() -> [CaptureOverviewMetricPresentation] {
         let totals = overviewSnapshot.totals
         let duration = captureDuration
@@ -341,90 +393,107 @@ final class CaptureOverviewViewController: NSViewController {
 
     // MARK: - Rows
 
-    private func sourceRows(_ rows: [CaptureOverviewTopRow]) -> [CaptureOverviewTrafficRowPresentation] {
+    // What differs between the ranked lists; trafficRows(_:) adds the shared value, share and bar.
+    private struct RankedRow {
+        let id: String
+        let title: String
+        let totals: CaptureOverviewTrafficTotals
+        var iconFilePath: String?
+        var badgeText: String?
+        let symbolName: String
+        let detailPrefix: String
+        let help: String
+        let action: CaptureOverviewRowAction?
+    }
+
+    // Format ranked rows the same way in every card, scaling each bar to the biggest row.
+    private func trafficRows(_ rows: [RankedRow]) -> [CaptureOverviewTrafficRowPresentation] {
+        let visibleRows = rows.prefix(CaptureOverviewStyle.rowLimit)
         let totalBytes = overviewSnapshot.totals.bytes
-        let maximumBytes = rows.map(\.totals.bytes).max() ?? 0
-        return rows.prefix(CaptureOverviewStyle.rowLimit).map { row in
+        let maximumBytes = visibleRows.map(\.totals.bytes).max() ?? 0
+        return visibleRows.map { row in
             let iconPath = PacketClientIconCache.normalizedIconPath(row.iconFilePath)
             return CaptureOverviewTrafficRowPresentation(
                 id: row.id,
                 title: row.title,
                 icon: iconPath.map(icon(forNormalizedPath:)),
                 iconIdentity: iconPath,
-                badgeText: nil,
-                symbolName: symbolName(for: row.selection),
+                badgeText: row.badgeText,
+                symbolName: row.symbolName,
                 valueText: CaptureOverviewFormat.bytes(row.totals.bytes),
-                detailText: "\(packetCountText(row.totals.packets)) · " +
-                    CaptureOverviewFormat.percent(row.totals.bytes, of: totalBytes),
+                detailText: "\(row.detailPrefix) · \(CaptureOverviewFormat.percent(row.totals.bytes, of: totalBytes))",
                 issueCount: row.totals.issuePackets,
                 sentFraction: CaptureOverviewFormat.fraction(row.totals.sentBytes, of: maximumBytes),
                 receivedFraction: CaptureOverviewFormat.fraction(row.totals.receivedBytes, of: maximumBytes),
                 unknownFraction: CaptureOverviewFormat.fraction(row.totals.unclassifiedBytes, of: maximumBytes),
+                help: row.help,
+                action: row.action
+            )
+        }
+    }
+
+    // Apps or destinations; a click opens the same scope as the sidebar item.
+    private func sourceRows(_ rows: [CaptureOverviewTopRow]) -> [CaptureOverviewTrafficRowPresentation] {
+        trafficRows(rows.map { row in
+            RankedRow(
+                id: row.id,
+                title: row.title,
+                totals: row.totals,
+                iconFilePath: row.iconFilePath,
+                symbolName: symbolName(for: row.selection),
+                detailPrefix: packetCountText(row.totals.packets),
                 help: "Show packets of \(row.title)\n\(directionText(row.totals))",
                 action: .selection(row.selection)
             )
-        }
+        })
     }
 
+    // Conversations titled by their server; a click filters to that one connection.
     private func conversationRows() -> [CaptureOverviewTrafficRowPresentation] {
-        let rows = overviewSnapshot.topConversations
-        let totalBytes = overviewSnapshot.totals.bytes
-        let maximumBytes = rows.map(\.totals.bytes).max() ?? 0
-        return rows.prefix(CaptureOverviewStyle.rowLimit).map { row in
-            let key = row.key
-            let server = CaptureOverviewClassifier.endpointText(address: row.domainName ?? key.serverAddress, port: key.serverPort)
-            let endpoints = "\(CaptureOverviewClassifier.endpointText(address: key.clientAddress, port: key.clientPort)) ⇄ " +
-                CaptureOverviewClassifier.endpointText(address: key.serverAddress, port: key.serverPort)
-            let filter = CaptureOverviewClassifier.displayFilter(for: key)
-            let iconPath = PacketClientIconCache.normalizedIconPath(row.appIconFilePath)
-            let helpLines = [endpoints, row.appName, directionText(row.totals), filter.map { "Filter: \($0)" }]
-            return CaptureOverviewTrafficRowPresentation(
-                id: "\(key.transport.rawValue)|\(key.clientAddress)|\(key.clientPort)|\(key.serverAddress)|\(key.serverPort)",
+        trafficRows(overviewSnapshot.topConversations.map { row in
+            let endpoints = row.endpoints
+            let server = EndpointStatisticsClassifier.transportKey(
+                address: row.domainName ?? endpoints.serverAddress,
+                port: endpoints.serverPort
+            )
+            let pair = "\(EndpointStatisticsClassifier.transportKey(address: endpoints.clientAddress, port: endpoints.clientPort)) ⇄ " +
+                EndpointStatisticsClassifier.transportKey(address: endpoints.serverAddress, port: endpoints.serverPort)
+            let filter = CaptureOverviewClassifier.displayFilter(for: row.key)
+            let helpLines = [pair, row.appName, directionText(row.totals), filter.map { "Filter: \($0)" }]
+            return RankedRow(
+                id: CaptureOverviewClassifier.identifier(for: row.key),
                 title: server,
-                icon: iconPath.map(icon(forNormalizedPath:)),
-                iconIdentity: iconPath,
-                badgeText: nil,
+                totals: row.totals,
+                iconFilePath: row.appIconFilePath,
                 symbolName: "arrow.left.arrow.right",
-                valueText: CaptureOverviewFormat.bytes(row.totals.bytes),
-                detailText: "\(key.transport.rawValue) · " + CaptureOverviewFormat.percent(row.totals.bytes, of: totalBytes),
-                issueCount: row.totals.issuePackets,
-                sentFraction: CaptureOverviewFormat.fraction(row.totals.sentBytes, of: maximumBytes),
-                receivedFraction: CaptureOverviewFormat.fraction(row.totals.receivedBytes, of: maximumBytes),
-                unknownFraction: CaptureOverviewFormat.fraction(row.totals.unclassifiedBytes, of: maximumBytes),
+                detailPrefix: endpoints.transport.rawValue,
                 help: helpLines.compactMap { $0 }.joined(separator: "\n"),
                 action: filter.map { .displayFilter($0) }
             )
-        }
+        })
     }
 
+    // Server ports with their well-known names; a click filters to that port.
     private func serviceRows() -> [CaptureOverviewTrafficRowPresentation] {
-        let rows = overviewSnapshot.topServices
-        let totalBytes = overviewSnapshot.totals.bytes
-        let maximumBytes = rows.map(\.totals.bytes).max() ?? 0
-        return rows.prefix(CaptureOverviewStyle.rowLimit).map { row in
+        trafficRows(overviewSnapshot.topServices.map { row in
             let key = row.key
             let name = CaptureOverviewClassifier.serviceName(for: key)
             let filter = CaptureOverviewClassifier.displayFilter(for: key)
-            return CaptureOverviewTrafficRowPresentation(
+            return RankedRow(
                 id: "\(key.transport.rawValue)|\(key.port)",
                 title: name ?? "\(key.transport.rawValue) \(key.port)",
-                icon: nil,
-                iconIdentity: nil,
+                totals: row.totals,
                 badgeText: "\(key.port)",
                 symbolName: "number",
-                valueText: CaptureOverviewFormat.bytes(row.totals.bytes),
-                detailText: "\(key.transport.rawValue) · " + CaptureOverviewFormat.percent(row.totals.bytes, of: totalBytes),
-                issueCount: row.totals.issuePackets,
-                sentFraction: CaptureOverviewFormat.fraction(row.totals.sentBytes, of: maximumBytes),
-                receivedFraction: CaptureOverviewFormat.fraction(row.totals.receivedBytes, of: maximumBytes),
-                unknownFraction: CaptureOverviewFormat.fraction(row.totals.unclassifiedBytes, of: maximumBytes),
+                detailPrefix: key.transport.rawValue,
                 help: "\(key.transport.rawValue) port \(key.port)\(name.map { " (\($0))" } ?? "")\n" +
                     "\(directionText(row.totals))\nFilter: \(filter)",
                 action: .displayFilter(filter)
             )
-        }
+        })
     }
 
+    // One row per Wireshark flag, each applying the filter that shows exactly the counted packets.
     private func tcpAnalysisPresentation() -> CaptureOverviewTCPAnalysisPresentation {
         let totals = overviewSnapshot.totals
         let tcpPackets = overviewSnapshot.tcpPacketCount
@@ -456,15 +525,18 @@ final class CaptureOverviewViewController: NSViewController {
         )
     }
 
+    // "1 packet" or "1,234 packets".
     private func packetCountText(_ packets: UInt64) -> String {
         packets == 1 ? "1 packet" : "\(CaptureOverviewFormat.count(packets)) packets"
     }
 
+    // Packets with sent and received bytes, for row tooltips.
     private func directionText(_ totals: CaptureOverviewTrafficTotals) -> String {
         "\(packetCountText(totals.packets)) · ↑ \(CaptureOverviewFormat.bytes(totals.sentBytes))  " +
             "↓ \(CaptureOverviewFormat.bytes(totals.receivedBytes))"
     }
 
+    // Fallback icon when a row has no app icon.
     private func symbolName(for selection: PacketSourceListSelection) -> String {
         switch selection {
         case .app:
@@ -476,6 +548,7 @@ final class CaptureOverviewViewController: NSViewController {
         }
     }
 
+    // App icons are loaded once per path while the Overview is visible.
     private func icon(forNormalizedPath path: String) -> NSImage {
         if let cached = iconCache[path] {
             return cached
@@ -497,12 +570,14 @@ final class CaptureOverviewViewController: NSViewController {
         )
     }
 
+    // Put the report on the general pasteboard as plain text.
     private func copyMarkdown() {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(markdownReport(generatedAt: Date()), forType: .string)
     }
 
+    // Ask where to save the report as a .md file.
     private func saveMarkdown() {
         let generatedAt = Date()
         let markdown = markdownReport(generatedAt: generatedAt)
@@ -540,6 +615,7 @@ final class CaptureOverviewViewController: NSViewController {
 
     // MARK: - Header
 
+    // Source, start time and duration under the Overview title.
     private func headerSubtitle(_ network: NetworkInspectorSnapshot) -> String {
         var parts = [sourceDescription(network)]
         if let firstPacketDate = overviewSnapshot.firstPacketDate {
@@ -555,6 +631,7 @@ final class CaptureOverviewViewController: NSViewController {
         return parts.joined(separator: " · ")
     }
 
+    // The capture file, imported files or live interface this Overview describes.
     private func sourceDescription(_ network: NetworkInspectorSnapshot) -> String {
         if let fileName = network.base.documentState.fileURL?.lastPathComponent {
             return fileName
@@ -575,6 +652,7 @@ final class CaptureOverviewViewController: NSViewController {
         return "Live capture on \(name)"
     }
 
+    // The pill beside the title: Live, Paused, Loaded and so on.
     private func statusPresentation(_ snapshot: NetworkInspectorSnapshot) -> CaptureOverviewStatusPresentation {
         if snapshot.base.packetIngestState.source == .offline {
             let phase = snapshot.base.documentState.phase
@@ -609,6 +687,14 @@ private extension CaptureOverviewTCPIssueKind {
         case .duplicateAck: .yellow
         case .reset: .indigo
         }
+    }
+}
+
+extension CaptureOverviewViewController: NSPopoverDelegate {
+    // Release the picker so the next click builds a fresh one from the saved layout.
+    func popoverDidClose(_ notification: Notification) {
+        cardPickerPopover = nil
+        cardPickerController = nil
     }
 }
 

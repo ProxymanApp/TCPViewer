@@ -9,9 +9,20 @@ import Foundation
 import Testing
 @testable import TCPViewer
 
+// macOS keeps a suite's plist even after removePersistentDomain, so every test reuses one fixed suite,
+// cleared before it runs, instead of leaving a new file behind per test.
+@Suite(.serialized)
 struct CaptureOverviewCardLayoutStoreTests {
+    private static let suiteName = "com.proxyman.tcpviewer.tests.CaptureOverviewCardLayoutStore"
+    private let defaults: UserDefaults
+
+    init() {
+        defaults = UserDefaults(suiteName: Self.suiteName)!
+        defaults.removePersistentDomain(forName: Self.suiteName)
+    }
+
     @Test func newOverviewShowsTheDefaultCardsAndHidesTheRest() {
-        let store = CaptureOverviewCardLayoutStore(defaults: makeDefaults())
+        let store = CaptureOverviewCardLayoutStore(defaults: defaults)
 
         #expect(store.cards == CaptureOverviewCard.defaults)
         #expect(!store.cards.contains(.conversations))
@@ -20,7 +31,6 @@ struct CaptureOverviewCardLayoutStoreTests {
     }
 
     @Test func showingAppendsAndHidingRemoves() {
-        let defaults = makeDefaults()
         let store = CaptureOverviewCardLayoutStore(defaults: defaults)
 
         store.setVisible(.protocols, false)
@@ -32,7 +42,6 @@ struct CaptureOverviewCardLayoutStoreTests {
     }
 
     @Test func aStaleWindowRepeatingAChangeCannotInvertIt() {
-        let defaults = makeDefaults()
         let firstWindow = CaptureOverviewCardLayoutStore(defaults: defaults)
         let staleWindow = CaptureOverviewCardLayoutStore(defaults: defaults)
 
@@ -45,7 +54,7 @@ struct CaptureOverviewCardLayoutStoreTests {
     }
 
     @Test func hidingEveryCardIsKeptAndRestoreDefaultsBringsThemBack() {
-        let store = CaptureOverviewCardLayoutStore(defaults: makeDefaults())
+        let store = CaptureOverviewCardLayoutStore(defaults: defaults)
         for card in CaptureOverviewCard.defaults {
             store.setVisible(card, false)
         }
@@ -56,16 +65,8 @@ struct CaptureOverviewCardLayoutStoreTests {
     }
 
     @Test func unknownAndDuplicateStoredNamesAreSkipped() {
-        let defaults = makeDefaults()
         defaults.set(["services", "futureCard", "packets", "services"], forKey: CaptureOverviewCardLayoutStore.storageKey)
 
         #expect(CaptureOverviewCardLayoutStore(defaults: defaults).cards == [.services, .packets])
-    }
-
-    private func makeDefaults() -> UserDefaults {
-        let suiteName = "CaptureOverviewCardLayoutStoreTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defaults.removePersistentDomain(forName: suiteName)
-        return defaults
     }
 }

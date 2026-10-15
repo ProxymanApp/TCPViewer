@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import PcapPlusPlusCore
 import Testing
 @testable import TCPViewer
 
@@ -156,7 +157,8 @@ struct CaptureOverviewMarkdownTests {
             topServices: [CaptureOverviewServiceRow(key: CaptureOverviewServiceKey(transport: .tcp, port: 443), totals: totals)],
             topConversations: [
                 CaptureOverviewConversationRow(
-                    key: CaptureOverviewConversationKey(
+                    key: .stream(FollowStreamID(streamProtocol: .tcp, streamID: 1)),
+                    endpoints: CaptureOverviewConversationEndpoints(
                         transport: .tcp,
                         clientAddress: "fe80::1",
                         clientPort: 51_000,

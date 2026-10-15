@@ -102,6 +102,7 @@ enum CaptureOverviewMarkdown {
         return table("Summary", columns: [("Metric", false), ("Value", false)], rows: rows)
     }
 
+    // The busiest time slots, standing in for the two time charts.
     private static func activitySection(_ snapshot: CaptureOverviewSnapshot) -> [String] {
         let interval = max(snapshot.timelineInterval, 1)
         let busiest = snapshot.timeline
@@ -126,6 +127,7 @@ enum CaptureOverviewMarkdown {
         )
     }
 
+    // Bytes and packets per Protocol column value.
     private static func protocolSection(_ snapshot: CaptureOverviewSnapshot) -> [String] {
         let rows = snapshot.protocols.map { row in
             [
@@ -142,6 +144,7 @@ enum CaptureOverviewMarkdown {
         )
     }
 
+    // A ranked table of apps or destinations.
     private static func sourceSection(
         _ title: String,
         nameTitle: String,
@@ -154,6 +157,7 @@ enum CaptureOverviewMarkdown {
         return table(title, columns: [("#", true), (nameTitle, false)] + trafficColumns, rows: tableRows)
     }
 
+    // Each Wireshark flag with its share and the filter that shows it.
     private static func tcpAnalysisSection(_ snapshot: CaptureOverviewSnapshot) -> [String] {
         guard !snapshot.tcpIssues.isEmpty else {
             let text = snapshot.tcpPacketCount > 0
@@ -178,14 +182,15 @@ enum CaptureOverviewMarkdown {
         )
     }
 
+    // The busiest conversations with both endpoints.
     private static func conversationSection(_ snapshot: CaptureOverviewSnapshot) -> [String] {
         let rows = snapshot.topConversations.enumerated().map { index, row in
-            let key = row.key
+            let endpoints = row.endpoints
             return [
                 "\(index + 1)",
-                CaptureOverviewClassifier.endpointText(address: key.clientAddress, port: key.clientPort),
-                CaptureOverviewClassifier.endpointText(address: key.serverAddress, port: key.serverPort),
-                key.transport.rawValue,
+                EndpointStatisticsClassifier.transportKey(address: endpoints.clientAddress, port: endpoints.clientPort),
+                EndpointStatisticsClassifier.transportKey(address: endpoints.serverAddress, port: endpoints.serverPort),
+                endpoints.transport.rawValue,
                 row.domainName ?? "–",
                 row.appName ?? "–",
             ] + trafficCells(row.totals, of: snapshot.totals)
@@ -198,6 +203,7 @@ enum CaptureOverviewMarkdown {
         )
     }
 
+    // The busiest server ports with their service names.
     private static func serviceSection(_ snapshot: CaptureOverviewSnapshot) -> [String] {
         let rows = snapshot.topServices.enumerated().map { index, row in
             [
@@ -213,6 +219,7 @@ enum CaptureOverviewMarkdown {
         )
     }
 
+    // Non-empty Packet Lengths ranges.
     private static func packetLengthSection(_ snapshot: CaptureOverviewSnapshot) -> [String] {
         let rows = snapshot.packetLengthCounts.enumerated().compactMap { index, count -> [String]? in
             guard count > 0 else {
@@ -237,6 +244,7 @@ enum CaptureOverviewMarkdown {
         ("Packets", true), ("Sent", true), ("Received", true), ("Total", true), ("Share", true), ("TCP Issues", true),
     ]
 
+    // Packets, bytes per direction, share and issues for one ranked row.
     private static func trafficCells(_ totals: CaptureOverviewTrafficTotals, of all: CaptureOverviewTrafficTotals) -> [String] {
         [
             CaptureOverviewFormat.count(totals.packets),
@@ -279,10 +287,12 @@ enum CaptureOverviewMarkdown {
             .replacingOccurrences(of: "\n", with: " ")
     }
 
+    // Byte counts formatted like the Overview cards.
     private static func bytes(_ value: UInt64) -> String {
         CaptureOverviewFormat.bytes(value)
     }
 
+    // Locale date and time for the report text.
     private static func dateTime(_ date: Date) -> String {
         date.formatted(date: .abbreviated, time: .standard)
     }

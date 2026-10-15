@@ -117,6 +117,7 @@ final class CaptureOverviewCardLayoutStore {
         return cards
     }
 
+    // Forget the saved layout so the default cards come back.
     func restoreDefaults() {
         defaults.removeObject(forKey: Self.storageKey)
     }

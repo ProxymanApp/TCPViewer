@@ -29,6 +29,7 @@ enum CaptureOverviewChartHoverSelection {
         return max(slotWidth * CGFloat(slot) - 8 - tooltipWidth, 0)
     }
 
+    // The donut segment under the pointer, ignoring the hole and the area outside the ring.
     static func protocolRow(
         at location: CGPoint,
         in size: CGSize,
@@ -163,18 +164,22 @@ private extension CaptureOverviewTimelinePresentation {
         return start...start.addingTimeInterval(interval * Double(max(points.count, 1)))
     }
 
+    // Where a slot begins on the time axis.
     func slotStart(_ index: Int) -> Date {
         points[index].date
     }
 
+    // Where a line chart plots a slot's value.
     func slotCenter(_ index: Int) -> Date {
         points[index].date.addingTimeInterval(interval / 2)
     }
 
+    // Where a slot ends on the time axis.
     func slotEnd(_ index: Int) -> Date {
         points[index].date.addingTimeInterval(interval)
     }
 
+    // A slot's time range for tooltips.
     func slotTitle(_ index: Int) -> String {
         "\(CaptureOverviewFormat.time(slotStart(index), slotInterval: interval)) – " +
             CaptureOverviewFormat.time(slotEnd(index), slotInterval: interval)
@@ -290,6 +295,7 @@ struct CaptureOverviewPacketsCard: View {
         .accessibilityLabel("Packets over time")
     }
 
+    // One stacked segment of a slot's bar.
     private func bar(_ index: Int, from start: Int, to end: Int, color: Color) -> some ChartContent {
         // Leave a small gap between slots.
         let inset = timeline.interval * 0.1
@@ -303,6 +309,7 @@ struct CaptureOverviewPacketsCard: View {
         .cornerRadius(2)
     }
 
+    // A slot's packets, TCP issues and bytes per direction.
     private func tooltip(_ index: Int) -> CaptureOverviewChartTooltip {
         let totals = points[index].totals
         var rows: [CaptureOverviewTooltipRow] = []
@@ -338,6 +345,7 @@ private struct CaptureOverviewThroughputSeries: Identifiable {
     let color: Color
     let bytes: KeyPath<CaptureOverviewTrafficTotals, UInt64>
 
+    // Received and sent when the capture knows the local side; otherwise one total.
     static func series(for totals: CaptureOverviewTrafficTotals) -> [CaptureOverviewThroughputSeries] {
         guard totals.sentBytes > 0 || totals.receivedBytes > 0 else {
             return [CaptureOverviewThroughputSeries(id: "Total", color: .orange, bytes: \.bytes)]
@@ -473,10 +481,12 @@ struct CaptureOverviewThroughputCard: View {
         .accessibilityLabel("Throughput over time")
     }
 
+    // Bytes in a slot per second.
     private func rate(_ bytes: UInt64) -> Double {
         Double(bytes) / max(timeline.interval, 1)
     }
 
+    // A slot's rate per direction and its packet count.
     private func tooltip(_ index: Int) -> CaptureOverviewChartTooltip {
         let totals = points[index].totals
         var rows = series.map { series in
@@ -506,6 +516,7 @@ struct CaptureOverviewThroughputCard: View {
 private enum CaptureOverviewProtocolPalette {
     static let colors: [Color] = [.blue, .cyan, .purple, .orange, .green, .pink]
 
+    // A protocol's color by rank, repeating after six.
     static func color(at index: Int) -> Color {
         colors[index % colors.count]
     }
@@ -605,6 +616,7 @@ struct CaptureOverviewProtocolsCard: View {
         .accessibilityLabel("Protocol traffic breakdown")
     }
 
+    // The protocol under the pointer, in plot-area coordinates.
     private func row(
         at location: CGPoint,
         proxy: ChartProxy,
@@ -625,6 +637,7 @@ struct CaptureOverviewProtocolsCard: View {
         )
     }
 
+    // One protocol's color, name, bytes and share beside the donut.
     private func legendRow(_ row: CaptureOverviewProtocolPresentation) -> some View {
         HStack(spacing: 6) {
             Circle()
@@ -708,6 +721,7 @@ struct CaptureOverviewPacketLengthsCard: View {
         .accessibilityLabel("Packet lengths histogram")
     }
 
+    // A length range's packet count and share.
     private func tooltip(_ index: Int) -> CaptureOverviewChartTooltip {
         let row = rows[index]
         return CaptureOverviewChartTooltip(
