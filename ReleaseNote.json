@@ -349,6 +349,19 @@
         "Fixed: TCP Viewer missing from Finder's Open With menu for some PCAP and PCAPNG files.",
         "Fixed: missing TLS and other packet details after stopping a capture or switching between captures."
       ]
+    },
+    {
+      "version": "1.22.0",
+      "title": "TCP Viewer 1.22.0: Redesign the Overview view 📊",
+      "features": [
+        "New Overview: see your capture at a glance with cards for packets, throughput, protocols, top apps, top domains and IPs, and TCP problems.",
+        "Show or hide Overview cards with the + button. More cards: top conversations, services and ports, and packet sizes.",
+        "Share the Overview as a Markdown report: copy it, save it, or send it."
+      ],
+      "improvements": [
+        "Add new menu item: Expand or Collapse this node in the Packet Details tree."
+      ],
+      "bugs": []
     }
   ]
 }

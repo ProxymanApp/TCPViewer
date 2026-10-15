@@ -1261,12 +1261,23 @@ final class PacketInspectorViewController: NSViewController {
         !item.children.isEmpty || item.children.contains(where: hasExpandableInspectorRows(in:))
     }
 
-    // Expand every visible detail node and persist that choice for matching packet-detail IDs.
-    private func expandAllInspectorRows() {
+    // Selected rows that have children, used by the "This Node" expand and collapse actions.
+    private func selectedExpandableItems() -> [PacketInspectorTreeItem] {
+        outlineView.selectedRowIndexes.compactMap { row in
+            guard let item = outlineView.item(atRow: row) as? PacketInspectorTreeItem,
+                  !item.children.isEmpty else {
+                return nil
+            }
+            return item
+        }
+    }
+
+    // Expand the given nodes and their subtrees, and persist that choice for matching packet-detail IDs.
+    private func expandInspectorRows(_ items: [PacketInspectorTreeItem]) {
         isApplyingExpansionState = true
         defer { isApplyingExpansionState = false }
 
-        for item in viewModel.rootItems {
+        for item in items {
             expandAllInspectorRows(in: item)
         }
     }
@@ -1283,12 +1294,12 @@ final class PacketInspectorViewController: NSViewController {
         }
     }
 
-    // Collapse every visible detail node while recording children so future reloads stay collapsed.
-    private func collapseAllInspectorRows() {
+    // Collapse the given nodes while recording their children so future reloads stay collapsed.
+    private func collapseInspectorRows(_ items: [PacketInspectorTreeItem]) {
         isApplyingExpansionState = true
         defer { isApplyingExpansionState = false }
 
-        for item in viewModel.rootItems {
+        for item in items {
             collapseAllInspectorRows(in: item)
         }
     }
@@ -1339,12 +1350,20 @@ final class PacketInspectorViewController: NSViewController {
         delegate?.packetInspectorViewController(self, didRequestApplyFilter: request)
     }
 
+    @objc private func expandSelectedRowsFromMenu(_ sender: Any?) {
+        expandInspectorRows(selectedExpandableItems())
+    }
+
+    @objc private func collapseSelectedRowsFromMenu(_ sender: Any?) {
+        collapseInspectorRows(selectedExpandableItems())
+    }
+
     @objc private func expandAllRowsFromMenu(_ sender: Any?) {
-        expandAllInspectorRows()
+        expandInspectorRows(viewModel.rootItems)
     }
 
     @objc private func collapseAllRowsFromMenu(_ sender: Any?) {
-        collapseAllInspectorRows()
+        collapseInspectorRows(viewModel.rootItems)
     }
 
     private func configuredCell(for item: PacketInspectorTreeItem) -> NSTableCellView {
@@ -1535,9 +1554,33 @@ extension PacketInspectorViewController: NSMenuDelegate {
         let hasExpandableRows = hasExpandableInspectorRows()
         let canCreateColumn = selectedCustomColumnRequest() != nil
         let canApplyFilter = selectedFilterRequest() != nil
+        let hasSelectedExpandableRows = !selectedExpandableItems().isEmpty
         menu.addItem(copySubmenuItem(hasSelectedRows: hasSelectedRows, hasSelectedByteRanges: hasSelectedByteRanges))
         menu.addItem(.separator())
         menu.addItem(createColumnItem(isEnabled: canCreateColumn))
+        menu.addItem(.separator())
+
+        let expandNodeItem = NSMenuItem(
+            title: "Expand This Node",
+            action: #selector(expandSelectedRowsFromMenu(_:)),
+            keyEquivalent: ""
+        )
+        expandNodeItem.target = self
+        expandNodeItem.isEnabled = hasSelectedExpandableRows
+        expandNodeItem.toolTip = "Expand the selected packet detail row and its children."
+        expandNodeItem.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: "Expand This Node")
+        menu.addItem(expandNodeItem)
+
+        let collapseNodeItem = NSMenuItem(
+            title: "Collapse This Node",
+            action: #selector(collapseSelectedRowsFromMenu(_:)),
+            keyEquivalent: ""
+        )
+        collapseNodeItem.target = self
+        collapseNodeItem.isEnabled = hasSelectedExpandableRows
+        collapseNodeItem.toolTip = "Collapse the selected packet detail row and its children."
+        collapseNodeItem.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: "Collapse This Node")
+        menu.addItem(collapseNodeItem)
         menu.addItem(.separator())
 
         let expandAllItem = NSMenuItem(
