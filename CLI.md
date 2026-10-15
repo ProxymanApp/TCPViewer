@@ -206,7 +206,7 @@ tcpviewer-cli statistics endpoints [--pane-id UUID] [--scope all|displayed]
   [--sort COLUMN] [--order asc|desc] [--offset N] [--limit 1...500]
 ```
 
-Overview returns the complete source's totals, time range, protocol breakdown, top apps and destinations, and timeline. It does not open the Overview view. Top rows include source IDs for pane selection. Overview always uses the full source; use endpoint statistics for displayed-scope analysis.
+Overview returns the complete source's totals, time range, protocol breakdown, top apps and destinations, and timeline. Protocol names match the packet table's Protocol column, for example `TLSv1.3` or `QUIC`. The timeline has at most 240 consecutive slots of a round width (1 s, 5 s, 1 min, …), including empty slots. It does not open the Overview view. Top rows include source IDs for pane selection. Overview always uses the full source; use endpoint statistics for displayed-scope analysis.
 
 Endpoint statistics defaults to Apps, all packets, bytes descending, and 50 rows. Sort columns are `address`, `port`, `protocol`, `client`, `domain`, `packets`, `bytes`, `tx_packets`, `tx_bytes`, `rx_packets`, `rx_bytes`, and `summary`. Results include total row count, `next_offset`, group counts, traffic totals, and endpoint identifiers for drill-down. Byte and packet counters in totals use unsigned decimal strings.
 

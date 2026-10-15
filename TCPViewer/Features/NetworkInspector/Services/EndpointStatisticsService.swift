@@ -238,7 +238,8 @@ enum EndpointStatisticsClassifier {
         }
     }
 
-    fileprivate static func transportKey(address: String, port: UInt16) -> String {
+    // Address and port as one text key; also how the Overview displays an endpoint (IPv6 in brackets).
+    static func transportKey(address: String, port: UInt16) -> String {
         address.contains(":") ? "[\(address)]:\(port)" : "\(address):\(port)"
     }
 

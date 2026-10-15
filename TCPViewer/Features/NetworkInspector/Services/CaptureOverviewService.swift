@@ -17,6 +17,8 @@ struct CaptureOverviewTrafficTotals: Equatable, Sendable {
     var receivedBytes: UInt64 = 0
     var unclassifiedPackets: UInt64 = 0
     var unclassifiedBytes: UInt64 = 0
+    // Packets with at least one TCP analysis flag; malformed packets are counted separately.
+    var issuePackets: UInt64 = 0
 
     var isEmpty: Bool {
         packets == 0
@@ -31,6 +33,7 @@ struct CaptureOverviewTrafficTotals: Equatable, Sendable {
         receivedBytes += value.receivedBytes
         unclassifiedPackets += value.unclassifiedPackets
         unclassifiedBytes += value.unclassifiedBytes
+        issuePackets += value.issuePackets
     }
 
     mutating func remove(_ value: CaptureOverviewTrafficTotals) {
@@ -42,6 +45,7 @@ struct CaptureOverviewTrafficTotals: Equatable, Sendable {
         receivedBytes -= value.receivedBytes
         unclassifiedPackets -= value.unclassifiedPackets
         unclassifiedBytes -= value.unclassifiedBytes
+        issuePackets -= value.issuePackets
     }
 }
 
@@ -64,6 +68,31 @@ struct CaptureOverviewTimelinePoint: Equatable, Sendable {
     let totals: CaptureOverviewTrafficTotals
 }
 
+struct CaptureOverviewTCPIssueRow: Identifiable, Equatable, Sendable {
+    let kind: CaptureOverviewTCPIssueKind
+    let packets: UInt64
+
+    var id: Int { kind.rawValue }
+}
+
+struct CaptureOverviewServiceRow: Identifiable, Equatable, Sendable {
+    let key: CaptureOverviewServiceKey
+    let totals: CaptureOverviewTrafficTotals
+
+    var id: CaptureOverviewServiceKey { key }
+}
+
+struct CaptureOverviewConversationRow: Identifiable, Equatable, Sendable {
+    let key: CaptureOverviewConversationKey
+    let endpoints: CaptureOverviewConversationEndpoints
+    let domainName: String?
+    let appName: String?
+    let appIconFilePath: String?
+    let totals: CaptureOverviewTrafficTotals
+
+    var id: CaptureOverviewConversationKey { key }
+}
+
 struct CaptureOverviewSnapshot: Equatable, Sendable {
     let totals: CaptureOverviewTrafficTotals
     let firstPacketDate: Date?
@@ -71,10 +100,16 @@ struct CaptureOverviewSnapshot: Equatable, Sendable {
     let appCount: Int
     let domainCount: Int
     let malformedPacketCount: UInt64
+    let tcpPacketCount: UInt64
     let topApps: [CaptureOverviewTopRow]
     let topDestinations: [CaptureOverviewTopRow]
     let protocols: [CaptureOverviewProtocolRow]
+    let tcpIssues: [CaptureOverviewTCPIssueRow]
+    let topServices: [CaptureOverviewServiceRow]
+    let topConversations: [CaptureOverviewConversationRow]
+    let packetLengthCounts: [UInt64]
     let timeline: [CaptureOverviewTimelinePoint]
+    let timelineInterval: TimeInterval
 
     static let empty = CaptureOverviewSnapshot(
         totals: CaptureOverviewTrafficTotals(),
@@ -83,10 +118,16 @@ struct CaptureOverviewSnapshot: Equatable, Sendable {
         appCount: 0,
         domainCount: 0,
         malformedPacketCount: 0,
+        tcpPacketCount: 0,
         topApps: [],
         topDestinations: [],
         protocols: [],
-        timeline: []
+        tcpIssues: [],
+        topServices: [],
+        topConversations: [],
+        packetLengthCounts: Array(repeating: 0, count: CaptureOverviewClassifier.packetLengthBucketCount),
+        timeline: [],
+        timelineInterval: 1
     )
 
 }
@@ -100,6 +141,22 @@ private struct CaptureOverviewContribution: Equatable {
     let protocolName: String
     let totals: CaptureOverviewTrafficTotals
     let isMalformed: Bool
+    let isTCP: Bool
+    let tcpIssues: CaptureOverviewTCPIssueSet
+    let service: CaptureOverviewServiceKey?
+    let packetLengthBucket: UInt8
+    // The conversation bucket this packet was added to. A small ID instead of the key keeps per-packet memory
+    // low, and a pruned then recreated bucket gets a new ID, so it is never charged for packets it never had.
+    var conversationGeneration: UInt64?
+}
+
+private struct CaptureOverviewConversationBucket {
+    let generation: UInt64
+    var endpoints: CaptureOverviewConversationEndpoints
+    var isClientConfirmed: Bool
+    var domainName: String?
+    var app: PacketSourceClientIdentity?
+    var totals = CaptureOverviewTrafficTotals()
 }
 
 private struct CaptureOverviewAppBucket {
@@ -129,19 +186,36 @@ private struct CaptureOverviewSourceIdentity: Equatable {
 
 struct CaptureOverviewAccumulator {
     static let maximumTimelineBucketCount = 1_024
-    static let maximumRenderedTimelinePointCount = 240
+    static let maximumRenderedTimelinePointCount = 60
     static let maximumTopRowCount = 10
     static let maximumProtocolRowCount = 5
+    // DNS queries and scans open a conversation per packet, so only the busiest ones are kept.
+    static let maximumConversationBucketCount = 4_096
+    // Each storage width divides the next one, so compaction always merges whole buckets.
+    static let timelineStorageWidths: [TimeInterval] = [
+        1, 2, 10, 30, 60, 300, 600, 1_800, 3_600, 7_200, 21_600, 43_200, 86_400,
+    ]
+    // Round chart steps; a step is used only when it is a multiple of the storage width.
+    static let timelineRenderWidths: [TimeInterval] = [
+        1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1_800, 3_600, 7_200, 10_800, 21_600, 43_200, 86_400,
+    ]
 
     private var contributionsByPacketID: [PacketSummary.ID: CaptureOverviewContribution] = [:]
     private var appBuckets: [PacketSourceClientKey: CaptureOverviewAppBucket] = [:]
     private var domainBuckets: [PacketSourceDomainKey: CaptureOverviewDomainBucket] = [:]
     private var ipAddressBuckets: [PacketSourceIPAddressKey: CaptureOverviewIPAddressBucket] = [:]
     private var protocolBuckets: [String: CaptureOverviewProtocolBucket] = [:]
+    private var serviceBuckets: [CaptureOverviewServiceKey: CaptureOverviewTrafficTotals] = [:]
+    private var conversationBuckets: [CaptureOverviewConversationKey: CaptureOverviewConversationBucket] = [:]
+    private var conversationKeysByGeneration: [UInt64: CaptureOverviewConversationKey] = [:]
+    private var nextConversationGeneration: UInt64 = 0
+    private var tcpIssueCounts = Array(repeating: UInt64(0), count: CaptureOverviewTCPIssueKind.allCases.count)
+    private var packetLengthCounts = Array(repeating: UInt64(0), count: CaptureOverviewClassifier.packetLengthBucketCount)
     private var timelineBuckets: [Int64: CaptureOverviewTrafficTotals] = [:]
     private var timelineBucketWidth: TimeInterval = 1
     private var totals = CaptureOverviewTrafficTotals()
     private var malformedPacketCount: UInt64 = 0
+    private var tcpPacketCount: UInt64 = 0
     private var firstPacketDate: Date?
     private var lastPacketDate: Date?
     private var cursor: EndpointStatisticsIngestCursor?
@@ -152,10 +226,17 @@ struct CaptureOverviewAccumulator {
         domainBuckets.removeAll(keepingCapacity: false)
         ipAddressBuckets.removeAll(keepingCapacity: false)
         protocolBuckets.removeAll(keepingCapacity: false)
+        serviceBuckets.removeAll(keepingCapacity: false)
+        conversationBuckets.removeAll(keepingCapacity: false)
+        conversationKeysByGeneration.removeAll(keepingCapacity: false)
+        nextConversationGeneration = 0
+        tcpIssueCounts = Array(repeating: 0, count: CaptureOverviewTCPIssueKind.allCases.count)
+        packetLengthCounts = Array(repeating: 0, count: CaptureOverviewClassifier.packetLengthBucketCount)
         timelineBuckets.removeAll(keepingCapacity: false)
         timelineBucketWidth = 1
         totals = CaptureOverviewTrafficTotals()
         malformedPacketCount = 0
+        tcpPacketCount = 0
         firstPacketDate = nil
         lastPacketDate = nil
         cursor = nil
@@ -221,18 +302,26 @@ struct CaptureOverviewAccumulator {
         }
     }
 
-    func snapshot() -> CaptureOverviewSnapshot {
-        CaptureOverviewSnapshot(
+    // The Overview charts use 60 slots; automation callers may ask for a finer timeline.
+    func snapshot(maximumTimelinePointCount: Int = maximumRenderedTimelinePointCount) -> CaptureOverviewSnapshot {
+        let timeline = timelinePoints(maximumCount: max(2, maximumTimelinePointCount))
+        return CaptureOverviewSnapshot(
             totals: totals,
             firstPacketDate: firstPacketDate,
             lastPacketDate: lastPacketDate,
             appCount: appBuckets.count,
             domainCount: domainBuckets.count,
             malformedPacketCount: malformedPacketCount,
+            tcpPacketCount: tcpPacketCount,
             topApps: topAppRows(),
             topDestinations: topDestinationRows(),
             protocols: protocolRows(),
-            timeline: timelinePoints()
+            tcpIssues: tcpIssueRows(),
+            topServices: topServiceRows(),
+            topConversations: topConversationRows(),
+            packetLengthCounts: packetLengthCounts,
+            timeline: timeline.points,
+            timelineInterval: timeline.interval
         )
     }
 
@@ -240,16 +329,28 @@ struct CaptureOverviewAccumulator {
         if let oldContribution = contributionsByPacketID[packet.id] {
             remove(oldContribution)
         }
-        let contribution = Self.contribution(for: packet)
+        var contribution = Self.contribution(for: packet)
+        let conversation = CaptureOverviewClassifier.conversation(for: packet, isTCP: contribution.isTCP)
+        add(&contribution, conversation: conversation)
         contributionsByPacketID[packet.id] = contribution
-        add(contribution)
     }
 
-    private mutating func add(_ contribution: CaptureOverviewContribution) {
+    // Count one packet everywhere it belongs; the conversation sample is used once and never stored.
+    private mutating func add(
+        _ contribution: inout CaptureOverviewContribution,
+        conversation: CaptureOverviewConversationSample?
+    ) {
         totals.add(contribution.totals)
         if contribution.isMalformed {
             malformedPacketCount += 1
         }
+        if contribution.isTCP {
+            tcpPacketCount += 1
+        }
+        for kind in CaptureOverviewTCPIssueKind.allCases where contribution.tcpIssues.contains(CaptureOverviewTCPIssueSet(kind)) {
+            tcpIssueCounts[kind.rawValue] += 1
+        }
+        packetLengthCounts[Int(contribution.packetLengthBucket)] += 1
         if let app = contribution.app {
             var bucket = appBuckets[app.key] ?? CaptureOverviewAppBucket(identity: app)
             bucket.identity = app
@@ -272,6 +373,28 @@ struct CaptureOverviewAccumulator {
             ?? CaptureOverviewProtocolBucket(title: contribution.protocolName)
         protocolBucket.totals.add(contribution.totals)
         protocolBuckets[contribution.protocolName] = protocolBucket
+        if let service = contribution.service {
+            serviceBuckets[service, default: CaptureOverviewTrafficTotals()].add(contribution.totals)
+        }
+        if let conversation {
+            var bucket = conversationBuckets[conversation.key] ?? makeConversationBucket(for: conversation)
+            // A handshake packet settles which side is the client for the rest of the conversation.
+            if conversation.isClientConfirmed, !bucket.isClientConfirmed {
+                bucket.endpoints = conversation.endpoints
+                bucket.isClientConfirmed = true
+            }
+            // Keep the last known names: SNI and DNS names only arrive on some packets of a conversation.
+            if let domain = contribution.domain, !domain.key.isMissingDomain {
+                bucket.domainName = domain.displayName
+            }
+            if let app = contribution.app {
+                bucket.app = app
+            }
+            bucket.totals.add(contribution.totals)
+            conversationBuckets[conversation.key] = bucket
+            contribution.conversationGeneration = bucket.generation
+            pruneConversationsIfNeeded()
+        }
 
         let timelineKey = self.timelineKey(for: contribution.timestamp)
         timelineBuckets[timelineKey, default: CaptureOverviewTrafficTotals()].add(contribution.totals)
@@ -285,6 +408,13 @@ struct CaptureOverviewAccumulator {
         if contribution.isMalformed {
             malformedPacketCount -= 1
         }
+        if contribution.isTCP {
+            tcpPacketCount -= 1
+        }
+        for kind in CaptureOverviewTCPIssueKind.allCases where contribution.tcpIssues.contains(CaptureOverviewTCPIssueSet(kind)) {
+            tcpIssueCounts[kind.rawValue] -= 1
+        }
+        packetLengthCounts[Int(contribution.packetLengthBucket)] -= 1
         if let app = contribution.app, var bucket = appBuckets[app.key] {
             bucket.totals.remove(contribution.totals)
             if bucket.totals.isEmpty {
@@ -322,6 +452,21 @@ struct CaptureOverviewAccumulator {
                 protocolBuckets[contribution.protocolName] = bucket
             }
         }
+        if let service = contribution.service, var bucket = serviceBuckets[service] {
+            bucket.remove(contribution.totals)
+            serviceBuckets[service] = bucket.isEmpty ? nil : bucket
+        }
+        if let generation = contribution.conversationGeneration,
+           let conversation = conversationKeysByGeneration[generation],
+           var bucket = conversationBuckets[conversation] {
+            bucket.totals.remove(contribution.totals)
+            if bucket.totals.isEmpty {
+                conversationBuckets.removeValue(forKey: conversation)
+                conversationKeysByGeneration.removeValue(forKey: generation)
+            } else {
+                conversationBuckets[conversation] = bucket
+            }
+        }
 
         let timelineKey = self.timelineKey(for: contribution.timestamp)
         if var bucket = timelineBuckets[timelineKey] {
@@ -334,16 +479,26 @@ struct CaptureOverviewAccumulator {
         }
     }
 
+    // Everything one packet adds to the Overview, kept so a later summary update can be undone exactly.
     private static func contribution(for packet: PacketSummary) -> CaptureOverviewContribution {
-        CaptureOverviewContribution(
+        let isTCP = CaptureOverviewClassifier.isTCP(packet)
+        let tcpIssues = CaptureOverviewClassifier.tcpIssues(for: packet, isTCP: isTCP)
+        let length = max(0, packet.originalLength)
+        var totals = trafficTotals(bytes: UInt64(length), direction: packet.direction)
+        totals.issuePackets = tcpIssues.hasTCPIssue ? 1 : 0
+        return CaptureOverviewContribution(
             packetID: packet.id,
             timestamp: packet.timestamp,
             app: PacketSourceListClassifier.clientIdentity(for: packet),
             domain: PacketSourceListClassifier.domainIdentity(for: packet),
             ipAddresses: PacketSourceListClassifier.ipAddressIdentities(for: packet),
-            protocolName: EndpointStatisticsClassifier.protocolName(for: packet),
-            totals: trafficTotals(bytes: UInt64(max(0, packet.originalLength)), direction: packet.direction),
-            isMalformed: packet.decodeStatus.kind == .malformed
+            protocolName: NetworkInspectorFormatters.protocolLabel(for: packet),
+            totals: totals,
+            isMalformed: packet.decodeStatus.kind == .malformed,
+            isTCP: isTCP,
+            tcpIssues: tcpIssues,
+            service: CaptureOverviewClassifier.serviceKey(for: packet, isTCP: isTCP),
+            packetLengthBucket: UInt8(CaptureOverviewClassifier.packetLengthBucket(for: length))
         )
     }
 
@@ -366,61 +521,134 @@ struct CaptureOverviewAccumulator {
         return value
     }
 
+    // The apps with the most bytes.
     private func topAppRows() -> [CaptureOverviewTopRow] {
-        topRows(appBuckets.values.lazy.map { bucket in
-            CaptureOverviewTopRow(
+        var result: [CaptureOverviewTopRow] = []
+        result.reserveCapacity(Self.maximumTopRowCount)
+        for bucket in appBuckets.values {
+            Self.insertTopRow(CaptureOverviewTopRow(
                 id: bucket.identity.key.rawValue,
                 title: bucket.identity.displayName,
                 iconFilePath: bucket.identity.iconFilePath,
                 selection: .app(bucket.identity.key),
                 totals: bucket.totals
-            )
-        })
+            ), into: &result, precedes: Self.precedes)
+        }
+        return result
     }
 
     private func topDestinationRows() -> [CaptureOverviewTopRow] {
         var result: [CaptureOverviewTopRow] = []
         result.reserveCapacity(Self.maximumTopRowCount)
         for bucket in domainBuckets.values {
-            insertTopRow(CaptureOverviewTopRow(
+            Self.insertTopRow(CaptureOverviewTopRow(
                 id: "domain:\(bucket.identity.key.rawValue)",
                 title: bucket.identity.displayName,
                 iconFilePath: nil,
                 selection: .domain(bucket.identity.key),
                 totals: bucket.totals
-            ), into: &result)
+            ), into: &result, precedes: Self.precedes)
         }
         for bucket in ipAddressBuckets.values {
-            insertTopRow(CaptureOverviewTopRow(
+            Self.insertTopRow(CaptureOverviewTopRow(
                 id: "ip:\(bucket.identity.key.rawValue)",
                 title: bucket.identity.displayName,
                 iconFilePath: nil,
                 selection: .ipAddress(bucket.identity.key),
                 totals: bucket.totals
-            ), into: &result)
+            ), into: &result, precedes: Self.precedes)
         }
         return result
+    }
+
+    // The server ports with the most bytes; ties keep well-known low ports first.
+    private func topServiceRows() -> [CaptureOverviewServiceRow] {
+        var result: [CaptureOverviewServiceRow] = []
+        result.reserveCapacity(Self.maximumTopRowCount)
+        for (key, totals) in serviceBuckets {
+            Self.insertTopRow(CaptureOverviewServiceRow(key: key, totals: totals), into: &result) { lhs, rhs in
+                if lhs.totals.bytes != rhs.totals.bytes {
+                    return lhs.totals.bytes > rhs.totals.bytes
+                }
+                if lhs.key.port != rhs.key.port {
+                    return lhs.key.port < rhs.key.port
+                }
+                return lhs.key.transport.rawValue < rhs.key.transport.rawValue
+            }
+        }
+        return result
+    }
+
+    // The conversations with the most bytes, from the bounded set the accumulator keeps.
+    private func topConversationRows() -> [CaptureOverviewConversationRow] {
+        var result: [CaptureOverviewConversationRow] = []
+        result.reserveCapacity(Self.maximumTopRowCount)
+        for (key, bucket) in conversationBuckets {
+            let row = CaptureOverviewConversationRow(
+                key: key,
+                endpoints: bucket.endpoints,
+                domainName: bucket.domainName,
+                appName: bucket.app?.displayName,
+                appIconFilePath: bucket.app?.iconFilePath,
+                totals: bucket.totals
+            )
+            Self.insertTopRow(row, into: &result) { lhs, rhs in
+                if lhs.totals.bytes != rhs.totals.bytes {
+                    return lhs.totals.bytes > rhs.totals.bytes
+                }
+                if lhs.totals.packets != rhs.totals.packets {
+                    return lhs.totals.packets > rhs.totals.packets
+                }
+                return CaptureOverviewClassifier.identifier(for: lhs.key) < CaptureOverviewClassifier.identifier(for: rhs.key)
+            }
+        }
+        return result
+    }
+
+    // A new bucket gets a fresh generation, so packets added to an earlier, pruned bucket never match it.
+    private mutating func makeConversationBucket(for sample: CaptureOverviewConversationSample) -> CaptureOverviewConversationBucket {
+        nextConversationGeneration &+= 1
+        conversationKeysByGeneration[nextConversationGeneration] = sample.key
+        return CaptureOverviewConversationBucket(
+            generation: nextConversationGeneration,
+            endpoints: sample.endpoints,
+            isClientConfirmed: sample.isClientConfirmed
+        )
+    }
+
+    // Prune in batches to the busiest half, so each snapshot scans a bounded number of conversations.
+    private mutating func pruneConversationsIfNeeded() {
+        guard conversationBuckets.count > Self.maximumConversationBucketCount * 2 else {
+            return
+        }
+        let busiest = conversationBuckets
+            .sorted { $0.value.totals.bytes > $1.value.totals.bytes }
+            .prefix(Self.maximumConversationBucketCount)
+        conversationBuckets = Dictionary(uniqueKeysWithValues: busiest.map { ($0.key, $0.value) })
+        conversationKeysByGeneration = Dictionary(uniqueKeysWithValues: busiest.map { ($0.value.generation, $0.key) })
+    }
+
+    // One row per flag that occurred, in severity order.
+    private func tcpIssueRows() -> [CaptureOverviewTCPIssueRow] {
+        CaptureOverviewTCPIssueKind.allCases.compactMap { kind in
+            let packets = tcpIssueCounts[kind.rawValue]
+            return packets > 0 ? CaptureOverviewTCPIssueRow(kind: kind, packets: packets) : nil
+        }
     }
 
     // Keep only ten candidates while scanning so high-cardinality captures avoid a full sort.
-    private func topRows<Rows: Sequence>(_ rows: Rows) -> [CaptureOverviewTopRow]
-        where Rows.Element == CaptureOverviewTopRow {
-        var result: [CaptureOverviewTopRow] = []
-        result.reserveCapacity(Self.maximumTopRowCount)
-        for row in rows {
-            insertTopRow(row, into: &result)
-        }
-        return result
-    }
-
-    private func insertTopRow(_ row: CaptureOverviewTopRow, into result: inout [CaptureOverviewTopRow]) {
-        let insertionIndex = result.firstIndex { Self.precedes(row, $0) } ?? result.endIndex
-        if insertionIndex < Self.maximumTopRowCount {
+    private static func insertTopRow<Row>(
+        _ row: Row,
+        into result: inout [Row],
+        precedes: (Row, Row) -> Bool
+    ) {
+        let insertionIndex = result.firstIndex { precedes(row, $0) } ?? result.endIndex
+        if insertionIndex < maximumTopRowCount {
             result.insert(row, at: insertionIndex)
-            if result.count > Self.maximumTopRowCount {
+            if result.count > maximumTopRowCount {
                 result.removeLast()
             }
-        } else if result.count < Self.maximumTopRowCount {
+        } else if result.count < maximumTopRowCount {
             result.append(row)
         }
     }
@@ -466,48 +694,77 @@ struct CaptureOverviewAccumulator {
     private mutating func compactTimelineIfNeeded() {
         while timelineBuckets.count > Self.maximumTimelineBucketCount {
             let previousWidth = timelineBucketWidth
-            timelineBucketWidth *= 2
+            timelineBucketWidth = Self.timelineStorageWidths.first { $0 > previousWidth } ?? previousWidth * 2
+            let ratio = Int64((timelineBucketWidth / previousWidth).rounded())
             var merged: [Int64: CaptureOverviewTrafficTotals] = [:]
-            merged.reserveCapacity((timelineBuckets.count + 1) / 2)
+            merged.reserveCapacity(timelineBuckets.count / Int(ratio) + 1)
             for (key, value) in timelineBuckets {
-                let timestamp = TimeInterval(key) * previousWidth
-                let mergedKey = Int64(floor(timestamp / timelineBucketWidth))
-                merged[mergedKey, default: CaptureOverviewTrafficTotals()].add(value)
+                merged[Self.floorDivide(key, by: ratio), default: CaptureOverviewTrafficTotals()].add(value)
             }
             timelineBuckets = merged
         }
     }
 
-    private func timelinePoints() -> [CaptureOverviewTimelinePoint] {
+    // Dense, round-width slots so bar charts keep their spacing and hover maps a pointer to one slot.
+    private func timelinePoints(maximumCount: Int) -> (points: [CaptureOverviewTimelinePoint], interval: TimeInterval) {
         guard let minimumKey = timelineBuckets.keys.min(),
               let maximumKey = timelineBuckets.keys.max() else {
-            return []
+            return ([], 1)
         }
         let span = TimeInterval(maximumKey - minimumKey + 1) * timelineBucketWidth
-        var renderedWidth = timelineBucketWidth
-        while span / renderedWidth > Double(Self.maximumRenderedTimelinePointCount) {
-            renderedWidth *= 2
-        }
+        let interval = Self.renderedTimelineWidth(span: span, storageWidth: timelineBucketWidth, maximumCount: maximumCount)
+        let ratio = Int64((interval / timelineBucketWidth).rounded())
+        let firstKey = Self.floorDivide(minimumKey, by: ratio)
+        let lastKey = Self.floorDivide(maximumKey, by: ratio)
+        let count = Int(lastKey - firstKey) + 1
 
-        var renderedBuckets: [Int64: CaptureOverviewTrafficTotals] = [:]
-        renderedBuckets.reserveCapacity(min(Self.maximumRenderedTimelinePointCount, timelineBuckets.count))
+        var renderedTotals = Array(repeating: CaptureOverviewTrafficTotals(), count: count)
         for (key, value) in timelineBuckets {
-            let timestamp = TimeInterval(key) * timelineBucketWidth
-            let renderedKey = Int64(floor(timestamp / renderedWidth))
-            renderedBuckets[renderedKey, default: CaptureOverviewTrafficTotals()].add(value)
+            renderedTotals[Int(Self.floorDivide(key, by: ratio) - firstKey)].add(value)
         }
-        return renderedBuckets.keys.sorted().map { key in
+        let points = renderedTotals.enumerated().map { offset, totals in
             CaptureOverviewTimelinePoint(
-                date: Date(timeIntervalSince1970: TimeInterval(key) * renderedWidth),
-                totals: renderedBuckets[key] ?? CaptureOverviewTrafficTotals()
+                date: Date(timeIntervalSince1970: TimeInterval(firstKey + Int64(offset)) * interval),
+                totals: totals
             )
         }
+        return (points, interval)
+    }
+
+    // The smallest round slot width that fits the span in the slot budget and merges whole storage buckets.
+    static func renderedTimelineWidth(
+        span: TimeInterval,
+        storageWidth: TimeInterval,
+        maximumCount: Int = maximumRenderedTimelinePointCount
+    ) -> TimeInterval {
+        // Keep one spare slot because the first slot starts at a round time before the first packet.
+        let maximumSlots = TimeInterval(maximumCount - 1)
+        let roundWidth = timelineRenderWidths.first { width in
+            width >= storageWidth &&
+                width.truncatingRemainder(dividingBy: storageWidth) == 0 &&
+                span / width <= maximumSlots
+        }
+        return roundWidth ?? (span / maximumSlots / storageWidth).rounded(.up) * storageWidth
+    }
+
+    // Integer division rounded toward negative infinity, like floor() for bucket keys.
+    private static func floorDivide(_ value: Int64, by divisor: Int64) -> Int64 {
+        let quotient = value / divisor
+        return value % divisor < 0 ? quotient - 1 : quotient
     }
 
     private func timelineKey(for date: Date) -> Int64 {
         Int64(floor(date.timeIntervalSince1970 / timelineBucketWidth))
     }
 }
+
+#if DEBUG
+extension CaptureOverviewAccumulator {
+    var conversationBucketCountForTesting: Int {
+        conversationBuckets.count
+    }
+}
+#endif
 
 private final class CaptureOverviewReplacementWork {
     static let chunkSize = 2_048

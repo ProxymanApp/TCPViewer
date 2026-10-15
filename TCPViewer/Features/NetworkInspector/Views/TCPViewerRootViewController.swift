@@ -1642,6 +1642,18 @@ extension TCPViewerRootViewController: CaptureOverviewViewControllerDelegate {
             self?.sidebarViewController.revealSourceListSelection(selection)
         }
     }
+
+    // Open all packets first so the Wireshark filter applies to the whole capture, not a sidebar scope.
+    func captureOverviewViewController(
+        _ controller: CaptureOverviewViewController,
+        didRequestDisplayFilter expression: String
+    ) {
+        guard let request = PacketInspectorFilterRequest(displayFilterExpression: expression, nativeFilter: nil) else {
+            return
+        }
+        viewModel.showPacketsFromOverview()
+        applyFilterRequest(request)
+    }
 }
 
 extension TCPViewerRootViewController: PacketWorkspaceViewControllerDelegate {
@@ -1952,6 +1964,11 @@ extension TCPViewerRootViewController: PacketInspectorViewControllerDelegate {
         _ controller: PacketInspectorViewController,
         didRequestApplyFilter request: PacketInspectorFilterRequest
     ) {
+        applyFilterRequest(request)
+    }
+
+    // Shared by inspector rows and Overview cards: validate, apply, then focus the filter bar.
+    fileprivate func applyFilterRequest(_ request: PacketInspectorFilterRequest) {
         viewModel.applyInspectorFilter(request) { [weak self] didApply, failureMessage in
             guard didApply else {
                 if let failureMessage {
