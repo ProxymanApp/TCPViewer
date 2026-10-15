@@ -10,6 +10,9 @@ import PcapPlusPlusCore
 
 // An explicit analysis request owns one bounded drain, never a live presentation timer.
 final class TCPViewerAutomationAnalysisJob: TCPViewerWorkspaceControllerDelegate {
+    // Automation keeps a finer timeline than the Overview charts.
+    private static let maximumTimelinePointCount = 240
+
     private let request: TCPViewerMCPRequest
     private let model: NetworkInspectorViewModel
     private let isValid: () -> Bool
@@ -150,7 +153,7 @@ final class TCPViewerAutomationAnalysisJob: TCPViewerWorkspaceControllerDelegate
                                                                        totalPacketCount: self.processedCount, kind: .metadata(updates)))
             var data: [String: TCPViewerMCPValue]
             if self.request.command == TCPViewerMCPCommand.getOverviewStatistics.rawValue {
-                data = self.overviewData(self.overview.snapshot())
+                data = self.overviewData(self.overview.snapshot(maximumTimelinePointCount: Self.maximumTimelinePointCount))
             } else {
                 let snapshot = self.statistics.currentSnapshot(for: self.group)
                 guard let table = EndpointStatisticsTablePresenter.presentation(rows: snapshot.rows, searchText: self.search,

@@ -160,36 +160,210 @@ struct CaptureOverviewServiceTests {
         #expect(snapshot.timeline.count <= CaptureOverviewAccumulator.maximumRenderedTimelinePointCount)
     }
 
-    @Test func trafficChartHoverSelectsTheNearestTimestamp() {
-        let firstDate = Date(timeIntervalSince1970: 100)
-        let secondDate = Date(timeIntervalSince1970: 110)
-        let points = [
-            CaptureOverviewChartPoint(
-                id: .init(date: firstDate, direction: .sent),
-                date: firstDate,
-                direction: .sent,
-                bytes: 100
-            ),
-            CaptureOverviewChartPoint(
-                id: .init(date: secondDate, direction: .sent),
-                date: secondDate,
-                direction: .sent,
-                bytes: 200
-            ),
-        ]
+    @Test func timelineHoverMapsThePointerToOneSlotAndKeepsTheTooltipInside() {
+        #expect(CaptureOverviewChartHoverSelection.slotIndex(fraction: nil, slotCount: 12) == nil)
+        #expect(CaptureOverviewChartHoverSelection.slotIndex(fraction: 0.5, slotCount: 0) == nil)
+        #expect(CaptureOverviewChartHoverSelection.slotIndex(fraction: 0, slotCount: 12) == 0)
+        #expect(CaptureOverviewChartHoverSelection.slotIndex(fraction: 0.5, slotCount: 12) == 6)
+        #expect(CaptureOverviewChartHoverSelection.slotIndex(fraction: 1, slotCount: 12) == 11)
+        #expect(CaptureOverviewChartHoverSelection.slotIndex(fraction: -0.2, slotCount: 12) == 0)
 
-        #expect(CaptureOverviewChartHoverSelection.nearestDate(
-            to: Date(timeIntervalSince1970: 104),
-            in: points
-        ) == firstDate)
-        #expect(CaptureOverviewChartHoverSelection.nearestDate(
-            to: Date(timeIntervalSince1970: 106),
-            in: points
-        ) == secondDate)
-        #expect(CaptureOverviewChartHoverSelection.nearestDate(
-            to: Date(timeIntervalSince1970: 105),
-            in: points
-        ) == firstDate)
+        // Beside the slot when it fits, flipped to the left near the trailing edge.
+        #expect(CaptureOverviewChartHoverSelection.tooltipX(slot: 0, slotCount: 10, width: 300, tooltipWidth: 100) == 38)
+        #expect(CaptureOverviewChartHoverSelection.tooltipX(slot: 9, slotCount: 10, width: 300, tooltipWidth: 100) == 162)
+    }
+
+    @Test func tcpIssuesReadWiresharkInfoMarkersBySeverity() {
+        func issue(_ info: String, tcpFlags: String? = "ACK", decodeStatus: PacketDecodeStatus.Kind = .complete) -> CaptureOverviewTCPIssueKind? {
+            let packet = makePacket(
+                id: 1,
+                info: info,
+                tcpFlags: tcpFlags,
+                decodeStatus: PacketDecodeStatus(kind: decodeStatus)
+            )
+            return CaptureOverviewClassifier.tcpIssue(for: packet, isTCP: CaptureOverviewClassifier.isTCP(packet))
+        }
+
+        #expect(issue("[TCP Retransmission] 51000 → 443 [PSH, ACK]") == .retransmission)
+        #expect(issue("[TCP Fast Retransmission] 51000 → 443") == .retransmission)
+        #expect(issue("[TCP Spurious Retransmission] 51000 → 443") == .retransmission)
+        #expect(issue("[TCP Dup ACK 12#1] 443 → 51000 [ACK]") == .duplicateAck)
+        #expect(issue("[TCP Out-Of-Order] 443 → 51000") == .outOfOrder)
+        #expect(issue("[TCP ZeroWindow] 443 → 51000") == .zeroWindow)
+        #expect(issue("[TCP Window Full] 443 → 51000") == .zeroWindow)
+        #expect(issue("[TCP Previous segment not captured] 443 → 51000") == .lostSegment)
+        // A packet with several markers counts once, as its most severe problem.
+        #expect(issue("[TCP Dup ACK 5#1] [TCP ACKed unseen segment] 443 → 51000") == .lostSegment)
+        #expect(issue("443 → 51000 [RST, ACK]", tcpFlags: "RST, ACK") == .reset)
+        #expect(issue("Ignored [Malformed Packet]") == .malformed)
+        #expect(issue("Response [Malformed Packet: length of contained item exceeds length of containing item]") == .malformed)
+        #expect(issue("Client Hello", decodeStatus: .malformed) == .malformed)
+        #expect(issue("[TCP Keep-Alive] 51000 → 443") == nil)
+        #expect(issue("[TCP Window Update] 51000 → 443") == nil)
+        #expect(issue("Application Data") == nil)
+    }
+
+    @Test func tcpIssuesFollowSummaryUpdatesAndRollUpPerApp() throws {
+        let client = makeClient(name: "Browser", bundleIdentifier: "com.example.browser")
+        var accumulator = CaptureOverviewAccumulator()
+        accumulator.appendReplacementChunk([
+            makePacket(id: 1, client: client, info: "51000 → 443 [ACK]", tcpFlags: "ACK"),
+            makePacket(id: 2, client: client, info: "[TCP Dup ACK 1#1] 51000 → 443 [ACK]", tcpFlags: "ACK"),
+            makePacket(id: 3, transportHint: .dns, info: "Standard query"),
+        ])
+        let didFinishReplacement = accumulator.finishReplacement(cursor: cursor(revision: 1, count: 3))
+        #expect(didFinishReplacement)
+
+        // Wireshark refines the Info column later; the old classification must be removed, not added twice.
+        let didConsume = accumulator.consume(EndpointStatisticsIngestUpdate(
+            packetRevision: 2,
+            packetLineageRevision: 1,
+            totalPacketCount: 3,
+            kind: .metadata([
+                makePacket(id: 1, client: client, info: "[TCP Retransmission] 51000 → 443 [ACK]", tcpFlags: "ACK"),
+            ]),
+            previousPacketRevision: 1
+        ))
+        #expect(didConsume)
+
+        let snapshot = accumulator.snapshot()
+        let app = try #require(snapshot.topApps.first)
+        #expect(snapshot.tcpPacketCount == 2)
+        #expect(snapshot.totals.issuePackets == 2)
+        #expect(app.totals.issuePackets == 2)
+        #expect(snapshot.tcpIssues == [
+            CaptureOverviewTCPIssueRow(kind: .retransmission, packets: 1),
+            CaptureOverviewTCPIssueRow(kind: .duplicateAck, packets: 1),
+        ])
+        #expect(snapshot.timeline.reduce(0) { $0 + $1.totals.issuePackets } == 2)
+    }
+
+    @Test func conversationsMergeBothDirectionsAndServicesUseTheServerPort() throws {
+        let snapshot = replacementSnapshot([
+            makePacket(id: 1, length: 100, direction: .outbound, domain: "api.example", tcpFlags: "SYN"),
+            makePacket(
+                id: 2,
+                length: 300,
+                direction: .inbound,
+                tcpFlags: "SYN, ACK",
+                sourceAddress: "93.184.216.34",
+                sourcePort: 443,
+                destinationAddress: "10.0.0.2",
+                destinationPort: 51_000
+            ),
+            makePacket(
+                id: 3,
+                length: 80,
+                transportHint: .dns,
+                sourcePort: 53_000,
+                destinationAddress: "1.1.1.1",
+                destinationPort: 53
+            ),
+        ])
+
+        let conversation = try #require(snapshot.topConversations.first)
+        #expect(snapshot.topConversations.count == 2)
+        #expect(conversation.key == CaptureOverviewConversationKey(
+            transport: .tcp,
+            clientAddress: "10.0.0.2",
+            clientPort: 51_000,
+            serverAddress: "93.184.216.34",
+            serverPort: 443
+        ))
+        #expect(conversation.domainName == "api.example")
+        #expect(conversation.totals.bytes == 400)
+        #expect(conversation.totals.sentBytes == 100)
+        #expect(conversation.totals.receivedBytes == 300)
+
+        #expect(snapshot.topServices.map(\.key) == [
+            CaptureOverviewServiceKey(transport: .tcp, port: 443),
+            CaptureOverviewServiceKey(transport: .udp, port: 53),
+        ])
+        #expect(CaptureOverviewClassifier.serviceName(for: CaptureOverviewServiceKey(transport: .udp, port: 443)) == "QUIC")
+        #expect(CaptureOverviewClassifier.serviceName(for: CaptureOverviewServiceKey(transport: .tcp, port: 443)) == "HTTPS")
+    }
+
+    @Test func displayFiltersOnlyUsePlainAddressLiterals() {
+        let conversation = CaptureOverviewConversationKey(
+            transport: .tcp,
+            clientAddress: "10.0.0.2",
+            clientPort: 51_000,
+            serverAddress: "93.184.216.34",
+            serverPort: 443
+        )
+        #expect(CaptureOverviewClassifier.displayFilter(for: conversation) ==
+            "ip.addr == 10.0.0.2 && tcp.port == 51000 && ip.addr == 93.184.216.34 && tcp.port == 443")
+
+        let ipv6 = CaptureOverviewConversationKey(
+            transport: .udp,
+            clientAddress: "fe80::1",
+            clientPort: 5_353,
+            serverAddress: "ff02::fb",
+            serverPort: 5_353
+        )
+        #expect(CaptureOverviewClassifier.displayFilter(for: ipv6) ==
+            "ipv6.addr == fe80::1 && udp.port == 5353 && ipv6.addr == ff02::fb && udp.port == 5353")
+
+        let injected = CaptureOverviewConversationKey(
+            transport: .tcp,
+            clientAddress: "10.0.0.2 || frame",
+            clientPort: 1,
+            serverAddress: "10.0.0.3",
+            serverPort: 2
+        )
+        #expect(CaptureOverviewClassifier.displayFilter(for: injected) == nil)
+        #expect(CaptureOverviewClassifier.displayFilter(for: CaptureOverviewServiceKey(transport: .udp, port: 53)) == "udp.port == 53")
+    }
+
+    @Test func packetLengthsUseWiresharkRanges() {
+        #expect(CaptureOverviewClassifier.packetLengthBucket(for: 0) == 0)
+        #expect(CaptureOverviewClassifier.packetLengthBucket(for: 79) == 0)
+        #expect(CaptureOverviewClassifier.packetLengthBucket(for: 80) == 1)
+        #expect(CaptureOverviewClassifier.packetLengthBucket(for: 1_514) == 5)
+        #expect(CaptureOverviewClassifier.packetLengthBucket(for: 2_560) == 6)
+        #expect(CaptureOverviewClassifier.packetLengthTitle(forBucket: 4) == "640–1279 bytes")
+        #expect(CaptureOverviewClassifier.packetLengthAxisTitle(forBucket: 0) == "<80")
+        #expect(CaptureOverviewClassifier.packetLengthAxisTitle(forBucket: 6) == "2560+")
+
+        let snapshot = replacementSnapshot([
+            makePacket(id: 1, length: 60),
+            makePacket(id: 2, length: 1_514),
+            makePacket(id: 3, length: 1_500),
+        ])
+        #expect(snapshot.packetLengthCounts == [1, 0, 0, 0, 0, 2, 0])
+    }
+
+    @Test func timelineUsesDenseRoundSlotsWithAMinimumCount() {
+        let shortCapture = replacementSnapshot([
+            makePacket(id: 1, timestamp: Date(timeIntervalSince1970: 100.2)),
+            makePacket(id: 2, timestamp: Date(timeIntervalSince1970: 102.7)),
+        ])
+        #expect(shortCapture.timelineInterval == 1)
+        #expect(shortCapture.timeline.first?.date == Date(timeIntervalSince1970: 100))
+        #expect(shortCapture.timeline.map(\.totals.packets) == [1, 0, 1])
+        // Only the charts pad a short capture, so automation output keeps the real time range.
+        let padded = CaptureOverviewTimelinePresentation.padded(shortCapture.timeline, interval: 1)
+        #expect(padded.count == CaptureOverviewTimelinePresentation.minimumSlotCount)
+        #expect(padded.last?.date == Date(timeIntervalSince1970: 111))
+
+        let longCapture = replacementSnapshot((0..<200).map { index in
+            makePacket(id: UInt64(index + 1), timestamp: Date(timeIntervalSince1970: TimeInterval(index * 10)))
+        })
+        #expect(longCapture.timelineInterval == 60)
+        #expect(longCapture.timeline.count <= CaptureOverviewAccumulator.maximumRenderedTimelinePointCount)
+        #expect(longCapture.timeline.reduce(0) { $0 + $1.totals.packets } == 200)
+        var accumulator = CaptureOverviewAccumulator()
+        accumulator.appendReplacementChunk((0..<200).map { index in
+            makePacket(id: UInt64(index + 1), timestamp: Date(timeIntervalSince1970: TimeInterval(index * 10)))
+        })
+        let automationSnapshot = accumulator.snapshot(maximumTimelinePointCount: 240)
+        #expect(automationSnapshot.timelineInterval == 10)
+        #expect(automationSnapshot.timeline.count == 200)
+
+        #expect(CaptureOverviewAccumulator.renderedTimelineWidth(span: 30, storageWidth: 1) == 1)
+        #expect(CaptureOverviewAccumulator.renderedTimelineWidth(span: 200, storageWidth: 1) == 5)
+        // A 2 s storage width can't render 5 s slots, so the next multiple, 10 s, is used.
+        #expect(CaptureOverviewAccumulator.renderedTimelineWidth(span: 200, storageWidth: 2) == 10)
     }
 
     @Test func protocolChartHoverSelectsOnlyDonutSegments() {
@@ -294,6 +468,12 @@ struct CaptureOverviewServiceTests {
         domain: String? = nil,
         client: PacketClient? = nil,
         transportHint: TransportProtocolHint = .tcp,
+        info: String? = nil,
+        tcpFlags: String? = nil,
+        sourceAddress: String = "10.0.0.2",
+        sourcePort: UInt16 = 51_000,
+        destinationAddress: String = "93.184.216.34",
+        destinationPort: UInt16 = 443,
         decodeStatus: PacketDecodeStatus = PacketDecodeStatus(kind: .complete)
     ) -> PacketSummary {
         PacketSummary(
@@ -304,13 +484,14 @@ struct CaptureOverviewServiceTests {
             interfaceID: "en0",
             transportHint: transportHint,
             endpoints: PacketEndpoints(
-                source: PacketEndpoint(address: "10.0.0.2", port: 51_000),
-                destination: PacketEndpoint(address: "93.184.216.34", port: 443)
+                source: PacketEndpoint(address: sourceAddress, port: sourcePort),
+                destination: PacketEndpoint(address: destinationAddress, port: destinationPort)
             ),
             originalLength: length,
             capturedLength: min(length, 64),
             direction: direction,
-            infoSummary: "Packet \(id)",
+            tcpFlags: tcpFlags,
+            infoSummary: info ?? "Packet \(id)",
             layers: [PacketLayer(name: transportHint.rawValue.uppercased())],
             decodeStatus: decodeStatus,
             captureMetadata: PacketCaptureMetadata(linkType: .ethernet, isTruncated: false),
