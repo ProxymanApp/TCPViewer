@@ -1,0 +1,21 @@
+{
+  "name": "tcpviewer-electron-spike",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Throwaway benchmark: a native engine in an Electron utility process feeding a sandboxed renderer over a direct MessagePort.",
+  "license": "GPL-2.0-or-later",
+  "main": "src/main.js",
+  "scripts": {
+    "build": "cmake-js compile --runtime electron --runtime-version 44.9.0",
+    "start": "electron .",
+    "bench": "electron . --bench"
+  },
+  "binary": {
+    "napi_versions": [9]
+  },
+  "devDependencies": {
+    "cmake-js": "8.0.0",
+    "electron": "44.9.0",
+    "node-addon-api": "8.9.2"
+  }
+}
