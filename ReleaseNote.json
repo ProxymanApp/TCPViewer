@@ -362,6 +362,15 @@
         "Add new menu item: Expand or Collapse this node in the Packet Details tree."
       ],
       "bugs": []
+    },
+    {
+      "version": "1.22.1",
+      "title": "TCP Viewer 1.22.1: MCP Fix for Codex",
+      "features": [],
+      "improvements": [],
+      "bugs": [
+        "Fixed: Codex could not load TCP Viewer MCP tools because the MCP server failed to start."
+      ]
     }
   ]
 }
