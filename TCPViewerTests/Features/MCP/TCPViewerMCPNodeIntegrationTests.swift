@@ -129,9 +129,13 @@ struct TCPViewerMCPNodeIntegrationTests {
           process.exit(2);
         }, 15000);
         (async () => {
+          // Codex sends object-valued experimental capabilities, which must not break initialize.
           const initialized = await request('initialize', {
             protocolVersion: '2025-11-25',
-            capabilities: {},
+            capabilities: {
+              experimental: { 'codex/auth-change': {} },
+              elicitation: { form: {}, url: {} }
+            },
             clientInfo: { name: 'tcpviewer-node-integration', version: '1.0.0' }
           });
           notify('notifications/initialized');
