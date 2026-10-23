@@ -1,0 +1,107 @@
+:root {
+  --row-height: 20px;
+  --header-height: 22px;
+  --background: #1b1d21;
+  --surface: #23262b;
+  --stripe: #262a30;
+  --text: #d7dae0;
+  --muted: #8b919c;
+  --border: #33373e;
+  --columns: 90px 110px 130px 130px 80px 70px 1fr;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  background: var(--background);
+  color: var(--text);
+  font: 12px/var(--row-height) ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace;
+  overflow: hidden;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+#status {
+  flex: none;
+  padding: 4px 10px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#table {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: var(--columns);
+  height: var(--row-height);
+  padding: 0 8px;
+  contain: layout style;
+}
+
+.row span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  padding-right: 8px;
+}
+
+.row.odd {
+  background: var(--stripe);
+}
+
+.row.placeholder {
+  color: var(--muted);
+}
+
+.row.header {
+  height: var(--header-height);
+  line-height: var(--header-height);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+}
+
+#viewport {
+  position: absolute;
+  top: var(--header-height);
+  left: 0;
+  right: 0;
+  bottom: 0;
+  overflow-y: scroll;
+}
+
+#spacer {
+  width: 1px;
+}
+
+/* Rows sit over the scroller and ignore the pointer so wheel and scrollbar input reach #viewport. */
+#rows {
+  position: absolute;
+  top: var(--header-height);
+  left: 0;
+  right: 16px;
+  bottom: 0;
+  overflow: hidden;
+  pointer-events: none;
+  contain: strict;
+}
+
+#rows-inner {
+  will-change: transform;
+}
