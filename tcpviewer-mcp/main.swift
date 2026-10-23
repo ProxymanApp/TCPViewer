@@ -38,7 +38,7 @@ private enum TCPViewerMCPExecutable {
             }
         }
 
-        let transport = StdioTransport()
+        let transport = TCPViewerMCPCompatibilityTransport()
         try await server.start(transport: transport)
         await server.waitUntilCompleted()
     }
