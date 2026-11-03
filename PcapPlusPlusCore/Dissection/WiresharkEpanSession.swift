@@ -179,6 +179,17 @@ final class WiresharkEpanSession {
         TCPViewerWiresharkSessionClearDisplayFilter(handle)
     }
 
+    // Give Wireshark a capture's decryption secrets; the shim reloads them whenever this session is rebuilt.
+    @discardableResult
+    func addDecryptionSecret(_ secret: NativeDecryptionSecret) -> Bool {
+        secret.data.withUnsafeBytes { buffer in
+            guard let bytes = buffer.bindMemory(to: UInt8.self).baseAddress else {
+                return false
+            }
+            return TCPViewerWiresharkSessionAddDecryptionSecrets(handle, secret.type, bytes, buffer.count)
+        }
+    }
+
     @discardableResult
     func observe(_ record: NativePacketRecord) throws -> [WiresharkStreamIndexEntry] {
         try withContext(for: record) { context in

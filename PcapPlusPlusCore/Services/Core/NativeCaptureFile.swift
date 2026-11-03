@@ -8,6 +8,12 @@
 import Darwin
 import Foundation
 
+/// A PCAPNG Decryption Secrets Block, such as a TLS key log ("TLSK") for TLS and QUIC.
+struct NativeDecryptionSecret: Equatable, Sendable {
+    let type: UInt32
+    let data: Data
+}
+
 struct NativeCaptureFile {
     var url: URL
     var format: CaptureFileFormat
@@ -15,6 +21,7 @@ struct NativeCaptureFile {
     var metadata: PCPPNativeCaptureDocumentMetadataDescriptor
     var skippedPacketCount: Int = 0
     var partialLoadReason: String?
+    var decryptionSecrets: [NativeDecryptionSecret] = []
 
     var isPartialResult: Bool {
         skippedPacketCount > 0 || partialLoadReason != nil
@@ -259,6 +266,8 @@ private struct PcapNGReader {
         var partialLoadReason: String?
         var captureApplication: String?
         var sectionSupportsTextStyles = false
+        var decryptionSecrets: [NativeDecryptionSecret] = []
+        var decryptionSecretByteCount = 0
 
         while offset + 12 <= data.count {
             let blockStart = offset
@@ -402,6 +411,21 @@ private struct PcapNGReader {
                     sectionNumber: section
                 ))
                 packetNumber += 1
+            } else if blockType == 0x0000_000a {
+                // Decryption Secrets Block: secrets type, length, then the secrets (e.g. a TLS key log).
+                let secretsType = readUInt32(at: bodyStart, littleEndian: littleEndian) ?? 0
+                let secretsLength = Int(readUInt32(at: bodyStart + 4, littleEndian: littleEndian) ?? 0)
+                let secretsOffset = bodyStart + 8
+                if hasValidTrailingLength,
+                   secretsLength > 0,
+                   secretsOffset + secretsLength <= bodyEnd,
+                   decryptionSecretByteCount + secretsLength <= Self.maximumDecryptionSecretBytes {
+                    decryptionSecrets.append(NativeDecryptionSecret(
+                        type: secretsType,
+                        data: data.subdata(in: secretsOffset..<(secretsOffset + secretsLength))
+                    ))
+                    decryptionSecretByteCount += secretsLength
+                }
             }
 
             offset = blockStart + totalLength
@@ -424,9 +448,13 @@ private struct PcapNGReader {
                 fileComment: nil
             ),
             skippedPacketCount: skippedPacketCount,
-            partialLoadReason: partialLoadReason
+            partialLoadReason: partialLoadReason,
+            decryptionSecrets: decryptionSecrets
         )
     }
+
+    // Matches the shim's per-capture bound; capture files are untrusted input.
+    private static let maximumDecryptionSecretBytes = 16 * 1024 * 1024
 
     private struct SectionHeaderBlock {
         let totalLength: Int

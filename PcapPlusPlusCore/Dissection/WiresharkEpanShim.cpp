@@ -33,6 +33,7 @@
 #include <epan/packet.h>
 #include <epan/prefs.h>
 #include <epan/proto.h>
+#include <epan/secrets.h>
 #include <epan/tap.h>
 #include <epan/timestamp.h>
 #include <epan/to_str.h>
@@ -77,6 +78,8 @@ constexpr size_t kMaximumInspectorDisplayFilterValueBytes = 4 * 1024;
 constexpr size_t kMaximumInspectorNodes = 20 * 1024;
 constexpr size_t kMaximumInspectorDepth = 128;
 constexpr size_t kMaximumInspectorTextLength = 16 * 1024;
+// Capture files are untrusted input, so bound the decryption secrets one capture may hold.
+constexpr size_t kMaximumDecryptionSecretBytes = 16 * 1024 * 1024;
 
 enum class NodeKind {
     Layer,
@@ -1591,6 +1594,8 @@ struct TCPViewerWiresharkSession {
     uint64_t followPayloadByteCount = 0;
     GList *followNewestPayloadItem = nullptr;
     std::string personalConfigurationDirectory;
+    std::vector<std::pair<uint32_t, std::vector<uint8_t>>> decryptionSecrets;
+    size_t decryptionSecretByteCount = 0;
     bool disabled = false;
     bool livePriority = false;
     bool firstPassFinished = false;
@@ -1980,6 +1985,10 @@ struct TCPViewerWiresharkSession {
             unavailableReason = "Wireshark session could not be created.";
             return false;
         }
+        // epan_new reruns dissector init routines, which drop TLS and QUIC keys; give this capture's back.
+        for (const auto &secret : decryptionSecrets) {
+            loadDecryptionSecretsLocked(secret.first, secret.second);
+        }
 
         epan_dissect_t *firstPass = nullptr;
         auto *currentEpan = epan;
@@ -2097,6 +2106,29 @@ struct TCPViewerWiresharkSession {
             return false;
         }
         unavailableReason.clear();
+        return true;
+    }
+
+    void loadDecryptionSecretsLocked(uint32_t secretsType, const std::vector<uint8_t> &bytes)
+    {
+        if (auto report = CatchWiresharkException("loading decryption secrets", std::nullopt, [secretsType, &bytes] {
+                secrets_wtap_callback(secretsType, bytes.data(), static_cast<unsigned>(bytes.size()));
+            })) {
+            recordCriticalExceptionLocked(std::move(*report), false);
+        }
+    }
+
+    // Keep a capture's secrets (e.g. a PCAPNG Decryption Secrets Block) for every Wireshark session it gets.
+    bool addDecryptionSecretsLocked(uint32_t secretsType, const uint8_t *bytes, size_t byteCount)
+    {
+        if (byteCount == 0 || byteCount > kMaximumDecryptionSecretBytes - decryptionSecretByteCount) {
+            return false;
+        }
+        decryptionSecrets.emplace_back(secretsType, std::vector<uint8_t>(bytes, bytes + byteCount));
+        decryptionSecretByteCount += byteCount;
+        if (epan != nullptr && activeSession() == this) {
+            loadDecryptionSecretsLocked(secretsType, decryptionSecrets.back().second);
+        }
         return true;
     }
 
@@ -2961,6 +2993,20 @@ void TCPViewerWiresharkSessionClearDisplayFilter(TCPViewerWiresharkSession *sess
     std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
     std::lock_guard<std::mutex> sessionLock(session->mutex);
     session->clearActiveDisplayFilterLocked();
+}
+
+bool TCPViewerWiresharkSessionAddDecryptionSecrets(
+    TCPViewerWiresharkSession *session,
+    uint32_t secretsType,
+    const uint8_t *bytes,
+    size_t byteCount
+) {
+    if (session == nullptr || bytes == nullptr) {
+        return false;
+    }
+    std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
+    std::lock_guard<std::mutex> sessionLock(session->mutex);
+    return session->addDecryptionSecretsLocked(secretsType, bytes, byteCount);
 }
 
 bool TCPViewerWiresharkSessionObservePacket(TCPViewerWiresharkSession *session, const TCPViewerWiresharkPacketContext *context)

@@ -239,6 +239,12 @@ TCPViewerDisplayFilterMatchResult *TCPViewerWiresharkSessionEvaluateDisplayFilte
     uint64_t generation
 );
 void TCPViewerWiresharkSessionClearDisplayFilter(TCPViewerWiresharkSession *session);
+bool TCPViewerWiresharkSessionAddDecryptionSecrets(
+    TCPViewerWiresharkSession *session,
+    uint32_t secretsType,
+    const uint8_t *bytes,
+    size_t byteCount
+);
 void TCPViewerWiresharkSummaryResultDestroy(TCPViewerWiresharkSummaryResult *result);
 void TCPViewerWiresharkInspectionResultDestroy(TCPViewerWiresharkInspectionResult *result);
 void TCPViewerWiresharkStreamIndexResultDestroy(TCPViewerWiresharkStreamIndexResult *result);

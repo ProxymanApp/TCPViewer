@@ -315,6 +315,19 @@ struct InspectorPipelineTests {
         }
     }
 
+    @Test func pcapNGDecryptionSecretsDecryptTLS() async throws {
+        // Wireshark's test capture: two TLS 1.2 HEAD requests to example.com with a TLS key log in a DSB.
+        let captureURL = try bundledCaptureFixtureURL(fileName: "wireshark-tls12-dsb.pcapng")
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
+        let summaries = try await document.open()
+        let request = try #require(summaries.first { $0.packetNumber == 6 })
+
+        #expect(request.protocolSummary == "HTTP")
+        #expect(request.infoSummary.hasPrefix("HEAD / HTTP/1.1"))
+        let inspection = try await document.inspectPacket(id: request.id)
+        #expect(findNode(in: inspection.detailNodes, fieldName: "http.request.method")?.value == "HEAD")
+    }
+
     @Test func malformedPcapNgPacketRecordIsSkippedAndLaterPacketsStillLoad() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

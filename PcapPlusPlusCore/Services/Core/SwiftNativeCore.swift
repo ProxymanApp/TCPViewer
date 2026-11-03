@@ -412,7 +412,7 @@ final class PCPPNativeOfflineDocument {
                     $0.recordIndexByIdentifier = Self.recordIndex(in: loaded)
                     $0.currentFormat = loaded.format.rawValue
                     $0.partiallyLoaded = loaded.isPartialResult
-                    $0.dissectionSession = try WiresharkEpanSession(disabled: disablesWireshark)
+                    $0.dissectionSession = try makeDissectionSession(for: loaded)
                 }
             }
 
@@ -492,9 +492,18 @@ final class PCPPNativeOfflineDocument {
         errorPointer?.pointee = NativeBridgeMapper.coreError(thrownError, defaultCode: .offlineFileOpenFailed) as NSError
     }
 
+    // Every Wireshark session starts without keys, so hand it the capture file's decryption secrets.
+    private func makeDissectionSession(for file: NativeCaptureFile) throws -> WiresharkEpanSession {
+        let session = try WiresharkEpanSession(disabled: disablesWireshark)
+        for secret in file.decryptionSecrets {
+            session.addDecryptionSecret(secret)
+        }
+        return session
+    }
+
     private func configureDissectionSession(error errorPointer: AutoreleasingUnsafeMutablePointer<NSError?>?) {
         do {
-            let session = try WiresharkEpanSession(disabled: disablesWireshark)
+            let session = try makeDissectionSession(for: state.read(\.file))
             state.write {
                 $0.dissectionSession = session
             }
@@ -526,7 +535,7 @@ final class PCPPNativeOfflineDocument {
 
     // Replay every record in capture order so reassembly and conversation state match the original load.
     private func replayFirstPass(in state: inout PCPPNativeOfflineDocumentState) throws -> WiresharkEpanSession {
-        let session = try WiresharkEpanSession(disabled: disablesWireshark)
+        let session = try makeDissectionSession(for: state.file)
         for record in state.file.records {
             try session.observe(record)
         }
