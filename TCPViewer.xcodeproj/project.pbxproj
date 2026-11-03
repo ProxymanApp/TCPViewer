@@ -809,6 +809,7 @@
 			);
 			inputPaths = (
 				"$(PROJECT_DIR)/Vendor/.install/wireshark/lib",
+				"$(PROJECT_DIR)/Vendor/.install/wireshark/share/wireshark",
 				"$(PROJECT_DIR)/scripts/stage-wireshark-runtime.sh",
 			);
 			name = "Stage Wireshark Runtime Libraries";

@@ -45,7 +45,9 @@
 #include <wsutil/wslog.h>
 
 #if defined(__APPLE__)
+#include <dlfcn.h>
 #include <mach-o/dyld.h>
+#include <sys/stat.h>
 #endif
 
 extern "C" void TCPViewerWiresharkIPDisplayFilterPluginRegister(void);
@@ -204,6 +206,26 @@ std::string CurrentExecutablePath()
     }
 #endif
     return "TCPViewer";
+}
+
+// Wireshark's data files (wka, radius, diameter, ...) are staged in this framework's Resources/wireshark.
+std::string BundledDataDirectory()
+{
+#if defined(__APPLE__)
+    Dl_info info{};
+    if (dladdr(reinterpret_cast<const void *>(&CurrentExecutablePath), &info) != 0 && info.dli_fname != nullptr) {
+        std::string path(info.dli_fname);
+        const auto separator = path.find_last_of('/');
+        if (separator != std::string::npos) {
+            path = path.substr(0, separator) + "/Resources/wireshark";
+            struct stat status {};
+            if (stat(path.c_str(), &status) == 0 && S_ISDIR(status.st_mode)) {
+                return path;
+            }
+        }
+    }
+#endif
+    return "";
 }
 
 const char *KindString(NodeKind kind)
@@ -1417,7 +1439,12 @@ private:
             unavailableReason_ = "Wireshark personal configuration directory is unavailable.";
             return;
         }
-        // Wireshark resolves bundled data relative to the host executable path.
+        // Wireshark resolves bundled data relative to the host executable path, which is not a Wireshark
+        // install here, so point it at the framework's copy before it caches the data directory.
+        const auto dataDirectory = BundledDataDirectory();
+        if (!dataDirectory.empty()) {
+            setenv("WIRESHARK_DATA_DIR", dataDirectory.c_str(), 1);
+        }
         const auto executablePath = CurrentExecutablePath();
         if (char *configurationError = configuration_init(executablePath.c_str())) {
             available_ = false;

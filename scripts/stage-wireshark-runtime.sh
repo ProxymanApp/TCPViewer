@@ -290,5 +290,19 @@ while IFS= read -r COPIED_LIBRARY; do
   sign_code "$COPIED_LIBRARY"
 done < "$COPIED_PATHS_FILE"
 
+# Stage the Wireshark data files dissectors read at runtime: well-known MAC names (wka),
+# RADIUS and Diameter dictionaries, DTDs, and the TPNCP and WiMAX ASN CP definitions.
+SOURCE_DATA_DIR="$PROJECT_DIR/Vendor/.install/wireshark/share/wireshark"
+if [ -n "${UNLOCALIZED_RESOURCES_FOLDER_PATH:-}" ] && [ -d "$SOURCE_DATA_DIR" ]; then
+  DATA_DESTINATION_DIR="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/wireshark"
+  rm -rf "$DATA_DESTINATION_DIR"
+  mkdir -p "$DATA_DESTINATION_DIR"
+  for DATA_ITEM in wka radius diameter dtds tpncp wimaxasncp; do
+    if [ -e "$SOURCE_DATA_DIR/$DATA_ITEM" ]; then
+      cp -R "$SOURCE_DATA_DIR/$DATA_ITEM" "$DATA_DESTINATION_DIR/"
+    fi
+  done
+fi
+
 mkdir -p "$(dirname "$STAMP_FILE")"
 touch "$STAMP_FILE"
