@@ -18,10 +18,15 @@ typedef struct TCPViewerWiresharkPacketContext {
     int32_t linkLayerType;
     int64_t timestampSeconds;
     int32_t timestampNanoseconds;
+    int32_t timestampPrecision; // Fraction digits the source recorded: 6 = microseconds, 9 = nanoseconds.
     const char *interfaceName;
+    const char *interfaceDescription;
     const char *packetComment;
     uint32_t interfaceID;
     uint32_t sectionNumber;
+    uint32_t packetFlags; // PCAPNG epb_flags, used only when hasPacketFlags is set.
+    bool hasPacketFlags;
+    bool omitsInterface; // Classic PCAP records have no interface or section, so Wireshark shows none.
 } TCPViewerWiresharkPacketContext;
 
 typedef struct TCPViewerWiresharkByteRange {

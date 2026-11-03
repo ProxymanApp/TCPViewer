@@ -25,6 +25,12 @@ struct NativePacketRecord: Sendable {
     let pcapNGTimestampOffsetSeconds: Int64
     let pcapNGTimestampRawValue: UInt64?
     let textStyle: PacketTextStyle
+    /// PCAPNG if_description of the packet's interface.
+    let interfaceDescription: String?
+    /// PCAPNG epb_flags (direction, reception type, FCS length, link-layer errors).
+    let packetFlags: UInt32?
+    /// Classic PCAP has no interface or section blocks, so Wireshark shows no interface for it.
+    let isClassicPCAP: Bool
 
     init(
         identifier: UInt64,
@@ -41,7 +47,10 @@ struct NativePacketRecord: Sendable {
         pcapNGTimestampResolution: UInt8? = nil,
         pcapNGTimestampOffsetSeconds: Int64 = 0,
         pcapNGTimestampRawValue: UInt64? = nil,
-        textStyle: PacketTextStyle = .plain
+        textStyle: PacketTextStyle = .plain,
+        interfaceDescription: String? = nil,
+        packetFlags: UInt32? = nil,
+        isClassicPCAP: Bool = false
     ) {
         self.identifier = identifier
         self.packetNumber = packetNumber
@@ -58,10 +67,71 @@ struct NativePacketRecord: Sendable {
         self.pcapNGTimestampOffsetSeconds = pcapNGTimestampOffsetSeconds
         self.pcapNGTimestampRawValue = pcapNGTimestampRawValue
         self.textStyle = textStyle
+        self.interfaceDescription = interfaceDescription
+        self.packetFlags = packetFlags
+        self.isClassicPCAP = isClassicPCAP
     }
 
     var capturedLength: Int {
         rawBytes.count
+    }
+
+    // Exact capture time for Wireshark. A Date near 1.7e9 seconds keeps only ~240 ns of resolution,
+    // so use the source's integer timestamp when there is one.
+    var exactTimestamp: PacketExactTimestamp {
+        if let rawValue = pcapNGTimestampRawValue, let resolution = pcapNGTimestampResolution {
+            return PacketExactTimestamp(rawValue: rawValue, resolution: resolution, offsetSeconds: pcapNGTimestampOffsetSeconds)
+        }
+        // Classic PCAP and libpcap live capture record microseconds, which a Date round-trips at that precision.
+        return PacketExactTimestamp(microsecondsFrom: timestamp)
+    }
+}
+
+struct PacketExactTimestamp: Equatable, Sendable {
+    let seconds: Int64
+    let nanoseconds: Int32
+    /// Fraction digits the source recorded: 6 for microseconds, 9 for nanoseconds.
+    let precisionDigits: Int32
+
+    init(seconds: Int64, nanoseconds: Int32, precisionDigits: Int32) {
+        self.seconds = seconds
+        self.nanoseconds = nanoseconds
+        self.precisionDigits = precisionDigits
+    }
+
+    init(microsecondsFrom date: Date) {
+        let interval = date.timeIntervalSince1970
+        var seconds = interval.rounded(.down)
+        var microseconds = ((interval - seconds) * 1_000_000).rounded()
+        if microseconds >= 1_000_000 {
+            seconds += 1
+            microseconds -= 1_000_000
+        }
+        self.init(seconds: Int64(seconds), nanoseconds: Int32(microseconds) * 1_000, precisionDigits: 6)
+    }
+
+    // Decode a PCAPNG timestamp: the high bit of if_tsresol selects a power of 2 instead of 10.
+    init(rawValue: UInt64, resolution: UInt8, offsetSeconds: Int64) {
+        let exponent = UInt64(resolution & 0x7f)
+        let isBinary = resolution & 0x80 != 0
+        guard exponent <= 63, isBinary || exponent <= 19 else {
+            self.init(seconds: offsetSeconds, nanoseconds: 0, precisionDigits: 9)
+            return
+        }
+        let unitsPerSecond: UInt64 = isBinary ? UInt64(1) << exponent : (0..<exponent).reduce(UInt64(1)) { value, _ in value * 10 }
+        let fraction = rawValue % unitsPerSecond
+        let product = fraction.multipliedFullWidth(by: 1_000_000_000)
+        let nanoseconds = unitsPerSecond.dividingFullWidth(product).quotient
+        let digits = isBinary ? Int32((Double(exponent) * log10(2.0)).rounded(.up)) : Int32(exponent)
+        self.init(
+            seconds: Int64(rawValue / unitsPerSecond) + offsetSeconds,
+            nanoseconds: Int32(nanoseconds),
+            precisionDigits: min(max(digits, 0), 9)
+        )
+    }
+
+    var date: Date {
+        Date(timeIntervalSince1970: TimeInterval(seconds) + TimeInterval(nanoseconds) / 1_000_000_000)
     }
 }
 

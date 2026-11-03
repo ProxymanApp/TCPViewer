@@ -160,6 +160,9 @@ private struct PcapReader {
 
             let rawBytes = data.subdata(in: offset..<(offset + capturedLength))
             let timestamp = Date(timeIntervalSince1970: TimeInterval(timestampSeconds) + Double(timestampFraction) / timestampScale)
+            // A Date cannot hold nanoseconds, so nanosecond PCAP keeps its integer time like a PCAPNG
+            // interface with if_tsresol 9; that also preserves it when exported as PCAPNG.
+            let isNanosecondPCAP = timestampScale == 1_000_000_000
             records.append(NativePacketRecord(
                 identifier: packetNumber,
                 packetNumber: packetNumber,
@@ -169,7 +172,10 @@ private struct PcapReader {
                 linkLayerType: linkType,
                 interfaceIdentifier: nil,
                 interfaceName: nil,
-                packetComment: nil
+                packetComment: nil,
+                pcapNGTimestampResolution: isNanosecondPCAP ? 9 : nil,
+                pcapNGTimestampRawValue: isNanosecondPCAP ? UInt64(timestampSeconds) * 1_000_000_000 + UInt64(timestampFraction) : nil,
+                isClassicPCAP: true
             ))
             packetNumber += 1
             offset += capturedLength
@@ -367,7 +373,9 @@ private struct PcapNGReader {
                     pcapNGTimestampResolution: timestampResolution,
                     pcapNGTimestampOffsetSeconds: timestampOffset,
                     pcapNGTimestampRawValue: timestampRaw,
-                    textStyle: decodedComment.textStyle
+                    textStyle: decodedComment.textStyle,
+                    interfaceDescription: interface?.description,
+                    packetFlags: packetOptions[2].flatMap { readUInt32(from: $0, littleEndian: littleEndian) }
                 ))
                 packetNumber += 1
             } else if blockType == 3 {
@@ -497,6 +505,18 @@ private struct PcapNGReader {
         return pow(2, Double(resolution & 0x7f))
     }
 
+    // Decode a 4-byte option such as epb_flags without unaligned loads.
+    private func readUInt32(from data: Data, littleEndian: Bool) -> UInt32? {
+        guard data.count == 4 else {
+            return nil
+        }
+        let bytes = Array(data)
+        if littleEndian {
+            return UInt32(bytes[3]) << 24 | UInt32(bytes[2]) << 16 | UInt32(bytes[1]) << 8 | UInt32(bytes[0])
+        }
+        return UInt32(bytes[0]) << 24 | UInt32(bytes[1]) << 16 | UInt32(bytes[2]) << 8 | UInt32(bytes[3])
+    }
+
     private func readInt64(from data: Data, littleEndian: Bool) -> Int64? {
         // Decode if_tsoffset without relying on potentially unaligned integer loads.
         guard data.count == 8 else {
@@ -567,11 +587,13 @@ private struct PcapWriter {
                 throw NativeNSError(.fileWriteFailed, "Packet \(record.identifier) is too large for PCAP.")
             }
             let interval = record.timestamp.timeIntervalSince1970
-            guard interval.isFinite, interval >= 0, floor(interval) <= Double(UInt32.max) else {
+            let timestamp = record.exactTimestamp
+            guard interval.isFinite, timestamp.seconds >= 0, timestamp.seconds <= Int64(UInt32.max) else {
                 throw NativeNSError(.fileWriteFailed, "Packet \(record.identifier) has a timestamp that PCAP cannot represent.")
             }
-            let seconds = UInt32(floor(interval))
-            let micros = UInt32((interval - floor(interval)) * 1_000_000)
+            // Use the exact integer time; truncating the Date wrote .299999 for a .300000 packet.
+            let seconds = UInt32(timestamp.seconds)
+            let micros = UInt32(timestamp.nanoseconds / 1_000)
             var recordHeader = Data()
             recordHeader.appendLittleEndian(seconds)
             recordHeader.appendLittleEndian(micros)
@@ -1042,7 +1064,10 @@ private extension NativePacketRecord {
             pcapNGTimestampResolution: pcapNGTimestampResolution,
             pcapNGTimestampOffsetSeconds: pcapNGTimestampOffsetSeconds,
             pcapNGTimestampRawValue: pcapNGTimestampRawValue,
-            textStyle: textStyle
+            textStyle: textStyle,
+            interfaceDescription: interfaceDescription,
+            packetFlags: packetFlags,
+            isClassicPCAP: isClassicPCAP
         )
     }
 }

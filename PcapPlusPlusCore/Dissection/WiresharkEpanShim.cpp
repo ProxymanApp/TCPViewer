@@ -58,6 +58,7 @@ struct packet_provider_data {
     frame_data_sequence *frames = nullptr;
     GTree *frames_modified_blocks = nullptr;
     std::unordered_map<uint64_t, std::string> interfaceNames;
+    std::unordered_map<uint64_t, std::string> interfaceDescriptions;
 };
 
 namespace {
@@ -157,10 +158,14 @@ struct PacketContextView {
     int32_t linkLayerType = 1;
     int64_t timestampSeconds = 0;
     int32_t timestampNanoseconds = 0;
+    int timestampPrecision = WTAP_TSPREC_NSEC;
     std::optional<std::string> interfaceName;
+    std::optional<std::string> interfaceDescription;
     std::optional<std::string> packetComment;
     uint32_t interfaceID = 0;
     uint32_t sectionNumber = 0;
+    std::optional<uint32_t> packetFlags;
+    bool omitsInterface = false;
 };
 
 struct WiresharkCriticalException {
@@ -555,8 +560,12 @@ uint64_t InterfaceMetadataKey(uint32_t interfaceID, uint32_t sectionNumber)
 
 void MergeInterfaceMetadata(packet_provider_data &provider, const PacketContextView &context)
 {
+    const uint64_t key = InterfaceMetadataKey(context.interfaceID, context.sectionNumber);
     if (context.interfaceName.has_value() && !context.interfaceName->empty()) {
-        provider.interfaceNames[InterfaceMetadataKey(context.interfaceID, context.sectionNumber)] = *context.interfaceName;
+        provider.interfaceNames[key] = *context.interfaceName;
+    }
+    if (context.interfaceDescription.has_value() && !context.interfaceDescription->empty()) {
+        provider.interfaceDescriptions[key] = *context.interfaceDescription;
     }
 }
 
@@ -590,9 +599,14 @@ const char *ProviderGetInterfaceName(packet_provider_data *provider, uint32_t in
     return match == provider->interfaceNames.end() ? "unknown" : match->second.c_str();
 }
 
-const char *ProviderGetInterfaceDescription(packet_provider_data *, uint32_t, unsigned)
+const char *ProviderGetInterfaceDescription(packet_provider_data *provider, uint32_t interfaceID, unsigned sectionNumber)
 {
-    return nullptr;
+    if (provider == nullptr) {
+        return nullptr;
+    }
+
+    const auto match = provider->interfaceDescriptions.find(InterfaceMetadataKey(interfaceID, sectionNumber));
+    return match == provider->interfaceDescriptions.end() ? nullptr : match->second.c_str();
 }
 
 wtap_block_t ProviderGetModifiedBlock(packet_provider_data *provider, const frame_data *frame)
@@ -709,17 +723,25 @@ public:
         wtap_rec_init(&record_, static_cast<gsize>(capturedLength));
         initialized_ = true;
         wtap_setup_packet_rec(&record_, wiretapEncap);
-        record_.presence_flags = WTAP_HAS_TS | WTAP_HAS_CAP_LEN | WTAP_HAS_INTERFACE_ID;
+        // PCAPNG and live captures carry an interface and section like Wireshark's own PCAPNG files.
+        record_.presence_flags = WTAP_HAS_TS | WTAP_HAS_CAP_LEN;
+        if (!context.omitsInterface) {
+            record_.presence_flags |= WTAP_HAS_INTERFACE_ID | WTAP_HAS_SECTION_NUMBER;
+        }
         record_.rec_header.packet_header.caplen = static_cast<uint32_t>(capturedLength);
         record_.rec_header.packet_header.len = static_cast<uint32_t>(reportedLength);
         record_.rec_header.packet_header.interface_id = context.interfaceID;
         record_.section_number = context.sectionNumber;
-        record_.tsprec = WTAP_TSPREC_NSEC;
+        // Wireshark prints as many fraction digits as the capture recorded.
+        record_.tsprec = context.timestampPrecision;
         record_.ts.secs = context.timestampSeconds;
         record_.ts.nsecs = context.timestampNanoseconds;
         record_.block = wtap_block_create(WTAP_BLOCK_PACKET);
         if (context.packetComment.has_value()) {
             wtap_block_add_string_option(record_.block, OPT_COMMENT, context.packetComment->c_str(), context.packetComment->size());
+        }
+        if (context.packetFlags.has_value()) {
+            wtap_block_add_uint32_option(record_.block, OPT_PKT_FLAGS, *context.packetFlags);
         }
 
         ws_buffer_clean(&record_.data);
@@ -1239,14 +1261,24 @@ PacketContextView ContextViewFromC(const TCPViewerWiresharkPacketContext *contex
     view.linkLayerType = context->linkLayerType;
     view.timestampSeconds = context->timestampSeconds;
     view.timestampNanoseconds = context->timestampNanoseconds;
+    if (context->timestampPrecision >= WTAP_TSPREC_SEC && context->timestampPrecision <= WTAP_TSPREC_NSEC) {
+        view.timestampPrecision = context->timestampPrecision;
+    }
     if (context->interfaceName != nullptr && context->interfaceName[0] != '\0') {
         view.interfaceName = context->interfaceName;
+    }
+    if (context->interfaceDescription != nullptr && context->interfaceDescription[0] != '\0') {
+        view.interfaceDescription = context->interfaceDescription;
     }
     if (context->packetComment != nullptr && context->packetComment[0] != '\0') {
         view.packetComment = context->packetComment;
     }
     view.interfaceID = context->interfaceID;
     view.sectionNumber = context->sectionNumber;
+    if (context->hasPacketFlags) {
+        view.packetFlags = context->packetFlags;
+    }
+    view.omitsInterface = context->omitsInterface;
     return view;
 }
 
@@ -2651,8 +2683,10 @@ struct TCPViewerWiresharkSession {
         }
 
         wtap_block_t block = record.get()->block != nullptr ? wtap_block_ref(record.get()->block) : nullptr;
+        // Keep the previous frame chosen in the first pass; provider->prev_dis is the newest frame by now.
+        const frame_data *previousDisplayed = frame->prev_dis_num == 0 ? nullptr : frame_data_sequence_find(provider->frames, frame->prev_dis_num);
         if (auto report = CatchWiresharkException("running Wireshark second-pass dissection", context.packetIdentifier, [&] {
-                frame_data_set_before_dissect(frame, &elapsedTime, &provider->ref, provider->prev_dis);
+                frame_data_set_before_dissect(frame, &elapsedTime, &provider->ref, previousDisplayed);
                 if (provider->ref == frame) {
                     referenceFrame = *frame;
                     provider->ref = &referenceFrame;

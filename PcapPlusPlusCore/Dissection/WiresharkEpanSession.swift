@@ -507,6 +507,7 @@ final class WiresharkEpanSession {
     ) throws -> T {
         try record.rawBytes.withUnsafeBytes { rawBuffer in
             try withOptionalCString(record.interfaceName) { interfaceNamePointer in
+                try withOptionalCString(record.interfaceDescription) { interfaceDescriptionPointer in
                 try withOptionalCString(record.packetComment) { packetCommentPointer in
                     var context = TCPViewerWiresharkPacketContext()
                     context.packetIdentifier = record.identifier
@@ -514,15 +515,20 @@ final class WiresharkEpanSession {
                     context.capturedLength = record.rawBytes.count
                     context.originalLength = max(record.originalLength, record.rawBytes.count)
                     context.linkLayerType = record.linkLayerType
-                    let interval = record.timestamp.timeIntervalSince1970
-                    let seconds = floor(interval)
-                    context.timestampSeconds = Int64(seconds)
-                    context.timestampNanoseconds = Int32(max(0, min(999_999_999, (interval - seconds) * 1_000_000_000)))
+                    let timestamp = record.exactTimestamp
+                    context.timestampSeconds = timestamp.seconds
+                    context.timestampNanoseconds = timestamp.nanoseconds
+                    context.timestampPrecision = timestamp.precisionDigits
                     context.interfaceName = interfaceNamePointer
+                    context.interfaceDescription = interfaceDescriptionPointer
                     context.packetComment = packetCommentPointer
                     context.interfaceID = record.interfaceID
                     context.sectionNumber = record.sectionNumber
+                    context.packetFlags = record.packetFlags ?? 0
+                    context.hasPacketFlags = record.packetFlags != nil
+                    context.omitsInterface = record.isClassicPCAP
                     return try withUnsafePointer(to: &context, body)
+                }
                 }
             }
         }
