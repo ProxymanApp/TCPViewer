@@ -315,6 +315,19 @@ struct InspectorPipelineTests {
         }
     }
 
+    @Test func offlineSummariesReferenceLaterPacketsLikeWireshark() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let captureURL = directory.appendingPathComponent("ping.pcap")
+        try writePCAP(to: captureURL, packets: [makeIPv4ICMPEchoPacket(isReply: false), makeIPv4ICMPEchoPacket(isReply: true)])
+
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
+        let summaries = try await document.open()
+
+        // Wireshark only knows the reply after its first pass reaches packet 2.
+        #expect(summaries.first?.infoSummary.hasSuffix("(reply in 2)") == true)
+    }
+
     @Test func pcapNGDecryptionSecretsDecryptTLS() async throws {
         // Wireshark's test capture: two TLS 1.2 HEAD requests to example.com with a TLS key log in a DSB.
         let captureURL = try bundledCaptureFixtureURL(fileName: "wireshark-tls12-dsb.pcapng")
@@ -1356,6 +1369,36 @@ private func makeTemporaryDirectory() throws -> URL {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     return directory
+}
+
+// Ethernet + IPv4 + ICMP echo (id 1, seq 1) between 192.168.0.1 and 192.168.0.2, with valid checksums.
+private func makeIPv4ICMPEchoPacket(isReply: Bool) -> Data {
+    var icmp: [UInt8] = [isReply ? 0 : 8, 0, 0, 0, 0x00, 0x01, 0x00, 0x01, 0x61, 0x62, 0x63, 0x64]
+    let checksum = internetChecksum(icmp)
+    icmp[2] = UInt8(checksum >> 8)
+    icmp[3] = UInt8(checksum & 0xff)
+    let source: [UInt8] = isReply ? [192, 168, 0, 2] : [192, 168, 0, 1]
+    let destination: [UInt8] = isReply ? [192, 168, 0, 1] : [192, 168, 0, 2]
+    var ip: [UInt8] = [0x45, 0x00, 0x00, UInt8(20 + icmp.count), 0x00, 0x01, 0x00, 0x00, 0x40, 0x01, 0x00, 0x00]
+        + source + destination
+    let ipChecksum = internetChecksum(ip)
+    ip[10] = UInt8(ipChecksum >> 8)
+    ip[11] = UInt8(ipChecksum & 0xff)
+    let ethernet: [UInt8] = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0x08, 0x00]
+    return Data(ethernet + ip + icmp)
+}
+
+private func internetChecksum(_ bytes: [UInt8]) -> UInt16 {
+    var sum: UInt32 = 0
+    for index in stride(from: 0, to: bytes.count, by: 2) {
+        let high = UInt32(bytes[index]) << 8
+        let low = index + 1 < bytes.count ? UInt32(bytes[index + 1]) : 0
+        sum += high | low
+    }
+    while sum > 0xffff {
+        sum = (sum & 0xffff) + (sum >> 16)
+    }
+    return ~UInt16(sum)
 }
 
 private func writePCAP(to url: URL, packets: [Data]) throws {

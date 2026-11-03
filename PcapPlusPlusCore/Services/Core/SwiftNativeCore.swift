@@ -422,22 +422,54 @@ final class PCPPNativeOfflineDocument {
             var summaries: [PCPPNativePacketSummaryDescriptor] = []
             var pendingBatch: [PCPPNativePacketSummaryDescriptor] = []
             var dnsTCPStreamParser = DNSTCPStreamParser()
+            let cancelLoad = { (processedCount: Int, loadedCount: Int) -> NSError in
+                let progress = PCPPNativePacketLoadProgressDescriptor(
+                    phase: "cancelled",
+                    loadedPacketCount: UInt64(loadedCount),
+                    processedBytes: NSNumber(value: min(UInt64(processedCount), UInt64(records.count))),
+                    totalBytes: NSNumber(value: UInt64(records.count)),
+                    partialResult: true,
+                    message: "Loading \(sourceURL.lastPathComponent) was cancelled."
+                )
+                progressHandler?(progress)
+                self.state.write {
+                    $0.partiallyLoaded = true
+                }
+                return NativeNSError(.operationCancelled, progress.message)
+            }
+
+            // Wireshark summaries can name later packets ("reply in 8", "[TCP PDU reassembled in 82]"),
+            // so run its first pass over the whole file before summarizing, as Wireshark's two passes do.
+            // This only reorders work: each packet is still dissected once per pass.
+            for (index, record) in records.enumerated() {
+                if cancellationCheck?() == true {
+                    throw cancelLoad(index + 1, 0)
+                }
+                try state.write {
+                    do {
+                        try requireDissectionSession(in: $0).observe(record)
+                    } catch where !NativeErrorIsCriticalWiresharkException(error) {
+                        // The summary pass falls back to the built-in dissector for this packet.
+                    }
+                }
+                if (index + 1) % max(batchSize, 1) == 0 {
+                    progressHandler?(PCPPNativePacketLoadProgressDescriptor(
+                        phase: "loading",
+                        loadedPacketCount: 0,
+                        processedBytes: NSNumber(value: UInt64(index + 1)),
+                        totalBytes: NSNumber(value: UInt64(records.count)),
+                        partialResult: initialPartialResult,
+                        message: "Analyzing \(index + 1) of \(records.count) packets…"
+                    ))
+                }
+            }
+            state.write {
+                try? requireDissectionSession(in: $0).finishFirstPass()
+            }
 
             for (index, record) in records.enumerated() {
                 if cancellationCheck?() == true {
-                    let progress = PCPPNativePacketLoadProgressDescriptor(
-                        phase: "cancelled",
-                        loadedPacketCount: UInt64(summaries.count),
-                        processedBytes: NSNumber(value: min(UInt64(index + 1), UInt64(records.count))),
-                        totalBytes: NSNumber(value: UInt64(records.count)),
-                        partialResult: true,
-                        message: "Loading \(sourceURL.lastPathComponent) was cancelled."
-                    )
-                    progressHandler?(progress)
-                    state.write {
-                        $0.partiallyLoaded = true
-                    }
-                    throw NativeNSError(.operationCancelled, progress.message)
+                    throw cancelLoad(index + 1, summaries.count)
                 }
 
                 let summary = try autoreleasepool {
@@ -468,9 +500,6 @@ final class PCPPNativeOfflineDocument {
 
             if !pendingBatch.isEmpty {
                 batchHandler?(pendingBatch)
-            }
-            state.write {
-                try? requireDissectionSession(in: $0).finishFirstPass()
             }
             let partialResult = state.read(\.partiallyLoaded)
             progressHandler?(PCPPNativePacketLoadProgressDescriptor(
