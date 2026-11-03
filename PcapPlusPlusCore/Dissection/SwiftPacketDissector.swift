@@ -262,7 +262,7 @@ enum SwiftPacketDissector {
             return .ethernet
         case Libpcap.dltNull:
             return .loopback
-        case Libpcap.dltRaw:
+        case _ where Libpcap.isRawIP(linkLayerType):
             return .raw
         default:
             return .unknown
@@ -350,7 +350,11 @@ final class PacketAnalyzer {
             return analyzeEthernet(offset: 0)
         case Libpcap.dltNull:
             return analyzeLoopback()
-        case Libpcap.dltRaw:
+        case Libpcap.linktypeLinuxSLL:
+            return analyzeLinuxCooked(headerLength: 16, protocolOffset: 14, version: 1)
+        case Libpcap.linktypeLinuxSLL2:
+            return analyzeLinuxCooked(headerLength: 20, protocolOffset: 0, version: 2)
+        case _ where Libpcap.isRawIP(record.linkLayerType):
             return analyzeIP(offset: 0, inheritedNodes: [], inheritedLayers: [])
         default:
             return unsupportedPacket(reason: "Unsupported link-layer type \(record.linkLayerType).")
@@ -405,23 +409,63 @@ final class PacketAnalyzer {
                 field(id: "eth.type", name: "Type", fieldName: "eth.type", value: hex16(ethType), offset: offset + 12, length: 2),
             ]
         )
-        let frame = frameNode()
-        let inheritedNodes = [frame, ethNode]
-        let inheritedLayers = [PacketLayer(name: "Ethernet", detailSummary: "Ethernet II")]
+        return analyzeEtherType(
+            ethType,
+            offset: offset + 14,
+            inheritedNodes: [frameNode(), ethNode],
+            inheritedLayers: [PacketLayer(name: "Ethernet", detailSummary: "Ethernet II")],
+            linkSummary: "Ethernet II"
+        )
+    }
 
-        switch ethType {
+    // Linux cooked captures ("tcpdump -i any") replace the Ethernet header with an SLL or SLL2 header.
+    private func analyzeLinuxCooked(headerLength: Int, protocolOffset: Int, version: Int) -> AnalyzedPacket {
+        guard bytes.count >= headerLength else {
+            return malformedPacket(reason: "Linux cooked capture packet is shorter than its header.")
+        }
+
+        let protocolType = readUInt16BE(at: protocolOffset) ?? 0
+        let summary = "Linux cooked capture v\(version)"
+        let sllNode = PacketDetailNode(
+            id: "sll",
+            name: summary,
+            fieldName: "sll",
+            value: summary,
+            kind: .layer,
+            byteRange: range(offset: 0, length: headerLength),
+            children: [
+                field(id: "sll.etype", name: "Protocol", fieldName: "sll.etype", value: hex16(protocolType), offset: protocolOffset, length: 2),
+            ]
+        )
+        return analyzeEtherType(
+            protocolType,
+            offset: headerLength,
+            inheritedNodes: [frameNode(), sllNode],
+            inheritedLayers: [PacketLayer(name: "Linux cooked capture", detailSummary: summary)],
+            linkSummary: summary
+        )
+    }
+
+    private func analyzeEtherType(
+        _ etherType: UInt16,
+        offset: Int,
+        inheritedNodes: [PacketDetailNode],
+        inheritedLayers: [PacketLayer],
+        linkSummary: String
+    ) -> AnalyzedPacket {
+        switch etherType {
         case 0x0806:
-            return analyzeARP(offset: offset + 14, inheritedNodes: inheritedNodes, inheritedLayers: inheritedLayers)
+            return analyzeARP(offset: offset, inheritedNodes: inheritedNodes, inheritedLayers: inheritedLayers)
         case 0x0800, 0x86dd:
-            return analyzeIP(offset: offset + 14, inheritedNodes: inheritedNodes, inheritedLayers: inheritedLayers)
+            return analyzeIP(offset: offset, inheritedNodes: inheritedNodes, inheritedLayers: inheritedLayers)
         default:
             var packet = AnalyzedPacket()
             packet.transportHint = .ethernet
-            packet.protocolSummary = hex16(ethType)
-            packet.infoSummary = "Ethernet II"
+            packet.protocolSummary = hex16(etherType)
+            packet.infoSummary = linkSummary
             packet.layers = inheritedLayers
             packet.detailNodes = inheritedNodes
-            packet.decodeStatus = PacketDecodeStatus(kind: .unsupported, reason: "Unsupported EtherType \(hex16(ethType)).")
+            packet.decodeStatus = PacketDecodeStatus(kind: .unsupported, reason: "Unsupported EtherType \(hex16(etherType)).")
             return packet
         }
     }

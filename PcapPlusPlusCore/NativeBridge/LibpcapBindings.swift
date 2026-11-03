@@ -87,6 +87,17 @@ enum Libpcap {
     static let dltNull: Int32 = 0
     static let dltEthernet: Int32 = 1
     static let dltRaw: Int32 = 12
+    // LINKTYPE_* values that capture files store for raw IP and Linux "any"-interface captures.
+    static let linktypeRaw: Int32 = 101
+    static let linktypeLinuxSLL: Int32 = 113
+    static let linktypeIPv4: Int32 = 228
+    static let linktypeIPv6: Int32 = 229
+    static let linktypeLinuxSLL2: Int32 = 276
+
+    // Packets that start directly with an IPv4 or IPv6 header.
+    static func isRawIP(_ linkType: Int32) -> Bool {
+        linkType == dltRaw || linkType == linktypeRaw || linkType == linktypeIPv4 || linkType == linktypeIPv6
+    }
 
     static func validateFilter(_ expression: String, linkType: Int32 = dltEthernet, snapshotLength: Int32 = 65_535) -> String? {
         guard let handle = pcap_open_dead(linkType, snapshotLength) else {

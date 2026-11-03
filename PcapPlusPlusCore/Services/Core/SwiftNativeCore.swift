@@ -1360,7 +1360,7 @@ private func nativeLinkType(_ linkLayerType: Int32) -> PCPPNativeLinkType {
         return .ethernet
     case Libpcap.dltNull:
         return .loopback
-    case Libpcap.dltRaw:
+    case _ where Libpcap.isRawIP(linkLayerType):
         return .raw
     default:
         return .unknown
