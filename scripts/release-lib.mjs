@@ -4,6 +4,7 @@ export const minimumSystemVersion = "15.0";
 export const releaseDMGAppName = "tcpviewer";
 export const homebrewCaskToken = "tcp-viewer";
 export const emptyPayloadSHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+export const defaultSentryURL = "https://sentry.proxyman.com";
 
 const fileNameSegmentPattern = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
 const homebrewCLIStanza = '  binary "#{appdir}/TCP Viewer.app/Contents/MacOS/tcpviewer-cli"';
@@ -138,6 +139,27 @@ export function normalizeReleaseBackendURL(value) {
 
   if (!["http:", "https:"].includes(url.protocol)) {
     throw new Error("TCPVIEWER_RELEASE_BACKEND_URL must use http or https.");
+  }
+
+  return url.href.replace(/\/+$/, "");
+}
+
+// Resolve the sentry-cli server; an unset SENTRY_URL means the self-hosted server, never sentry.io.
+export function resolveSentryURL(env) {
+  const rawURL = String(env.SENTRY_URL ?? "").trim();
+  if (!rawURL) {
+    return defaultSentryURL;
+  }
+
+  let url;
+  try {
+    url = new URL(rawURL);
+  } catch {
+    throw new Error(`SENTRY_URL must be a valid HTTPS URL, for example ${defaultSentryURL}.`);
+  }
+
+  if (url.protocol !== "https:") {
+    throw new Error(`SENTRY_URL must use https, for example ${defaultSentryURL}.`);
   }
 
   return url.href.replace(/\/+$/, "");

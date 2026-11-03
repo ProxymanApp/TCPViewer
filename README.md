@@ -236,6 +236,8 @@ Create a local `.env` from `.env.example`. Add the required release values. Neve
 
 Use `#` for comments in `.env`. `sentry-cli` does not accept `//` comments.
 
+Crash reports and dSYM uploads use the self-hosted Sentry server at `https://sentry.proxyman.com`. The release tooling passes `SENTRY_URL` to `sentry-cli` and falls back to that server when it is unset, so uploads never go to sentry.io by accident. `SENTRY_AUTH_TOKEN` must be an API token from that server. If `Config/TCPViewer.local.xcconfig` sets `TCPVIEWER_SENTRY_DSN`, it overrides the `.env` value, so keep both in sync.
+
 For a production release, add a matching entry to `ReleaseNote.json`. Then run:
 
 ```bash

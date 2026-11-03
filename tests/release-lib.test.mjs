@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   assertReleaseTitleReflectsChanges,
+  defaultSentryURL,
   describeFetchError,
   emptyPayloadSHA256,
   findReleaseNote,
@@ -35,6 +36,7 @@ import {
   releaseNotesToMarkdown,
   releaseNotesToHTML,
   resolvePublishedGitHubReleaseArtifact,
+  resolveSentryURL,
   requiredEnvNames,
   signR2Request,
   updateHomebrewCaskContent,
@@ -453,6 +455,7 @@ test("documents required release env values with safe placeholders", () => {
   const parsed = parseEnvFile(content);
   const documentedNames = [
     ...requiredEnvNames("production"),
+    "SENTRY_URL",
     "TCPVIEWER_PUBLISH_RELEASE_TO_BACKEND",
     ...releaseBackendRequiredEnvNames,
     "TCPVIEWER_HOMEBREW_CASK_REPO"
@@ -468,6 +471,19 @@ test("documents required release env values with safe placeholders", () => {
       assert.match(value, /^replace-with-/);
     }
   }
+  assert.equal(parsed.SENTRY_URL, defaultSentryURL);
+});
+
+test("defaults sentry-cli uploads to the self-hosted Sentry server", () => {
+  assert.equal(defaultSentryURL, "https://sentry.proxyman.com");
+  assert.equal(resolveSentryURL({}), defaultSentryURL);
+  assert.equal(resolveSentryURL({ SENTRY_URL: "  " }), defaultSentryURL);
+  assert.equal(resolveSentryURL(mergeEnv({}, { SENTRY_URL: "https:/$()/sentry.proxyman.com/" })), defaultSentryURL);
+  assert.equal(resolveSentryURL({ SENTRY_URL: "https://sentry.example.com/" }), "https://sentry.example.com");
+  assert.ok(!requiredEnvNames("production").includes("SENTRY_URL"));
+
+  assert.throws(() => resolveSentryURL({ SENTRY_URL: "http://sentry.proxyman.com" }), /must use https/);
+  assert.throws(() => resolveSentryURL({ SENTRY_URL: "sentry.proxyman.com" }), /valid HTTPS URL/);
 });
 
 test("validates optional release backend publishing env", () => {
