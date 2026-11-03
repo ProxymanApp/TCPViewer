@@ -52,6 +52,7 @@ import {
   releaseBackendRequiredEnvNames,
   releaseNotesToMarkdown,
   resolvePublishedGitHubReleaseArtifact,
+  resolveSentryURL,
   requiredEnvNames,
   signR2Request,
   updateHomebrewCaskContent,
@@ -91,6 +92,8 @@ async function main() {
     && (args.bumpHomebrew ?? (args.yes ? false : await askHomebrewCaskBump()));
 
   const { env, envFileExists } = await loadReleaseEnv();
+  // Pin sentry-cli to the self-hosted server before fastlane inherits this env.
+  env.SENTRY_URL = resolveSentryURL(env);
   const settings = await readXcodeBuildSettings(env);
   validateRequiredBuildSettings(settings);
   const currentVersion = settings.MARKETING_VERSION;
@@ -166,6 +169,7 @@ async function main() {
     outputDir,
     objectKey,
     downloadURL,
+    sentryURL: env.SENTRY_URL,
     envFileExists,
     releaseNote,
     githubRelease,
@@ -1615,6 +1619,7 @@ function printReleaseSummary({
   outputDir,
   objectKey,
   downloadURL,
+  sentryURL,
   envFileExists,
   releaseNote,
   githubRelease,
@@ -1630,6 +1635,7 @@ function printReleaseSummary({
   console.log(`- Output directory: ${outputDir}`);
   console.log(`- R2 object: ${objectKey}`);
   console.log(`- Download URL: ${downloadURL}`);
+  console.log(`- Sentry server: ${sentryURL}`);
   console.log(`- Backend publishing: ${releaseBackend ? `enabled (${releaseBackend.baseURL})` : "disabled"}`);
   console.log(`- Environment source: ${envFileExists ? ".env + shell environment" : "shell environment only"}`);
   if (releaseNote) {
