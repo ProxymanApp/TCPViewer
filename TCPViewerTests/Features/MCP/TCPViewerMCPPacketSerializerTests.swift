@@ -31,6 +31,7 @@ struct TCPViewerMCPPacketSerializerTests {
 
         #expect(root?["value"] == .string(TCPViewerMCPSensitiveDataRedactor.placeholder))
         #expect(root?["raw_value"] == .string(TCPViewerMCPSensitiveDataRedactor.placeholder))
+        #expect(root?["label"] == .string("Authorization: \(TCPViewerMCPSensitiveDataRedactor.placeholder)"))
         #expect(root?["children_truncated"] == .bool(true))
         #expect(protected?["returned_node_count"] == .int(1))
         #expect(protected?["nodes_truncated"] == .bool(true))
@@ -43,6 +44,7 @@ struct TCPViewerMCPPacketSerializerTests {
         let unprotectedRoot = unprotected?["detail_nodes"]?.arrayValue?.first?.objectValue
         let child = unprotectedRoot?["children"]?.arrayValue?.first?.objectValue
         #expect(unprotectedRoot?["value"] == .string("Bearer super-secret-token"))
+        #expect(unprotectedRoot?["label"] == .string("Authorization: Bearer super-secret-token"))
         #expect(child?["value"] == .string("https://example.com/path?api_key=hidden&safe=yes"))
         #expect(unprotected?["returned_node_count"] == .int(2))
     }

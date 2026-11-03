@@ -655,6 +655,7 @@ final class WiresharkEpanSession {
         return PCPPNativePacketDetailNodeDescriptor(
             identifier: Self.string(node.identifier) ?? "wireshark.node",
             name: Self.string(node.name) ?? "Wireshark Field",
+            label: Self.string(node.label),
             fieldName: Self.string(node.fieldName) ?? "",
             value: Self.string(node.value),
             rawValue: Self.string(node.rawValue),

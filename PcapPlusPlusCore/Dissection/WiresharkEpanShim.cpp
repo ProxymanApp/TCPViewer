@@ -100,6 +100,7 @@ struct ByteRange {
 struct DetailNode {
     std::string id;
     std::string title;
+    std::string label;
     std::string fieldName;
     std::string displayValue;
     std::string rawValue;
@@ -930,12 +931,31 @@ std::string TruncateInspectorText(std::string value)
     return value;
 }
 
+// Drop only the separator between a field name and its value; values such as "::1" or ":authority" start with ':'.
 std::string TrimDisplayValue(std::string value)
 {
-    while (!value.empty() && (value.front() == ':' || value.front() == ',' || value.front() == ' ')) {
-        value.erase(value.begin());
+    size_t start = 0;
+    while (start < value.size() && value[start] == ' ') {
+        start += 1;
     }
-    return value;
+    if (start + 1 < value.size() && (value[start] == ':' || value[start] == ',') && value[start + 1] == ' ') {
+        start += 2;
+    } else if (start + 1 == value.size() && (value[start] == ':' || value[start] == ',')) {
+        start += 1;
+    }
+    while (start < value.size() && value[start] == ' ') {
+        start += 1;
+    }
+    return value.substr(start);
+}
+
+// Match Wireshark's details pane, which wraps generated items in brackets.
+std::string DisplayLabelForField(const field_info *field, const std::string &label)
+{
+    if (field != nullptr && FI_GET_FLAG(field, FI_GENERATED)) {
+        return "[" + label + "]";
+    }
+    return label;
 }
 
 std::string LabelForField(const field_info *field, size_t &valueOffset)
@@ -1133,6 +1153,7 @@ std::optional<DetailNode> MapProtoNode(
     DetailNode node;
     node.fieldName = header->abbrev != nullptr ? header->abbrev : "";
     node.title = TruncateInspectorText(header->name != nullptr ? header->name : label);
+    node.label = TruncateInspectorText(DisplayLabelForField(field, label));
     node.displayValue = valueOffset < label.size() ? TruncateInspectorText(TrimDisplayValue(label.substr(valueOffset))) : "";
     if (node.displayValue.empty() && label != node.title) {
         node.displayValue = TruncateInspectorText(TrimDisplayValue(label));
@@ -1249,6 +1270,7 @@ TCPViewerWiresharkDetailNode CopyDetailNode(const DetailNode &node)
     TCPViewerWiresharkDetailNode copied{};
     copied.identifier = CopyCString(node.id, false);
     copied.name = CopyCString(node.title, false);
+    copied.label = CopyCString(node.label);
     copied.fieldName = CopyCString(node.fieldName, false);
     copied.value = CopyCString(node.displayValue);
     copied.rawValue = CopyCString(node.rawValue);
@@ -1292,6 +1314,7 @@ void DestroyDetailNode(TCPViewerWiresharkDetailNode &node)
 {
     std::free(const_cast<char *>(node.identifier));
     std::free(const_cast<char *>(node.name));
+    std::free(const_cast<char *>(node.label));
     std::free(const_cast<char *>(node.fieldName));
     std::free(const_cast<char *>(node.value));
     std::free(const_cast<char *>(node.rawValue));

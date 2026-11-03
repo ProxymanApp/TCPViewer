@@ -36,6 +36,7 @@ typedef struct TCPViewerWiresharkByteRange {
 typedef struct TCPViewerWiresharkDetailNode {
     const char *identifier;
     const char *name;
+    const char *label; // Exact Wireshark details-pane row text, with [brackets] for generated items.
     const char *fieldName;
     const char *value;
     const char *rawValue;

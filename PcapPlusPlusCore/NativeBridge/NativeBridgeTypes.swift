@@ -400,6 +400,7 @@ final class PCPPNativePacketByteRangeDescriptor {
 final class PCPPNativePacketDetailNodeDescriptor {
     let identifier: String
     let name: String
+    let label: String?
     let fieldName: String
     let value: String?
     let rawValue: String?
@@ -413,6 +414,7 @@ final class PCPPNativePacketDetailNodeDescriptor {
     init(
         identifier: String,
         name: String,
+        label: String? = nil,
         fieldName: String,
         value: String?,
         rawValue: String?,
@@ -425,6 +427,7 @@ final class PCPPNativePacketDetailNodeDescriptor {
     ) {
         self.identifier = identifier
         self.name = name
+        self.label = label
         self.fieldName = fieldName
         self.value = value
         self.rawValue = rawValue
