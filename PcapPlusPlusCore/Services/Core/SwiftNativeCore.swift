@@ -351,7 +351,9 @@ final class PCPPNativeOfflineDocument {
 
     func save() throws {
         let snapshot = state.read { ($0.file, $0.currentURL) }
-        try NativeCaptureFile.write(records: snapshot.0.records, to: snapshot.1, format: snapshot.0.format)
+        try NativeCaptureFile.write(
+            records: snapshot.0.records, to: snapshot.1, format: snapshot.0.format, decryptionSecrets: snapshot.0.decryptionSecrets
+        )
         state.write {
             $0.dirty = false
         }
@@ -359,8 +361,8 @@ final class PCPPNativeOfflineDocument {
 
     func save(to url: URL, format: String) throws {
         let outputFormat = CaptureFileFormat(exportRawValue: format)
-        let records = state.read { $0.file.records }
-        try NativeCaptureFile.write(records: records, to: url, format: outputFormat)
+        let file = state.read(\.file)
+        try NativeCaptureFile.write(records: file.records, to: url, format: outputFormat, decryptionSecrets: file.decryptionSecrets)
         state.write {
             $0.currentURL = url
             $0.currentFormat = outputFormat.rawValue
@@ -381,8 +383,8 @@ final class PCPPNativeOfflineDocument {
         cancellationCheck: PCPPNativeCancellationHandler?
     ) throws {
         let idSet = Set(identifiers.map(\.uint64Value))
-        let records = state.read {
-            $0.file.records.filter { idSet.contains($0.identifier) }
+        let (records, secrets) = state.read {
+            ($0.file.records.filter { idSet.contains($0.identifier) }, $0.file.decryptionSecrets)
         }
         try Exporter.export(
             records: records,
@@ -390,6 +392,7 @@ final class PCPPNativeOfflineDocument {
             format: CaptureFileFormat(exportRawValue: format),
             textStylesByPacketID: textStylesByPacketID,
             commentsByPacketID: commentsByPacketID,
+            decryptionSecrets: secrets,
             progressHandler: progressHandler,
             cancellationCheck: cancellationCheck
         )
@@ -422,6 +425,11 @@ final class PCPPNativeOfflineDocument {
             var summaries: [PCPPNativePacketSummaryDescriptor] = []
             var pendingBatch: [PCPPNativePacketSummaryDescriptor] = []
             var dnsTCPStreamParser = DNSTCPStreamParser()
+            // Both passes report on one file-byte scale, the first pass filling the first half, so progress never resets.
+            let progressBytes = { (completedSteps: Int) -> NSNumber in
+                let steps = Double(max(records.count, 1) * 2)
+                return NSNumber(value: totalBytes == 0 ? UInt64(completedSteps) : UInt64(Double(totalBytes) * Double(completedSteps) / steps))
+            }
             let cancelLoad = { (processedCount: Int, loadedCount: Int) -> NSError in
                 let progress = PCPPNativePacketLoadProgressDescriptor(
                     phase: "cancelled",
@@ -456,8 +464,8 @@ final class PCPPNativeOfflineDocument {
                     progressHandler?(PCPPNativePacketLoadProgressDescriptor(
                         phase: "loading",
                         loadedPacketCount: 0,
-                        processedBytes: NSNumber(value: UInt64(index + 1)),
-                        totalBytes: NSNumber(value: UInt64(records.count)),
+                        processedBytes: progressBytes(index + 1),
+                        totalBytes: NSNumber(value: totalBytes),
                         partialResult: initialPartialResult,
                         message: "Analyzing \(index + 1) of \(records.count) packets…"
                     ))
@@ -490,7 +498,7 @@ final class PCPPNativeOfflineDocument {
                     progressHandler?(PCPPNativePacketLoadProgressDescriptor(
                         phase: "loading",
                         loadedPacketCount: UInt64(summaries.count),
-                        processedBytes: NSNumber(value: totalBytes == 0 ? UInt64(summaries.count) : UInt64(Double(totalBytes) * Double(summaries.count) / Double(max(records.count, 1)))),
+                        processedBytes: progressBytes(records.count + summaries.count),
                         totalBytes: NSNumber(value: totalBytes),
                         partialResult: initialPartialResult,
                         message: self.loadProgressMessage(prefix: "Loaded", packetCount: summaries.count)
@@ -1509,6 +1517,7 @@ enum Exporter {
         format: CaptureFileFormat,
         textStylesByPacketID: [PacketSummary.ID: PacketTextStyle] = [:],
         commentsByPacketID: [PacketSummary.ID: String] = [:],
+        decryptionSecrets: [NativeDecryptionSecret] = [],
         progressHandler: PCPPNativePacketExportProgressHandler?,
         cancellationCheck: PCPPNativeCancellationHandler?
     ) throws {
@@ -1526,7 +1535,8 @@ enum Exporter {
             to: url,
             format: format,
             textStylesByPacketID: textStylesByPacketID,
-            commentsByPacketID: commentsByPacketID
+            commentsByPacketID: commentsByPacketID,
+            decryptionSecrets: decryptionSecrets
         )
         progressHandler?(UInt(records.count), UInt(records.count))
     }

@@ -530,6 +530,7 @@ final class WiresharkEpanSession {
                     context.timestampSeconds = timestamp.seconds
                     context.timestampNanoseconds = timestamp.nanoseconds
                     context.timestampPrecision = timestamp.precisionDigits
+                    context.hasTimestampPrecision = true
                     context.interfaceName = interfaceNamePointer
                     context.interfaceDescription = interfaceDescriptionPointer
                     context.packetComment = packetCommentPointer

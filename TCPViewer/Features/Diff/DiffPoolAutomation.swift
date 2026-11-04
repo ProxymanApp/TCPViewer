@@ -253,7 +253,7 @@ final class DiffPoolAutomation {
             let isSensitive = redactor.isSensitiveName(node.fieldName) || redactor.isSensitiveName(node.name)
             let value = node.value.map { isSensitive ? TCPViewerMCPSensitiveDataRedactor.placeholder : redactor.redact($0) }
             // A sensitive field's label carries its value, so show the name with the placeholder instead.
-            let label = node.label.map { isSensitive ? "\(redactor.redact(node.name)): \(TCPViewerMCPSensitiveDataRedactor.placeholder)" : redactor.redact($0) }
+            let label = node.label.map { isSensitive ? "\(redactor.redact(node.name)): \(TCPViewerMCPSensitiveDataRedactor.placeholder)" : redactor.redact(label: $0, value: node.value) }
             return PacketDetailNode(id: node.id, name: redactor.redact(node.name), label: label, fieldName: node.fieldName, value: value,
                                     kind: node.kind, severity: node.severity, children: node.children.map(redact))
         }

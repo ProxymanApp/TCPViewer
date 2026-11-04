@@ -341,6 +341,43 @@ struct InspectorPipelineTests {
         #expect(findNode(in: inspection.detailNodes, fieldName: "http.request.method")?.value == "HEAD")
     }
 
+    @Test func savingPCAPNGKeepsDecryptionSecrets() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let savedURL = directory.appendingPathComponent("saved.pcapng")
+        let captureURL = try bundledCaptureFixtureURL(fileName: "wireshark-tls12-dsb.pcapng")
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: captureURL)
+        _ = try await document.open()
+        try await document.save(to: savedURL, format: .pcapng)
+
+        let reopened = try await NativeTCPViewerCore().openOfflineCaptureDocument(at: savedURL)
+        let request = try #require(try await reopened.open().first { $0.packetNumber == 6 })
+
+        #expect(request.protocolSummary == "HTTP")
+    }
+
+    @Test func decryptionSecretsAreReplayedWhenASessionTakesWiresharkBack() throws {
+        // Another tab, live capture or follow session taking Wireshark runs epan_new, which drops TLS keys;
+        // re-initializing this session must feed its capture's secrets again.
+        let file = try NativeCaptureFile.load(from: bundledCaptureFixtureURL(fileName: "wireshark-tls12-dsb.pcapng"))
+        let session = try WiresharkEpanSession()
+        for secret in file.decryptionSecrets {
+            #expect(session.addDecryptionSecret(secret))
+        }
+        let other = try WiresharkEpanSession()
+        _ = try other.observe(file.records[0])
+
+        for record in file.records {
+            _ = try session.observe(record)
+        }
+        let nodes = try session.inspect(file.records[5]).detailNodes
+
+        func method(in nodes: [PCPPNativePacketDetailNodeDescriptor]) -> String? {
+            nodes.lazy.compactMap { $0.fieldName == "http.request.method" ? $0.value : method(in: $0.children) }.first
+        }
+        #expect(method(in: nodes) == "HEAD")
+    }
+
     @Test func malformedPcapNgPacketRecordIsSkippedAndLaterPacketsStillLoad() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

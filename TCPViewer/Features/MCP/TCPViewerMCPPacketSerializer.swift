@@ -182,7 +182,7 @@ struct TCPViewerMCPPacketSerializer {
             // A sensitive field's label carries its value, so show the name with the placeholder instead.
             object["label"] = isSensitiveField
                 ? .string("\(redactor.redact(node.name)): \(TCPViewerMCPSensitiveDataRedactor.placeholder)")
-                : protectedText(label)
+                : .string(redactsSensitiveData ? redactor.redact(label: label, value: node.value) : label)
         }
         if let rawValue = node.rawValue {
             object["raw_value"] = isSensitiveField ? .string(TCPViewerMCPSensitiveDataRedactor.placeholder) : protectedText(rawValue)

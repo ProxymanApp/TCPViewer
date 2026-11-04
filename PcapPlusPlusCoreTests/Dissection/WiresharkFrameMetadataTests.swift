@@ -31,6 +31,28 @@ struct WiresharkFrameMetadataTests {
         #expect(flags.children.first { $0.fieldName == "frame.packet_flags_direction" }?.value == "Inbound (0x1)")
     }
 
+    @Test func descriptionOnlyInterfaceIsNamedByItsDescriptionLikeWireshark() throws {
+        // Wireshark's file provider names an interface by if_name, then if_description, then "unknown".
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("description-only.pcapng")
+        try NativeCaptureFile.write(
+            records: [makeRecord(identifier: 1, interfaceName: nil, interfaceDescription: "Wi-Fi")],
+            to: url,
+            format: .pcapng
+        )
+
+        let record = try NativeCaptureFile.load(from: url).records[0]
+        let frame = try #require(try frameNode(of: [record]).last)
+        let interface = try #require(frame.children.first { $0.fieldName == "frame.interface_id" })
+
+        #expect(record.interfaceName == "Wi-Fi")
+        #expect(record.interfaceDescription == "Wi-Fi")
+        #expect(interface.label == "Interface id: 0 (Wi-Fi)")
+        #expect(interface.children.map(\.label) == ["Interface name: Wi-Fi", "Interface description: Wi-Fi"])
+    }
+
     @Test func secondPassKeepsTheDeltaFromThePreviousDisplayedFrame() throws {
         let records = (1...3).map { makeRecord(identifier: UInt64($0)) }
         let frames = try frameNode(of: records, inspecting: 1)
@@ -55,6 +77,7 @@ struct WiresharkFrameMetadataTests {
     // Ethernet + IPv4 + UDP to port 53, one second apart per identifier.
     private func makeRecord(
         identifier: UInt64,
+        interfaceName: String? = "en0",
         interfaceDescription: String? = nil,
         packetFlags: UInt32? = nil,
         isClassicPCAP: Bool = false
@@ -73,8 +96,8 @@ struct WiresharkFrameMetadataTests {
             ]),
             originalLength: 42,
             linkLayerType: Libpcap.dltEthernet,
-            interfaceIdentifier: isClassicPCAP ? nil : "en0",
-            interfaceName: isClassicPCAP ? nil : "en0",
+            interfaceIdentifier: isClassicPCAP ? nil : interfaceName,
+            interfaceName: isClassicPCAP ? nil : interfaceName,
             packetComment: nil,
             interfaceDescription: interfaceDescription,
             packetFlags: packetFlags,

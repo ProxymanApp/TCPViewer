@@ -43,6 +43,7 @@
 #include <wiretap/wtap_opttypes.h>
 #include <wsutil/buffer.h>
 #include <wsutil/filesystem.h>
+#include <wsutil/privileges.h>
 #include <wsutil/wslog.h>
 
 #if defined(__APPLE__)
@@ -229,6 +230,27 @@ std::string BundledDataDirectory()
     }
 #endif
     return "";
+}
+
+// Point Wireshark at the bundled data while the image loads, before app threads start, since setenv
+// races with getenv on other threads. Wireshark caches the path on first use, so the previous value is
+// restored at once and child processes never inherit TCP Viewer's data directory.
+__attribute__((constructor)) void CacheBundledDataDirectory()
+{
+    const auto dataDirectory = BundledDataDirectory();
+    if (dataDirectory.empty()) {
+        return;
+    }
+    const char *current = getenv("WIRESHARK_DATA_DIR");
+    const std::optional<std::string> previous = current != nullptr ? std::optional<std::string>(current) : std::nullopt;
+    setenv("WIRESHARK_DATA_DIR", dataDirectory.c_str(), 1);
+    init_process_policies(); // get_datafile_dir() asks started_with_special_privs(), which expects this first.
+    get_datafile_dir();
+    if (previous.has_value()) {
+        setenv("WIRESHARK_DATA_DIR", previous->c_str(), 1);
+    } else {
+        unsetenv("WIRESHARK_DATA_DIR");
+    }
 }
 
 const char *KindString(NodeKind kind)
@@ -987,8 +1009,6 @@ std::string TrimDisplayValue(std::string value)
     }
     if (start + 1 < value.size() && (value[start] == ':' || value[start] == ',') && value[start + 1] == ' ') {
         start += 2;
-    } else if (start + 1 == value.size() && (value[start] == ':' || value[start] == ',')) {
-        start += 1;
     }
     while (start < value.size() && value[start] == ' ') {
         start += 1;
@@ -1286,7 +1306,7 @@ PacketContextView ContextViewFromC(const TCPViewerWiresharkPacketContext *contex
     view.linkLayerType = context->linkLayerType;
     view.timestampSeconds = context->timestampSeconds;
     view.timestampNanoseconds = context->timestampNanoseconds;
-    if (context->timestampPrecision >= WTAP_TSPREC_SEC && context->timestampPrecision <= WTAP_TSPREC_NSEC) {
+    if (context->hasTimestampPrecision && context->timestampPrecision >= WTAP_TSPREC_SEC && context->timestampPrecision <= WTAP_TSPREC_NSEC) {
         view.timestampPrecision = context->timestampPrecision;
     }
     if (context->interfaceName != nullptr && context->interfaceName[0] != '\0') {
@@ -1442,12 +1462,7 @@ private:
             unavailableReason_ = "Wireshark personal configuration directory is unavailable.";
             return;
         }
-        // Wireshark resolves bundled data relative to the host executable path, which is not a Wireshark
-        // install here, so point it at the framework's copy before it caches the data directory.
-        const auto dataDirectory = BundledDataDirectory();
-        if (!dataDirectory.empty()) {
-            setenv("WIRESHARK_DATA_DIR", dataDirectory.c_str(), 1);
-        }
+        // The bundled data directory is already cached by CacheBundledDataDirectory at load time.
         const auto executablePath = CurrentExecutablePath();
         if (char *configurationError = configuration_init(executablePath.c_str())) {
             available_ = false;

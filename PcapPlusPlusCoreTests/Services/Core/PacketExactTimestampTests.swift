@@ -28,6 +28,44 @@ struct PacketExactTimestampTests {
             == PacketExactTimestamp(seconds: 12, nanoseconds: 500_000_000, precisionDigits: 4))
     }
 
+    @Test func corruptTimestampsSaturateInsteadOfTrapping() {
+        // if_tsresol 0 with a raw value above Int64.max, and an if_tsoffset that overflows the sum.
+        #expect(PacketExactTimestamp(rawValue: .max, resolution: 0, offsetSeconds: 0)?.seconds == .max)
+        #expect(PacketExactTimestamp(rawValue: 2_000_000, resolution: 6, offsetSeconds: .max)?.seconds == .max)
+        #expect(PacketExactTimestamp(microsecondsFrom: Date(timeIntervalSince1970: 1e300)).seconds == .max)
+        #expect(PacketExactTimestamp(microsecondsFrom: Date(timeIntervalSince1970: .nan)).seconds == 0)
+    }
+
+    @Test func unsupportedResolutionFallsBackToTheReaderDate() {
+        // 10^20 units per second does not fit in UInt64, so use the same approximate Date as the packet table.
+        let record = NativePacketRecord(
+            identifier: 1,
+            packetNumber: 1,
+            timestamp: Date(timeIntervalSince1970: 12.5),
+            rawBytes: Data([0x01]),
+            originalLength: 1,
+            linkLayerType: Libpcap.dltEthernet,
+            interfaceIdentifier: nil,
+            interfaceName: nil,
+            packetComment: nil,
+            pcapNGTimestampResolution: 20,
+            pcapNGTimestampRawValue: 1_250_000_000_000_000_000
+        )
+
+        #expect(PacketExactTimestamp(rawValue: 1, resolution: 20, offsetSeconds: 0) == nil)
+        #expect(record.exactTimestamp == PacketExactTimestamp(seconds: 12, nanoseconds: 500_000_000, precisionDigits: 6))
+    }
+
+    @Test func pcapExportRejectsTimestampsItCannotRepresent() throws {
+        let url = try temporaryURL(named: "infinite.pcap")
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let record = makeRecord(timestamp: Date(timeIntervalSince1970: .infinity))
+
+        #expect(throws: (any Error).self) {
+            try NativeCaptureFile.write(records: [record], to: url, format: .pcap)
+        }
+    }
+
     @Test func pcapExportKeepsMicroseconds() throws {
         let url = try temporaryURL(named: "microseconds.pcap")
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }

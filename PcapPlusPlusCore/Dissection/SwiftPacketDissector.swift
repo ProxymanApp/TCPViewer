@@ -79,10 +79,12 @@ struct NativePacketRecord: Sendable {
     // Exact capture time for Wireshark. A Date near 1.7e9 seconds keeps only ~240 ns of resolution,
     // so use the source's integer timestamp when there is one.
     var exactTimestamp: PacketExactTimestamp {
-        if let rawValue = pcapNGTimestampRawValue, let resolution = pcapNGTimestampResolution {
-            return PacketExactTimestamp(rawValue: rawValue, resolution: resolution, offsetSeconds: pcapNGTimestampOffsetSeconds)
+        if let rawValue = pcapNGTimestampRawValue, let resolution = pcapNGTimestampResolution,
+           let exact = PacketExactTimestamp(rawValue: rawValue, resolution: resolution, offsetSeconds: pcapNGTimestampOffsetSeconds) {
+            return exact
         }
         // Classic PCAP and libpcap live capture record microseconds, which a Date round-trips at that precision.
+        // Unsupported if_tsresol values also land here, matching the reader's approximate Date.
         return PacketExactTimestamp(microsecondsFrom: timestamp)
     }
 }
@@ -99,8 +101,13 @@ struct PacketExactTimestamp: Equatable, Sendable {
         self.precisionDigits = precisionDigits
     }
 
+    // Split a Date into whole seconds and microseconds, saturating corrupt dates instead of trapping in Int64(_:).
     init(microsecondsFrom date: Date) {
         let interval = date.timeIntervalSince1970
+        guard interval.isFinite, interval.magnitude < 9.2e18 else {
+            self.init(seconds: interval > 0 ? .max : interval < 0 ? .min : 0, nanoseconds: 0, precisionDigits: 6)
+            return
+        }
         var seconds = interval.rounded(.down)
         var microseconds = ((interval - seconds) * 1_000_000).rounded()
         if microseconds >= 1_000_000 {
@@ -110,28 +117,30 @@ struct PacketExactTimestamp: Equatable, Sendable {
         self.init(seconds: Int64(seconds), nanoseconds: Int32(microseconds) * 1_000, precisionDigits: 6)
     }
 
-    // Decode a PCAPNG timestamp: the high bit of if_tsresol selects a power of 2 instead of 10.
-    init(rawValue: UInt64, resolution: UInt8, offsetSeconds: Int64) {
-        let exponent = UInt64(resolution & 0x7f)
-        let isBinary = resolution & 0x80 != 0
-        guard exponent <= 63, isBinary || exponent <= 19 else {
-            self.init(seconds: offsetSeconds, nanoseconds: 0, precisionDigits: 9)
-            return
+    // Decode a PCAPNG timestamp exactly; nil when if_tsresol has more units per second than UInt64 holds.
+    init?(rawValue: UInt64, resolution: UInt8, offsetSeconds: Int64) {
+        guard let unitsPerSecond = UInt64(exactly: Self.unitsPerSecond(resolution: resolution)) else {
+            return nil
         }
-        let unitsPerSecond: UInt64 = isBinary ? UInt64(1) << exponent : (0..<exponent).reduce(UInt64(1)) { value, _ in value * 10 }
         let fraction = rawValue % unitsPerSecond
         let product = fraction.multipliedFullWidth(by: 1_000_000_000)
         let nanoseconds = unitsPerSecond.dividingFullWidth(product).quotient
-        let digits = isBinary ? Int32((Double(exponent) * log10(2.0)).rounded(.up)) : Int32(exponent)
+        let exponent = Double(resolution & 0x7f)
+        let digits = resolution & 0x80 != 0 ? Int32((exponent * log10(2.0)).rounded(.up)) : Int32(exponent)
+        // Saturate: the raw value (with if_tsresol 0) and if_tsoffset come from untrusted files.
+        let (sum, overflow) = Int64(clamping: rawValue / unitsPerSecond).addingReportingOverflow(offsetSeconds)
         self.init(
-            seconds: Int64(rawValue / unitsPerSecond) + offsetSeconds,
+            seconds: overflow ? (offsetSeconds > 0 ? .max : .min) : sum,
             nanoseconds: Int32(nanoseconds),
             precisionDigits: min(max(digits, 0), 9)
         )
     }
 
-    var date: Date {
-        Date(timeIntervalSince1970: TimeInterval(seconds) + TimeInterval(nanoseconds) / 1_000_000_000)
+    // Units per second for a PCAPNG if_tsresol; the high bit selects a power of 2 instead of 10.
+    // Exact up to 10^19 and 2^63, the largest that fit in UInt64.
+    static func unitsPerSecond(resolution: UInt8) -> Double {
+        let exponent = Double(resolution & 0x7f)
+        return resolution & 0x80 == 0 ? pow(10, exponent) : pow(2, exponent)
     }
 }
 

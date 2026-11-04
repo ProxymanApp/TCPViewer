@@ -57,7 +57,8 @@ struct NativeCaptureFile {
         to url: URL,
         format: CaptureFileFormat,
         textStylesByPacketID: [PacketSummary.ID: PacketTextStyle] = [:],
-        commentsByPacketID: [PacketSummary.ID: String] = [:]
+        commentsByPacketID: [PacketSummary.ID: String] = [:],
+        decryptionSecrets: [NativeDecryptionSecret] = []
     ) throws {
         let outputRecords = records.map { record in
             record.withMetadata(
@@ -81,7 +82,7 @@ struct NativeCaptureFile {
                 case .pcap:
                     try PcapWriter(records: outputRecords).write(to: handle)
                 case .pcapng:
-                    try PcapNGWriter(records: outputRecords).write(to: handle)
+                    try PcapNGWriter(records: outputRecords, decryptionSecrets: decryptionSecrets).write(to: handle)
                 }
                 try handle.close()
             } catch {
@@ -366,7 +367,7 @@ private struct PcapNGReader {
                 let timestampRaw = (timestampHigh << 32) | timestampLow
                 let timestampResolution = interface?.timestampResolution ?? 6
                 let timestampOffset = interface?.timestampOffsetSeconds ?? 0
-                let unitsPerSecond = timestampUnitsPerSecond(resolution: timestampResolution)
+                let unitsPerSecond = PacketExactTimestamp.unitsPerSecond(resolution: timestampResolution)
                 records.append(NativePacketRecord(
                     identifier: packetNumber,
                     packetNumber: packetNumber,
@@ -375,6 +376,7 @@ private struct PcapNGReader {
                     originalLength: originalLength,
                     linkLayerType: interface?.linkType ?? Libpcap.dltEthernet,
                     interfaceIdentifier: interface?.name,
+                    // Wireshark's file provider also falls back from if_name to if_description.
                     interfaceName: interface?.name ?? interface?.description,
                     packetComment: decodedComment.packetComment,
                     interfaceID: interfaceID,
@@ -384,7 +386,7 @@ private struct PcapNGReader {
                     pcapNGTimestampRawValue: timestampRaw,
                     textStyle: decodedComment.textStyle,
                     interfaceDescription: interface?.description,
-                    packetFlags: packetOptions[2].flatMap { readUInt32(from: $0, littleEndian: littleEndian) }
+                    packetFlags: packetOptions[2].flatMap { $0.count == 4 ? readUInt32(at: 0, littleEndian: littleEndian, in: $0) : nil }
                 ))
                 packetNumber += 1
             } else if blockType == 3 {
@@ -525,26 +527,6 @@ private struct PcapNGReader {
         return values
     }
 
-    private func timestampUnitsPerSecond(resolution: UInt8) -> Double {
-        // PCAPNG uses the high bit to distinguish decimal and binary resolution.
-        if resolution & 0x80 == 0 {
-            return pow(10, Double(resolution))
-        }
-        return pow(2, Double(resolution & 0x7f))
-    }
-
-    // Decode a 4-byte option such as epb_flags without unaligned loads.
-    private func readUInt32(from data: Data, littleEndian: Bool) -> UInt32? {
-        guard data.count == 4 else {
-            return nil
-        }
-        let bytes = Array(data)
-        if littleEndian {
-            return UInt32(bytes[3]) << 24 | UInt32(bytes[2]) << 16 | UInt32(bytes[1]) << 8 | UInt32(bytes[0])
-        }
-        return UInt32(bytes[0]) << 24 | UInt32(bytes[1]) << 16 | UInt32(bytes[2]) << 8 | UInt32(bytes[3])
-    }
-
     private func readInt64(from data: Data, littleEndian: Bool) -> Int64? {
         // Decode if_tsoffset without relying on potentially unaligned integer loads.
         guard data.count == 8 else {
@@ -578,11 +560,13 @@ private struct PcapNGReader {
         return UInt16(bytes[0]) << 8 | UInt16(bytes[1])
     }
 
-    private func readUInt32(at offset: Int, littleEndian: Bool) -> UInt32? {
-        guard offset >= 0, offset + 4 <= data.count else {
+    // Read a 4-byte field from the file, or from an option value such as epb_flags when `source` is given.
+    private func readUInt32(at offset: Int, littleEndian: Bool, in source: Data? = nil) -> UInt32? {
+        let source = source ?? data
+        guard offset >= 0, offset + 4 <= source.count else {
             return nil
         }
-        let bytes = Array(data[offset..<(offset + 4)])
+        let bytes = Array(source[offset..<(offset + 4)])
         if littleEndian {
             return UInt32(bytes[3]) << 24 | UInt32(bytes[2]) << 16 | UInt32(bytes[1]) << 8 | UInt32(bytes[0])
         }
@@ -639,11 +623,13 @@ private struct PcapNGWriter {
         let interfaceID: UInt32
         let linkLayerType: Int32
         let name: String?
+        let description: String?
         let timestampResolution: UInt8
         let timestampOffsetSeconds: Int64
     }
 
     let records: [NativePacketRecord]
+    let decryptionSecrets: [NativeDecryptionSecret]
 
     // Stream blocks so export does not duplicate all packet payloads in one Data value.
     func write(to handle: FileHandle) throws {
@@ -661,11 +647,22 @@ private struct PcapNGWriter {
         sectionBody.appendLittleEndian(UInt16(0))
         try writeBlock(type: 0x0a0d0d0a, body: sectionBody, to: handle)
 
+        // Write Decryption Secrets Blocks back, so saving an opened PCAPNG keeps its embedded TLS/QUIC keys.
+        for secret in decryptionSecrets {
+            var secretBody = Data()
+            secretBody.appendLittleEndian(secret.type)
+            secretBody.appendLittleEndian(UInt32(secret.data.count))
+            secretBody.append(secret.data)
+            secretBody.append(Data(repeating: 0, count: (4 - secret.data.count % 4) % 4))
+            try writeBlock(type: 0x0000_000a, body: secretBody, to: handle)
+        }
+
         let defaultInterface = InterfaceKey(
             sectionNumber: 0,
             interfaceID: 0,
             linkLayerType: Libpcap.dltEthernet,
             name: nil,
+            description: nil,
             timestampResolution: 6,
             timestampOffsetSeconds: 0
         )
@@ -682,6 +679,9 @@ private struct PcapNGWriter {
             interfaceBody.appendLittleEndian(UInt32(65_535))
             if let name = interface.name, !name.isEmpty {
                 try appendOption(code: 2, value: Data(name.utf8), to: &interfaceBody)
+            }
+            if let description = interface.description, !description.isEmpty {
+                try appendOption(code: 3, value: Data(description.utf8), to: &interfaceBody)
             }
             try appendOption(code: 9, value: Data([interface.timestampResolution]), to: &interfaceBody)
             if interface.timestampOffsetSeconds != 0 {
@@ -759,6 +759,7 @@ private struct PcapNGWriter {
             interfaceID: record.interfaceID,
             linkLayerType: record.linkLayerType,
             name: record.interfaceName ?? record.interfaceIdentifier,
+            description: record.interfaceDescription,
             timestampResolution: record.pcapNGTimestampResolution ?? 6,
             timestampOffsetSeconds: record.pcapNGTimestampOffsetSeconds
         )
@@ -769,12 +770,7 @@ private struct PcapNGWriter {
         if let rawValue = record.pcapNGTimestampRawValue {
             return rawValue
         }
-        let unitsPerSecond: Double
-        if interface.timestampResolution & 0x80 == 0 {
-            unitsPerSecond = pow(10, Double(interface.timestampResolution))
-        } else {
-            unitsPerSecond = pow(2, Double(interface.timestampResolution & 0x7f))
-        }
+        let unitsPerSecond = PacketExactTimestamp.unitsPerSecond(resolution: interface.timestampResolution)
         let relativeTimestamp = (record.timestamp.timeIntervalSince1970 - Double(interface.timestampOffsetSeconds)) * unitsPerSecond
         // UInt64.max rounds to 2^64 as Double, so use an exclusive upper bound before conversion.
         guard relativeTimestamp.isFinite,
