@@ -266,7 +266,7 @@ final class DiffPoolModel {
     private static func ownedNode(_ node: PacketDetailNode) -> PacketDetailNode {
         func owned(_ string: String) -> String { String(decoding: string.utf8, as: UTF8.self) }
         return PacketDetailNode(
-            id: owned(node.id), name: owned(node.name), fieldName: owned(node.fieldName),
+            id: owned(node.id), name: owned(node.name), label: node.label.map(owned), fieldName: owned(node.fieldName),
             value: node.value.map(owned), rawValue: node.rawValue.map(owned),
             displayFilterExpression: node.displayFilterExpression.map(owned), kind: node.kind,
             severity: node.severity, byteRange: node.byteRange, jumpTargetPacketID: node.jumpTargetPacketID,

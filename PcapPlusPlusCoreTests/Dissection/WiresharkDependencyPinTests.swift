@@ -11,8 +11,8 @@ import Testing
 
 @Suite(.serialized)
 struct WiresharkDependencyPinTests {
-    private let expectedTag = "v4.6.6"
-    private let expectedCommit = "3a22c3ef473d3f9c556d1fb13e3088c693d4fa96"
+    private let expectedTag = "v4.6.9"
+    private let expectedCommit = "2d548b197c7582332f143c15259e1650aff7cc26"
 
     @Test func publishedPinUsesPatchedWiresharkRelease() {
         #expect(PcapPlusPlusCoreModule.wiresharkPinnedTag == expectedTag)
@@ -30,7 +30,7 @@ struct WiresharkDependencyPinTests {
         #expect(notices.contains("Pinned peeled commit: `\(expectedCommit)`"))
         #expect(cmake.contains("set(PROJECT_MAJOR_VERSION 4)"))
         #expect(cmake.contains("set(PROJECT_MINOR_VERSION 6)"))
-        #expect(cmake.contains("set(PROJECT_PATCH_VERSION 6)"))
+        #expect(cmake.contains("set(PROJECT_PATCH_VERSION 9)"))
     }
 
     @Test func vendoredCheckoutMatchesPinnedCommit() throws {

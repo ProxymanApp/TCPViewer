@@ -33,6 +33,7 @@
 #include <epan/packet.h>
 #include <epan/prefs.h>
 #include <epan/proto.h>
+#include <epan/secrets.h>
 #include <epan/tap.h>
 #include <epan/timestamp.h>
 #include <epan/to_str.h>
@@ -42,10 +43,13 @@
 #include <wiretap/wtap_opttypes.h>
 #include <wsutil/buffer.h>
 #include <wsutil/filesystem.h>
+#include <wsutil/privileges.h>
 #include <wsutil/wslog.h>
 
 #if defined(__APPLE__)
+#include <dlfcn.h>
 #include <mach-o/dyld.h>
+#include <sys/stat.h>
 #endif
 
 extern "C" void TCPViewerWiresharkIPDisplayFilterPluginRegister(void);
@@ -58,6 +62,7 @@ struct packet_provider_data {
     frame_data_sequence *frames = nullptr;
     GTree *frames_modified_blocks = nullptr;
     std::unordered_map<uint64_t, std::string> interfaceNames;
+    std::unordered_map<uint64_t, std::string> interfaceDescriptions;
 };
 
 namespace {
@@ -74,6 +79,8 @@ constexpr size_t kMaximumInspectorDisplayFilterValueBytes = 4 * 1024;
 constexpr size_t kMaximumInspectorNodes = 20 * 1024;
 constexpr size_t kMaximumInspectorDepth = 128;
 constexpr size_t kMaximumInspectorTextLength = 16 * 1024;
+// Capture files are untrusted input, so bound the decryption secrets one capture may hold.
+constexpr size_t kMaximumDecryptionSecretBytes = 16 * 1024 * 1024;
 
 enum class NodeKind {
     Layer,
@@ -100,6 +107,7 @@ struct ByteRange {
 struct DetailNode {
     std::string id;
     std::string title;
+    std::string label;
     std::string fieldName;
     std::string displayValue;
     std::string rawValue;
@@ -156,10 +164,14 @@ struct PacketContextView {
     int32_t linkLayerType = 1;
     int64_t timestampSeconds = 0;
     int32_t timestampNanoseconds = 0;
+    int timestampPrecision = WTAP_TSPREC_NSEC;
     std::optional<std::string> interfaceName;
+    std::optional<std::string> interfaceDescription;
     std::optional<std::string> packetComment;
     uint32_t interfaceID = 0;
     uint32_t sectionNumber = 0;
+    std::optional<uint32_t> packetFlags;
+    bool omitsInterface = false;
 };
 
 struct WiresharkCriticalException {
@@ -198,6 +210,47 @@ std::string CurrentExecutablePath()
     }
 #endif
     return "TCPViewer";
+}
+
+// Wireshark's data files (wka, radius, diameter, ...) are staged in this framework's Resources/wireshark.
+std::string BundledDataDirectory()
+{
+#if defined(__APPLE__)
+    Dl_info info{};
+    if (dladdr(reinterpret_cast<const void *>(&CurrentExecutablePath), &info) != 0 && info.dli_fname != nullptr) {
+        std::string path(info.dli_fname);
+        const auto separator = path.find_last_of('/');
+        if (separator != std::string::npos) {
+            path = path.substr(0, separator) + "/Resources/wireshark";
+            struct stat status {};
+            if (stat(path.c_str(), &status) == 0 && S_ISDIR(status.st_mode)) {
+                return path;
+            }
+        }
+    }
+#endif
+    return "";
+}
+
+// Point Wireshark at the bundled data while the image loads, before app threads start, since setenv
+// races with getenv on other threads. Wireshark caches the path on first use, so the previous value is
+// restored at once and child processes never inherit TCP Viewer's data directory.
+__attribute__((constructor)) void CacheBundledDataDirectory()
+{
+    const auto dataDirectory = BundledDataDirectory();
+    if (dataDirectory.empty()) {
+        return;
+    }
+    const char *current = getenv("WIRESHARK_DATA_DIR");
+    const std::optional<std::string> previous = current != nullptr ? std::optional<std::string>(current) : std::nullopt;
+    setenv("WIRESHARK_DATA_DIR", dataDirectory.c_str(), 1);
+    init_process_policies(); // get_datafile_dir() asks started_with_special_privs(), which expects this first.
+    get_datafile_dir();
+    if (previous.has_value()) {
+        setenv("WIRESHARK_DATA_DIR", previous->c_str(), 1);
+    } else {
+        unsetenv("WIRESHARK_DATA_DIR");
+    }
 }
 
 const char *KindString(NodeKind kind)
@@ -554,8 +607,12 @@ uint64_t InterfaceMetadataKey(uint32_t interfaceID, uint32_t sectionNumber)
 
 void MergeInterfaceMetadata(packet_provider_data &provider, const PacketContextView &context)
 {
+    const uint64_t key = InterfaceMetadataKey(context.interfaceID, context.sectionNumber);
     if (context.interfaceName.has_value() && !context.interfaceName->empty()) {
-        provider.interfaceNames[InterfaceMetadataKey(context.interfaceID, context.sectionNumber)] = *context.interfaceName;
+        provider.interfaceNames[key] = *context.interfaceName;
+    }
+    if (context.interfaceDescription.has_value() && !context.interfaceDescription->empty()) {
+        provider.interfaceDescriptions[key] = *context.interfaceDescription;
     }
 }
 
@@ -589,9 +646,14 @@ const char *ProviderGetInterfaceName(packet_provider_data *provider, uint32_t in
     return match == provider->interfaceNames.end() ? "unknown" : match->second.c_str();
 }
 
-const char *ProviderGetInterfaceDescription(packet_provider_data *, uint32_t, unsigned)
+const char *ProviderGetInterfaceDescription(packet_provider_data *provider, uint32_t interfaceID, unsigned sectionNumber)
 {
-    return nullptr;
+    if (provider == nullptr) {
+        return nullptr;
+    }
+
+    const auto match = provider->interfaceDescriptions.find(InterfaceMetadataKey(interfaceID, sectionNumber));
+    return match == provider->interfaceDescriptions.end() ? nullptr : match->second.c_str();
 }
 
 wtap_block_t ProviderGetModifiedBlock(packet_provider_data *provider, const frame_data *frame)
@@ -708,17 +770,25 @@ public:
         wtap_rec_init(&record_, static_cast<gsize>(capturedLength));
         initialized_ = true;
         wtap_setup_packet_rec(&record_, wiretapEncap);
-        record_.presence_flags = WTAP_HAS_TS | WTAP_HAS_CAP_LEN | WTAP_HAS_INTERFACE_ID;
+        // PCAPNG and live captures carry an interface and section like Wireshark's own PCAPNG files.
+        record_.presence_flags = WTAP_HAS_TS | WTAP_HAS_CAP_LEN;
+        if (!context.omitsInterface) {
+            record_.presence_flags |= WTAP_HAS_INTERFACE_ID | WTAP_HAS_SECTION_NUMBER;
+        }
         record_.rec_header.packet_header.caplen = static_cast<uint32_t>(capturedLength);
         record_.rec_header.packet_header.len = static_cast<uint32_t>(reportedLength);
         record_.rec_header.packet_header.interface_id = context.interfaceID;
         record_.section_number = context.sectionNumber;
-        record_.tsprec = WTAP_TSPREC_NSEC;
+        // Wireshark prints as many fraction digits as the capture recorded.
+        record_.tsprec = context.timestampPrecision;
         record_.ts.secs = context.timestampSeconds;
         record_.ts.nsecs = context.timestampNanoseconds;
         record_.block = wtap_block_create(WTAP_BLOCK_PACKET);
         if (context.packetComment.has_value()) {
             wtap_block_add_string_option(record_.block, OPT_COMMENT, context.packetComment->c_str(), context.packetComment->size());
+        }
+        if (context.packetFlags.has_value()) {
+            wtap_block_add_uint32_option(record_.block, OPT_PKT_FLAGS, *context.packetFlags);
         }
 
         ws_buffer_clean(&record_.data);
@@ -930,12 +1000,29 @@ std::string TruncateInspectorText(std::string value)
     return value;
 }
 
+// Drop only the separator between a field name and its value; values such as "::1" or ":authority" start with ':'.
 std::string TrimDisplayValue(std::string value)
 {
-    while (!value.empty() && (value.front() == ':' || value.front() == ',' || value.front() == ' ')) {
-        value.erase(value.begin());
+    size_t start = 0;
+    while (start < value.size() && value[start] == ' ') {
+        start += 1;
     }
-    return value;
+    if (start + 1 < value.size() && (value[start] == ':' || value[start] == ',') && value[start + 1] == ' ') {
+        start += 2;
+    }
+    while (start < value.size() && value[start] == ' ') {
+        start += 1;
+    }
+    return value.substr(start);
+}
+
+// Match Wireshark's details pane, which wraps generated items in brackets.
+std::string DisplayLabelForField(const field_info *field, const std::string &label)
+{
+    if (field != nullptr && FI_GET_FLAG(field, FI_GENERATED)) {
+        return "[" + label + "]";
+    }
+    return label;
 }
 
 std::string LabelForField(const field_info *field, size_t &valueOffset)
@@ -1133,6 +1220,7 @@ std::optional<DetailNode> MapProtoNode(
     DetailNode node;
     node.fieldName = header->abbrev != nullptr ? header->abbrev : "";
     node.title = TruncateInspectorText(header->name != nullptr ? header->name : label);
+    node.label = TruncateInspectorText(DisplayLabelForField(field, label));
     node.displayValue = valueOffset < label.size() ? TruncateInspectorText(TrimDisplayValue(label.substr(valueOffset))) : "";
     if (node.displayValue.empty() && label != node.title) {
         node.displayValue = TruncateInspectorText(TrimDisplayValue(label));
@@ -1218,14 +1306,24 @@ PacketContextView ContextViewFromC(const TCPViewerWiresharkPacketContext *contex
     view.linkLayerType = context->linkLayerType;
     view.timestampSeconds = context->timestampSeconds;
     view.timestampNanoseconds = context->timestampNanoseconds;
+    if (context->hasTimestampPrecision && context->timestampPrecision >= WTAP_TSPREC_SEC && context->timestampPrecision <= WTAP_TSPREC_NSEC) {
+        view.timestampPrecision = context->timestampPrecision;
+    }
     if (context->interfaceName != nullptr && context->interfaceName[0] != '\0') {
         view.interfaceName = context->interfaceName;
+    }
+    if (context->interfaceDescription != nullptr && context->interfaceDescription[0] != '\0') {
+        view.interfaceDescription = context->interfaceDescription;
     }
     if (context->packetComment != nullptr && context->packetComment[0] != '\0') {
         view.packetComment = context->packetComment;
     }
     view.interfaceID = context->interfaceID;
     view.sectionNumber = context->sectionNumber;
+    if (context->hasPacketFlags) {
+        view.packetFlags = context->packetFlags;
+    }
+    view.omitsInterface = context->omitsInterface;
     return view;
 }
 
@@ -1249,6 +1347,7 @@ TCPViewerWiresharkDetailNode CopyDetailNode(const DetailNode &node)
     TCPViewerWiresharkDetailNode copied{};
     copied.identifier = CopyCString(node.id, false);
     copied.name = CopyCString(node.title, false);
+    copied.label = CopyCString(node.label);
     copied.fieldName = CopyCString(node.fieldName, false);
     copied.value = CopyCString(node.displayValue);
     copied.rawValue = CopyCString(node.rawValue);
@@ -1292,6 +1391,7 @@ void DestroyDetailNode(TCPViewerWiresharkDetailNode &node)
 {
     std::free(const_cast<char *>(node.identifier));
     std::free(const_cast<char *>(node.name));
+    std::free(const_cast<char *>(node.label));
     std::free(const_cast<char *>(node.fieldName));
     std::free(const_cast<char *>(node.value));
     std::free(const_cast<char *>(node.rawValue));
@@ -1362,7 +1462,7 @@ private:
             unavailableReason_ = "Wireshark personal configuration directory is unavailable.";
             return;
         }
-        // Wireshark resolves bundled data relative to the host executable path.
+        // The bundled data directory is already cached by CacheBundledDataDirectory at load time.
         const auto executablePath = CurrentExecutablePath();
         if (char *configurationError = configuration_init(executablePath.c_str())) {
             available_ = false;
@@ -1509,6 +1609,8 @@ struct TCPViewerWiresharkSession {
     uint64_t followPayloadByteCount = 0;
     GList *followNewestPayloadItem = nullptr;
     std::string personalConfigurationDirectory;
+    std::vector<std::pair<uint32_t, std::vector<uint8_t>>> decryptionSecrets;
+    size_t decryptionSecretByteCount = 0;
     bool disabled = false;
     bool livePriority = false;
     bool firstPassFinished = false;
@@ -1898,6 +2000,10 @@ struct TCPViewerWiresharkSession {
             unavailableReason = "Wireshark session could not be created.";
             return false;
         }
+        // epan_new reruns dissector init routines, which drop TLS and QUIC keys; give this capture's back.
+        for (const auto &secret : decryptionSecrets) {
+            loadDecryptionSecretsLocked(secret.first, secret.second);
+        }
 
         epan_dissect_t *firstPass = nullptr;
         auto *currentEpan = epan;
@@ -2015,6 +2121,29 @@ struct TCPViewerWiresharkSession {
             return false;
         }
         unavailableReason.clear();
+        return true;
+    }
+
+    void loadDecryptionSecretsLocked(uint32_t secretsType, const std::vector<uint8_t> &bytes)
+    {
+        if (auto report = CatchWiresharkException("loading decryption secrets", std::nullopt, [secretsType, &bytes] {
+                secrets_wtap_callback(secretsType, bytes.data(), static_cast<unsigned>(bytes.size()));
+            })) {
+            recordCriticalExceptionLocked(std::move(*report), false);
+        }
+    }
+
+    // Keep a capture's secrets (e.g. a PCAPNG Decryption Secrets Block) for every Wireshark session it gets.
+    bool addDecryptionSecretsLocked(uint32_t secretsType, const uint8_t *bytes, size_t byteCount)
+    {
+        if (byteCount == 0 || byteCount > kMaximumDecryptionSecretBytes - decryptionSecretByteCount) {
+            return false;
+        }
+        decryptionSecrets.emplace_back(secretsType, std::vector<uint8_t>(bytes, bytes + byteCount));
+        decryptionSecretByteCount += byteCount;
+        if (epan != nullptr && activeSession() == this) {
+            loadDecryptionSecretsLocked(secretsType, decryptionSecrets.back().second);
+        }
         return true;
     }
 
@@ -2628,8 +2757,10 @@ struct TCPViewerWiresharkSession {
         }
 
         wtap_block_t block = record.get()->block != nullptr ? wtap_block_ref(record.get()->block) : nullptr;
+        // Keep the previous frame chosen in the first pass; provider->prev_dis is the newest frame by now.
+        const frame_data *previousDisplayed = frame->prev_dis_num == 0 ? nullptr : frame_data_sequence_find(provider->frames, frame->prev_dis_num);
         if (auto report = CatchWiresharkException("running Wireshark second-pass dissection", context.packetIdentifier, [&] {
-                frame_data_set_before_dissect(frame, &elapsedTime, &provider->ref, provider->prev_dis);
+                frame_data_set_before_dissect(frame, &elapsedTime, &provider->ref, previousDisplayed);
                 if (provider->ref == frame) {
                     referenceFrame = *frame;
                     provider->ref = &referenceFrame;
@@ -2877,6 +3008,20 @@ void TCPViewerWiresharkSessionClearDisplayFilter(TCPViewerWiresharkSession *sess
     std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
     std::lock_guard<std::mutex> sessionLock(session->mutex);
     session->clearActiveDisplayFilterLocked();
+}
+
+bool TCPViewerWiresharkSessionAddDecryptionSecrets(
+    TCPViewerWiresharkSession *session,
+    uint32_t secretsType,
+    const uint8_t *bytes,
+    size_t byteCount
+) {
+    if (session == nullptr || bytes == nullptr) {
+        return false;
+    }
+    std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
+    std::lock_guard<std::mutex> sessionLock(session->mutex);
+    return session->addDecryptionSecretsLocked(secretsType, bytes, byteCount);
 }
 
 bool TCPViewerWiresharkSessionObservePacket(TCPViewerWiresharkSession *session, const TCPViewerWiresharkPacketContext *context)

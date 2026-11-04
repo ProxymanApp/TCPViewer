@@ -85,6 +85,8 @@ public struct PacketByteView: Identifiable, Sendable, Codable, Hashable {
 public struct PacketDetailNode: Identifiable, Sendable, Codable, Hashable {
     public let id: String
     public let name: String
+    /// Exact Wireshark details-pane row text; nil for nodes built without Wireshark.
+    public let label: String?
     public let fieldName: String
     public let value: String?
     public let rawValue: String?
@@ -98,6 +100,7 @@ public struct PacketDetailNode: Identifiable, Sendable, Codable, Hashable {
     public init(
         id: String,
         name: String,
+        label: String? = nil,
         fieldName: String? = nil,
         value: String? = nil,
         rawValue: String? = nil,
@@ -110,6 +113,7 @@ public struct PacketDetailNode: Identifiable, Sendable, Codable, Hashable {
     ) {
         self.id = id
         self.name = name
+        self.label = label
         self.fieldName = fieldName ?? id
         self.value = value
         self.rawValue = rawValue

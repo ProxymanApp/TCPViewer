@@ -740,6 +740,50 @@ struct PacketInspectorTreeViewModelTests {
         ])
     }
 
+    @Test func wiresharkLabelsRenderExactlyWithoutSummaryRows() throws {
+        let packet = makePacket()
+        let tcpLabel = "Transmission Control Protocol, Src Port: 3267, Dst Port: 80, Seq: 1, Ack: 1, Len: 153"
+        let inspection = PacketInspection(
+            packetID: packet.id,
+            packetNumber: packet.packetNumber,
+            rawBytes: Data([0x01, 0x02]),
+            detailNodes: [
+                PacketDetailNode(
+                    id: "tcp",
+                    name: "Transmission Control Protocol",
+                    label: tcpLabel,
+                    value: "Src Port: 3267, Dst Port: 80, Seq: 1, Ack: 1, Len: 153",
+                    kind: .layer,
+                    children: [
+                        PacketDetailNode(id: "tcp.flags.syn", name: "Syn", label: ".... .... ..1. = Syn: Set", value: "Set"),
+                        PacketDetailNode(id: "tcp.stream", name: "Stream index", label: "[Stream index: 0]", value: "0"),
+                    ]
+                ),
+            ],
+            decodeStatus: PacketDecodeStatus(kind: .complete)
+        )
+        let state = PacketInspectionState(
+            selectedPacketID: packet.id,
+            inspection: inspection,
+            selectedDetailNodeID: nil,
+            highlightedByteRange: nil,
+            isLoading: false,
+            statusMessage: "Inspecting packet 1."
+        )
+        let viewModel = PacketInspectorTreeViewModel()
+
+        #expect(viewModel.render(snapshot: makeSnapshot(packet: packet, inspectionState: state)) == .reload)
+
+        let rootItem = try #require(viewModel.rootItems.first)
+        #expect(rootItem.displayText == tcpLabel)
+        #expect(rootItem.children.map(\.displayText) == [".... .... ..1. = Syn: Set", "[Stream index: 0]"])
+        #expect(PacketInspectorCopyFormatter.text(for: viewModel.copyRowsForAllDetails()) == """
+        \(tcpLabel)
+        \t.... .... ..1. = Syn: Set
+        \t[Stream index: 0]
+        """)
+    }
+
     @Test func copyFormatterPreservesMultipleRowsAndChildIndentation() {
         let text = PacketInspectorCopyFormatter.text(for: [
             PacketInspectorCopyRow(text: "Frame: Packet 1", indentationLevel: 0),

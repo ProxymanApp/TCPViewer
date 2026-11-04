@@ -87,6 +87,7 @@ final class PacketInspectorTreeItem: NSObject {
     let nodeID: String?
     let selectionID: String?
     let name: String
+    let label: String?
     let fieldName: String?
     let value: String?
     let rawValue: String?
@@ -101,6 +102,7 @@ final class PacketInspectorTreeItem: NSObject {
         nodeID: String? = nil,
         selectionID: String? = nil,
         name: String,
+        label: String? = nil,
         fieldName: String? = nil,
         value: String? = nil,
         rawValue: String? = nil,
@@ -114,6 +116,7 @@ final class PacketInspectorTreeItem: NSObject {
         self.nodeID = nodeID
         self.selectionID = selectionID ?? nodeID
         self.name = name
+        self.label = label
         self.fieldName = fieldName
         self.value = value
         self.rawValue = rawValue
@@ -124,7 +127,11 @@ final class PacketInspectorTreeItem: NSObject {
         self.children = children
     }
 
+    // Wireshark rows show its exact label; other rows join the name and value.
     var displayText: String {
+        if let label, !label.isEmpty {
+            return label
+        }
         guard let value, !value.isEmpty else {
             return name
         }
@@ -292,6 +299,7 @@ final class PacketInspectorTreeViewModel {
             nodeID: item.nodeID,
             selectionID: item.selectionID,
             name: item.name,
+            label: item.label,
             fieldName: item.fieldName,
             value: item.value,
             rawValue: item.rawValue,
@@ -304,7 +312,7 @@ final class PacketInspectorTreeViewModel {
     }
 
     private func matchesFilter(_ filterText: String, item: PacketInspectorTreeItem) -> Bool {
-        [item.name, item.fieldName, item.value]
+        [item.name, item.label, item.fieldName, item.value]
             .compactMap(\.self)
             .contains { value in
                 value.range(of: filterText, options: [.caseInsensitive, .diacriticInsensitive]) != nil
@@ -454,6 +462,7 @@ final class PacketInspectorTreeViewModel {
             id: path,
             nodeID: node.id,
             name: displayParts.name,
+            label: node.label,
             fieldName: node.fieldName,
             value: displayParts.value,
             rawValue: node.rawValue,
@@ -468,7 +477,8 @@ final class PacketInspectorTreeViewModel {
 
     // Split oversized layer summaries into child rows so the outline stays readable at inspector width.
     private func displayParts(for node: PacketDetailNode) -> DisplayParts {
-        guard shouldSplitDisplayText(name: node.name, value: node.value, kind: node.kind) else {
+        // Wireshark labels are shown exactly as Wireshark's details pane shows them, so never split them.
+        guard node.label == nil, shouldSplitDisplayText(name: node.name, value: node.value, kind: node.kind) else {
             return DisplayParts(name: node.name, value: node.value, summaryRows: [])
         }
 

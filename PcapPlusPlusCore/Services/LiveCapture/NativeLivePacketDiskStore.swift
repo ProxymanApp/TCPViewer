@@ -24,6 +24,9 @@ fileprivate struct NativeLivePacketDiskEntry {
     let pcapNGTimestampResolution: UInt8?
     let pcapNGTimestampOffsetSeconds: Int64
     let pcapNGTimestampRawValue: UInt64?
+    let interfaceDescription: String?
+    let packetFlags: UInt32?
+    let isClassicPCAP: Bool
     var streamIdentifier: FollowStreamID?
     var previousSameStreamEntryIndex: Int?
 }
@@ -74,7 +77,10 @@ final class NativeLivePacketDiskSnapshot: @unchecked Sendable {
                 sectionNumber: entry.sectionNumber,
                 pcapNGTimestampResolution: entry.pcapNGTimestampResolution,
                 pcapNGTimestampOffsetSeconds: entry.pcapNGTimestampOffsetSeconds,
-                pcapNGTimestampRawValue: entry.pcapNGTimestampRawValue
+                pcapNGTimestampRawValue: entry.pcapNGTimestampRawValue,
+                interfaceDescription: entry.interfaceDescription,
+                packetFlags: entry.packetFlags,
+                isClassicPCAP: entry.isClassicPCAP
             ))
         }
         return records
@@ -169,6 +175,9 @@ final class NativeLivePacketDiskStore {
             pcapNGTimestampResolution: record.pcapNGTimestampResolution,
             pcapNGTimestampOffsetSeconds: record.pcapNGTimestampOffsetSeconds,
             pcapNGTimestampRawValue: record.pcapNGTimestampRawValue,
+            interfaceDescription: record.interfaceDescription,
+            packetFlags: record.packetFlags,
+            isClassicPCAP: record.isClassicPCAP,
             streamIdentifier: nil,
             previousSameStreamEntryIndex: nil
         )
@@ -372,7 +381,10 @@ final class NativeLivePacketDiskStore {
                 sectionNumber: entry.sectionNumber,
                 pcapNGTimestampResolution: entry.pcapNGTimestampResolution,
                 pcapNGTimestampOffsetSeconds: entry.pcapNGTimestampOffsetSeconds,
-                pcapNGTimestampRawValue: entry.pcapNGTimestampRawValue
+                pcapNGTimestampRawValue: entry.pcapNGTimestampRawValue,
+                interfaceDescription: entry.interfaceDescription,
+                packetFlags: entry.packetFlags,
+                isClassicPCAP: entry.isClassicPCAP
             )
         } catch let error as NSError where error.domain == TCPViewerNativeErrorDomain {
             throw error

@@ -346,6 +346,7 @@ enum NativeBridgeMapper {
         PacketDetailNode(
             id: descriptor.identifier,
             name: descriptor.name,
+            label: descriptor.label,
             fieldName: descriptor.fieldName,
             value: descriptor.value,
             rawValue: descriptor.rawValue,

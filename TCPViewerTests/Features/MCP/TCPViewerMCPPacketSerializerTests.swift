@@ -5,6 +5,8 @@
 //  Created by Proxyman LLC on 20/7/26.
 //
 
+import Foundation
+import PcapPlusPlusCore
 import Testing
 @testable import TCPViewer
 
@@ -31,6 +33,7 @@ struct TCPViewerMCPPacketSerializerTests {
 
         #expect(root?["value"] == .string(TCPViewerMCPSensitiveDataRedactor.placeholder))
         #expect(root?["raw_value"] == .string(TCPViewerMCPSensitiveDataRedactor.placeholder))
+        #expect(root?["label"] == .string("Authorization: \(TCPViewerMCPSensitiveDataRedactor.placeholder)"))
         #expect(root?["children_truncated"] == .bool(true))
         #expect(protected?["returned_node_count"] == .int(1))
         #expect(protected?["nodes_truncated"] == .bool(true))
@@ -43,8 +46,23 @@ struct TCPViewerMCPPacketSerializerTests {
         let unprotectedRoot = unprotected?["detail_nodes"]?.arrayValue?.first?.objectValue
         let child = unprotectedRoot?["children"]?.arrayValue?.first?.objectValue
         #expect(unprotectedRoot?["value"] == .string("Bearer super-secret-token"))
+        #expect(unprotectedRoot?["label"] == .string("Authorization: Bearer super-secret-token"))
         #expect(child?["value"] == .string("https://example.com/path?api_key=hidden&safe=yes"))
         #expect(unprotected?["returned_node_count"] == .int(2))
+    }
+
+    @Test func headerLabelIsRedactedLikeItsValue() {
+        // HTTP/2 header rows prefix the "name: value" text, so the label is not line-anchored.
+        let node = PacketDetailNode(id: "http2.header", name: "Header", label: "Header: cookie: sid=abc123",
+                                    fieldName: "http2.header", value: "cookie: sid=abc123")
+        let inspection = PacketInspection(packetID: 1, packetNumber: 1, rawBytes: Data(), byteViews: [],
+                                          detailNodes: [node], decodeStatus: PacketDecodeStatus(kind: .complete))
+        let root = TCPViewerMCPPacketSerializer(redactsSensitiveData: true)
+            .inspection(inspection, maximumDepth: 1, maximumNodeCount: 1)
+            .objectValue?["detail_nodes"]?.arrayValue?.first?.objectValue
+
+        #expect(root?["value"] == .string("cookie: <redacted>"))
+        #expect(root?["label"] == .string("Header: cookie: <redacted>"))
     }
 
     @Test func bytesAreBoundedAndSupportHexAndBase64() {

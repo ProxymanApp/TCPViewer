@@ -127,6 +127,17 @@ final class TCPViewerMCPSensitiveDataRedactor: @unchecked Sendable {
         return output
     }
 
+    // Redact a detail label at least as strictly as its value; labels such as "Header: cookie: …"
+    // embed the value after a prefix, so the line-anchored header patterns would miss it.
+    func redact(label: String, value: String?) -> String {
+        guard let value, !value.isEmpty, let range = label.range(of: value, options: .backwards) else {
+            return redact(label)
+        }
+        var text = label
+        text.replaceSubrange(range, with: redact(value))
+        return redact(text)
+    }
+
     func redact(_ value: TCPViewerMCPValue, fieldName: String? = nil) -> TCPViewerMCPValue {
         if let fieldName, isSensitiveName(fieldName) {
             return .string(Self.placeholder)

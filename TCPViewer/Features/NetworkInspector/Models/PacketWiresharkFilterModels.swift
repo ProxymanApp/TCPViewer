@@ -96,7 +96,7 @@ struct PacketWiresharkFilterMembership: Equatable, Sendable {
 }
 
 struct PacketDisplayFilterCacheKey: Hashable, Sendable {
-    static let dissectionRevision = "wireshark-4.6.6-display-filter-v1"
+    static let dissectionRevision = "wireshark-4.6.9-display-filter-v1"
 
     let backingIdentity: String
     let packetLineageRevision: UInt64

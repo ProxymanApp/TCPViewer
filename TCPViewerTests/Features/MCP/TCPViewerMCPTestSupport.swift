@@ -71,6 +71,7 @@ func makeMCPInspection(packetID: UInt64 = 1) -> PacketInspection {
             PacketDetailNode(
                 id: "http.authorization",
                 name: "Authorization",
+                label: "Authorization: Bearer super-secret-token",
                 fieldName: "authorization",
                 value: "Bearer super-secret-token",
                 rawValue: "Authorization: Bearer super-secret-token",

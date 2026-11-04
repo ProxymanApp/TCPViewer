@@ -351,7 +351,9 @@ final class PCPPNativeOfflineDocument {
 
     func save() throws {
         let snapshot = state.read { ($0.file, $0.currentURL) }
-        try NativeCaptureFile.write(records: snapshot.0.records, to: snapshot.1, format: snapshot.0.format)
+        try NativeCaptureFile.write(
+            records: snapshot.0.records, to: snapshot.1, format: snapshot.0.format, decryptionSecrets: snapshot.0.decryptionSecrets
+        )
         state.write {
             $0.dirty = false
         }
@@ -359,8 +361,8 @@ final class PCPPNativeOfflineDocument {
 
     func save(to url: URL, format: String) throws {
         let outputFormat = CaptureFileFormat(exportRawValue: format)
-        let records = state.read { $0.file.records }
-        try NativeCaptureFile.write(records: records, to: url, format: outputFormat)
+        let file = state.read(\.file)
+        try NativeCaptureFile.write(records: file.records, to: url, format: outputFormat, decryptionSecrets: file.decryptionSecrets)
         state.write {
             $0.currentURL = url
             $0.currentFormat = outputFormat.rawValue
@@ -381,8 +383,8 @@ final class PCPPNativeOfflineDocument {
         cancellationCheck: PCPPNativeCancellationHandler?
     ) throws {
         let idSet = Set(identifiers.map(\.uint64Value))
-        let records = state.read {
-            $0.file.records.filter { idSet.contains($0.identifier) }
+        let (records, secrets) = state.read {
+            ($0.file.records.filter { idSet.contains($0.identifier) }, $0.file.decryptionSecrets)
         }
         try Exporter.export(
             records: records,
@@ -390,6 +392,7 @@ final class PCPPNativeOfflineDocument {
             format: CaptureFileFormat(exportRawValue: format),
             textStylesByPacketID: textStylesByPacketID,
             commentsByPacketID: commentsByPacketID,
+            decryptionSecrets: secrets,
             progressHandler: progressHandler,
             cancellationCheck: cancellationCheck
         )
@@ -412,7 +415,7 @@ final class PCPPNativeOfflineDocument {
                     $0.recordIndexByIdentifier = Self.recordIndex(in: loaded)
                     $0.currentFormat = loaded.format.rawValue
                     $0.partiallyLoaded = loaded.isPartialResult
-                    $0.dissectionSession = try WiresharkEpanSession(disabled: disablesWireshark)
+                    $0.dissectionSession = try makeDissectionSession(for: loaded)
                 }
             }
 
@@ -422,22 +425,59 @@ final class PCPPNativeOfflineDocument {
             var summaries: [PCPPNativePacketSummaryDescriptor] = []
             var pendingBatch: [PCPPNativePacketSummaryDescriptor] = []
             var dnsTCPStreamParser = DNSTCPStreamParser()
+            // Both passes report on one file-byte scale, the first pass filling the first half, so progress never resets.
+            let progressBytes = { (completedSteps: Int) -> NSNumber in
+                let steps = Double(max(records.count, 1) * 2)
+                return NSNumber(value: totalBytes == 0 ? UInt64(completedSteps) : UInt64(Double(totalBytes) * Double(completedSteps) / steps))
+            }
+            let cancelLoad = { (processedCount: Int, loadedCount: Int) -> NSError in
+                let progress = PCPPNativePacketLoadProgressDescriptor(
+                    phase: "cancelled",
+                    loadedPacketCount: UInt64(loadedCount),
+                    processedBytes: NSNumber(value: min(UInt64(processedCount), UInt64(records.count))),
+                    totalBytes: NSNumber(value: UInt64(records.count)),
+                    partialResult: true,
+                    message: "Loading \(sourceURL.lastPathComponent) was cancelled."
+                )
+                progressHandler?(progress)
+                self.state.write {
+                    $0.partiallyLoaded = true
+                }
+                return NativeNSError(.operationCancelled, progress.message)
+            }
+
+            // Wireshark summaries can name later packets ("reply in 8", "[TCP PDU reassembled in 82]"),
+            // so run its first pass over the whole file before summarizing, as Wireshark's two passes do.
+            // This only reorders work: each packet is still dissected once per pass.
+            for (index, record) in records.enumerated() {
+                if cancellationCheck?() == true {
+                    throw cancelLoad(index + 1, 0)
+                }
+                try state.write {
+                    do {
+                        try requireDissectionSession(in: $0).observe(record)
+                    } catch where !NativeErrorIsCriticalWiresharkException(error) {
+                        // The summary pass falls back to the built-in dissector for this packet.
+                    }
+                }
+                if (index + 1) % max(batchSize, 1) == 0 {
+                    progressHandler?(PCPPNativePacketLoadProgressDescriptor(
+                        phase: "loading",
+                        loadedPacketCount: 0,
+                        processedBytes: progressBytes(index + 1),
+                        totalBytes: NSNumber(value: totalBytes),
+                        partialResult: initialPartialResult,
+                        message: "Analyzing \(index + 1) of \(records.count) packets…"
+                    ))
+                }
+            }
+            state.write {
+                try? requireDissectionSession(in: $0).finishFirstPass()
+            }
 
             for (index, record) in records.enumerated() {
                 if cancellationCheck?() == true {
-                    let progress = PCPPNativePacketLoadProgressDescriptor(
-                        phase: "cancelled",
-                        loadedPacketCount: UInt64(summaries.count),
-                        processedBytes: NSNumber(value: min(UInt64(index + 1), UInt64(records.count))),
-                        totalBytes: NSNumber(value: UInt64(records.count)),
-                        partialResult: true,
-                        message: "Loading \(sourceURL.lastPathComponent) was cancelled."
-                    )
-                    progressHandler?(progress)
-                    state.write {
-                        $0.partiallyLoaded = true
-                    }
-                    throw NativeNSError(.operationCancelled, progress.message)
+                    throw cancelLoad(index + 1, summaries.count)
                 }
 
                 let summary = try autoreleasepool {
@@ -458,7 +498,7 @@ final class PCPPNativeOfflineDocument {
                     progressHandler?(PCPPNativePacketLoadProgressDescriptor(
                         phase: "loading",
                         loadedPacketCount: UInt64(summaries.count),
-                        processedBytes: NSNumber(value: totalBytes == 0 ? UInt64(summaries.count) : UInt64(Double(totalBytes) * Double(summaries.count) / Double(max(records.count, 1)))),
+                        processedBytes: progressBytes(records.count + summaries.count),
                         totalBytes: NSNumber(value: totalBytes),
                         partialResult: initialPartialResult,
                         message: self.loadProgressMessage(prefix: "Loaded", packetCount: summaries.count)
@@ -468,9 +508,6 @@ final class PCPPNativeOfflineDocument {
 
             if !pendingBatch.isEmpty {
                 batchHandler?(pendingBatch)
-            }
-            state.write {
-                try? requireDissectionSession(in: $0).finishFirstPass()
             }
             let partialResult = state.read(\.partiallyLoaded)
             progressHandler?(PCPPNativePacketLoadProgressDescriptor(
@@ -492,9 +529,18 @@ final class PCPPNativeOfflineDocument {
         errorPointer?.pointee = NativeBridgeMapper.coreError(thrownError, defaultCode: .offlineFileOpenFailed) as NSError
     }
 
+    // Every Wireshark session starts without keys, so hand it the capture file's decryption secrets.
+    private func makeDissectionSession(for file: NativeCaptureFile) throws -> WiresharkEpanSession {
+        let session = try WiresharkEpanSession(disabled: disablesWireshark)
+        for secret in file.decryptionSecrets {
+            session.addDecryptionSecret(secret)
+        }
+        return session
+    }
+
     private func configureDissectionSession(error errorPointer: AutoreleasingUnsafeMutablePointer<NSError?>?) {
         do {
-            let session = try WiresharkEpanSession(disabled: disablesWireshark)
+            let session = try makeDissectionSession(for: state.read(\.file))
             state.write {
                 $0.dissectionSession = session
             }
@@ -526,7 +572,7 @@ final class PCPPNativeOfflineDocument {
 
     // Replay every record in capture order so reassembly and conversation state match the original load.
     private func replayFirstPass(in state: inout PCPPNativeOfflineDocumentState) throws -> WiresharkEpanSession {
-        let session = try WiresharkEpanSession(disabled: disablesWireshark)
+        let session = try makeDissectionSession(for: state.file)
         for record in state.file.records {
             try session.observe(record)
         }
@@ -1351,7 +1397,7 @@ private func nativeLinkType(_ linkLayerType: Int32) -> PCPPNativeLinkType {
         return .ethernet
     case Libpcap.dltNull:
         return .loopback
-    case Libpcap.dltRaw:
+    case _ where Libpcap.isRawIP(linkLayerType):
         return .raw
     default:
         return .unknown
@@ -1471,6 +1517,7 @@ enum Exporter {
         format: CaptureFileFormat,
         textStylesByPacketID: [PacketSummary.ID: PacketTextStyle] = [:],
         commentsByPacketID: [PacketSummary.ID: String] = [:],
+        decryptionSecrets: [NativeDecryptionSecret] = [],
         progressHandler: PCPPNativePacketExportProgressHandler?,
         cancellationCheck: PCPPNativeCancellationHandler?
     ) throws {
@@ -1488,7 +1535,8 @@ enum Exporter {
             to: url,
             format: format,
             textStylesByPacketID: textStylesByPacketID,
-            commentsByPacketID: commentsByPacketID
+            commentsByPacketID: commentsByPacketID,
+            decryptionSecrets: decryptionSecrets
         )
         progressHandler?(UInt(records.count), UInt(records.count))
     }

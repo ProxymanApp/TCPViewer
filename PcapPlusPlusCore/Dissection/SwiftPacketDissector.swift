@@ -25,6 +25,12 @@ struct NativePacketRecord: Sendable {
     let pcapNGTimestampOffsetSeconds: Int64
     let pcapNGTimestampRawValue: UInt64?
     let textStyle: PacketTextStyle
+    /// PCAPNG if_description of the packet's interface.
+    let interfaceDescription: String?
+    /// PCAPNG epb_flags (direction, reception type, FCS length, link-layer errors).
+    let packetFlags: UInt32?
+    /// Classic PCAP has no interface or section blocks, so Wireshark shows no interface for it.
+    let isClassicPCAP: Bool
 
     init(
         identifier: UInt64,
@@ -41,7 +47,10 @@ struct NativePacketRecord: Sendable {
         pcapNGTimestampResolution: UInt8? = nil,
         pcapNGTimestampOffsetSeconds: Int64 = 0,
         pcapNGTimestampRawValue: UInt64? = nil,
-        textStyle: PacketTextStyle = .plain
+        textStyle: PacketTextStyle = .plain,
+        interfaceDescription: String? = nil,
+        packetFlags: UInt32? = nil,
+        isClassicPCAP: Bool = false
     ) {
         self.identifier = identifier
         self.packetNumber = packetNumber
@@ -58,10 +67,80 @@ struct NativePacketRecord: Sendable {
         self.pcapNGTimestampOffsetSeconds = pcapNGTimestampOffsetSeconds
         self.pcapNGTimestampRawValue = pcapNGTimestampRawValue
         self.textStyle = textStyle
+        self.interfaceDescription = interfaceDescription
+        self.packetFlags = packetFlags
+        self.isClassicPCAP = isClassicPCAP
     }
 
     var capturedLength: Int {
         rawBytes.count
+    }
+
+    // Exact capture time for Wireshark. A Date near 1.7e9 seconds keeps only ~240 ns of resolution,
+    // so use the source's integer timestamp when there is one.
+    var exactTimestamp: PacketExactTimestamp {
+        if let rawValue = pcapNGTimestampRawValue, let resolution = pcapNGTimestampResolution,
+           let exact = PacketExactTimestamp(rawValue: rawValue, resolution: resolution, offsetSeconds: pcapNGTimestampOffsetSeconds) {
+            return exact
+        }
+        // Classic PCAP and libpcap live capture record microseconds, which a Date round-trips at that precision.
+        // Unsupported if_tsresol values also land here, matching the reader's approximate Date.
+        return PacketExactTimestamp(microsecondsFrom: timestamp)
+    }
+}
+
+struct PacketExactTimestamp: Equatable, Sendable {
+    let seconds: Int64
+    let nanoseconds: Int32
+    /// Fraction digits the source recorded: 6 for microseconds, 9 for nanoseconds.
+    let precisionDigits: Int32
+
+    init(seconds: Int64, nanoseconds: Int32, precisionDigits: Int32) {
+        self.seconds = seconds
+        self.nanoseconds = nanoseconds
+        self.precisionDigits = precisionDigits
+    }
+
+    // Split a Date into whole seconds and microseconds, saturating corrupt dates instead of trapping in Int64(_:).
+    init(microsecondsFrom date: Date) {
+        let interval = date.timeIntervalSince1970
+        guard interval.isFinite, interval.magnitude < 9.2e18 else {
+            self.init(seconds: interval > 0 ? .max : interval < 0 ? .min : 0, nanoseconds: 0, precisionDigits: 6)
+            return
+        }
+        var seconds = interval.rounded(.down)
+        var microseconds = ((interval - seconds) * 1_000_000).rounded()
+        if microseconds >= 1_000_000 {
+            seconds += 1
+            microseconds -= 1_000_000
+        }
+        self.init(seconds: Int64(seconds), nanoseconds: Int32(microseconds) * 1_000, precisionDigits: 6)
+    }
+
+    // Decode a PCAPNG timestamp exactly; nil when if_tsresol has more units per second than UInt64 holds.
+    init?(rawValue: UInt64, resolution: UInt8, offsetSeconds: Int64) {
+        guard let unitsPerSecond = UInt64(exactly: Self.unitsPerSecond(resolution: resolution)) else {
+            return nil
+        }
+        let fraction = rawValue % unitsPerSecond
+        let product = fraction.multipliedFullWidth(by: 1_000_000_000)
+        let nanoseconds = unitsPerSecond.dividingFullWidth(product).quotient
+        let exponent = Double(resolution & 0x7f)
+        let digits = resolution & 0x80 != 0 ? Int32((exponent * log10(2.0)).rounded(.up)) : Int32(exponent)
+        // Saturate: the raw value (with if_tsresol 0) and if_tsoffset come from untrusted files.
+        let (sum, overflow) = Int64(clamping: rawValue / unitsPerSecond).addingReportingOverflow(offsetSeconds)
+        self.init(
+            seconds: overflow ? (offsetSeconds > 0 ? .max : .min) : sum,
+            nanoseconds: Int32(nanoseconds),
+            precisionDigits: min(max(digits, 0), 9)
+        )
+    }
+
+    // Units per second for a PCAPNG if_tsresol; the high bit selects a power of 2 instead of 10.
+    // Exact up to 10^19 and 2^63, the largest that fit in UInt64.
+    static func unitsPerSecond(resolution: UInt8) -> Double {
+        let exponent = Double(resolution & 0x7f)
+        return resolution & 0x80 == 0 ? pow(10, exponent) : pow(2, exponent)
     }
 }
 
@@ -192,7 +271,7 @@ enum SwiftPacketDissector {
             return .ethernet
         case Libpcap.dltNull:
             return .loopback
-        case Libpcap.dltRaw:
+        case _ where Libpcap.isRawIP(linkLayerType):
             return .raw
         default:
             return .unknown
@@ -280,7 +359,11 @@ final class PacketAnalyzer {
             return analyzeEthernet(offset: 0)
         case Libpcap.dltNull:
             return analyzeLoopback()
-        case Libpcap.dltRaw:
+        case Libpcap.linktypeLinuxSLL:
+            return analyzeLinuxCooked(headerLength: 16, protocolOffset: 14, version: 1)
+        case Libpcap.linktypeLinuxSLL2:
+            return analyzeLinuxCooked(headerLength: 20, protocolOffset: 0, version: 2)
+        case _ where Libpcap.isRawIP(record.linkLayerType):
             return analyzeIP(offset: 0, inheritedNodes: [], inheritedLayers: [])
         default:
             return unsupportedPacket(reason: "Unsupported link-layer type \(record.linkLayerType).")
@@ -335,23 +418,63 @@ final class PacketAnalyzer {
                 field(id: "eth.type", name: "Type", fieldName: "eth.type", value: hex16(ethType), offset: offset + 12, length: 2),
             ]
         )
-        let frame = frameNode()
-        let inheritedNodes = [frame, ethNode]
-        let inheritedLayers = [PacketLayer(name: "Ethernet", detailSummary: "Ethernet II")]
+        return analyzeEtherType(
+            ethType,
+            offset: offset + 14,
+            inheritedNodes: [frameNode(), ethNode],
+            inheritedLayers: [PacketLayer(name: "Ethernet", detailSummary: "Ethernet II")],
+            linkSummary: "Ethernet II"
+        )
+    }
 
-        switch ethType {
+    // Linux cooked captures ("tcpdump -i any") replace the Ethernet header with an SLL or SLL2 header.
+    private func analyzeLinuxCooked(headerLength: Int, protocolOffset: Int, version: Int) -> AnalyzedPacket {
+        guard bytes.count >= headerLength else {
+            return malformedPacket(reason: "Linux cooked capture packet is shorter than its header.")
+        }
+
+        let protocolType = readUInt16BE(at: protocolOffset) ?? 0
+        let summary = "Linux cooked capture v\(version)"
+        let sllNode = PacketDetailNode(
+            id: "sll",
+            name: summary,
+            fieldName: "sll",
+            value: summary,
+            kind: .layer,
+            byteRange: range(offset: 0, length: headerLength),
+            children: [
+                field(id: "sll.etype", name: "Protocol", fieldName: "sll.etype", value: hex16(protocolType), offset: protocolOffset, length: 2),
+            ]
+        )
+        return analyzeEtherType(
+            protocolType,
+            offset: headerLength,
+            inheritedNodes: [frameNode(), sllNode],
+            inheritedLayers: [PacketLayer(name: "Linux cooked capture", detailSummary: summary)],
+            linkSummary: summary
+        )
+    }
+
+    private func analyzeEtherType(
+        _ etherType: UInt16,
+        offset: Int,
+        inheritedNodes: [PacketDetailNode],
+        inheritedLayers: [PacketLayer],
+        linkSummary: String
+    ) -> AnalyzedPacket {
+        switch etherType {
         case 0x0806:
-            return analyzeARP(offset: offset + 14, inheritedNodes: inheritedNodes, inheritedLayers: inheritedLayers)
+            return analyzeARP(offset: offset, inheritedNodes: inheritedNodes, inheritedLayers: inheritedLayers)
         case 0x0800, 0x86dd:
-            return analyzeIP(offset: offset + 14, inheritedNodes: inheritedNodes, inheritedLayers: inheritedLayers)
+            return analyzeIP(offset: offset, inheritedNodes: inheritedNodes, inheritedLayers: inheritedLayers)
         default:
             var packet = AnalyzedPacket()
             packet.transportHint = .ethernet
-            packet.protocolSummary = hex16(ethType)
-            packet.infoSummary = "Ethernet II"
+            packet.protocolSummary = hex16(etherType)
+            packet.infoSummary = linkSummary
             packet.layers = inheritedLayers
             packet.detailNodes = inheritedNodes
-            packet.decodeStatus = PacketDecodeStatus(kind: .unsupported, reason: "Unsupported EtherType \(hex16(ethType)).")
+            packet.decodeStatus = PacketDecodeStatus(kind: .unsupported, reason: "Unsupported EtherType \(hex16(etherType)).")
             return packet
         }
     }
