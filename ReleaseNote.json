@@ -371,6 +371,29 @@
       "bugs": [
         "Fixed: Codex could not load TCP Viewer MCP tools because the MCP server failed to start."
       ]
+    },
+    {
+      "version": "1.23.0",
+      "title": "TCP Viewer 1.23.0: Wireshark-Accurate Packet Details and TLS Decryption 🔓",
+      "features": [
+        "Decrypt TLS and QUIC in PCAPNG files that carry their own keys (Decryption Secrets Blocks): see HTTPS, HTTP/2, and HTTP/3 instead of Application Data.",
+        "Support raw IP and Linux cooked captures (tcpdump -i any): the packet list now shows Source, Destination, and Protocol instead of Unsupported."
+      ],
+      "improvements": [
+        "Packet Details now match Wireshark row for row, including bit patterns, [generated] fields, and option labels.",
+        "Frame details show the same metadata as Wireshark: time since the previous displayed frame, and the interface description, section number, and packet flags for PCAPNG files.",
+        "Show names for well-known addresses, such as Broadcast instead of ff:ff:ff:ff:ff:ff.",
+        "Packet summaries in opened files now point to related packets, such as an ICMP request's reply and the packet where a TCP PDU was reassembled.",
+        "Saving or exporting a PCAPNG file keeps its TLS and QUIC keys.",
+        "MCP and CLI packet details return Wireshark's exact labels, with sensitive fields redacted.",
+        "Update the bundled Wireshark to 4.6.9, which fixes several dissector crashes.",
+        "Crash reports now go to Proxyman's self-hosted server instead of sentry.io."
+      ],
+      "bugs": [
+        "Fixed: packet timestamps showing fake nanoseconds (.299999952 instead of .300000) and wrong time deltas.",
+        "Fixed: IPv6 addresses like ::1 showing as 1, and HTTP/2 headers like :authority losing their leading colon.",
+        "Fixed: extra colons and repeated labels in Packet Details, such as \"Ethernet: II\" and \"TCP Option - MSS: TCP Option - MSS: 1460 bytes\"."
+      ]
     }
   ]
 }
