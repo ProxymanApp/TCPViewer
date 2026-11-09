@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'">
+    <title>TCP Viewer Electron Spike</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header id="status">Connecting to engine…</header>
+    <main id="table">
+      <div class="row header">
+        <span>No.</span><span>Time</span><span>Source</span><span>Destination</span><span>Protocol</span><span>Length</span><span>Info</span>
+      </div>
+      <div id="viewport"><div id="spacer"></div></div>
+      <div id="rows"><div id="rows-inner"></div></div>
+    </main>
+    <script src="renderer.js"></script>
+  </body>
+</html>
