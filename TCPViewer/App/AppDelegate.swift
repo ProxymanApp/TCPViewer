@@ -47,6 +47,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var didCheckForUpdatesAtLaunch = false
     private var availableUpdateCount = 0
     private var isTerminatingAfterFactoryReset = false
+    private var relaunchesAfterTermination = false
     #if DEBUG
     private var shouldOpenUntitledDocumentAfterIgnoringDebugLaunchFiles = false
     #endif
@@ -266,6 +267,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let configurationObserver {
             NotificationCenter.default.removeObserver(configurationObserver)
         }
+        // Spawn the waiter only once quitting is final, so a cancelled quit never triggers a surprise relaunch later.
+        if relaunchesAfterTermination {
+            TCPViewerAppRelauncher.relaunchAfterCurrentProcessExits()
+        }
+    }
+
+    // Quits and reopens TCP Viewer so a newly installed helper's capture group applies to the new process.
+    func relaunchApplication() {
+        relaunchesAfterTermination = true
+        skipsNextQuitConfirmation = true
+        NSApp.terminate(nil)
     }
 
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
@@ -296,7 +308,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         isHandlingTermination = true
         TCPViewerWorkspaceController.prepareAllForApplicationTermination { [weak self] shouldTerminate in
             self?.isHandlingTermination = false
-            if shouldTerminate { self?.mainWindowController?.window?.close() }
+            if shouldTerminate { self?.mainWindowController?.window?.close() } else { self?.relaunchesAfterTermination = false }
             sender.reply(toApplicationShouldTerminate: shouldTerminate)
         }
 

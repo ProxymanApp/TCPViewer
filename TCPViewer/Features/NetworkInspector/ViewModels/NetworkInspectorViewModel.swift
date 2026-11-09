@@ -1565,13 +1565,6 @@ final class NetworkInspectorViewModel {
         controller.openNetworkHelperSystemSettings()
     }
 
-    func relaunchTCPViewer() {
-        let configuration = NSWorkspace.OpenConfiguration()
-        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, _ in
-            NSApp.terminate(nil)
-        }
-    }
-
     func selectSidebar(_ selection: NetworkInspectorSidebarSelection?) {
         guard let selection else {
             return
