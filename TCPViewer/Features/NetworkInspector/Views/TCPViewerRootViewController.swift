@@ -606,7 +606,7 @@ final class TCPViewerRootViewController: NSViewController {
     }
 
     func relaunchTCPViewer() {
-        viewModel.relaunchTCPViewer()
+        (NSApp.delegate as? AppDelegate)?.relaunchApplication()
     }
 
     func dismissNetworkHelperOnboarding() {

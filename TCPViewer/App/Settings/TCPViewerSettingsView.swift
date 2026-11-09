@@ -447,10 +447,7 @@ struct TCPViewerHelperToolSettingsView: View {
     }
 
     private func relaunchTCPViewer() {
-        let configuration = NSWorkspace.OpenConfiguration()
-        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, _ in
-            NSApp.terminate(nil)
-        }
+        (NSApp.delegate as? AppDelegate)?.relaunchApplication()
     }
 }
 
