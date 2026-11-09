@@ -394,6 +394,17 @@
         "Fixed: IPv6 addresses like ::1 showing as 1, and HTTP/2 headers like :authority losing their leading colon.",
         "Fixed: extra colons and repeated labels in Packet Details, such as \"Ethernet: II\" and \"TCP Option - MSS: TCP Option - MSS: 1460 bytes\"."
       ]
+    },
+        {
+      "version": "1.24.0",
+      "title": "TCP Viewer 1.24.0: Install Helper Tool Fix",
+      "features": [
+      ],
+      "improvements": [
+      ],
+      "bugs": [
+        "Fixed: Install Helper Tool is not success"
+      ]
     }
   ]
 }
