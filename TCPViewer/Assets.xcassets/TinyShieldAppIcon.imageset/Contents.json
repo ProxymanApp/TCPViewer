@@ -1,17 +1,14 @@
 {
   "images" : [
     {
-      "filename" : "tinyshield-icon-256.png",
-      "idiom" : "universal",
+      "filename" : "TinyShieldAppIcon.png",
+      "idiom" : "mac",
       "scale" : "1x"
     },
     {
-      "idiom" : "universal",
+      "filename" : "TinyShieldAppIcon@2x.png",
+      "idiom" : "mac",
       "scale" : "2x"
-    },
-    {
-      "idiom" : "universal",
-      "scale" : "3x"
     }
   ],
   "info" : {
