@@ -405,6 +405,18 @@
       "bugs": [
         "Fixed: Install Helper Tool is not success"
       ]
+    },
+            {
+      "version": "1.25.0",
+      "title": "TCP Viewer 1.25.0: Device MCP App Introduction",
+      "features": [
+      ],
+      "improvements": [
+        "Update the Product Page: Introduce the Device MCP app"
+      ],
+      "bugs": [
+        "Fixed: Few crashes in Sentry"
+      ]
     }
   ]
 }
