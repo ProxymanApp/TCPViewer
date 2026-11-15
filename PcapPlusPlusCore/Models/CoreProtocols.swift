@@ -127,12 +127,16 @@ public protocol PacketRedissecting {
 }
 
 public extension PacketRedissecting {
+    // A capture source that cannot dissect again says so, rather than look decrypted while it is not.
     func redissectPackets(
         updateHandler: @escaping ([PacketSummaryUpdate]) -> Void,
         completion: @escaping TCPViewerVoidCompletion
     ) {
         _ = updateHandler
-        completion(.success(()))
+        completion(.failure(TCPViewerCoreError(
+            code: .unavailableFeature,
+            message: "This capture cannot be dissected again."
+        )))
     }
 }
 

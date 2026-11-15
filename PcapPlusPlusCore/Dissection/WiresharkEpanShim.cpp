@@ -1835,6 +1835,9 @@ struct TCPViewerWiresharkSession {
         return epan != nullptr && provider != nullptr && provider->frames != nullptr;
     }
 
+    // Counts how often this session took Wireshark; a long pass compares it to detect another capture in between.
+    uint64_t ownershipGeneration = 0;
+
     void clearCriticalExceptionsLocked()
     {
         pendingCriticalExceptions.clear();
@@ -2069,6 +2072,7 @@ struct TCPViewerWiresharkSession {
         udpIndexTapRegistered = true;
 
         activeSession() = this;
+        ++ownershipGeneration;
         resetActiveFrameStateLocked();
         firstPassFinished = false;
         return true;
@@ -3030,6 +3034,19 @@ void TCPViewerWiresharkSessionClearDisplayFilter(TCPViewerWiresharkSession *sess
     std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
     std::lock_guard<std::mutex> sessionLock(session->mutex);
     session->clearActiveDisplayFilterLocked();
+}
+
+bool TCPViewerWiresharkSessionOwnsWireshark(TCPViewerWiresharkSession *session, uint64_t *ownershipGeneration)
+{
+    if (session == nullptr) {
+        return false;
+    }
+    std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
+    std::lock_guard<std::mutex> sessionLock(session->mutex);
+    if (ownershipGeneration != nullptr) {
+        *ownershipGeneration = session->ownershipGeneration;
+    }
+    return session->hasSession() && TCPViewerWiresharkSession::activeSession() == session;
 }
 
 void TCPViewerWiresharkSetTLSKeyLogFile(const char *path)

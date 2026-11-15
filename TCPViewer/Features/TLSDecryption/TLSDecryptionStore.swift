@@ -19,16 +19,18 @@ final class TLSDecryptionStore {
         static let isEnabled = "TCPViewer.settings.tlsDecryption.isEnabled"
     }
 
-    private static let statusRefreshDelay: DispatchTimeInterval = .milliseconds(500)
+    private static let statusRefreshInterval: DispatchTimeInterval = .milliseconds(500)
 
     private let defaults: UserDefaults
     private let workQueue: DispatchQueue
     private let applyKeyLogFile: (URL?) -> Void
-    private let summarizeKeyLog: (URL) throws -> TLSKeyLogSummary
+    private let summarizeKeyLog: (URL, TLSKeyLogSummary?) throws -> TLSKeyLogSummary
     private let redissectOpenCaptures: () -> Void
     private var fileMonitor: DispatchSourceFileSystemObject?
     private var pendingStatusRefresh: DispatchWorkItem?
     private var statusRequestGeneration = 0
+    // Bumped by every change the user makes, so a slow file check never overrides a newer choice.
+    private var changeGeneration = 0
 
     private(set) var status: TLSKeyLogStatus = .notConfigured {
         didSet {
@@ -41,7 +43,7 @@ final class TLSDecryptionStore {
         defaults: UserDefaults = .standard,
         workQueue: DispatchQueue = DispatchQueue(label: "com.proxyman.tcpviewer.tls-decryption", qos: .utility),
         applyKeyLogFile: @escaping (URL?) -> Void = TLSKeyLog.setKeyLogFile,
-        summarizeKeyLog: @escaping (URL) throws -> TLSKeyLogSummary = TLSKeyLog.summarize(fileAt:),
+        summarizeKeyLog: @escaping (URL, TLSKeyLogSummary?) throws -> TLSKeyLogSummary = { try TLSKeyLog.summarize(fileAt: $0, continuing: $1) },
         redissectOpenCaptures: @escaping () -> Void = TCPViewerWorkspaceController.redissectAllForTLSKeyLog
     ) {
         self.defaults = defaults
@@ -70,6 +72,18 @@ final class TLSDecryptionStore {
         isEnabled ? keyLogFileURL : nil
     }
 
+    // Identifies the active key log's contents (size and modification date); nil without one.
+    // A live capture compares it at start and stop to tell whether keys may have arrived late.
+    var activeKeyLogVersion: String? {
+        guard let url = activeKeyLogFileURL,
+              let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else {
+            return nil
+        }
+        let size = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+        let modified = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        return "\(url.path)|\(size)|\(modified)"
+    }
+
     // Hand the saved key log to Wireshark at launch, before any capture is dissected.
     func start() {
         applyKeyLogFile(activeKeyLogFileURL)
@@ -77,38 +91,55 @@ final class TLSDecryptionStore {
     }
 
     // Check the file first so a capture or a README is never used as a key log; nothing changes on failure.
-    func useKeyLogFile(at url: URL, completion: @escaping (Result<TLSKeyLogSummary, TLSKeyLogFileError>) -> Void) {
+    func useKeyLogFile(
+        at url: URL,
+        enabled: Bool = true,
+        completion: @escaping (Result<TLSKeyLogSummary, TLSKeyLogFileError>) -> Void
+    ) {
+        changeGeneration += 1
+        let generation = changeGeneration
         let fileURL = url.standardizedFileURL
         let summarizeKeyLog = summarizeKeyLog
         workQueue.async {
-            let result: Result<TLSKeyLogSummary, TLSKeyLogFileError>
+            var result: Result<TLSKeyLogSummary, TLSKeyLogFileError>
             do {
-                let summary = try summarizeKeyLog(fileURL)
+                let summary = try summarizeKeyLog(fileURL, nil)
                 result = summary.isKeyLog ? .success(summary) : .failure(.notKeyLog(fileName: fileURL.lastPathComponent))
             } catch {
                 result = .failure(.unreadable(fileName: fileURL.lastPathComponent, reason: Self.readFailureReason(error)))
             }
             DispatchQueue.main.async {
                 if case .success(let summary) = result {
-                    self.save(keyLogURL: fileURL, isEnabled: true)
-                    self.statusRequestGeneration += 1
-                    self.status = .ready(summary)
-                    self.monitorKeyLogFile()
+                    if generation == self.changeGeneration {
+                        self.save(keyLogURL: fileURL, isEnabled: enabled)
+                        self.statusRequestGeneration += 1
+                        self.status = .ready(summary)
+                        self.monitorKeyLogFile()
+                    } else {
+                        result = .failure(.superseded(fileName: fileURL.lastPathComponent))
+                    }
                 }
                 completion(result)
             }
         }
     }
 
-    func removeKeyLogFile() {
-        guard keyLogFileURL != nil else { return }
-        save(keyLogURL: nil, isEnabled: true)
+    // Returns whether open captures are dissected again.
+    @discardableResult
+    func removeKeyLogFile() -> Bool {
+        changeGeneration += 1
+        guard keyLogFileURL != nil else { return false }
+        let redissects = save(keyLogURL: nil, isEnabled: true)
         refreshStatus()
+        return redissects
     }
 
-    func setEnabled(_ isEnabled: Bool) {
-        guard isEnabled != self.isEnabled else { return }
-        save(keyLogURL: keyLogFileURL, isEnabled: isEnabled)
+    // Returns whether open captures are dissected again.
+    @discardableResult
+    func setEnabled(_ isEnabled: Bool) -> Bool {
+        changeGeneration += 1
+        guard isEnabled != self.isEnabled else { return false }
+        return save(keyLogURL: keyLogFileURL, isEnabled: isEnabled)
     }
 
     // Dissect open captures again, e.g. after the key log gained keys for a capture that is already open.
@@ -116,7 +147,8 @@ final class TLSDecryptionStore {
         redissectOpenCaptures()
     }
 
-    // Read the key log in the background; the newest request wins when the file changes quickly.
+    // Read the key log in the background, continuing after the part already counted when the file only grew.
+    // The newest request wins when the file changes quickly.
     func refreshStatus() {
         statusRequestGeneration += 1
         let generation = statusRequestGeneration
@@ -125,7 +157,10 @@ final class TLSDecryptionStore {
             status = .notConfigured
             return
         }
-        if case .ready = status {} else {
+        var previous: TLSKeyLogSummary?
+        if case .ready(let summary) = status {
+            previous = summary
+        } else {
             status = .reading
         }
         let summarizeKeyLog = summarizeKeyLog
@@ -135,7 +170,7 @@ final class TLSDecryptionStore {
                 nextStatus = .missing
             } else {
                 do {
-                    let summary = try summarizeKeyLog(url)
+                    let summary = try summarizeKeyLog(url, previous)
                     nextStatus = summary.isKeyLog ? .ready(summary) : .notKeyLog
                 } catch {
                     nextStatus = .unreadable(Self.readFailureReason(error))
@@ -150,7 +185,9 @@ final class TLSDecryptionStore {
     }
 
     // Persist the choice, give Wireshark the file it should read now and re-dissect when that file changed.
-    private func save(keyLogURL: URL?, isEnabled: Bool) {
+    // Returns whether open captures are dissected again.
+    @discardableResult
+    private func save(keyLogURL: URL?, isEnabled: Bool) -> Bool {
         let previousActiveURL = activeKeyLogFileURL
         if let keyLogURL {
             defaults.set(keyLogURL.path, forKey: Key.keyLogPath)
@@ -161,16 +198,22 @@ final class TLSDecryptionStore {
         applyKeyLogFile(activeKeyLogFileURL)
         notifyChange()
         // Choosing a key log again also re-dissects: it may hold keys it did not have before.
-        if previousActiveURL != activeKeyLogFileURL || (keyLogURL != nil && isEnabled) {
-            redissectOpenCaptures()
+        guard previousActiveURL != activeKeyLogFileURL || (keyLogURL != nil && isEnabled) else {
+            return false
         }
+        redissectOpenCaptures()
+        return true
     }
 
     // Keep the key count current while Proxyman appends keys; Wireshark itself reads appended lines on demand.
+    // A missing key log may come back (Proxyman recreates it), so its folder is watched until it does.
     private func monitorKeyLogFile() {
         stopMonitoringKeyLogFile()
         guard let url = keyLogFileURL else { return }
-        let descriptor = open(url.path, O_EVTONLY)
+        var descriptor = open(url.path, O_EVTONLY)
+        if descriptor < 0 {
+            descriptor = open(url.deletingLastPathComponent().path, O_EVTONLY)
+        }
         guard descriptor >= 0 else { return }
         let source = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: descriptor,
@@ -192,13 +235,15 @@ final class TLSDecryptionStore {
         fileMonitor = nil
     }
 
+    // Throttle rather than debounce, so keys appended without pause still update the count twice a second.
     private func scheduleStatusRefresh() {
-        pendingStatusRefresh?.cancel()
+        guard pendingStatusRefresh == nil else { return }
         let workItem = DispatchWorkItem { [weak self] in
+            self?.pendingStatusRefresh = nil
             self?.refreshStatus()
         }
         pendingStatusRefresh = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.statusRefreshDelay, execute: workItem)
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.statusRefreshInterval, execute: workItem)
     }
 
     private func notifyChange() {

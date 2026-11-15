@@ -240,6 +240,8 @@ TCPViewerDisplayFilterMatchResult *TCPViewerWiresharkSessionEvaluateDisplayFilte
     uint64_t generation
 );
 void TCPViewerWiresharkSessionClearDisplayFilter(TCPViewerWiresharkSession *session);
+// True while this session holds Wireshark's process-wide state; `ownershipGeneration` changes each time it takes it again.
+bool TCPViewerWiresharkSessionOwnsWireshark(TCPViewerWiresharkSession *session, uint64_t *ownershipGeneration);
 // Use an NSS key log file (SSLKEYLOGFILE format) for TLS, DTLS and QUIC decryption; NULL or "" turns it off.
 // New Wireshark sessions and handshakes the active session has not dissected yet use it; packets that were
 // already dissected keep their result until their capture is dissected again.

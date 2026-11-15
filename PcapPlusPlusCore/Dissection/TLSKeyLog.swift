@@ -15,6 +15,12 @@ public struct TLSKeyLogSummary: Sendable, Equatable {
     public var invalidLineCount = 0
     public var containsBinaryData = false
 
+    // Lets a later read of the same, grown file continue after the last complete line instead of from the start.
+    var fileNumber: UInt64?
+    var resumeOffset: UInt64 = 0
+    // The unterminated last line is counted above but read again later, once it is complete.
+    var trailingLine = TLSKeyLogLineCounts()
+
     public init(
         byteCount: UInt64 = 0,
         keyCount: Int = 0,
@@ -33,6 +39,18 @@ public struct TLSKeyLogSummary: Sendable, Equatable {
     public var isKeyLog: Bool {
         keyCount > 0 || (invalidLineCount == 0 && !containsBinaryData)
     }
+
+    mutating func add(_ counts: TLSKeyLogLineCounts, sign: Int = 1) {
+        keyCount += sign * counts.keyCount
+        sessionCount += sign * counts.sessionCount
+        invalidLineCount += sign * counts.invalidLineCount
+    }
+}
+
+struct TLSKeyLogLineCounts: Sendable, Equatable {
+    var keyCount = 0
+    var sessionCount = 0
+    var invalidLineCount = 0
 }
 
 // NSS key log files (SSLKEYLOGFILE), as written by Proxyman, browsers and curl, decrypt TLS, DTLS and QUIC.
@@ -48,52 +66,74 @@ public enum TLSKeyLog {
     }
 
     // Stream the file in bounded chunks so a key log that grew for months does not load into memory.
-    public static func summarize(fileAt url: URL) throws -> TLSKeyLogSummary {
+    // With `previous` from the same file, only the bytes after its last complete line are read.
+    public static func summarize(fileAt url: URL, continuing previous: TLSKeyLogSummary? = nil) throws -> TLSKeyLogSummary {
+        let fileNumber = try regularFileNumber(of: url)
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
 
         var summary = TLSKeyLogSummary()
+        summary.fileNumber = fileNumber
+        if var previous, previous.fileNumber == fileNumber, !previous.containsBinaryData,
+           try handle.seekToEnd() >= previous.resumeOffset {
+            previous.add(previous.trailingLine, sign: -1)
+            previous.trailingLine = TLSKeyLogLineCounts()
+            previous.byteCount = previous.resumeOffset
+            summary = previous
+        }
+        try handle.seek(toOffset: summary.byteCount)
+
         var pendingLine = Data()
         while let chunk = try handle.read(upToCount: readChunkSize), !chunk.isEmpty {
-            summary.byteCount += UInt64(chunk.count)
             if chunk.contains(0) {
+                summary.byteCount += UInt64(chunk.count)
                 summary.containsBinaryData = true
                 return summary
             }
             var lineStart = chunk.startIndex
             while let newline = chunk[lineStart...].firstIndex(of: UInt8(ascii: "\n")) {
                 pendingLine.append(chunk[lineStart..<newline])
-                record(pendingLine, in: &summary)
+                summary.add(lineCounts(pendingLine))
                 pendingLine.removeAll(keepingCapacity: true)
                 lineStart = chunk.index(after: newline)
+                summary.resumeOffset = summary.byteCount + UInt64(lineStart - chunk.startIndex)
             }
             // Keep at most one line past the limit; longer lines are invalid either way.
             if pendingLine.count <= maximumLineLength {
                 pendingLine.append(chunk[lineStart...].prefix(maximumLineLength + 1 - pendingLine.count))
             }
+            summary.byteCount += UInt64(chunk.count)
         }
-        record(pendingLine, in: &summary)
+        summary.trailingLine = lineCounts(pendingLine)
+        summary.add(summary.trailingLine)
         return summary
     }
 
+    // A FIFO or device would block the read forever, so only regular files, or links to them, are key logs.
+    private static func regularFileNumber(of url: URL) throws -> UInt64? {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.resolvingSymlinksInPath().path)
+        guard attributes[.type] as? FileAttributeType == .typeRegular else {
+            throw NativeNSError(.fileReadFailed, "It isn't a regular file.")
+        }
+        return (attributes[.systemFileNumber] as? NSNumber)?.uint64Value
+    }
+
     // Count one line, using the same line shapes Wireshark's key log parser accepts.
-    static func record(_ lineData: Data, in summary: inout TLSKeyLogSummary) {
+    static func lineCounts(_ lineData: Data) -> TLSKeyLogLineCounts {
         guard let line = String(data: lineData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
               line.utf8.count <= maximumLineLength else {
-            summary.invalidLineCount += 1
-            return
+            return TLSKeyLogLineCounts(invalidLineCount: 1)
         }
         if line.isEmpty || line.hasPrefix("#") {
-            return
+            return TLSKeyLogLineCounts()
         }
         switch lineKind(line) {
         case .connection:
-            summary.keyCount += 1
-            summary.sessionCount += 1
+            return TLSKeyLogLineCounts(keyCount: 1, sessionCount: 1)
         case .secret:
-            summary.keyCount += 1
+            return TLSKeyLogLineCounts(keyCount: 1)
         case nil:
-            summary.invalidLineCount += 1
+            return TLSKeyLogLineCounts(invalidLineCount: 1)
         }
     }
 

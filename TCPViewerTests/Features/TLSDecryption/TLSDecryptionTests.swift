@@ -105,6 +105,40 @@ struct TLSDecryptionStoreTests {
         #expect(harness.store.activeKeyLogFileURL == url)
     }
 
+    @Test func aChangeMadeWhileAFileIsCheckedWins() async throws {
+        let harness = try Harness()
+        let url = try harness.writeFile("keys.txt", Self.keyLogText)
+
+        // The check runs in the background; switching decryption off meanwhile must not be undone by it.
+        let result: Result<TLSKeyLogSummary, TLSKeyLogFileError> = await withCheckedContinuation { continuation in
+            harness.store.useKeyLogFile(at: url) { continuation.resume(returning: $0) }
+            harness.store.setEnabled(false)
+        }
+
+        #expect(throws: TLSKeyLogFileError.superseded(fileName: "keys.txt")) { try result.get() }
+        #expect(harness.store.keyLogFileURL == nil)
+        #expect(!harness.store.isEnabled)
+        #expect(harness.redissectCount == 0)
+    }
+
+    @Test func aKeyLogThatComesBackIsNoticed() async throws {
+        let harness = try Harness()
+        let url = try harness.writeFile("keys.txt", Self.keyLogText)
+        _ = await harness.use(url)
+        try FileManager.default.removeItem(at: url)
+        await harness.waitForStatus { $0 == .missing }
+
+        // Proxyman recreates its key log when logging is turned off and on; the folder is watched meanwhile.
+        try Data((Self.keyLogText + Self.keyLogText).utf8).write(to: url)
+        await harness.waitForStatus { if case .ready = $0 { true } else { false } }
+
+        guard case .ready(let summary) = harness.store.status else {
+            Issue.record("Expected the recreated key log to be read, got \(harness.store.status).")
+            return
+        }
+        #expect(summary.sessionCount == 2)
+    }
+
     // An isolated store: its own defaults and folder, recording what it would hand to Wireshark.
     @MainActor
     private final class Harness {
@@ -148,7 +182,7 @@ struct TLSDecryptionStoreTests {
         }
 
         func waitForStatus(_ condition: (TLSKeyLogStatus) -> Bool) async {
-            for _ in 0..<200 where !condition(store.status) {
+            for _ in 0..<300 where !condition(store.status) {
                 try? await Task.sleep(nanoseconds: 10_000_000)
             }
         }
@@ -240,7 +274,8 @@ struct TCPViewerMCPTLSDecryptionTests {
         let suiteName = "TCPViewer.TCPViewerMCPTLSDecryptionTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defer { defaults.removePersistentDomain(forName: suiteName) }
-        let store = TLSDecryptionStore(defaults: defaults, applyKeyLogFile: { _ in }, redissectOpenCaptures: {})
+        var redissectCount = 0
+        let store = TLSDecryptionStore(defaults: defaults, applyKeyLogFile: { _ in }, redissectOpenCaptures: { redissectCount += 1 })
         let router = TCPViewerMCPCommandRouter(
             dataSourceProvider: { nil },
             isLicenseAuthorized: { true },
@@ -254,6 +289,9 @@ struct TCPViewerMCPTLSDecryptionTests {
         try Data("CLIENT_HANDSHAKE_TRAFFIC_SECRET \(String(repeating: "ab", count: 32)) \(String(repeating: "cd", count: 32))\n".utf8).write(to: keyLog)
         let notes = directory.appendingPathComponent("notes.txt")
         try Data("not keys\n".utf8).write(to: notes)
+        // Reading a FIFO would block until a writer appears.
+        let fifo = directory.appendingPathComponent("keys.fifo")
+        #expect(mkfifo(fifo.path, 0o600) == 0)
 
         let empty = await routeMCP(router, command: .getTLSDecryption)
         #expect(empty.success && empty.value("key_log") == .null)
@@ -264,6 +302,7 @@ struct TCPViewerMCPTLSDecryptionTests {
             ["key_log_path": .string("relative/keys.txt")],
             ["key_log_path": .string(directory.path)],
             ["key_log_path": .string(notes.path)],
+            ["key_log_path": .string(fifo.path)],
             ["key_log_path": .string(keyLog.path), "tab_id": .string(UUID().uuidString)],
         ]
         for params in invalidRequests {
@@ -271,7 +310,14 @@ struct TCPViewerMCPTLSDecryptionTests {
         }
         #expect(store.keyLogFileURL == nil)
 
-        let set = await routeMCP(router, command: .updateTLSDecryption, params: ["key_log_path": .string(keyLog.path)])
+        #expect(redissectCount == 0)
+
+        // A key log plus another change still dissects open captures once.
+        let set = await routeMCP(router, command: .updateTLSDecryption, params: [
+            "key_log_path": .string(keyLog.path),
+            "decrypt_open_captures_again": .bool(true),
+        ])
+        #expect(redissectCount == 1)
         guard case .object(let file)? = set.value("key_log") else {
             Issue.record("Expected key_log details, got \(set).")
             return
@@ -279,8 +325,12 @@ struct TCPViewerMCPTLSDecryptionTests {
         #expect(set.success && set.value("decrypting") == .bool(true))
         #expect(file["status"] == .string("ready") && file["tls_connection_count"] == .int(1) && file["key_count"] == .int(1))
 
-        let off = await routeMCP(router, command: .updateTLSDecryption, params: ["enabled": .bool(false)])
+        let off = await routeMCP(router, command: .updateTLSDecryption, params: [
+            "enabled": .bool(false),
+            "decrypt_open_captures_again": .bool(true),
+        ])
         #expect(off.value("enabled") == .bool(false) && off.value("decrypting") == .bool(false))
+        #expect(redissectCount == 2)
 
         let removed = await routeMCP(router, command: .updateTLSDecryption, params: ["key_log_path": .string("")])
         #expect(removed.success && removed.value("key_log") == .null && store.keyLogFileURL == nil)

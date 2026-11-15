@@ -373,6 +373,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     private let stopCondition: CaptureStopCondition
     private let followOperationCoordinator = LiveFollowStreamOperationCoordinator()
 
+    private let redissectGeneration = Protected<UInt64>(0)
     private var phase: LiveCaptureSessionPhase = .ready
     private var health: CaptureHealthSnapshot = .empty
     private var startedAt: Date?
@@ -449,6 +450,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     }
 
     func start(completion: @escaping TCPViewerVoidCompletion) {
+        cancelRedissect()
         queue.async {
             completion(Result {
                 try self.startOnQueue()
@@ -473,6 +475,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     }
 
     func stop(completion: @escaping TCPViewerVoidCompletion) {
+        cancelRedissect()
         queue.async {
             completion(Result {
                 try self.stopOnQueue(reason: nil)
@@ -481,11 +484,16 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     }
 
     func clearCapturedPackets(completion: @escaping TCPViewerVoidCompletion) {
+        cancelRedissect()
         queue.async {
             completion(Result {
                 self.clearCapturedPacketsOnQueue()
             })
         }
+    }
+
+    private func cancelRedissect() {
+        redissectGeneration.write { $0 &+= 1 }
     }
 
     func healthSnapshot(completion: @escaping (CaptureHealthSnapshot) -> Void) {
@@ -503,14 +511,22 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     }
 
     // Dissect a stopped capture again; the live store keeps no summaries, so every row is reported in batches.
+    // Start, stop and clear cancel it at once, because it holds the capture queue until it sees the change.
     func redissectPackets(
         updateHandler: @escaping ([PacketSummaryUpdate]) -> Void,
         completion: @escaping TCPViewerVoidCompletion
     ) {
+        let generation = redissectGeneration.write { value -> UInt64 in
+            value &+= 1
+            return value
+        }
         queue.async {
             completion(Result {
                 do {
-                    _ = try self.nativeSession.redissectPacketSummaries(batchSize: Self.maxRedissectBatchSize) { descriptors in
+                    _ = try self.nativeSession.redissectPacketSummaries(
+                        batchSize: Self.maxRedissectBatchSize,
+                        shouldCancel: { self.redissectGeneration.read { $0 } != generation }
+                    ) { descriptors in
                         updateHandler(NativeBridgeMapper.packetBatch(descriptors, source: .live).map {
                             PacketSummaryUpdate(
                                 packetID: $0.id,

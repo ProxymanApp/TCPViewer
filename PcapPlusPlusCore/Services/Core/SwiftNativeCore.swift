@@ -244,23 +244,37 @@ final class PCPPNativeOfflineDocument {
 
     // Summarize the loaded packets again in a fresh Wireshark session, e.g. after the TLS key log changed.
     // Wireshark applies keys only while its first pass sees a handshake, so new keys need a new first pass.
-    func redissectPacketSummaries() throws -> [PCPPNativePacketSummaryDescriptor] {
-        // Build the session first: if a live capture owns Wireshark this throws and the old summaries stay valid.
+    // Summaries stream to `batchHandler`. The pass fails instead of returning degraded rows when it cannot hold
+    // Wireshark throughout: a live capture owns it, or another capture took it meanwhile.
+    func redissectPacketSummaries(
+        batchSize: Int,
+        cancellationCheck: @escaping () -> Bool,
+        batchHandler: @escaping ([PCPPNativePacketSummaryDescriptor]) -> Void
+    ) throws {
         let session = try makeDissectionSession(for: state.read(\.file))
+        guard let ownership = session.wiresharkOwnership else {
+            throw NativeNSError(.unavailableFeature, "Wireshark is busy with a live capture.")
+        }
+        let wasPartiallyLoaded = state.read(\.partiallyLoaded)
         state.write { $0.dissectionSession = session }
         var nativeError: NSError?
-        let summaries = loadIncrementally(
+        _ = loadIncrementally(
             reload: false,
-            batchSize: Int.max,
-            batchHandler: nil,
+            batchSize: batchSize,
+            batchHandler: batchHandler,
             progressHandler: nil,
-            cancellationCheck: nil,
+            cancellationCheck: cancellationCheck,
+            keepsSummaries: false,
             error: &nativeError
         )
-        if let nativeError {
-            throw nativeError
+        let failure = nativeError ?? (session.wiresharkOwnership == ownership
+            ? nil
+            : NativeNSError(.unavailableFeature, "Another capture used Wireshark while this one was being decrypted."))
+        if let failure {
+            // An interrupted pass says nothing about the file, so keep it saveable.
+            state.write { $0.partiallyLoaded = wasPartiallyLoaded }
+            throw failure
         }
-        return summaries
     }
 
     func inspectPacket(withIdentifier identifier: UInt64) throws -> PCPPNativePacketInspectionDescriptor {
@@ -425,6 +439,7 @@ final class PCPPNativeOfflineDocument {
         batchHandler: PCPPNativePacketBatchHandler?,
         progressHandler: PCPPNativeLoadProgressHandler?,
         cancellationCheck: PCPPNativeCancellationHandler?,
+        keepsSummaries: Bool = true,
         error errorPointer: AutoreleasingUnsafeMutablePointer<NSError?>?
     ) -> [PCPPNativePacketSummaryDescriptor] {
         do {
@@ -444,6 +459,7 @@ final class PCPPNativeOfflineDocument {
             let initialPartialResult = state.read(\.partiallyLoaded)
             let totalBytes = UInt64((try? FileManager.default.attributesOfItem(atPath: sourceURL.path)[.size] as? NSNumber)?.uint64Value ?? 0)
             var summaries: [PCPPNativePacketSummaryDescriptor] = []
+            var summarizedCount = 0
             var pendingBatch: [PCPPNativePacketSummaryDescriptor] = []
             var dnsTCPStreamParser = DNSTCPStreamParser()
             // Both passes report on one file-byte scale, the first pass filling the first half, so progress never resets.
@@ -498,7 +514,7 @@ final class PCPPNativeOfflineDocument {
 
             for (index, record) in records.enumerated() {
                 if cancellationCheck?() == true {
-                    throw cancelLoad(index + 1, summaries.count)
+                    throw cancelLoad(index + 1, summarizedCount)
                 }
 
                 let summary = try autoreleasepool {
@@ -510,7 +526,11 @@ final class PCPPNativeOfflineDocument {
                         )
                     }
                 }
-                summaries.append(summary)
+                // Dissecting again streams batches only, so a long capture is not held in memory a second time.
+                if keepsSummaries {
+                    summaries.append(summary)
+                }
+                summarizedCount += 1
                 pendingBatch.append(summary)
 
                 if pendingBatch.count >= max(batchSize, 1) {
@@ -518,11 +538,11 @@ final class PCPPNativeOfflineDocument {
                     pendingBatch.removeAll(keepingCapacity: true)
                     progressHandler?(PCPPNativePacketLoadProgressDescriptor(
                         phase: "loading",
-                        loadedPacketCount: UInt64(summaries.count),
-                        processedBytes: progressBytes(records.count + summaries.count),
+                        loadedPacketCount: UInt64(summarizedCount),
+                        processedBytes: progressBytes(records.count + summarizedCount),
                         totalBytes: NSNumber(value: totalBytes),
                         partialResult: initialPartialResult,
-                        message: self.loadProgressMessage(prefix: "Loaded", packetCount: summaries.count)
+                        message: self.loadProgressMessage(prefix: "Loaded", packetCount: summarizedCount)
                     ))
                 }
             }
@@ -533,11 +553,11 @@ final class PCPPNativeOfflineDocument {
             let partialResult = state.read(\.partiallyLoaded)
             progressHandler?(PCPPNativePacketLoadProgressDescriptor(
                 phase: "completed",
-                loadedPacketCount: UInt64(summaries.count),
+                loadedPacketCount: UInt64(summarizedCount),
                 processedBytes: NSNumber(value: totalBytes),
                 totalBytes: NSNumber(value: totalBytes),
                 partialResult: partialResult,
-                message: self.loadProgressMessage(prefix: "Loaded", packetCount: summaries.count)
+                message: self.loadProgressMessage(prefix: "Loaded", packetCount: summarizedCount)
             ))
             return summaries
         } catch let thrownError {
@@ -1085,18 +1105,26 @@ final class PCPPNativeLiveSession {
     // Rebuild a stopped capture's first pass so a changed TLS key log reaches packets already captured.
     // Summaries stream to `batchHandler` because a long capture should not be held in memory twice.
     // Returns false without work while capturing: new handshakes already use the current key log.
+    // Throws, after possibly reporting some batches, when cancelled or when Wireshark was not held throughout.
     func redissectPacketSummaries(
         batchSize: Int,
+        shouldCancel: () -> Bool = { false },
         batchHandler: ([PCPPNativePacketSummaryDescriptor]) -> Void
     ) throws -> Bool {
         try state.write { state in
             guard state.phase == .stopped, state.hadWorkingDissectionSession else {
                 return false
             }
-            let session = try replayRetainedPackets(in: &state)
+            let session = try replayRetainedPackets(in: &state, shouldCancel: shouldCancel)
+            guard let ownership = session.wiresharkOwnership else {
+                throw NativeNSError(.unavailableFeature, "Wireshark is busy with a live capture.")
+            }
             var batch: [PCPPNativePacketSummaryDescriptor] = []
             batch.reserveCapacity(batchSize)
             try state.packetStore.forEachRecord { record in
+                if shouldCancel() {
+                    throw NativeNSError(.operationCancelled, "Decrypting the capture was cancelled.")
+                }
                 let summary = try autoreleasepool {
                     makePacketSummaryDescriptor(
                         record: record,
@@ -1113,6 +1141,9 @@ final class PCPPNativeLiveSession {
             }
             if !batch.isEmpty {
                 batchHandler(batch)
+            }
+            guard session.wiresharkOwnership == ownership else {
+                throw NativeNSError(.unavailableFeature, "Another capture used Wireshark while this one was being decrypted.")
             }
             return true
         }
@@ -1326,9 +1357,15 @@ final class PCPPNativeLiveSession {
     }
 
     // Rebuild a stopped capture's first pass from the retained packets, in capture order.
-    private func replayRetainedPackets(in state: inout PCPPNativeLiveSessionState) throws -> WiresharkEpanSession {
+    private func replayRetainedPackets(
+        in state: inout PCPPNativeLiveSessionState,
+        shouldCancel: () -> Bool = { false }
+    ) throws -> WiresharkEpanSession {
         let session = try WiresharkEpanSession()
         try state.packetStore.forEachRecord { record in
+            if shouldCancel() {
+                throw NativeNSError(.operationCancelled, "Decrypting the capture was cancelled.")
+            }
             try session.observe(record)
         }
         try session.finishFirstPass()

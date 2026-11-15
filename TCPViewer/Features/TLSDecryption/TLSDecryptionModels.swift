@@ -30,6 +30,8 @@ enum TLSKeyLogStatus: Equatable {
 enum TLSKeyLogFileError: LocalizedError, Equatable {
     case unreadable(fileName: String, reason: String)
     case notKeyLog(fileName: String)
+    // The setting changed (another file, Remove, or the switch) while this file was being checked.
+    case superseded(fileName: String)
 
     var errorDescription: String? {
         switch self {
@@ -37,6 +39,8 @@ enum TLSKeyLogFileError: LocalizedError, Equatable {
             "TCP Viewer can't read “\(fileName)”. \(reason)"
         case .notKeyLog(let fileName):
             "“\(fileName)” isn't a TLS key log file. Choose the file Proxyman, your browser or curl writes with SSLKEYLOGFILE; each line starts with a label such as CLIENT_RANDOM."
+        case .superseded(let fileName):
+            "“\(fileName)” wasn't used because the TLS decryption setting changed while it was being checked."
         }
     }
 }

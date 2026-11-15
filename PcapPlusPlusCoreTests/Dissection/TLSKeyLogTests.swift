@@ -86,6 +86,58 @@ struct TLSKeyLogTests {
         #expect(summary.keyCount == 1)
     }
 
+    @Test func continuingAfterAppendsMatchesAFullRead() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).keys")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let first = "CLIENT_RANDOM \(clientRandom) \(masterSecret)\n"
+        let second = "CLIENT_HANDSHAKE_TRAFFIC_SECRET \(clientRandom) \(trafficSecret)\n"
+        // The first read ends inside a line that a later append completes.
+        try Data((first + "CLIENT_HANDSHAKE_TRAFFIC").utf8).write(to: url)
+        let partial = try TLSKeyLog.summarize(fileAt: url)
+        #expect(partial.keyCount == 1 && partial.invalidLineCount == 1)
+
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(("_SECRET \(clientRandom) \(trafficSecret)\n" + second).utf8))
+        try handle.close()
+
+        let continued = try TLSKeyLog.summarize(fileAt: url, continuing: partial)
+        #expect(continued == (try TLSKeyLog.summarize(fileAt: url)))
+        #expect(continued.keyCount == 3 && continued.sessionCount == 3 && continued.invalidLineCount == 0)
+    }
+
+    @Test func aReplacedFileIsReadFromTheStart() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).keys")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Data("CLIENT_RANDOM \(clientRandom) \(masterSecret)\n".utf8).write(to: url)
+        let original = try TLSKeyLog.summarize(fileAt: url)
+
+        // A new file at the same path (another inode) is never treated as a continuation.
+        try Data("not a key log line\nCLIENT_RANDOM \(clientRandom) \(masterSecret)\n".utf8).write(to: url, options: .atomic)
+        let summary = try TLSKeyLog.summarize(fileAt: url, continuing: original)
+
+        #expect(summary.keyCount == 1 && summary.invalidLineCount == 1)
+    }
+
+    @Test func aFIFOIsRejectedWithoutBlocking() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).fifo")
+        #expect(mkfifo(url.path, 0o600) == 0)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        #expect(throws: (any Error).self) {
+            try TLSKeyLog.summarize(fileAt: url)
+        }
+    }
+
+    @Test func aCaptureSourceWithoutRedissectionReportsIt() async {
+        struct Unsupported: PacketRedissecting {}
+        let result: Result<Void, Error> = await withCheckedContinuation { continuation in
+            Unsupported().redissectPackets(updateHandler: { _ in }, completion: { continuation.resume(returning: $0) })
+        }
+
+        #expect(throws: TCPViewerCoreError.self) { try result.get() }
+    }
+
     @Test func missingFileThrows() {
         #expect(throws: (any Error).self) {
             try TLSKeyLog.summarize(fileAt: URL(fileURLWithPath: "/nonexistent/tcpviewer-missing.keys"))

@@ -46,8 +46,8 @@ enum TCPViewerMCPTLSDecryption {
         return data
     }
 
-    // Check the arguments first. A new key log is read before it is used, so a rejected file changes nothing;
-    // `enabled` applies after it because using a key log turns decryption on.
+    // Check the arguments first. A new key log is read before it is used, so a rejected file changes nothing.
+    // Every change dissects open captures again at most once, however many arguments the call has.
     private static func update(
         _ request: TCPViewerMCPRequest,
         store: TLSDecryptionStore,
@@ -60,19 +60,17 @@ enum TCPViewerMCPTLSDecryption {
             completion(.failure("Pass key_log_path, enabled or decrypt_open_captures_again."))
             return
         }
-        let applyOtherChanges = {
-            if let enabled {
-                store.setEnabled(enabled)
+        guard let path, !path.isEmpty else {
+            var redissected = false
+            if path != nil {
+                redissected = store.removeKeyLogFile()
             }
-            if decryptsAgain {
+            if let enabled {
+                redissected = store.setEnabled(enabled) || redissected
+            }
+            if decryptsAgain, !redissected {
                 store.decryptOpenCapturesAgain()
             }
-        }
-        guard let path, !path.isEmpty else {
-            if path != nil {
-                store.removeKeyLogFile()
-            }
-            applyOtherChanges()
             completion(.success(state(store)))
             return
         }
@@ -80,15 +78,16 @@ enum TCPViewerMCPTLSDecryption {
             completion(.failure("key_log_path must be an absolute file path, or an empty string to remove the key log."))
             return
         }
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), !isDirectory.boolValue else {
-            completion(.failure("No key log file exists at key_log_path."))
+        // A FIFO or device would block reading it, so only regular files (or links to them) are accepted.
+        let fileURL = URL(fileURLWithPath: path)
+        guard (try? fileURL.resolvingSymlinksInPath().resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else {
+            completion(.failure("key_log_path must point to an existing regular file."))
             return
         }
-        store.useKeyLogFile(at: URL(fileURLWithPath: path)) { result in
+        // Using a key log dissects open captures again, which also covers decrypt_open_captures_again.
+        store.useKeyLogFile(at: fileURL, enabled: enabled ?? true) { result in
             switch result {
             case .success:
-                applyOtherChanges()
                 completion(.success(state(store)))
             case .failure(let error):
                 completion(.failure(error.localizedDescription))

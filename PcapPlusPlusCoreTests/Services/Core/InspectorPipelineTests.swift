@@ -452,6 +452,39 @@ struct InspectorPipelineTests {
         #expect(try session.summarize(file.records[4]).protocolSummary == "HTTP")
     }
 
+    @Test func tlsKeyLogRedissectWaitsWhileALiveCaptureOwnsWireshark() async throws {
+        defer { TLSKeyLog.setKeyLogFile(nil) }
+        TLSKeyLog.setKeyLogFile(nil)
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(
+            at: bundledCaptureFixtureURL(fileName: "wireshark-tls13-rfc8446.pcap")
+        )
+        let encrypted = try await document.open()
+        TLSKeyLog.setKeyLogFile(try bundledCaptureFixtureURL(fileName: "wireshark-tls13-rfc8446.keys"))
+
+        // A live capture keeps Wireshark: dissecting again must fail rather than fall back to built-in summaries.
+        var liveCapture: WiresharkEpanSession? = try WiresharkEpanSession(purpose: .live)
+        await #expect(throws: (any Error).self) { try await document.redissectPackets() }
+        #expect(document.packetSummaries() == encrypted)
+        _ = liveCapture
+
+        liveCapture = nil
+        let decrypted = try await document.redissectPackets()
+        #expect(decrypted.filter { $0.protocolSummary == "HTTP" }.count == 6)
+    }
+
+    @Test func wiresharkOwnershipChangesWhenAnotherCaptureTakesItMeanwhile() throws {
+        let file = try NativeCaptureFile.load(from: bundledCaptureFixtureURL(fileName: "wireshark-tls13-rfc8446.pcap"))
+        let session = try WiresharkEpanSession()
+        let ownership = try #require(session.wiresharkOwnership)
+
+        let other = try WiresharkEpanSession()
+        #expect(session.wiresharkOwnership == nil)
+        // Taking Wireshark back starts a new first pass, which a long pass must not mistake for its own.
+        _ = try session.observe(file.records[0])
+        #expect(session.wiresharkOwnership != ownership)
+        _ = other
+    }
+
     @Test func malformedPcapNgPacketRecordIsSkippedAndLaterPacketsStillLoad() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

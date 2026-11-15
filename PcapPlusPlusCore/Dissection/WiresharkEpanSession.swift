@@ -179,6 +179,13 @@ final class WiresharkEpanSession {
         TCPViewerWiresharkSessionClearDisplayFilter(handle)
     }
 
+    // Which turn of Wireshark ownership this session is on, or nil when another capture holds Wireshark.
+    // A long pass that ends on the same value was never interrupted by another capture.
+    var wiresharkOwnership: UInt64? {
+        var generation: UInt64 = 0
+        return TCPViewerWiresharkSessionOwnsWireshark(handle, &generation) ? generation : nil
+    }
+
     // Point every Wireshark session at an NSS key log file; nil turns key log decryption off.
     static func setTLSKeyLogFile(path: String?) {
         guard let path else {

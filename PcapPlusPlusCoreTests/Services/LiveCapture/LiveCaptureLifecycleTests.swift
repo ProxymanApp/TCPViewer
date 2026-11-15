@@ -375,6 +375,10 @@ struct LiveCaptureLifecycleTests {
         try session.stop()
 
         TLSKeyLog.setKeyLogFile(keyLogURL)
+        // Starting another capture cancels a replay that is still running.
+        #expect(throws: (any Error).self) {
+            try session.redissectPacketSummaries(batchSize: 4, shouldCancel: { true }) { _ in }
+        }
         var summaries: [PCPPNativePacketSummaryDescriptor] = []
         var batchCount = 0
         #expect(try session.redissectPacketSummaries(batchSize: 4) { batch in
