@@ -110,10 +110,12 @@ enum FollowStreamPayloadMatcher {
     }
 }
 
-final class PacketHexViewController: NSViewController {
+final class PacketHexViewController: NSViewController, NSPopoverDelegate {
     private let configuration: AppConfiguration
     private let stackView = NSStackView()
+    private let headerRow = NSStackView()
     private let byteViewSegmentedControl = NSSegmentedControl()
+    private let previewButton = NSButton(title: "Preview", image: NSImage(), target: nil, action: nil)
     private let revealStatusLabel = NSTextField(labelWithString: "")
     private let hexTextView = HFTextView()
     private var renderedPacketID: PacketSummary.ID?
@@ -125,6 +127,9 @@ final class PacketHexViewController: NSViewController {
     private var manualRevealPacketID: PacketSummary.ID?
     private var manualRevealRange: PacketByteRange?
     private var manualRevealByteViewID: String?
+    // The inspection the Preview button reads; only kept while it holds an HTTP message.
+    private var previewInspection: PacketInspection?
+    private var previewPopover: NSPopover?
 
     init(configuration: AppConfiguration) {
         self.configuration = configuration
@@ -139,7 +144,7 @@ final class PacketHexViewController: NSViewController {
     override func loadView() {
         view = TCPViewerDynamicBackgroundView(backgroundColor: .controlBackgroundColor)
         setupStackView()
-        setupByteViewControl()
+        setupHeaderRow()
         setupRevealStatusLabel()
         setupHexTextView()
     }
@@ -170,6 +175,7 @@ final class PacketHexViewController: NSViewController {
         }
 
         renderByteViewControl(byteViews: byteViews)
+        renderPreviewButton(for: inspection)
         let requestedRange = inspectionState.highlightedByteRange ?? manualRevealRange
         let selectedByteView = selectedByteView(in: byteViews, highlightedRange: requestedRange)
         let contentChanged = renderedPacketID != inspection?.packetID ||
@@ -241,15 +247,33 @@ final class PacketHexViewController: NSViewController {
         TCPViewerUI.pin(stackView, to: view)
     }
 
-    private func setupByteViewControl() {
+    // Byte source tabs on the left and the HTTP Preview button on the right; hidden when neither applies.
+    private func setupHeaderRow() {
         byteViewSegmentedControl.segmentStyle = .texturedRounded
         byteViewSegmentedControl.target = self
         byteViewSegmentedControl.action = #selector(byteViewSelectionChanged)
         byteViewSegmentedControl.translatesAutoresizingMaskIntoConstraints = false
         byteViewSegmentedControl.isHidden = true
-
-        stackView.addArrangedSubview(byteViewSegmentedControl)
         byteViewSegmentedControl.heightAnchor.constraint(equalToConstant: 24).isActive = true
+
+        previewButton.image = TCPViewerUI.image("eye")
+        previewButton.imagePosition = .imageLeading
+        previewButton.bezelStyle = .texturedRounded
+        previewButton.target = self
+        previewButton.action = #selector(showHTTPPreview)
+        previewButton.toolTip = "Preview the HTTP message with highlighting and prettified JSON"
+        previewButton.isHidden = true
+
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        headerRow.setViews([byteViewSegmentedControl, spacer, previewButton], in: .leading)
+        headerRow.orientation = .horizontal
+        headerRow.alignment = .centerY
+        headerRow.spacing = 8
+        headerRow.translatesAutoresizingMaskIntoConstraints = false
+        headerRow.isHidden = true
+        stackView.addArrangedSubview(headerRow)
+        headerRow.widthAnchor.constraint(equalTo: stackView.widthAnchor).isActive = true
     }
 
     private func setupRevealStatusLabel() {
@@ -327,7 +351,52 @@ final class PacketHexViewController: NSViewController {
             byteViewSegmentedControl.setEnabled(true, forSegment: index)
         }
         byteViewSegmentedControl.isHidden = byteViews.count <= 1
+        updateHeaderRowVisibility()
         selectRenderedSegment()
+    }
+
+    // Offer Preview only for packets that carry an HTTP request, response, or HTTP/2 body.
+    private func renderPreviewButton(for inspection: PacketInspection?) {
+        let available = inspection.map(HTTPMessagePreview.isAvailable(in:)) ?? false
+        if previewInspection?.packetID != inspection?.packetID {
+            previewPopover?.close()
+        }
+        previewInspection = available ? inspection : nil
+        previewButton.isHidden = !available
+        updateHeaderRowVisibility()
+    }
+
+    private func updateHeaderRowVisibility() {
+        headerRow.isHidden = byteViewSegmentedControl.isHidden && previewButton.isHidden
+    }
+
+    // Build the message on demand, since the body can be large, and show it in a popover by the button.
+    @objc private func showHTTPPreview() {
+        guard previewPopover == nil else {
+            previewPopover?.close()
+            return
+        }
+        guard let inspection = previewInspection, let preview = HTTPMessagePreview.make(from: inspection) else {
+            NSSound.beep()
+            return
+        }
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.animates = false
+        popover.contentSize = HTTPMessagePreviewViewController.contentSize
+        popover.contentViewController = HTTPMessagePreviewViewController(preview: preview, configuration: configuration)
+        popover.delegate = self
+        previewPopover = popover
+        popover.show(relativeTo: previewButton.bounds, of: previewButton, preferredEdge: .maxY)
+    }
+
+    // Release the popover's web view as soon as it closes.
+    func popoverDidClose(_ notification: Notification) {
+        guard let popover = notification.object as? NSPopover, popover === previewPopover else {
+            return
+        }
+        (popover.contentViewController as? HTTPMessagePreviewViewController)?.closeEditor()
+        previewPopover = nil
     }
 
     private func selectRenderedSegment() {

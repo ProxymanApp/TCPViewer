@@ -10,6 +10,7 @@ import 'monaco-editor/editor/contrib/wordHighlighter/browser/wordHighlighter.js'
 import 'monaco-editor/editor/contrib/toggleTabFocusMode/browser/toggleTabFocusMode.js';
 import workerSource from 'diff-worker-source';
 import { createDiff } from './view.js';
+import { createPreview } from './preview.js';
 import './styles.css';
 
 const workers = new Set();
@@ -25,7 +26,15 @@ globalThis.MonacoEnvironment = {
   }
 };
 
-window.tcpviewerDiff = createDiff(monaco, document.getElementById('diff'), () => {
-  for (const worker of workers) worker.terminate();
-  workers.clear();
-});
+// One bundle serves two pages: index.html (Packet Diff) and preview.html (HTTP message Preview).
+const diffContainer = document.getElementById('diff');
+if (diffContainer) {
+  window.tcpviewerDiff = createDiff(monaco, diffContainer, () => {
+    for (const worker of workers) worker.terminate();
+    workers.clear();
+  });
+}
+const previewContainer = document.getElementById('preview');
+if (previewContainer) {
+  window.tcpviewerPreview = createPreview(monaco, previewContainer);
+}

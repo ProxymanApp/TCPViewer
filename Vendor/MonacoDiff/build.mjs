@@ -30,6 +30,7 @@ if (inputs.some(path => /\/languages\/definitions\/|\/language\/|\/contrib\/(sug
   throw new Error('The diff bundle unexpectedly includes language or completion services.');
 }
 await copyFile(new URL('src/index.html', import.meta.url), new URL('index.html', output));
+await copyFile(new URL('src/preview.html', import.meta.url), new URL('preview.html', output));
 await copyFile(new URL('node_modules/monaco-editor/LICENSE', import.meta.url), new URL('LICENSE.txt', output));
 await copyFile(new URL('node_modules/monaco-editor/ThirdPartyNotices.txt', import.meta.url), new URL('ThirdPartyNotices.txt', output));
 await writeFile(new URL('VERSION', output), 'monaco-editor 0.57.0\nesbuild 0.28.2\n');
