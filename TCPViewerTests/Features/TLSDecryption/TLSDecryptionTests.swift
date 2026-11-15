@@ -192,10 +192,10 @@ struct TLSDecryptionStoreTests {
 struct TLSInspectorNoticeTests {
     private let keyLogURL = URL(fileURLWithPath: "/tmp/tlskeylog.txt")
 
-    @Test func encryptedApplicationDataAsksForAKeyLogOrExplainsMissingKeys() {
+    @Test func encryptedApplicationDataExplainsMissingKeysOnlyWithAKeyLog() {
         let inspection = makeInspection(fieldNames: ["tls", "tls.app_data"])
 
-        #expect(TLSInspectorNotice.make(for: inspection, activeKeyLogURL: nil) == .encryptedWithoutKeyLog)
+        #expect(TLSInspectorNotice.make(for: inspection, activeKeyLogURL: nil) == nil)
         #expect(TLSInspectorNotice.make(for: inspection, activeKeyLogURL: keyLogURL) == .encryptedWithKeyLog(fileName: "tlskeylog.txt"))
     }
 
@@ -215,10 +215,8 @@ struct TLSInspectorNoticeTests {
     @Test func noticeViewShowsTheActionsForEachState() {
         let view = TLSInspectorNoticeView(frame: .zero)
 
-        view.render(.encryptedWithoutKeyLog)
-        #expect(!view.isHidden && view.buttonTitles == ["Add Key Log File…", "TLS Settings…"])
         view.render(.encryptedWithKeyLog(fileName: "tlskeylog.txt"))
-        #expect(view.message.contains("tlskeylog.txt") && view.buttonTitles == ["Decrypt Again", "TLS Settings…"])
+        #expect(!view.isHidden && view.message.contains("tlskeylog.txt") && view.buttonTitles == ["Decrypt Again", "TLS Settings…"])
         view.render(.decrypted(keyLogFileName: "tlskeylog.txt"))
         #expect(view.title == "Decrypted with “tlskeylog.txt”" && view.buttonTitles == ["Show Decrypted Bytes"])
         view.render(nil)

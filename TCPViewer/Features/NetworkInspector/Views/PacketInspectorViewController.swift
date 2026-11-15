@@ -1719,10 +1719,6 @@ extension PacketInspectorViewController: NSMenuDelegate {
 
 extension PacketInspectorViewController: TLSInspectorNoticeViewDelegate {
     // App-wide TLS actions travel the responder chain to the app delegate, which owns Settings and the key log.
-    func tlsInspectorNoticeViewDidRequestAddKeyLog(_ view: TLSInspectorNoticeView) {
-        NSApp.sendAction(#selector(AppDelegate.addTLSKeyLogFile(_:)), to: nil, from: view)
-    }
-
     func tlsInspectorNoticeViewDidRequestSettings(_ view: TLSInspectorNoticeView) {
         NSApp.sendAction(#selector(AppDelegate.showTLSDecryptionSettings(_:)), to: nil, from: view)
     }

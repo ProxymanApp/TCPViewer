@@ -8,7 +8,6 @@
 import AppKit
 
 protocol TLSInspectorNoticeViewDelegate: AnyObject {
-    func tlsInspectorNoticeViewDidRequestAddKeyLog(_ view: TLSInspectorNoticeView)
     func tlsInspectorNoticeViewDidRequestSettings(_ view: TLSInspectorNoticeView)
     func tlsInspectorNoticeViewDidRequestDecryptAgain(_ view: TLSInspectorNoticeView)
     func tlsInspectorNoticeViewDidRequestShowDecryptedBytes(_ view: TLSInspectorNoticeView)
@@ -17,7 +16,6 @@ protocol TLSInspectorNoticeViewDelegate: AnyObject {
 // A strip above the packet details that says whether the selected TLS packet is decrypted, and what to do if not.
 final class TLSInspectorNoticeView: NSView {
     private enum Action: Int {
-        case addKeyLog
         case settings
         case decryptAgain
         case showDecryptedBytes
@@ -64,9 +62,7 @@ final class TLSInspectorNoticeView: NSView {
         messageLabel.stringValue = content.message
         layer?.backgroundColor = content.tint.withAlphaComponent(0.09).cgColor
         buttonStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        for (index, action) in content.actions.enumerated() {
-            buttonStack.addArrangedSubview(makeButton(action, isPrimary: index == 0))
-        }
+        content.actions.map(makeButton).forEach(buttonStack.addArrangedSubview)
     }
 
     // Wrapping labels need their width before Auto Layout can size their height.
@@ -97,14 +93,6 @@ final class TLSInspectorNoticeView: NSView {
 
     private static func content(for notice: TLSInspectorNotice) -> Content {
         switch notice {
-        case .encryptedWithoutKeyLog:
-            Content(
-                symbol: "lock.fill",
-                tint: .systemOrange,
-                title: "Encrypted TLS traffic",
-                message: "Add a TLS key log file from Proxyman, your browser or curl to see the HTTP requests inside.",
-                actions: [.addKeyLog, .settings]
-            )
         case .encryptedWithKeyLog(let fileName):
             Content(
                 symbol: "lock.trianglebadge.exclamationmark.fill",
@@ -124,10 +112,9 @@ final class TLSInspectorNoticeView: NSView {
         }
     }
 
-    private func makeButton(_ action: Action, isPrimary: Bool) -> NSButton {
+    private func makeButton(_ action: Action) -> NSButton {
         let title: String
         switch action {
-        case .addKeyLog: title = "Add Key Log File…"
         case .settings: title = "TLS Settings…"
         case .decryptAgain: title = "Decrypt Again"
         case .showDecryptedBytes: title = "Show Decrypted Bytes"
@@ -137,16 +124,11 @@ final class TLSInspectorNoticeView: NSView {
         button.controlSize = .small
         button.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         button.bezelStyle = .push
-        if isPrimary, action == .addKeyLog {
-            button.keyEquivalent = ""
-            button.bezelColor = .controlAccentColor
-        }
         return button
     }
 
     @objc private func buttonPressed(_ sender: NSButton) {
         switch Action(rawValue: sender.tag) {
-        case .addKeyLog: delegate?.tlsInspectorNoticeViewDidRequestAddKeyLog(self)
         case .settings: delegate?.tlsInspectorNoticeViewDidRequestSettings(self)
         case .decryptAgain: delegate?.tlsInspectorNoticeViewDidRequestDecryptAgain(self)
         case .showDecryptedBytes: delegate?.tlsInspectorNoticeViewDidRequestShowDecryptedBytes(self)
