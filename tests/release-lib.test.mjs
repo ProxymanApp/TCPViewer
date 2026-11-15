@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   assertReleaseTitleReflectsChanges,
+  compareVersions,
   defaultSentryURL,
   describeFetchError,
   emptyPayloadSHA256,
+  findDeveloperIDIdentity,
   findReleaseNote,
   generateAppcastXML,
   githubRepoFromRemoteURL,
@@ -22,6 +25,9 @@ import {
   makeR2StorageObjectKey,
   mergeEnv,
   missingRequiredEnv,
+  nextBuildNumberProblem,
+  nextReleaseDefaults,
+  nextVersionProblem,
   normalizeBetaDMGCustomName,
   normalizeReleaseBackendURL,
   normalizeSparklePrivateKey,
@@ -38,7 +44,9 @@ import {
   resolvePublishedGitHubReleaseArtifact,
   resolveSentryURL,
   requiredEnvNames,
+  setAppVersionInProject,
   signR2Request,
+  sparklePublicKeyFromPrivateKey,
   updateHomebrewCaskContent,
   validateHomebrewCaskContent,
   validateHomebrewLivecheckOutput,
@@ -567,5 +575,102 @@ test("formats GitHub release metadata from release notes", () => {
       "- None",
       ""
     ].join("\n")
+  );
+});
+
+test("suggests the next production version and build number", () => {
+  assert.equal(compareVersions("1.10.0", "1.9.0"), 1);
+  assert.equal(compareVersions("1.2", "1.2.0"), 0);
+  assert.equal(compareVersions("1.2.0", "1.22.1"), -1);
+
+  const latest = { latestVersion: "1.26.0", latestBuild: "126" };
+  assert.deepEqual(
+    nextReleaseDefaults({ projectVersion: "1.26.0", projectBuild: "126", ...latest }),
+    { version: "1.27.0", buildNumber: "127" }
+  );
+  // A version commit from a release that stopped before publishing is suggested again.
+  assert.deepEqual(
+    nextReleaseDefaults({ projectVersion: "1.26.1", projectBuild: "127", ...latest }),
+    { version: "1.26.1", buildNumber: "127" }
+  );
+  assert.deepEqual(
+    nextReleaseDefaults({ projectVersion: "1.27.0", projectBuild: "120", ...latest }),
+    { version: "1.27.0", buildNumber: "127" }
+  );
+});
+
+test("accepts only versions and build numbers newer than the published release", () => {
+  assert.equal(nextVersionProblem("1.27.0", "1.26.0"), null);
+  assert.equal(nextVersionProblem("1.26.1", "1.26.0"), null);
+  assert.match(nextVersionProblem("1.26.0", "1.26.0"), /isn't newer/);
+  assert.match(nextVersionProblem("1.25.9", "1.26.0"), /isn't newer/);
+  assert.match(nextVersionProblem("v1.27.0", "1.26.0"), /looks like/);
+  assert.match(nextVersionProblem("1.27.0-beta", "1.26.0"), /looks like/);
+
+  assert.equal(nextBuildNumberProblem("127", "126"), null);
+  assert.match(nextBuildNumberProblem("126", "126"), /isn't newer/);
+  assert.match(nextBuildNumberProblem("0127", "126"), /whole number/);
+  assert.match(nextBuildNumberProblem("12a", "126"), /whole number/);
+});
+
+test("sets the version only in the app target's build configurations", () => {
+  const configuration = (id, name, bundleId, version, build) => [
+    `\t\t${id} /* ${name} */ = {`,
+    "\t\t\tisa = XCBuildConfiguration;",
+    "\t\t\tbuildSettings = {",
+    `\t\t\t\tCURRENT_PROJECT_VERSION = ${build};`,
+    `\t\t\t\tMARKETING_VERSION = ${version};`,
+    `\t\t\t\tPRODUCT_BUNDLE_IDENTIFIER = ${bundleId};`,
+    "\t\t\t};",
+    `\t\t\tname = ${name};`,
+    "\t\t};"
+  ].join("\n");
+  const project = [
+    configuration("A1", "Debug", "com.example.app", "1.26.0", "126"),
+    configuration("A2", "Release", "com.example.app", "1.26.0", "126"),
+    configuration("B1", "Release", "\"com.example.app-cli\"", "1.26.0", "126"),
+    configuration("C1", "Release", "com.example.app.helper", "1.0", "1")
+  ].join("\n");
+
+  const updated = setAppVersionInProject(project, { bundleId: "com.example.app", version: "1.27.0", buildNumber: "127" });
+  assert.equal(updated.match(/MARKETING_VERSION = 1\.27\.0;/g).length, 2);
+  assert.equal(updated.match(/CURRENT_PROJECT_VERSION = 127;/g).length, 2);
+  assert.match(updated, /B1[\s\S]*MARKETING_VERSION = 1\.26\.0;[\s\S]*com\.example\.app-cli/);
+  assert.match(updated, /MARKETING_VERSION = 1\.0;/);
+
+  assert.throws(
+    () => setAppVersionInProject(project, { bundleId: "com.example.missing", version: "1.27.0", buildNumber: "127" }),
+    /no build configuration/
+  );
+  assert.throws(
+    () => setAppVersionInProject(project, { bundleId: "com.example.app", version: "1.27.0;", buildNumber: "127" }),
+    /Invalid app version/
+  );
+});
+
+test("matches the Sparkle private key with the app's public key", () => {
+  // A throwaway key pair made for this test only; real keys stay in the ignored .env and xcconfig files.
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const seed = Buffer.from(privateKey.export({ format: "jwk" }).d, "base64url").toString("base64");
+  const expected = Buffer.from(publicKey.export({ format: "jwk" }).x, "base64url").toString("base64");
+
+  assert.equal(sparklePublicKeyFromPrivateKey(seed), expected);
+  assert.throws(() => sparklePublicKeyFromPrivateKey("not a key"), /TCPVIEWER_SPARKLE_PRIVATE_ED_KEY/);
+});
+
+test("finds exactly one Developer ID Application identity for the team", () => {
+  const hash = "0123456789ABCDEF0123456789ABCDEF01234567";
+  const output = [
+    `  1) ${hash} "Developer ID Application: Example LLC (ABCDE12345)"`,
+    '  2) FEDCBA9876543210FEDCBA9876543210FEDCBA98 "Apple Development: Example (ABCDE12345)"',
+    "     2 valid identities found"
+  ].join("\n");
+  const options = { identity: "Developer ID Application: Example LLC", teamId: "ABCDE12345" };
+
+  assert.equal(findDeveloperIDIdentity(output, options), hash);
+  assert.throws(() => findDeveloperIDIdentity(output, { ...options, teamId: "ZZZZZ99999" }), /No valid Developer ID/);
+  assert.throws(
+    () => findDeveloperIDIdentity(`${output}\n  3) ${hash.replace("0", "1")} "Developer ID Application: Example LLC (ABCDE12345)"`, options),
+    /More than one/
   );
 });

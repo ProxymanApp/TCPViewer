@@ -1,8 +1,13 @@
 # Homebrew Cask release setup
 
-The production release can create the initial TCP Viewer cask or update the existing cask.
+A production release doesn't touch Homebrew. After it is published, open the Homebrew Cask pull request for it
+(the initial cask, or an update) with:
 
-The Homebrew-only command submits the latest public production release:
+```bash
+make homebrew
+```
+
+It runs the Homebrew-only command, which submits the latest public production release:
 
 ```bash
 npm run release:homebrew
@@ -59,11 +64,9 @@ Review Homebrew's current [cask acceptance](https://docs.brew.sh/Acceptable-Cask
 
 ## Release flags
 
-- `--bump-homebrew` creates the cask pull request.
-- `--no-bump-homebrew` skips Homebrew.
-- `--yes` skips Homebrew unless `--bump-homebrew` is also present.
-- `--homebrew-install-tested` confirms the initial install and uninstall checks already passed.
 - `--homebrew-only` submits the latest public production release without publishing it again.
+- `--yes` skips the confirmation.
+- `--homebrew-install-tested` confirms the initial install and uninstall checks already passed.
 
 After Homebrew merges the initial cask, users can install the app with:
 

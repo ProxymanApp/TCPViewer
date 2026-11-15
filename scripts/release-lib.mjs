@@ -1,4 +1,4 @@
-import { createHash, createHmac } from "node:crypto";
+import { createHash, createHmac, createPrivateKey, createPublicKey } from "node:crypto";
 
 export const minimumSystemVersion = "15.0";
 export const releaseDMGAppName = "tcpviewer";
@@ -188,6 +188,124 @@ export function normalizeSparklePrivateKey(value) {
   }
 
   return key;
+}
+
+// Derive Sparkle's base64 Ed25519 public key from the 32-byte private seed, to match it with the app's SUPublicEDKey.
+export function sparklePublicKeyFromPrivateKey(value) {
+  const seed = Buffer.from(normalizeSparklePrivateKey(value), "base64");
+  // PKCS#8 DER prefix for a raw Ed25519 seed (RFC 8410), so Node can load the key without a PEM file.
+  const der = Buffer.concat([Buffer.from("302e020100300506032b657004220420", "hex"), seed]);
+  const publicKey = createPublicKey(createPrivateKey({ key: der, format: "der", type: "pkcs8" }));
+  return Buffer.from(publicKey.export({ format: "jwk" }).x, "base64url").toString("base64");
+}
+
+// Pick the one valid Developer ID Application identity for the team, as fastlane does when it signs the app.
+export function findDeveloperIDIdentity(output, { identity, teamId }) {
+  const identityFilter = String(identity ?? "").trim();
+  const team = String(teamId ?? "").trim();
+  const matches = String(output).split(/\r?\n/).filter((line) => {
+    return line.includes("Developer ID Application")
+      && line.includes(identityFilter)
+      && line.includes(`(${team})`)
+      && /\b[0-9A-F]{40}\b/.test(line);
+  });
+  if (matches.length === 0) {
+    throw new Error(`No valid Developer ID Application identity for team ${team} in the keychain.`);
+  }
+  if (matches.length > 1) {
+    throw new Error(`More than one Developer ID Application identity matches team ${team}.`);
+  }
+
+  return matches[0].match(/\b[0-9A-F]{40}\b/)[0];
+}
+
+export function isReleaseVersion(value) {
+  return /^\d+\.\d+(?:\.\d+)?$/.test(String(value ?? ""));
+}
+
+// Compare dotted numeric versions so 1.10.0 sorts after 1.9.0; missing parts count as 0.
+export function compareVersions(left, right) {
+  const leftParts = String(left).split(".").map(Number);
+  const rightParts = String(right).split(".").map(Number);
+  for (let index = 0; index < Math.max(leftParts.length, rightParts.length); index += 1) {
+    const difference = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
+    if (difference !== 0) {
+      return Math.sign(difference);
+    }
+  }
+  return 0;
+}
+
+export function nextMinorVersion(version) {
+  const [major, minor] = String(version).split(".").map(Number);
+  return `${major}.${minor + 1}.0`;
+}
+
+// Suggest the next production release: the project's version and build when they were already raised by hand
+// (or by a release that failed after its version commit), else the next minor version and build number.
+export function nextReleaseDefaults({ projectVersion, projectBuild, latestVersion, latestBuild }) {
+  const version = isReleaseVersion(projectVersion) && compareVersions(projectVersion, latestVersion) > 0
+    ? projectVersion
+    : nextMinorVersion(latestVersion);
+  const project = Number(projectBuild);
+  const latest = Number(latestBuild);
+  const buildNumber = Number.isSafeInteger(project) && project > latest ? project : latest + 1;
+  return { version, buildNumber: String(buildNumber) };
+}
+
+export function nextVersionProblem(version, latestVersion) {
+  if (!isReleaseVersion(version)) {
+    return `A version looks like 1.27.0: "${version}"`;
+  }
+  if (compareVersions(version, latestVersion) <= 0) {
+    return `Version ${version} isn't newer than the published ${latestVersion}.`;
+  }
+  return null;
+}
+
+export function nextBuildNumberProblem(buildNumber, latestBuild) {
+  if (!/^[1-9]\d{0,8}$/.test(String(buildNumber ?? ""))) {
+    return `A build number is a whole number, like 127: "${buildNumber}"`;
+  }
+  if (Number(buildNumber) <= Number(latestBuild)) {
+    return `Build ${buildNumber} isn't newer than the published build ${latestBuild}.`;
+  }
+  return null;
+}
+
+// Set MARKETING_VERSION and CURRENT_PROJECT_VERSION in the app target's build configurations only; the CLI, MCP,
+// helper and test targets keep their own versions.
+export function setAppVersionInProject(content, { bundleId, version, buildNumber }) {
+  if (!isReleaseVersion(version) || nextBuildNumberProblem(buildNumber, 0)) {
+    throw new Error(`Invalid app version ${version} (${buildNumber}).`);
+  }
+
+  const bundleLines = new Set([
+    `PRODUCT_BUNDLE_IDENTIFIER = ${bundleId};`,
+    `PRODUCT_BUNDLE_IDENTIFIER = "${bundleId}";`
+  ]);
+  let updatedConfigurations = 0;
+  // Each XCBuildConfiguration object ends with "};" indented by two tabs; its buildSettings close with three.
+  const updated = String(content).replace(/isa = XCBuildConfiguration;[\s\S]*?\n\t\t\};/g, (block) => {
+    if (!block.split("\n").some((line) => bundleLines.has(line.trim()))) {
+      return block;
+    }
+
+    const versionLine = /(\n\s*MARKETING_VERSION = )[^;\n]*;/;
+    const buildLine = /(\n\s*CURRENT_PROJECT_VERSION = )[^;\n]*;/;
+    if (!versionLine.test(block) || !buildLine.test(block)) {
+      throw new Error(`An Xcode build configuration for ${bundleId} has no MARKETING_VERSION or CURRENT_PROJECT_VERSION.`);
+    }
+    updatedConfigurations += 1;
+    return block
+      .replace(versionLine, (_, prefix) => `${prefix}${version};`)
+      .replace(buildLine, (_, prefix) => `${prefix}${buildNumber};`);
+  });
+  if (updatedConfigurations === 0) {
+    throw new Error(`project.pbxproj has no build configuration for ${bundleId}.`);
+  }
+
+  return updated;
 }
 
 export function parseBuildSettings(text) {
@@ -680,7 +798,8 @@ function validateReleaseNote(release) {
 
 function isGenericReleaseTitle(release) {
   const title = normalizeTitleText(release.title).toLowerCase();
-  const versionPrefix = new RegExp(`^(?:tcp viewer\\s+)?v?${escapeRegExp(release.version.toLowerCase())}\\s+`);
+  // Matches both "TCP Viewer 1.2 Release" and "TCP Viewer 1.2: Release".
+  const versionPrefix = new RegExp(`^(?:tcp viewer\\s+)?v?${escapeRegExp(release.version.toLowerCase())}(?:\\s*:\\s*|\\s+)`);
   const suffix = title.replace(versionPrefix, "").trim();
   const genericSuffixes = new Set([
     "release",
