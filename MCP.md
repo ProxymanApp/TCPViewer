@@ -18,6 +18,7 @@ Start with `list_workspaces` or `list_tabs` to discover `workspace_id`, `tab_id`
 | `get_diff_pool`, `add_diff_packets`, `remove_diff_packets` | Read the Diff pool, snapshot packets into it, and remove items |
 | `update_diff_pool`, `open_diff_view` | Choose the Left/Right items, display mode, and content the Diff window shows, and open that window |
 | `compare_diff_packets` | Read the differences between two pool items as a unified text diff or byte ranges |
+| `get_tls_decryption`, `update_tls_decryption` | Read or change the TLS key log file that decrypts HTTPS, TLS and QUIC in every capture |
 
 Existing tools remain available. `get_capture_overview` still returns capture status and controls. `query_packets` remains a read-only packet query; `update_pane` changes the app's display filters. `start_capture.capture_filter` is the separate persistent BPF filter controlling future collection.
 
@@ -130,6 +131,22 @@ Each item reports `status` as `loading`, `ready`, or `failed`, its `side`, and `
 `compare_diff_packets` is read-only. Omitted `left_entry_id`, `right_entry_id`, and `content` use the pool's current Left, Right, and content, so a call without arguments returns what the Diff window shows. It waits up to 10 seconds for items that are still loading. `details` returns `diff`, a unified line diff of the decoded fields, with `context` unchanged lines (0 to 20, default 3) around each change. `bytes` returns `changes` with offsets, lengths, and hex previews of up to 256 bytes per side. `limit` caps the returned diff lines or byte changes at 1 to 5,000, default 1,000, and `truncated` reports a capped result. Details compare the first 2,000 lines of each packet; `lines_truncated` reports a longer packet.
 
 `update_diff_pool` preserves omitted fields. `left_entry_id` and `right_entry_id` accept an entry ID or `null` to clear that side. Each side holds one item, so assigning an item moves it. `display_mode` is `side_by_side` or `unified`; `content` is `details` or `bytes`. `remove_diff_packets` takes `entry_ids`, or `all=true` with `confirm=true`, and never changes captured packets. `open_diff_view` shows the Diff window without activating the app.
+
+## TLS decryption
+
+TCP Viewer decrypts TLS, DTLS and QUIC with an NSS key log file (`SSLKEYLOGFILE`), such as the one Proxyman writes with Tools › TLS Key Logging. The key log is app-wide, like Settings › TLS, so both tools reject target selectors.
+
+```json
+{"name":"get_tls_decryption","arguments":{}}
+```
+
+```json
+{"name":"update_tls_decryption","arguments":{"key_log_path":"/Users/me/Desktop/tlskeylog.txt"}}
+```
+
+`get_tls_decryption` returns `enabled`, `decrypting`, and `key_log` with the file's `path`, `status` (`ready`, `waiting_for_keys`, `reading`, `missing`, `unreadable`, or `not_key_log`), `tls_connection_count`, `key_count`, and `byte_count`. Key contents are never returned.
+
+`update_tls_decryption` takes `key_log_path` (absolute; an empty string removes the key log), `enabled`, and `decrypt_open_captures_again`. TCP Viewer checks that the file is a key log before using it; a rejected file changes nothing. It saves only the path and dissects open captures again, so decrypted packets read as `HTTP` or `HTTP2` in `query_packets` and their headers and bodies appear in `get_packet_details`, scrubbed by redaction like other decoded values. A running live capture decrypts new connections at once and the rest when it stops.
 
 ## Privacy and bounded work
 

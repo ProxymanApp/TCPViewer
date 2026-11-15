@@ -132,6 +132,31 @@ enum TCPViewerMCPToolCatalog {
             properties: ["packet_id": stringProperty("Packet ID as an unsigned decimal string.")],
             required: ["packet_id"]
         ),
+        readOnlyTool(
+            .getTLSDecryption,
+            title: "Get TLS Decryption",
+            description: "Read the TLS key log (SSLKEYLOGFILE) TCP Viewer uses to decrypt TLS, DTLS and QUIC in every capture: whether decryption is on, the file, its status, and how many TLS connections and keys it holds. Key contents are never returned.",
+            properties: [:]
+        ),
+        controlTool(
+            .updateTLSDecryption,
+            title: "Update TLS Decryption",
+            description: "Use a TLS key log file to decrypt HTTPS, TLS and QUIC traffic, like Settings > TLS. For Proxyman, use the file it writes with Tools > TLS Key Logging. TCP Viewer checks the file is a key log, remembers only its path, and dissects open captures again so decrypted packets show HTTP in query_packets and get_packet_details. A running live capture decrypts new connections at once and earlier ones when it stops.",
+            properties: [
+                "key_log_path": stringProperty(
+                    "Absolute path of an NSS key log file (lines such as CLIENT_RANDOM or CLIENT_HANDSHAKE_TRAFFIC_SECRET). An empty string removes the key log.",
+                    maximumLength: 4_096
+                ),
+                "enabled": .object([
+                    "type": "boolean",
+                    "description": "Turn key log decryption on or off without forgetting the file.",
+                ]),
+                "decrypt_open_captures_again": .object([
+                    "type": "boolean",
+                    "description": "Dissect open captures again, e.g. after the key log gained keys for connections already captured.",
+                ]),
+            ]
+        ),
     ] + automationTools
 
     private static var automationTools: [Tool] {

@@ -9,3 +9,8 @@ packet data in an open source repo.
 (`test/captures/tls12-dsb.pcapng`, GPL-2.0-or-later): two synthetic TLS 1.2
 `HEAD` requests to example.com whose throwaway session keys are embedded in a
 PCAPNG Decryption Secrets Block, used to test TLS decryption.
+
+`wireshark-tls13-rfc8446.pcap` and `wireshark-tls13-rfc8446.keys` are Wireshark's
+own test capture and NSS key log (`test/captures/tls13-rfc8446.pcap` and
+`test/keys/tls13-rfc8446.keys`, GPL-2.0-or-later): two synthetic TLS 1.3 HTTP
+sessions on localhost with throwaway keys, used to test key log file decryption.

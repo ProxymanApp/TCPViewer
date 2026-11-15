@@ -712,6 +712,8 @@ final class PacketInspectorViewController: NSViewController {
     private var hexItem: NSSplitViewItem?
     private var emptyStateView: NSView?
     private var emptyStateMessage: String?
+    private let tlsNoticeView = TLSInspectorNoticeView()
+    private let activeTLSKeyLogURL: () -> URL?
     private var latestInspectionState: PacketInspectionState?
     private var appliedPlacement: NetworkInspectorPlacement?
     private var pendingDefaultDetailDividerPlacement: NetworkInspectorPlacement?
@@ -719,8 +721,12 @@ final class PacketInspectorViewController: NSViewController {
     private var isApplyingSelection = false
     private var isApplyingExpansionState = false
 
-    init(configuration: AppConfiguration) {
+    init(
+        configuration: AppConfiguration,
+        activeTLSKeyLogURL: @escaping () -> URL? = { TLSDecryptionStore.shared.activeKeyLogFileURL }
+    ) {
         self.configuration = configuration
+        self.activeTLSKeyLogURL = activeTLSKeyLogURL
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -753,8 +759,24 @@ final class PacketInspectorViewController: NSViewController {
         )
         let renderChange = viewModel.render(inspectionState: inspectionState, filterText: filterSearchField.stringValue)
         hexViewController?.render(inspectionState: inspectionState)
+        renderTLSNotice(for: inspectionState)
 
         applyTreeRenderChange(renderChange, inspectionState: inspectionState)
+    }
+
+    // Keep the notice of the previous packet while the next one loads, so the strip does not flicker.
+    private func renderTLSNotice(for inspectionState: PacketInspectionState) {
+        guard inspectionState.selectedPacketID != nil else {
+            tlsNoticeView.render(nil)
+            return
+        }
+        guard !inspectionState.isLoading else { return }
+        let inspection = inspectionState.inspection?.packetID == inspectionState.selectedPacketID ? inspectionState.inspection : nil
+        tlsNoticeView.render(TLSInspectorNotice.make(for: inspection, activeKeyLogURL: activeTLSKeyLogURL()))
+    }
+
+    var tlsNotice: TLSInspectorNotice? {
+        tlsNoticeView.isHidden ? nil : tlsNoticeView.notice
     }
 
     // Forward a Follow TCP record to the Hex pane after its packet inspection finishes loading.
@@ -971,10 +993,15 @@ final class PacketInspectorViewController: NSViewController {
         stackView.spacing = 0
         stackView.edgeInsets = NSEdgeInsetsZero
         stackView.translatesAutoresizingMaskIntoConstraints = false
+        stackView.distribution = .fill
         stackView.addArrangedSubview(filterBarView)
+        tlsNoticeView.delegate = self
+        stackView.addArrangedSubview(tlsNoticeView)
         stackView.addArrangedSubview(detailContainerView)
         filterBarView.setContentHuggingPriority(.required, for: .vertical)
         filterBarView.setContentCompressionResistancePriority(.required, for: .vertical)
+        tlsNoticeView.setContentHuggingPriority(.required, for: .vertical)
+        tlsNoticeView.setContentCompressionResistancePriority(.required, for: .vertical)
         detailContainerView.setContentHuggingPriority(.defaultLow, for: .vertical)
         detailContainerView.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
         applyPlacement(.trailing, resetsDefaultDivider: false, forcesDefaultDivider: false)
@@ -982,8 +1009,8 @@ final class PacketInspectorViewController: NSViewController {
         view.addSubview(stackView)
         NSLayoutConstraint.activate([
             filterBarView.widthAnchor.constraint(equalTo: stackView.widthAnchor),
+            tlsNoticeView.widthAnchor.constraint(equalTo: stackView.widthAnchor),
             detailContainerView.widthAnchor.constraint(equalTo: stackView.widthAnchor),
-            detailContainerView.heightAnchor.constraint(equalTo: stackView.heightAnchor, constant: -Metrics.filterBarHeight),
             detailSplitViewController.view.leadingAnchor.constraint(equalTo: detailContainerView.leadingAnchor),
             detailSplitViewController.view.trailingAnchor.constraint(equalTo: detailContainerView.trailingAnchor),
             detailSplitViewController.view.topAnchor.constraint(equalTo: detailContainerView.topAnchor),
@@ -1687,5 +1714,24 @@ extension PacketInspectorViewController: NSMenuDelegate {
         menuItem.toolTip = "Create a packet table column from the selected packet detail field."
         menuItem.image = NSImage(systemSymbolName: "tablecells", accessibilityDescription: "Create Column")
         return menuItem
+    }
+}
+
+extension PacketInspectorViewController: TLSInspectorNoticeViewDelegate {
+    // App-wide TLS actions travel the responder chain to the app delegate, which owns Settings and the key log.
+    func tlsInspectorNoticeViewDidRequestAddKeyLog(_ view: TLSInspectorNoticeView) {
+        NSApp.sendAction(#selector(AppDelegate.addTLSKeyLogFile(_:)), to: nil, from: view)
+    }
+
+    func tlsInspectorNoticeViewDidRequestSettings(_ view: TLSInspectorNoticeView) {
+        NSApp.sendAction(#selector(AppDelegate.showTLSDecryptionSettings(_:)), to: nil, from: view)
+    }
+
+    func tlsInspectorNoticeViewDidRequestDecryptAgain(_ view: TLSInspectorNoticeView) {
+        NSApp.sendAction(#selector(AppDelegate.decryptOpenCapturesAgain(_:)), to: nil, from: view)
+    }
+
+    func tlsInspectorNoticeViewDidRequestShowDecryptedBytes(_ view: TLSInspectorNoticeView) {
+        hexViewController?.showByteView(labelPrefix: "Decrypted")
     }
 }

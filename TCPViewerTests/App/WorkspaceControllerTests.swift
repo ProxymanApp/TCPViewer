@@ -3180,6 +3180,221 @@ struct WindowControllerTests {
         await tearDown(controller)
     }
 
+    @Test func tlsKeyLogRedissectUpdatesChangedRowsInPlaceAndKeepsComments() async {
+        let url = URL(fileURLWithPath: "/tmp/tls-redissect.pcapng")
+        let packets = [
+            encryptedTLSPacket(makePacket(packetNumber: 1, source: .offline, transportHint: .tls)),
+            makePacket(packetNumber: 2, source: .offline, transportHint: .tcp),
+        ]
+        let document = FakeOfflineDocument(
+            url: url,
+            metadata: CaptureDocumentMetadata(format: .pcapng),
+            openPlan: .completed(packets),
+            inspections: Dictionary(uniqueKeysWithValues: packets.map { ($0.id, makeInspection(for: $0)) })
+        )
+        // The core reports every row; only the decrypted one differs from what the table shows.
+        document.redissectBatches = [[
+            PacketSummaryUpdate(packetID: packets[0].id, protocolSummary: "HTTP", infoSummary: "GET / HTTP/1.1", transportHint: .http1),
+            PacketSummaryUpdate(packetID: packets[1].id, protocolSummary: packets[1].protocolSummary, infoSummary: packets[1].infoSummary),
+        ]]
+        let controller = TCPViewerWorkspaceController(services: TCPViewerServiceRegistry(core: FakeTCPViewerCore(
+            interfaceInventories: [[makeInterface(id: "en0", displayName: "Wi-Fi")]],
+            documentFactory: { _ in document }
+        )))
+        await controller.openDocument(at: url)
+        await waitUntil { controller.snapshot.packetIngestState.totalPacketCount == 2 }
+        controller.setCustomComment("Keep me", packetIDs: [packets[0].id])
+        controller.selectPacket(packets[0].id)
+        let revision = controller.snapshot.packetIngestState.dissectionRevision
+        let packetRevision = controller.snapshot.packetIngestState.packetRevision
+
+        await withCheckedContinuation { continuation in controller.requestTLSRedissect { continuation.resume() } }
+
+        let decrypted = controller.snapshot.packetIngestState.packet(withID: packets[0].id)
+        #expect(document.redissectCount == 1)
+        #expect(decrypted?.protocolSummary == "HTTP")
+        #expect(decrypted?.infoSummary == "GET / HTTP/1.1")
+        #expect(decrypted?.transportHint == .http1)
+        #expect(decrypted?.customComment == "Keep me")
+        #expect(controller.snapshot.packetIngestState.packet(withID: packets[1].id)?.infoSummary == "Packet 2")
+        #expect(controller.snapshot.packetIngestState.lastMutation == .metadataUpdate(packetIDs: [packets[0].id]))
+        #expect(controller.snapshot.packetIngestState.packetRevision == packetRevision &+ 1)
+        #expect(controller.snapshot.packetIngestState.dissectionRevision == revision &+ 1)
+        #expect(controller.snapshot.selectedPacketID == packets[0].id)
+        await tearDown(controller)
+    }
+
+    @Test func tlsKeyLogRedissectMapsImportedFilePacketsToWorkspaceIDs() async {
+        let firstURL = TCPViewerCaptureFileImportPolicy.standardizedFileURL(URL(fileURLWithPath: "/tmp/tls-import-one.pcap"))
+        let secondURL = TCPViewerCaptureFileImportPolicy.standardizedFileURL(URL(fileURLWithPath: "/tmp/tls-import-two.pcap"))
+        let packets = [
+            makePacket(packetNumber: 1, source: .offline, transportHint: .tls),
+            makePacket(packetNumber: 2, source: .offline, transportHint: .tls),
+        ]
+        let firstDocument = FakeOfflineDocument(url: firstURL, metadata: CaptureDocumentMetadata(format: .pcap), openPlan: .completed(packets))
+        let secondDocument = FakeOfflineDocument(url: secondURL, metadata: CaptureDocumentMetadata(format: .pcap), openPlan: .completed(packets))
+        // Both files number their packets 1 and 2; the second file's packet 2 is workspace packet 4.
+        secondDocument.redissectBatches = [[
+            PacketSummaryUpdate(packetID: packets[1].id, protocolSummary: "HTTP2", infoSummary: "HEADERS[1]: GET /", transportHint: .http1),
+        ]]
+        let controller = TCPViewerWorkspaceController(services: TCPViewerServiceRegistry(core: FakeTCPViewerCore(
+            interfaceInventories: [[makeInterface(id: "en0", displayName: "Wi-Fi")]],
+            documentFactory: { $0 == secondURL ? secondDocument : firstDocument }
+        )))
+        await controller.importDocuments(at: [firstURL, secondURL])
+        await waitUntil { controller.snapshot.packetIngestState.totalPacketCount == 4 }
+
+        await withCheckedContinuation { continuation in controller.requestTLSRedissect { continuation.resume() } }
+
+        let protocols = controller.snapshot.packetIngestState.packets.map(\.protocolSummary)
+        #expect(firstDocument.redissectCount == 1 && secondDocument.redissectCount == 1)
+        #expect(protocols == [nil, nil, nil, "HTTP2"])
+        await tearDown(controller)
+    }
+
+    @Test func runningLiveCaptureDissectsAgainForTLSKeyLogWhenItStops() async {
+        let live = FakeLiveSession()
+        let controller = TCPViewerWorkspaceController(
+            services: TCPViewerServiceRegistry(core: FakeTCPViewerCore(
+                interfaceInventories: [[makeInterface(id: "en0", displayName: "Wi-Fi")]],
+                liveSession: live
+            )),
+            tlsKeyLogVersion: { "tlskeylog.txt|1" }
+        )
+        await controller.refreshInterfaces()
+        await controller.startLiveCapture()
+        let packet = encryptedTLSPacket(makePacket(packetNumber: 1, source: .live, transportHint: .tls))
+        live.send(.packetBatch([packet], disposition: .append))
+        await waitUntil { controller.snapshot.packetIngestState.totalPacketCount == 1 }
+        live.redissectBatches = [[PacketSummaryUpdate(packetID: packet.id, protocolSummary: "HTTP", infoSummary: "GET / HTTP/1.1")]]
+
+        // A running capture already uses the key log for new handshakes and cannot replay its packets yet.
+        await withCheckedContinuation { continuation in controller.requestTLSRedissect { continuation.resume() } }
+        #expect(live.redissectCount == 0)
+
+        live.send(.liveStateChanged(phase: .stopped, message: "Capture stopped."))
+        await waitUntil { controller.snapshot.packetIngestState.packet(withID: packet.id)?.protocolSummary == "HTTP" }
+        #expect(live.redissectCount == 1)
+        await tearDown(controller)
+    }
+
+    @Test(arguments: [
+        // No key log, or one that did not change during the capture, cannot decrypt anything new.
+        (nil as String?, nil as String?, 0),
+        ("tlskeylog.txt|100", "tlskeylog.txt|100", 0),
+        // Keys appended while capturing may belong to handshakes dissected before they arrived.
+        ("tlskeylog.txt|100", "tlskeylog.txt|180", 1),
+    ])
+    func stoppedLiveCaptureIsDissectedAgainOnlyWhenTheKeyLogChanged(
+        versionAtStart: String?,
+        versionAtStop: String?,
+        expectedRedissectCount: Int
+    ) async {
+        let live = FakeLiveSession()
+        var keyLogVersion = versionAtStart
+        let controller = TCPViewerWorkspaceController(
+            services: TCPViewerServiceRegistry(core: FakeTCPViewerCore(
+                interfaceInventories: [[makeInterface(id: "en0", displayName: "Wi-Fi")]],
+                liveSession: live
+            )),
+            tlsKeyLogVersion: { keyLogVersion }
+        )
+        await controller.refreshInterfaces()
+        await controller.startLiveCapture()
+        live.send(.packetBatch([encryptedTLSPacket(makePacket(packetNumber: 1, source: .live, transportHint: .tls))], disposition: .append))
+        await waitUntil { controller.snapshot.packetIngestState.totalPacketCount == 1 }
+        keyLogVersion = versionAtStop
+
+        live.send(.liveStateChanged(phase: .stopped, message: "Capture stopped."))
+        await settleEventLoop()
+
+        #expect(live.redissectCount == expectedRedissectCount)
+        await tearDown(controller)
+    }
+
+    @Test func deletingRowsDuringTLSRedissectStillAppliesTheDecryptedRows() async {
+        let url = URL(fileURLWithPath: "/tmp/tls-redissect-delete.pcapng")
+        let packets = [
+            makePacket(packetNumber: 1, source: .offline, transportHint: .tls),
+            makePacket(packetNumber: 2, source: .offline, transportHint: .tls),
+        ]
+        let document = FakeOfflineDocument(url: url, metadata: CaptureDocumentMetadata(format: .pcapng), openPlan: .completed(packets))
+        document.redissectBatches = [packets.map {
+            PacketSummaryUpdate(packetID: $0.id, protocolSummary: "HTTP", infoSummary: "GET / HTTP/1.1", transportHint: .http1)
+        }]
+        let controller = TCPViewerWorkspaceController(services: TCPViewerServiceRegistry(core: FakeTCPViewerCore(
+            interfaceInventories: [[makeInterface(id: "en0", displayName: "Wi-Fi")]],
+            documentFactory: { _ in document }
+        )))
+        await controller.openDocument(at: url)
+        await waitUntil { controller.snapshot.packetIngestState.totalPacketCount == 2 }
+
+        // The results reach the main queue after the delete, which changes the lineage but not the capture.
+        let finished = AsyncFlag()
+        controller.requestTLSRedissect { finished.set() }
+        controller.deletePackets([packets[0].id])
+        await waitUntil { finished.isSet }
+
+        #expect(controller.snapshot.packetIngestState.packets.map(\.protocolSummary) == ["HTTP"])
+        #expect(!controller.needsTLSRedissect)
+        await tearDown(controller)
+    }
+
+    @Test func failedImportedFileKeepsTheOtherFilesDecryptedRows() async {
+        let firstURL = TCPViewerCaptureFileImportPolicy.standardizedFileURL(URL(fileURLWithPath: "/tmp/tls-partial-one.pcap"))
+        let secondURL = TCPViewerCaptureFileImportPolicy.standardizedFileURL(URL(fileURLWithPath: "/tmp/tls-partial-two.pcap"))
+        let packet = makePacket(packetNumber: 1, source: .offline, transportHint: .tls)
+        let firstDocument = FakeOfflineDocument(url: firstURL, metadata: CaptureDocumentMetadata(format: .pcap), openPlan: .completed([packet]))
+        let secondDocument = FakeOfflineDocument(url: secondURL, metadata: CaptureDocumentMetadata(format: .pcap), openPlan: .completed([packet]))
+        let update = PacketSummaryUpdate(packetID: packet.id, protocolSummary: "HTTP", infoSummary: "GET / HTTP/1.1")
+        firstDocument.redissectBatches = [[update]]
+        secondDocument.redissectBatches = [[update]]
+        secondDocument.redissectError = TCPViewerCoreError(code: .unavailableFeature, message: "Another capture used Wireshark.")
+        let controller = TCPViewerWorkspaceController(services: TCPViewerServiceRegistry(core: FakeTCPViewerCore(
+            interfaceInventories: [[makeInterface(id: "en0", displayName: "Wi-Fi")]],
+            documentFactory: { $0 == secondURL ? secondDocument : firstDocument }
+        )))
+        await controller.importDocuments(at: [firstURL, secondURL])
+        await waitUntil { controller.snapshot.packetIngestState.totalPacketCount == 2 }
+
+        await withCheckedContinuation { continuation in controller.requestTLSRedissect { continuation.resume() } }
+
+        // The first file already stored its new rows, so they must reach the table now; the second retries later.
+        #expect(controller.snapshot.packetIngestState.packets.map(\.protocolSummary) == ["HTTP", nil])
+        #expect(controller.needsTLSRedissect)
+        await tearDown(controller)
+    }
+
+    @Test func failedTLSRedissectKeepsTheCaptureMarkedForTheNextTry() async {
+        let url = URL(fileURLWithPath: "/tmp/tls-redissect-busy.pcapng")
+        let packet = makePacket(packetNumber: 1, source: .offline, transportHint: .tls)
+        let document = FakeOfflineDocument(url: url, metadata: CaptureDocumentMetadata(format: .pcapng), openPlan: .completed([packet]))
+        document.redissectError = TCPViewerCoreError(code: .unavailableFeature, message: "Wireshark is busy with another capture.")
+        let controller = TCPViewerWorkspaceController(services: TCPViewerServiceRegistry(core: FakeTCPViewerCore(
+            interfaceInventories: [[makeInterface(id: "en0", displayName: "Wi-Fi")]],
+            documentFactory: { _ in document }
+        )))
+        await controller.openDocument(at: url)
+        await waitUntil { controller.snapshot.packetIngestState.totalPacketCount == 1 }
+
+        let revision = controller.snapshot.packetIngestState.dissectionRevision
+        await withCheckedContinuation { continuation in controller.requestTLSRedissect { continuation.resume() } }
+
+        #expect(controller.needsTLSRedissect)
+        #expect(controller.snapshot.navigationState.statusMessage.contains("Wireshark is busy"))
+        // Nothing was dissected again, so Wireshark filter results stay valid.
+        #expect(controller.snapshot.packetIngestState.dissectionRevision == revision)
+        await tearDown(controller)
+    }
+
+    private func encryptedTLSPacket(_ packet: PacketSummary) -> PacketSummary {
+        packet.tcpviewerApplying(summaryUpdate: PacketSummaryUpdate(
+            packetID: packet.id,
+            protocolSummary: "TLSv1.3",
+            infoSummary: "Application Data"
+        ))
+    }
+
     private func makeInterface(
         id: String,
         displayName: String,
@@ -3635,6 +3850,17 @@ private final class FakeLiveSession: LiveCaptureSessionProviding, @unchecked Sen
     private(set) var clearCapturedPacketsCount = 0
     private(set) var exportRequests: [([PacketSummary.ID], URL, CaptureFileFormat)] = []
     private(set) var latestHealthSnapshot = CaptureHealthSnapshot.empty
+    var redissectBatches: [[PacketSummaryUpdate]] = []
+    private(set) var redissectCount = 0
+
+    func redissectPackets(
+        updateHandler: @escaping ([PacketSummaryUpdate]) -> Void,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        redissectCount += 1
+        redissectBatches.forEach(updateHandler)
+        completion(.success(()))
+    }
 
     func start(completion: @escaping TCPViewerVoidCompletion) {
         startCount += 1
@@ -3786,6 +4012,18 @@ private final class FakeOfflineDocument: OfflineCaptureDocumentProviding, @unche
     private(set) var cancelLoadingCount = 0
     private(set) var currentProgress: PacketLoadProgress = .idle
     private(set) var displayFilterEvaluationRequests: [[PacketSummary.ID]] = []
+    var redissectBatches: [[PacketSummaryUpdate]] = []
+    var redissectError: Error?
+    private(set) var redissectCount = 0
+
+    func redissectPackets(
+        updateHandler: @escaping ([PacketSummaryUpdate]) -> Void,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        redissectCount += 1
+        redissectBatches.forEach(updateHandler)
+        completion(redissectError.map { .failure($0) } ?? .success(()))
+    }
 
     init(
         url: URL,
@@ -4023,6 +4261,14 @@ private final class FakeOfflineDocument: OfflineCaptureDocumentProviding, @unche
 
     func send(_ event: PacketIngestEvent) {
         eventHandler?(.success(event))
+    }
+}
+
+private final class AsyncFlag {
+    private(set) var isSet = false
+
+    func set() {
+        isSet = true
     }
 }
 

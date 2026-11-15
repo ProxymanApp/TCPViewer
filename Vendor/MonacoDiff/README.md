@@ -1,4 +1,4 @@
-# Embedded Packet Details Diff
+# Embedded Packet Details Diff and HTTP Preview
 
 This directory replaces the private MonacoEditor Swift package with TCP Viewer's
 small AppKit/WebKit host and a subset of the public MIT-licensed
@@ -10,6 +10,16 @@ All assets, fonts, and the diff worker work offline. The web view uses an
 ephemeral store, restricted local-file access, and a CSP that denies network
 connections. Text crosses the WebKit bridge as data, never HTML or script source.
 
+## Pages
+
+- `index.html` (`window.tcpviewerDiff`): the Diff window's packet details comparison.
+- `preview.html` (`window.tcpviewerPreview`): the bytes pane's HTTP Preview popover, a
+  read-only editor with a small Monarch grammar for HTTP request/response messages
+  (`http-message`) and the same grammar with JSON body tokens (`http-message-json`).
+
+Both pages share one bundle (`diff.js`/`diff.css`) and the app's
+`MonacoPageViewController` host.
+
 ## Scope
 
 - Read-only plaintext Packet Details, including indentation and whitespace changes.
@@ -18,12 +28,15 @@ connections. Text crosses the WebKit bridge as data, never HTML or script source
 - Previous/next difference through the Diff window's Shift-F7/F7 shortcuts.
 - System light/dark appearance and the app's packet font size.
 - Two reused text models; closing the window disposes both models and the worker.
+- HTTP Preview: start line, headers, and body colors in light and dark themes; the app
+  prettifies JSON before it crosses the bridge.
 
 Packet Bytes continues to use HexFiend. Diff-pool selection, external comparisons,
 licensing, and persisted display mode stay in the app's existing controllers.
 No language packs, language servers, completion, or scripting integration are
-included. Monaco's core still contains the infrastructure required by its diff
-editor; this is a focused distribution, not a fork of its diff algorithm.
+included beyond the HTTP Monarch grammar in `src/preview.js`. Monaco's core still
+contains the infrastructure required by its diff editor; this is a focused
+distribution, not a fork of its diff algorithm.
 
 ## Rebuild
 
@@ -40,6 +53,7 @@ font, and copies the upstream license/notices. It rejects language/completion
 modules accidentally added to the bundle. Commit both source changes and rebuilt
 `MonacoDiff/` assets. A normal Xcode build never runs this tooling.
 
-The `DiffMonacoEditorIntegrationTests` in the existing app test target exercise
-the real bundled runtime in WKWebView, including its worker under the file origin.
+The `DiffMonacoEditorIntegrationTests` and `HTTPMessagePreviewEditorIntegrationTests`
+in the existing app test target exercise the real bundled runtime in WKWebView,
+including the diff worker under the file origin and the HTTP grammar's tokens.
 Run them along with the existing Diff tests after changing this integration.

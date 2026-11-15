@@ -8,6 +8,15 @@
 import AppKit
 import SwiftUI
 
+enum TCPViewerSettingsTab: String {
+    case privacy = "Privacy"
+    case appearance = "Appearance"
+    case helperTool = "Helper Tool"
+    case tlsDecryption = "TLS"
+    case mcp = "MCP"
+    case moreApps = "More Apps"
+}
+
 final class TCPViewerSettingsWindowController: NSWindowController {
     private static let frameAutosaveName = "TCPViewer.SettingsWindow"
 
@@ -18,37 +27,46 @@ final class TCPViewerSettingsWindowController: NSWindowController {
         configuration: AppConfiguration,
         networkHelperToolManager: any TCPViewerNetworkHelperToolManaging
     ) {
-        var resizeForMCPContentChange: (() -> Void)?
+        var resizeForContentChange: (() -> Void)?
 
         tabViewController.title = "Settings"
         tabViewController.tabStyle = .toolbar
         tabViewController.addTabViewItem(Self.makeTab(
-            title: "Privacy",
+            tab: .privacy,
             systemImage: "person.fill",
             viewController: Self.makeHostingController(rootView: TCPViewerPrivacySettingsView(configuration: configuration))
         ))
         tabViewController.addTabViewItem(Self.makeTab(
-            title: "Appearance",
+            tab: .appearance,
             systemImage: "paintbrush.pointed.fill",
             viewController: Self.makeHostingController(rootView: TCPViewerAppearanceSettingsView(configuration: configuration))
         ))
         tabViewController.addTabViewItem(Self.makeTab(
-            title: "Helper Tool",
+            tab: .helperTool,
             systemImage: "wrench.and.screwdriver.fill",
             viewController: Self.makeHostingController(rootView: TCPViewerHelperToolSettingsView(manager: networkHelperToolManager))
         ))
         tabViewController.addTabViewItem(Self.makeTab(
-            title: "MCP",
-            systemImage: "cpu.fill",
-            viewController: Self.makeHostingController(rootView: TCPViewerMCPSettingsView(
-                configuration: configuration,
+            tab: .tlsDecryption,
+            systemImage: "lock.open.fill",
+            viewController: Self.makeHostingController(rootView: TCPViewerTLSDecryptionSettingsView(
                 onPreferredHeightChange: {
-                    resizeForMCPContentChange?()
+                    resizeForContentChange?()
                 }
             ))
         ))
         tabViewController.addTabViewItem(Self.makeTab(
-            title: "More Apps",
+            tab: .mcp,
+            systemImage: "cpu.fill",
+            viewController: Self.makeHostingController(rootView: TCPViewerMCPSettingsView(
+                configuration: configuration,
+                onPreferredHeightChange: {
+                    resizeForContentChange?()
+                }
+            ))
+        ))
+        tabViewController.addTabViewItem(Self.makeTab(
+            tab: .moreApps,
             systemImage: "square.grid.2x2.fill",
             viewController: Self.makeHostingController(rootView: TCPViewerMoreAppsSettingsView())
         ))
@@ -64,7 +82,7 @@ final class TCPViewerSettingsWindowController: NSWindowController {
         }
 
         super.init(window: window)
-        resizeForMCPContentChange = { [weak self] in
+        resizeForContentChange = { [weak self] in
             self?.resizeWindowToSelectedTab()
         }
         tabViewController.onSelectionChanged = { [weak self] in
@@ -75,20 +93,27 @@ final class TCPViewerSettingsWindowController: NSWindowController {
         resizeWindowToSelectedTab()
     }
 
+    // Bring a pane forward, e.g. TLS when the user asks to add a key log from a capture window.
+    func select(_ tab: TCPViewerSettingsTab) {
+        guard let index = tabViewController.tabViewItems.firstIndex(where: { $0.label == tab.rawValue }) else { return }
+        tabViewController.selectedTabViewItemIndex = index
+    }
+
     private static func makeHostingController<Content: View>(rootView: Content) -> NSViewController {
         let controller = NSHostingController(rootView: rootView)
         controller.view.frame.size.width = TCPViewerSettingsLayout.windowWidth
         return controller
     }
 
+    // Tabs take their titles from TCPViewerSettingsTab, so select(_:) always finds them.
     private static func makeTab(
-        title: String,
+        tab: TCPViewerSettingsTab,
         systemImage: String,
         viewController: NSViewController
     ) -> NSTabViewItem {
         let item = NSTabViewItem(viewController: viewController)
-        item.label = title
-        item.image = NSImage(systemSymbolName: systemImage, accessibilityDescription: title)
+        item.label = tab.rawValue
+        item.image = NSImage(systemSymbolName: systemImage, accessibilityDescription: tab.rawValue)
         return item
     }
 

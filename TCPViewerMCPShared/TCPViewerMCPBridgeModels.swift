@@ -46,6 +46,8 @@ enum TCPViewerMCPCommand: String, Codable, CaseIterable, Sendable {
     case stopCapture = "stop_capture"
     case clearPackets = "clear_packets"
     case revealPacket = "reveal_packet"
+    case getTLSDecryption = "get_tls_decryption"
+    case updateTLSDecryption = "update_tls_decryption"
 }
 
 extension TCPViewerMCPCommand {
@@ -66,9 +68,14 @@ extension TCPViewerMCPCommand {
         }
     }
 
+    // The TLS key log is app-wide: it applies to every capture and never resolves a workspace.
+    var isTLSDecryptionCommand: Bool {
+        self == .getTLSDecryption || self == .updateTLSDecryption
+    }
+
     // The Diff pool is app-wide, so only adding packets resolves a workspace, tab, or pane.
     var acceptsTarget: Bool {
-        self != .listWorkspaces && (!isDiffCommand || self == .addDiffPackets)
+        self != .listWorkspaces && !isTLSDecryptionCommand && (!isDiffCommand || self == .addDiffPackets)
     }
 }
 

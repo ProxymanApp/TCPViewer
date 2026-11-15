@@ -60,6 +60,13 @@ public final class NativeOfflineCaptureDocument: OfflineCaptureDocumentProviding
         state.clearDisplayFilter(completion: completion)
     }
 
+    public func redissectPackets(
+        updateHandler: @escaping ([PacketSummaryUpdate]) -> Void,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        state.redissectPackets(updateHandler: updateHandler, completion: completion)
+    }
+
     public func followStream(
         containing packetID: PacketSummary.ID,
         streamProtocol: FollowStreamProtocol? = nil,
@@ -208,7 +215,9 @@ private final class NativeOfflineCaptureDocumentState: @unchecked Sendable {
     private let followQueue = DispatchQueue(label: "com.proxyman.tcpviewer.PcapPlusPlusCore.NativeOfflineCaptureDocument.follow", qos: .userInitiated)
     private let nativeDocument: PCPPNativeOfflineDocument
     private let eventBox: EventCallbackBox<PacketIngestEvent>
+    private static let redissectUpdateBatchSize = 1_024
     private let packetCache = LockedValueBox<[PacketSummary]>([])
+    private let redissectCancellation = LockedValueBox<CancellationFlag?>(nil)
     private let loadProgressBox = LockedValueBox<PacketLoadProgress>(.idle)
 
     private var activeLoad: ActiveLoad?
@@ -239,6 +248,8 @@ private final class NativeOfflineCaptureDocumentState: @unchecked Sendable {
     }
 
     func reopen(completion: @escaping TCPViewerCompletion<[PacketSummary]>) {
+        // Set now: a re-dissection already running holds the state queue until it sees the flag.
+        redissectCancellation.get()?.cancel()
         stateQueue.async {
             if let activeLoad = self.activeLoad {
                 activeLoad.cancellationFlag.cancel()
@@ -251,6 +262,7 @@ private final class NativeOfflineCaptureDocumentState: @unchecked Sendable {
     }
 
     func cancelLoading(completion: (() -> Void)?) {
+        redissectCancellation.get()?.cancel()
         stateQueue.async {
             self.activeLoad?.cancellationFlag.cancel()
             completion?()
@@ -265,6 +277,69 @@ private final class NativeOfflineCaptureDocumentState: @unchecked Sendable {
                     return NativeBridgeMapper.packetInspection(descriptor)
                 } catch {
                     throw NativeBridgeMapper.coreError(error, defaultCode: .offlineFileOpenFailed)
+                }
+            })
+        }
+    }
+
+    // Dissect the loaded packets again and report only rows whose table text or protocol changed.
+    // It runs on the state queue on purpose: Wireshark has one process-wide session, so an inspection that ran
+    // meanwhile would take it from this pass. Cancel, reopen and closing the tab stop it through `cancelLoading`.
+    func redissectPackets(
+        updateHandler: @escaping ([PacketSummaryUpdate]) -> Void,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        let cancellation = CancellationFlag()
+        redissectCancellation.set(cancellation)
+        stateQueue.async {
+            guard self.activeLoad == nil else {
+                completion(.failure(TCPViewerCoreError(
+                    code: .unavailableFeature,
+                    message: "Packets cannot be dissected again while the capture is still loading."
+                )))
+                return
+            }
+            // Rows come back in capture order, so they line up with the cached rows by index.
+            let cachedPackets = self.packetCache.get()
+            var changedRows: [(index: Int, packet: PacketSummary)] = []
+            var index = 0
+            completion(Result {
+                do {
+                    try self.nativeDocument.redissectPacketSummaries(
+                        batchSize: Self.redissectUpdateBatchSize,
+                        cancellationCheck: { cancellation.isCancelled }
+                    ) { descriptors in
+                        var updates: [PacketSummaryUpdate] = []
+                        for packet in NativeBridgeMapper.packetBatch(descriptors, source: .offline) {
+                            defer { index += 1 }
+                            let previous = cachedPackets.indices.contains(index) && cachedPackets[index].id == packet.id
+                                ? cachedPackets[index]
+                                : nil
+                            guard previous?.protocolSummary != packet.protocolSummary
+                                    || previous?.infoSummary != packet.infoSummary
+                                    || previous?.transportHint != packet.transportHint else {
+                                continue
+                            }
+                            changedRows.append((index, packet))
+                            updates.append(PacketSummaryUpdate(
+                                packetID: packet.id,
+                                protocolSummary: packet.protocolSummary,
+                                infoSummary: packet.infoSummary,
+                                transportHint: packet.transportHint
+                            ))
+                        }
+                        if !updates.isEmpty {
+                            updateHandler(updates)
+                        }
+                    }
+                } catch {
+                    throw NativeBridgeMapper.coreError(error, defaultCode: .unavailableFeature)
+                }
+                // Keep the cache in step only once the whole pass succeeded.
+                self.packetCache.withValue { packets in
+                    for row in changedRows where packets.indices.contains(row.index) && packets[row.index].id == row.packet.id {
+                        packets[row.index] = row.packet
+                    }
                 }
             })
         }
