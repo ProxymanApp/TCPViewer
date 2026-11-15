@@ -341,6 +341,54 @@ struct LiveCaptureLifecycleTests {
         #expect(findNode(in: inspection.detailNodes, fieldName: "http.host") != nil)
     }
 
+    @Test func stoppedLiveCaptureDecryptsWithTLSKeyLogWhenDissectedAgain() throws {
+        // Replay Wireshark's TLS 1.3 test capture as live traffic; its key log arrives only after the capture.
+        defer { TLSKeyLog.setKeyLogFile(nil) }
+        TLSKeyLog.setKeyLogFile(nil)
+        let bundle = Bundle(for: TestLiveCaptureBackend.self)
+        let captureURL = try #require(bundle.url(forResource: "wireshark-tls13-rfc8446", withExtension: "pcap", subdirectory: "Fixtures/CaptureFiles")
+            ?? bundle.url(forResource: "wireshark-tls13-rfc8446", withExtension: "pcap"))
+        let keyLogURL = try #require(bundle.url(forResource: "wireshark-tls13-rfc8446", withExtension: "keys", subdirectory: "Fixtures/CaptureFiles")
+            ?? bundle.url(forResource: "wireshark-tls13-rfc8446", withExtension: "keys"))
+        let records = try NativeCaptureFile.load(from: captureURL).records
+        let reads = records.enumerated().map { index, record in
+            LibpcapPacketReadResult.packet(
+                header: pcap_pkthdr(ts: timeval(tv_sec: index + 1, tv_usec: 0), caplen: UInt32(record.rawBytes.count), len: UInt32(record.rawBytes.count)),
+                bytes: record.rawBytes
+            )
+        }
+        let session = PCPPNativeLiveSession(
+            interfaceIdentifier: "test0",
+            options: makeOptions(),
+            captureBackend: TestLiveCaptureBackend(queuedReads: reads),
+            dissectionSessionFactory: { try WiresharkEpanSession(purpose: .live) }
+        )
+        let packetDelivered = DispatchSemaphore(value: 0)
+        session.packetHandler = { _ in packetDelivered.signal() }
+
+        try session.start()
+        for _ in records {
+            #expect(packetDelivered.wait(timeout: .now() + 2) == .success)
+        }
+        // A running capture is never replayed: new handshakes already use the current key log.
+        #expect(try session.redissectPacketSummaries(batchSize: 4) { _ in } == false)
+        try session.stop()
+
+        TLSKeyLog.setKeyLogFile(keyLogURL)
+        var summaries: [PCPPNativePacketSummaryDescriptor] = []
+        var batchCount = 0
+        #expect(try session.redissectPacketSummaries(batchSize: 4) { batch in
+            batchCount += 1
+            summaries.append(contentsOf: batch)
+        })
+        #expect(summaries.count == records.count)
+        #expect(batchCount == 4)
+        #expect(summaries.filter { $0.protocolSummary == "HTTP" }.map(\.packetNumber) == [5, 6, 8, 10, 12, 13])
+        // Inspection reuses the decrypted first pass instead of replaying the capture again.
+        let inspection = try session.inspectPacket(withIdentifier: 5)
+        #expect(findNode(in: inspection.detailNodes, fieldName: "http.request.uri")?.value == "/first")
+    }
+
     @Test func runningAndStoppedLiveCaptureFollowUDPWithoutLosingNewPackets() throws {
         // A controllable backend proves following does not consume or finish the active first pass.
         func read(_ number: Int, response: Bool, payload: String) -> LibpcapPacketReadResult {

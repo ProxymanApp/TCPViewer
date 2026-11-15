@@ -240,6 +240,10 @@ TCPViewerDisplayFilterMatchResult *TCPViewerWiresharkSessionEvaluateDisplayFilte
     uint64_t generation
 );
 void TCPViewerWiresharkSessionClearDisplayFilter(TCPViewerWiresharkSession *session);
+// Use an NSS key log file (SSLKEYLOGFILE format) for TLS, DTLS and QUIC decryption; NULL or "" turns it off.
+// New Wireshark sessions and handshakes the active session has not dissected yet use it; packets that were
+// already dissected keep their result until their capture is dissected again.
+void TCPViewerWiresharkSetTLSKeyLogFile(const char *path);
 bool TCPViewerWiresharkSessionAddDecryptionSecrets(
     TCPViewerWiresharkSession *session,
     uint32_t secretsType,

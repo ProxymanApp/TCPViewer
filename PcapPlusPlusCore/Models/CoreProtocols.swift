@@ -116,7 +116,27 @@ public extension DisplayFilterEvaluating {
     }
 }
 
-public protocol LiveCaptureSessionProviding: StreamFollowing, DisplayFilterEvaluating {
+public protocol PacketRedissecting {
+    // Dissect loaded packets again in place, e.g. after the TLS key log changed.
+    // `updateHandler` receives bounded batches of rows whose Protocol or Info may have changed;
+    // a running live capture skips this because new handshakes already use the current key log.
+    func redissectPackets(
+        updateHandler: @escaping ([PacketSummaryUpdate]) -> Void,
+        completion: @escaping TCPViewerVoidCompletion
+    )
+}
+
+public extension PacketRedissecting {
+    func redissectPackets(
+        updateHandler: @escaping ([PacketSummaryUpdate]) -> Void,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        _ = updateHandler
+        completion(.success(()))
+    }
+}
+
+public protocol LiveCaptureSessionProviding: StreamFollowing, DisplayFilterEvaluating, PacketRedissecting {
     var eventHandler: PacketIngestEventHandler? { get set }
 
     func start(completion: @escaping TCPViewerVoidCompletion)
@@ -156,7 +176,7 @@ public extension LiveCaptureSessionProviding {
 }
 #endif
 
-public protocol OfflineCaptureDocumentProviding: StreamFollowing, DisplayFilterEvaluating {
+public protocol OfflineCaptureDocumentProviding: StreamFollowing, DisplayFilterEvaluating, PacketRedissecting {
     var eventHandler: PacketIngestEventHandler? { get set }
 
     func open(completion: @escaping TCPViewerCompletion<[PacketSummary]>)

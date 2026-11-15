@@ -1158,6 +1158,7 @@ final class NetworkInspectorViewModel {
     private var wiresharkFilterState: PacketWiresharkFilterState
     private var wiresharkFilterMembership: PacketWiresharkFilterMembership?
     private var wiresharkFilterMembershipLineageRevision: UInt64?
+    private var observedDissectionRevision: UInt64 = 0
     private var displayFilterText: String
     private var structuredFilterGroup: PacketStructuredFilterGroup
     private var endpointStatisticsFilter: EndpointStatisticsRow.ID?
@@ -2411,7 +2412,7 @@ final class NetworkInspectorViewModel {
             backingIdentity: ingestState.backingIdentity ?? ingestState.source?.rawValue ?? "empty",
             packetLineageRevision: ingestState.packetLineageRevision,
             expression: expression,
-            dissectionRevision: PacketDisplayFilterCacheKey.dissectionRevision
+            dissectionRevision: "\(PacketDisplayFilterCacheKey.dissectionRevision)-\(ingestState.dissectionRevision)"
         )
     }
 
@@ -3956,8 +3957,11 @@ extension NetworkInspectorViewModel: TCPViewerWorkspaceControllerDelegate {
         if pendingInspectorCaptureChanged || activeEvaluationCaptureChanged {
             cancelWiresharkFilterEvaluation(clearMembership: false)
         }
+        let dissectedAgain = observedDissectionRevision != ingestState.dissectionRevision
+        observedDissectionRevision = ingestState.dissectionRevision
         if let lineageRevision = wiresharkFilterMembershipLineageRevision,
-           lineageRevision != ingestState.packetLineageRevision {
+           lineageRevision != ingestState.packetLineageRevision || dissectedAgain {
+            // New packets, or the same packets dissected again (e.g. TLS decrypted), change which ones match.
             cancelWiresharkFilterEvaluation(clearMembership: true)
             reapplyWiresharkFilterIfNeeded()
         } else {

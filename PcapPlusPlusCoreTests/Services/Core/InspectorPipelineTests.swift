@@ -378,6 +378,80 @@ struct InspectorPipelineTests {
         #expect(method(in: nodes) == "HEAD")
     }
 
+    @Test func tlsKeyLogDecryptsLoadedCaptureWhenDissectedAgain() async throws {
+        // Wireshark's TLS 1.3 test capture: HTTP over two sessions, decrypted with its throwaway key log.
+        defer { TLSKeyLog.setKeyLogFile(nil) }
+        TLSKeyLog.setKeyLogFile(nil)
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(
+            at: bundledCaptureFixtureURL(fileName: "wireshark-tls13-rfc8446.pcap")
+        )
+        let encrypted = try await document.open()
+        #expect(encrypted.filter { $0.protocolSummary == "HTTP" }.isEmpty)
+
+        TLSKeyLog.setKeyLogFile(try bundledCaptureFixtureURL(fileName: "wireshark-tls13-rfc8446.keys"))
+        let decrypted = try await document.redissectPackets()
+        let httpPacketNumbers = Set(decrypted.filter { $0.protocolSummary == "HTTP" }.compactMap { update in
+            encrypted.first { $0.id == update.packetID }?.packetNumber
+        })
+        #expect(httpPacketNumbers == [5, 6, 8, 10, 12, 13])
+        #expect(decrypted.first { $0.protocolSummary == "HTTP" }?.transportHint == .http1)
+        #expect(document.packetSummaries().filter { $0.protocolSummary == "HTTP" }.count == 6)
+
+        // Inspection uses the new first pass: HTTP fields plus Wireshark's decrypted byte source.
+        let request = try #require(encrypted.first { $0.packetNumber == 5 })
+        let inspection = try await document.inspectPacket(id: request.id)
+        #expect(findNode(in: inspection.detailNodes, fieldName: "http.request.uri")?.value == "/first")
+        #expect(inspection.byteViews.contains { $0.label.hasPrefix("Decrypted TLS") })
+
+        // Turning the key log off encrypts the rows again.
+        TLSKeyLog.setKeyLogFile(nil)
+        let reverted = try await document.redissectPackets()
+        let httpIDs = Set(decrypted.filter { $0.protocolSummary == "HTTP" }.map(\.packetID))
+        #expect(httpIDs.isSubset(of: Set(reverted.map(\.packetID))))
+        #expect(reverted.allSatisfy { $0.protocolSummary?.hasPrefix("TLS") == true })
+        #expect(document.packetSummaries().filter { $0.protocolSummary == "HTTP" }.isEmpty)
+    }
+
+    @Test func tlsKeyLogSetBeforeOpeningDecryptsOnFirstLoad() async throws {
+        defer { TLSKeyLog.setKeyLogFile(nil) }
+        TLSKeyLog.setKeyLogFile(try bundledCaptureFixtureURL(fileName: "wireshark-tls13-rfc8446.keys"))
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(
+            at: bundledCaptureFixtureURL(fileName: "wireshark-tls13-rfc8446.pcap")
+        )
+        let summaries = try await document.open()
+
+        #expect(summaries.first { $0.packetNumber == 5 }?.infoSummary.hasPrefix("GET /first HTTP/1.1") == true)
+        // Nothing changed since the first load, so dissecting again reports no rows.
+        #expect(try await document.redissectPackets().isEmpty)
+    }
+
+    @Test func missingTLSKeyLogFileLeavesTrafficEncrypted() async throws {
+        defer { TLSKeyLog.setKeyLogFile(nil) }
+        TLSKeyLog.setKeyLogFile(URL(fileURLWithPath: "/nonexistent/tcpviewer-missing.keys"))
+        let document = try await NativeTCPViewerCore().openOfflineCaptureDocument(
+            at: bundledCaptureFixtureURL(fileName: "wireshark-tls13-rfc8446.pcap")
+        )
+        let summaries = try await document.open()
+
+        #expect(summaries.count == 13)
+        #expect(summaries.filter { $0.protocolSummary == "HTTP" }.isEmpty)
+    }
+
+    @Test func tlsKeyLogDecryptsAfterAnotherCaptureTookWireshark() throws {
+        // epan_new empties Wireshark's key map, so a session rebuilt later must load the key log again.
+        defer { TLSKeyLog.setKeyLogFile(nil) }
+        TLSKeyLog.setKeyLogFile(try bundledCaptureFixtureURL(fileName: "wireshark-tls13-rfc8446.keys"))
+        let file = try NativeCaptureFile.load(from: bundledCaptureFixtureURL(fileName: "wireshark-tls13-rfc8446.pcap"))
+        let session = try WiresharkEpanSession()
+        let other = try WiresharkEpanSession()
+        _ = try other.observe(file.records[0])
+
+        for record in file.records {
+            _ = try session.observe(record)
+        }
+        #expect(try session.summarize(file.records[4]).protocolSummary == "HTTP")
+    }
+
     @Test func malformedPcapNgPacketRecordIsSkippedAndLaterPacketsStillLoad() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

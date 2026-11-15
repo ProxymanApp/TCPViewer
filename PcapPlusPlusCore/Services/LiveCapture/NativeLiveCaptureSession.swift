@@ -73,6 +73,13 @@ public final class NativeLiveCaptureSession: LiveCaptureSessionProviding, @unche
         state.clearDisplayFilter(completion: completion)
     }
 
+    public func redissectPackets(
+        updateHandler: @escaping ([PacketSummaryUpdate]) -> Void,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        state.redissectPackets(updateHandler: updateHandler, completion: completion)
+    }
+
     public func followStream(
         containing packetID: PacketSummary.ID,
         streamProtocol: FollowStreamProtocol? = nil,
@@ -355,6 +362,7 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
     private static let maxLivePacketBatchSize = 256
     private static let maxLiveReanalysisBatchSize = 128
     private static let maxLiveReanalysisPendingCount = 4_096
+    private static let maxRedissectBatchSize = 1_024
     private static let livePacketBatchInterval: DispatchTimeInterval = .milliseconds(100)
     private static let liveReanalysisInterval: DispatchTimeInterval = .milliseconds(250)
 
@@ -490,6 +498,31 @@ private final class NativeLiveCaptureSessionState: @unchecked Sendable {
         queue.async {
             completion(Result {
                 try self.inspectPacketOnQueue(id: id)
+            })
+        }
+    }
+
+    // Dissect a stopped capture again; the live store keeps no summaries, so every row is reported in batches.
+    func redissectPackets(
+        updateHandler: @escaping ([PacketSummaryUpdate]) -> Void,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        queue.async {
+            completion(Result {
+                do {
+                    _ = try self.nativeSession.redissectPacketSummaries(batchSize: Self.maxRedissectBatchSize) { descriptors in
+                        updateHandler(NativeBridgeMapper.packetBatch(descriptors, source: .live).map {
+                            PacketSummaryUpdate(
+                                packetID: $0.id,
+                                protocolSummary: $0.protocolSummary,
+                                infoSummary: $0.infoSummary,
+                                transportHint: $0.transportHint
+                            )
+                        })
+                    }
+                } catch {
+                    throw NativeBridgeMapper.coreError(error, defaultCode: .unavailableFeature)
+                }
             })
         }
     }

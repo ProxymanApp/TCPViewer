@@ -8,6 +8,15 @@
 import AppKit
 import SwiftUI
 
+enum TCPViewerSettingsTab: String {
+    case privacy = "Privacy"
+    case appearance = "Appearance"
+    case helperTool = "Helper Tool"
+    case tlsDecryption = "TLS"
+    case mcp = "MCP"
+    case moreApps = "More Apps"
+}
+
 final class TCPViewerSettingsWindowController: NSWindowController {
     private static let frameAutosaveName = "TCPViewer.SettingsWindow"
 
@@ -18,7 +27,7 @@ final class TCPViewerSettingsWindowController: NSWindowController {
         configuration: AppConfiguration,
         networkHelperToolManager: any TCPViewerNetworkHelperToolManaging
     ) {
-        var resizeForMCPContentChange: (() -> Void)?
+        var resizeForContentChange: (() -> Void)?
 
         tabViewController.title = "Settings"
         tabViewController.tabStyle = .toolbar
@@ -38,12 +47,21 @@ final class TCPViewerSettingsWindowController: NSWindowController {
             viewController: Self.makeHostingController(rootView: TCPViewerHelperToolSettingsView(manager: networkHelperToolManager))
         ))
         tabViewController.addTabViewItem(Self.makeTab(
+            title: TCPViewerSettingsTab.tlsDecryption.rawValue,
+            systemImage: "lock.open.fill",
+            viewController: Self.makeHostingController(rootView: TCPViewerTLSDecryptionSettingsView(
+                onPreferredHeightChange: {
+                    resizeForContentChange?()
+                }
+            ))
+        ))
+        tabViewController.addTabViewItem(Self.makeTab(
             title: "MCP",
             systemImage: "cpu.fill",
             viewController: Self.makeHostingController(rootView: TCPViewerMCPSettingsView(
                 configuration: configuration,
                 onPreferredHeightChange: {
-                    resizeForMCPContentChange?()
+                    resizeForContentChange?()
                 }
             ))
         ))
@@ -64,7 +82,7 @@ final class TCPViewerSettingsWindowController: NSWindowController {
         }
 
         super.init(window: window)
-        resizeForMCPContentChange = { [weak self] in
+        resizeForContentChange = { [weak self] in
             self?.resizeWindowToSelectedTab()
         }
         tabViewController.onSelectionChanged = { [weak self] in
@@ -73,6 +91,12 @@ final class TCPViewerSettingsWindowController: NSWindowController {
         resizeWindowToSelectedTab()
         TCPViewerUI.restoreWindowFrameOrCenter(window, autosaveName: Self.frameAutosaveName)
         resizeWindowToSelectedTab()
+    }
+
+    // Bring a pane forward, e.g. TLS when the user asks to add a key log from a capture window.
+    func select(_ tab: TCPViewerSettingsTab) {
+        guard let index = tabViewController.tabViewItems.firstIndex(where: { $0.label == tab.rawValue }) else { return }
+        tabViewController.selectedTabViewItemIndex = index
     }
 
     private static func makeHostingController<Content: View>(rootView: Content) -> NSViewController {

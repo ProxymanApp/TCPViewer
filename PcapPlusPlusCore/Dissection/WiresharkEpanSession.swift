@@ -179,6 +179,15 @@ final class WiresharkEpanSession {
         TCPViewerWiresharkSessionClearDisplayFilter(handle)
     }
 
+    // Point every Wireshark session at an NSS key log file; nil turns key log decryption off.
+    static func setTLSKeyLogFile(path: String?) {
+        guard let path else {
+            TCPViewerWiresharkSetTLSKeyLogFile(nil)
+            return
+        }
+        path.withCString { TCPViewerWiresharkSetTLSKeyLogFile($0) }
+    }
+
     // Give Wireshark a capture's decryption secrets; the shim reloads them whenever this session is rebuilt.
     @discardableResult
     func addDecryptionSecret(_ secret: NativeDecryptionSecret) -> Bool {

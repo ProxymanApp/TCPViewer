@@ -186,6 +186,30 @@ extension OfflineCaptureDocumentProviding {
     }
 }
 
+extension PacketRedissecting {
+    // Collect every batch the re-dissection reports, in order.
+    func redissectPackets() async throws -> [PacketSummaryUpdate] {
+        let updates = LockedUpdates()
+        try await waitForResult { completion in
+            redissectPackets(updateHandler: { updates.append($0) }, completion: completion)
+        }
+        return updates.values
+    }
+}
+
+private final class LockedUpdates: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [PacketSummaryUpdate] = []
+
+    var values: [PacketSummaryUpdate] {
+        lock.withLock { storage }
+    }
+
+    func append(_ batch: [PacketSummaryUpdate]) {
+        lock.withLock { storage.append(contentsOf: batch) }
+    }
+}
+
 private func waitForResult<Value>(
     _ start: (@escaping TCPViewerCompletion<Value>) -> Void
 ) async throws -> Value {

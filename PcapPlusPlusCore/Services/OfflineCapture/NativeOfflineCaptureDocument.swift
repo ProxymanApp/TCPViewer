@@ -60,6 +60,13 @@ public final class NativeOfflineCaptureDocument: OfflineCaptureDocumentProviding
         state.clearDisplayFilter(completion: completion)
     }
 
+    public func redissectPackets(
+        updateHandler: @escaping ([PacketSummaryUpdate]) -> Void,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        state.redissectPackets(updateHandler: updateHandler, completion: completion)
+    }
+
     public func followStream(
         containing packetID: PacketSummary.ID,
         streamProtocol: FollowStreamProtocol? = nil,
@@ -208,6 +215,7 @@ private final class NativeOfflineCaptureDocumentState: @unchecked Sendable {
     private let followQueue = DispatchQueue(label: "com.proxyman.tcpviewer.PcapPlusPlusCore.NativeOfflineCaptureDocument.follow", qos: .userInitiated)
     private let nativeDocument: PCPPNativeOfflineDocument
     private let eventBox: EventCallbackBox<PacketIngestEvent>
+    private static let redissectUpdateBatchSize = 1_024
     private let packetCache = LockedValueBox<[PacketSummary]>([])
     private let loadProgressBox = LockedValueBox<PacketLoadProgress>(.idle)
 
@@ -268,6 +276,58 @@ private final class NativeOfflineCaptureDocumentState: @unchecked Sendable {
                 }
             })
         }
+    }
+
+    // Dissect the loaded packets again and report only rows whose table text or protocol changed.
+    // It runs on the state queue, so inspections asked for meanwhile see the new dissection.
+    func redissectPackets(
+        updateHandler: @escaping ([PacketSummaryUpdate]) -> Void,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        stateQueue.async {
+            guard self.activeLoad == nil else {
+                completion(.failure(TCPViewerCoreError(
+                    code: .unavailableFeature,
+                    message: "Packets cannot be dissected again while the capture is still loading."
+                )))
+                return
+            }
+            completion(Result {
+                do {
+                    let descriptors = try self.nativeDocument.redissectPacketSummaries()
+                    let updates = self.replaceCachedPackets(with: NativeBridgeMapper.packetBatch(descriptors, source: .offline))
+                    for start in stride(from: 0, to: updates.count, by: Self.redissectUpdateBatchSize) {
+                        updateHandler(Array(updates[start..<min(start + Self.redissectUpdateBatchSize, updates.count)]))
+                    }
+                } catch {
+                    throw NativeBridgeMapper.coreError(error, defaultCode: .unavailableFeature)
+                }
+            })
+        }
+    }
+
+    // Swap in the new summaries and collect the rows whose table text or protocol changed.
+    private func replaceCachedPackets(with packets: [PacketSummary]) -> [PacketSummaryUpdate] {
+        var updates: [PacketSummaryUpdate] = []
+        packetCache.withValue { cachedPackets in
+            let previousByID = Dictionary(cachedPackets.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            for packet in packets {
+                let previous = previousByID[packet.id]
+                guard previous?.protocolSummary != packet.protocolSummary
+                        || previous?.infoSummary != packet.infoSummary
+                        || previous?.transportHint != packet.transportHint else {
+                    continue
+                }
+                updates.append(PacketSummaryUpdate(
+                    packetID: packet.id,
+                    protocolSummary: packet.protocolSummary,
+                    infoSummary: packet.infoSummary,
+                    transportHint: packet.transportHint
+                ))
+            }
+            cachedPackets = packets
+        }
+        return updates
     }
 
     func validateDisplayFilter(_ expression: String, completion: @escaping (DisplayFilterValidation) -> Void) {

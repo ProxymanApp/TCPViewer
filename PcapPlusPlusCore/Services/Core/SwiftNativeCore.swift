@@ -242,6 +242,27 @@ final class PCPPNativeOfflineDocument {
         loadIncrementally(reload: true, batchSize: Int(clamping: batchSize), batchHandler: batchHandler, progressHandler: progressHandler, cancellationCheck: cancellationCheck, error: errorPointer)
     }
 
+    // Summarize the loaded packets again in a fresh Wireshark session, e.g. after the TLS key log changed.
+    // Wireshark applies keys only while its first pass sees a handshake, so new keys need a new first pass.
+    func redissectPacketSummaries() throws -> [PCPPNativePacketSummaryDescriptor] {
+        // Build the session first: if a live capture owns Wireshark this throws and the old summaries stay valid.
+        let session = try makeDissectionSession(for: state.read(\.file))
+        state.write { $0.dissectionSession = session }
+        var nativeError: NSError?
+        let summaries = loadIncrementally(
+            reload: false,
+            batchSize: Int.max,
+            batchHandler: nil,
+            progressHandler: nil,
+            cancellationCheck: nil,
+            error: &nativeError
+        )
+        if let nativeError {
+            throw nativeError
+        }
+        return summaries
+    }
+
     func inspectPacket(withIdentifier identifier: UInt64) throws -> PCPPNativePacketInspectionDescriptor {
         try state.write { state in
             guard let index = state.recordIndexByIdentifier[identifier],
@@ -1058,6 +1079,42 @@ final class PCPPNativeLiveSession {
                 protocolSummary: $0.protocolSummary,
                 infoSummary: $0.infoSummary
             )
+        }
+    }
+
+    // Rebuild a stopped capture's first pass so a changed TLS key log reaches packets already captured.
+    // Summaries stream to `batchHandler` because a long capture should not be held in memory twice.
+    // Returns false without work while capturing: new handshakes already use the current key log.
+    func redissectPacketSummaries(
+        batchSize: Int,
+        batchHandler: ([PCPPNativePacketSummaryDescriptor]) -> Void
+    ) throws -> Bool {
+        try state.write { state in
+            guard state.phase == .stopped, state.hadWorkingDissectionSession else {
+                return false
+            }
+            let session = try replayRetainedPackets(in: &state)
+            var batch: [PCPPNativePacketSummaryDescriptor] = []
+            batch.reserveCapacity(batchSize)
+            try state.packetStore.forEachRecord { record in
+                let summary = try autoreleasepool {
+                    makePacketSummaryDescriptor(
+                        record: record,
+                        analyzed: PacketAnalyzer(record: record).analyze(),
+                        wireshark: try session.summarize(record),
+                        followStreamID: session.streamIdentifier(for: record.identifier)
+                    )
+                }
+                batch.append(summary)
+                if batch.count >= batchSize {
+                    batchHandler(batch)
+                    batch.removeAll(keepingCapacity: true)
+                }
+            }
+            if !batch.isEmpty {
+                batchHandler(batch)
+            }
+            return true
         }
     }
 

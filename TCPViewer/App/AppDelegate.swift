@@ -55,6 +55,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ aNotification: Notification) {
         NSWindow.allowsAutomaticWindowTabbing = false
+        // Wireshark must know the TLS key log before the first capture is dissected.
+        TLSDecryptionStore.shared.start()
         cliCoordinator.start()
         sentryService.start()
         appConfiguration.applyAppearance()
@@ -72,6 +74,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             toolsMenu.autoenablesItems = false
             toolsMenu.delegate = self
         }
+        wireTLSDecryptionMenu()
         wireHelpMenu()
         verifyLicenseAtLaunch()
         updateMCPServerAvailability()
@@ -530,18 +533,24 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @IBAction func showSettings(_ sender: Any?) {
-        if let settingsWindowController {
-            settingsWindowController.showWindow(sender)
-            settingsWindowController.window?.makeKeyAndOrderFront(sender)
-            return
-        }
+        showSettings(tab: nil, sender: sender)
+    }
 
-        let controller = TCPViewerSettingsWindowController(
+    @IBAction func showTLSDecryptionSettings(_ sender: Any?) {
+        showSettings(tab: .tlsDecryption, sender: sender)
+    }
+
+    private func showSettings(tab: TCPViewerSettingsTab?, sender: Any?) {
+        let controller = settingsWindowController as? TCPViewerSettingsWindowController ?? TCPViewerSettingsWindowController(
             configuration: appConfiguration,
             networkHelperToolManager: networkHelperToolManager
         )
         settingsWindowController = controller
+        if let tab {
+            controller.select(tab)
+        }
         controller.showWindow(sender)
+        controller.window?.makeKeyAndOrderFront(sender)
     }
 
     @IBAction func showLicense(_ sender: Any?) {

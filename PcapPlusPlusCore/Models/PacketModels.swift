@@ -432,11 +432,19 @@ public struct PacketSummaryUpdate: Sendable, Codable, Hashable {
     public let packetID: PacketSummary.ID
     public let protocolSummary: String?
     public let infoSummary: String
+    // Set when dissecting again changed the row's protocol (e.g. TLS decrypted into HTTP); nil keeps the current hint.
+    public let transportHint: TransportProtocolHint?
 
-    public init(packetID: PacketSummary.ID, protocolSummary: String?, infoSummary: String) {
+    public init(
+        packetID: PacketSummary.ID,
+        protocolSummary: String?,
+        infoSummary: String,
+        transportHint: TransportProtocolHint? = nil
+    ) {
         self.packetID = packetID
         self.protocolSummary = protocolSummary
         self.infoSummary = infoSummary
+        self.transportHint = transportHint
     }
 }
 

@@ -32,6 +32,7 @@
 #include <epan/frame_data_sequence.h>
 #include <epan/packet.h>
 #include <epan/prefs.h>
+#include <epan/prefs-int.h>
 #include <epan/proto.h>
 #include <epan/secrets.h>
 #include <epan/tap.h>
@@ -191,6 +192,26 @@ std::mutex &WiresharkAPIMutex()
     // Keep the lock alive until process exit; test runners can tear down Swift objects late.
     static auto *mutex = new std::mutex();
     return *mutex;
+}
+
+std::string &TLSKeyLogFilePath()
+{
+    // Wireshark keeps one TLS key map per process, so the key log file is process-wide too.
+    // Guarded by WiresharkAPIMutex.
+    static auto *path = new std::string();
+    return *path;
+}
+
+// Point Wireshark's "tls.keylog_file" preference (shared by TLS, DTLS and QUIC) at the configured file.
+// Wireshark opens it lazily when a handshake needs keys and follows lines appended later.
+// The caller holds WiresharkAPIMutex and Wireshark's preferences are registered.
+void ApplyTLSKeyLogFileLocked()
+{
+    module_t *tlsModule = prefs_find_module("tls");
+    pref_t *keyLogPreference = tlsModule == nullptr ? nullptr : prefs_find_preference(tlsModule, "keylog_file");
+    if (keyLogPreference != nullptr) {
+        prefs_set_string_value(keyLogPreference, TLSKeyLogFilePath().c_str(), pref_current);
+    }
 }
 
 #if DEBUG
@@ -2001,6 +2022,7 @@ struct TCPViewerWiresharkSession {
             return false;
         }
         // epan_new reruns dissector init routines, which drop TLS and QUIC keys; give this capture's back.
+        ApplyTLSKeyLogFileLocked();
         for (const auto &secret : decryptionSecrets) {
             loadDecryptionSecretsLocked(secret.first, secret.second);
         }
@@ -3008,6 +3030,17 @@ void TCPViewerWiresharkSessionClearDisplayFilter(TCPViewerWiresharkSession *sess
     std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
     std::lock_guard<std::mutex> sessionLock(session->mutex);
     session->clearActiveDisplayFilterLocked();
+}
+
+void TCPViewerWiresharkSetTLSKeyLogFile(const char *path)
+{
+    std::lock_guard<std::mutex> apiLock(WiresharkAPIMutex());
+    TLSKeyLogFilePath() = path == nullptr ? "" : path;
+    // A session can only exist after the runtime registered its preferences, so the running one
+    // (e.g. a live capture) can use the new file for handshakes it has not dissected yet.
+    if (TCPViewerWiresharkSession::activeSession() != nullptr) {
+        ApplyTLSKeyLogFileLocked();
+    }
 }
 
 bool TCPViewerWiresharkSessionAddDecryptionSecrets(

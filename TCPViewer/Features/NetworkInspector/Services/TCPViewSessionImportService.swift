@@ -625,6 +625,26 @@ final class TCPViewSessionOfflineDocument: OfflineCaptureDocumentProviding {
         }
     }
 
+    // Dissect the inner capture again and report its rows with this session's packet IDs.
+    func redissectPackets(
+        updateHandler: @escaping ([PacketSummaryUpdate]) -> Void,
+        completion: @escaping TCPViewerVoidCompletion
+    ) {
+        guard let innerDocument else {
+            completion(.success(()))
+            return
+        }
+        let sessionIDByInnerID = Dictionary(
+            innerPacketIDBySessionID.map { ($0.value, $0.key) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        innerDocument.redissectPackets(updateHandler: { updates in
+            updateHandler(updates.compactMap { update in
+                sessionIDByInnerID[update.packetID].map(update.tcpviewerRemapping(packetID:))
+            })
+        }, completion: completion)
+    }
+
     // Translate inner capture packet IDs back to their stable session IDs.
     func followStream(
         containing packetID: PacketSummary.ID,

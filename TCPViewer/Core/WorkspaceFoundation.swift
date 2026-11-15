@@ -50,6 +50,8 @@ struct PacketIngestState: Sendable, Equatable {
     var sessionClientIconFilePathByClientID: [String: String]
     var packetRevision: UInt64
     var packetLineageRevision: UInt64
+    // Bumped when the same packets were dissected again (e.g. a new TLS key log), so Wireshark filter results go stale.
+    var dissectionRevision: UInt64 = 0
     var lastMutation: PacketIngestMutation
     var lastBatchCount: Int
     var truncatedPacketCount: Int
@@ -1024,6 +1026,48 @@ private final class TCPViewerWorkspaceControllerRegistry {
     private func pruneReleasedControllers() {
         controllers.removeAll { $0.controller == nil }
     }
+
+    private var isRunningTLSRedissect = false
+    private var tlsRedissectRequestedWhileRunning = false
+
+    // Mark every open capture for a new TLS key log, then dissect them again.
+    func redissectAllForTLSKeyLog() {
+        pruneReleasedControllers()
+        controllers.compactMap(\.controller).forEach { $0.needsTLSRedissect = true }
+        redissectPendingForTLSKeyLog()
+    }
+
+    // Captures share Wireshark's single session, so they are dissected one at a time. Each marked capture is tried once
+    // per run and keeps its mark when it cannot run yet (loading, capturing, or Wireshark busy with a live capture);
+    // a later key log change, capture stop or finished load runs the marked ones again.
+    func redissectPendingForTLSKeyLog() {
+        guard !isRunningTLSRedissect else {
+            tlsRedissectRequestedWhileRunning = true
+            return
+        }
+        pruneReleasedControllers()
+        // While a live capture owns Wireshark, offline captures fail to start a session and stay marked.
+        let pending = controllers.compactMap(\.controller).filter(\.needsTLSRedissect)
+        guard !pending.isEmpty else {
+            return
+        }
+        isRunningTLSRedissect = true
+        redissect(pending[...])
+    }
+
+    private func redissect(_ pending: ArraySlice<TCPViewerWorkspaceController>) {
+        guard let controller = pending.first else {
+            isRunningTLSRedissect = false
+            if tlsRedissectRequestedWhileRunning {
+                tlsRedissectRequestedWhileRunning = false
+                redissectPendingForTLSKeyLog()
+            }
+            return
+        }
+        controller.redissectForTLSKeyLog { [weak self] in
+            self?.redissect(pending.dropFirst())
+        }
+    }
 }
 
 private final class WeakTCPViewerWorkspaceController {
@@ -1135,6 +1179,7 @@ final class TCPViewerWorkspaceController {
     private let preferences: TCPViewerPreferences
     private let interfaceHistoryStore: InterfaceSelectionHistoryStore
     private let activeInterfaceIDProvider: () -> String?
+    private let hasActiveTLSKeyLog: () -> Bool
 
     private var hasPerformedInitialLoad = false
     private var liveSession: (any LiveCaptureSessionProviding)?
@@ -1166,9 +1211,11 @@ final class TCPViewerWorkspaceController {
         snapshot: TCPViewerWindowSnapshot? = nil,
         userDefaults: UserDefaults = .standard,
         interfaceHistoryStore: InterfaceSelectionHistoryStore? = nil,
-        activeInterfaceIDProvider: @escaping () -> String? = CurrentNetworkInterfaceResolver.primaryInterfaceID
+        activeInterfaceIDProvider: @escaping () -> String? = CurrentNetworkInterfaceResolver.primaryInterfaceID,
+        hasActiveTLSKeyLog: @escaping () -> Bool = { TLSDecryptionStore.shared.activeKeyLogFileURL != nil }
     ) {
         self.services = services ?? .foundation
+        self.hasActiveTLSKeyLog = hasActiveTLSKeyLog
         self.backgroundCoordinator = backgroundCoordinator ?? TCPViewerBackgroundCoordinator()
         self.preferences = TCPViewerPreferences(defaults: userDefaults)
         self.interfaceHistoryStore = interfaceHistoryStore ?? InterfaceSelectionHistoryStore(defaults: userDefaults)
@@ -3374,6 +3421,157 @@ final class TCPViewerWorkspaceController {
         }
     }
 
+    // MARK: TLS key log re-dissection
+
+    private struct TLSRedissectRoute {
+        let redissector: any PacketRedissecting
+        // Backing packet ID -> workspace packet ID for imported files; nil when the IDs are the same.
+        let workspaceIDByBackingID: [PacketSummary.ID: PacketSummary.ID]?
+    }
+
+    // Set when the TLS key log changed and this capture has not been dissected again yet.
+    fileprivate(set) var needsTLSRedissect = false
+    private var isRedissectingTLS = false
+
+    private var isLiveCaptureActive: Bool {
+        guard liveSession != nil else { return false }
+        return [.starting, .running, .paused, .stopping].contains(snapshot.sessionState.phase)
+    }
+
+    // Dissect every open capture again after the TLS key log changed.
+    static func redissectAllForTLSKeyLog() {
+        TCPViewerWorkspaceControllerRegistry.shared.redissectAllForTLSKeyLog()
+    }
+
+    // Dissect only this capture again; the registry uses the same path for every open capture.
+    func requestTLSRedissect(completion: @escaping () -> Void = {}) {
+        needsTLSRedissect = true
+        redissectForTLSKeyLog(completion: completion)
+    }
+
+    // Dissect the loaded packets again in place so a changed TLS key log applies; selection, comments,
+    // styles and deleted rows stay because only Protocol and Info change. Loading or capturing keeps the mark.
+    fileprivate func redissectForTLSKeyLog(completion: @escaping () -> Void) {
+        let isLoading = snapshot.documentState.phase == .opening || snapshot.documentState.phase == .reopening
+        guard needsTLSRedissect, !isRedissectingTLS, !isLoading, !isLiveCaptureActive else {
+            completion()
+            return
+        }
+        needsTLSRedissect = false
+        let routes = tlsRedissectRoutes()
+        guard !routes.isEmpty else {
+            completion()
+            return
+        }
+
+        isRedissectingTLS = true
+        snapshot.navigationState.statusMessage = "Decrypting TLS with the key log…"
+        let captureIdentity = FollowStreamCaptureIdentity(ingestState: snapshot.packetIngestState)
+        runTLSRedissectRoutes(routes[...], changedUpdates: [], failure: nil) { [weak self] updates, failure in
+            guard let self else {
+                completion()
+                return
+            }
+            // Another capture replaced these packets meanwhile; it was dissected with the current key log.
+            let isSameCapture = captureIdentity == FollowStreamCaptureIdentity(ingestState: self.snapshot.packetIngestState)
+            self.finishTLSRedissect(updates: isSameCapture ? updates : [], failure: failure)
+            completion()
+        }
+    }
+
+    private func tlsRedissectRoutes() -> [TLSRedissectRoute] {
+        if snapshot.packetIngestState.source == .live {
+            return liveSession.map { [TLSRedissectRoute(redissector: $0, workspaceIDByBackingID: nil)] } ?? []
+        }
+        guard !importedDocumentsByFileID.isEmpty else {
+            return document.map { [TLSRedissectRoute(redissector: $0, workspaceIDByBackingID: nil)] } ?? []
+        }
+        var workspaceIDsByFileID: [ImportedCaptureFileID: [PacketSummary.ID: PacketSummary.ID]] = [:]
+        for (workspaceID, reference) in snapshot.packetIngestState.importedPacketReferenceByID {
+            workspaceIDsByFileID[reference.fileID, default: [:]][reference.originalPacketID] = workspaceID
+        }
+        return importedDocumentsByFileID.map { fileID, document in
+            TLSRedissectRoute(redissector: document, workspaceIDByBackingID: workspaceIDsByFileID[fileID] ?? [:])
+        }
+    }
+
+    // Run one backing capture after another and keep only rows whose text or protocol changed.
+    private func runTLSRedissectRoutes(
+        _ routes: ArraySlice<TLSRedissectRoute>,
+        changedUpdates: [PacketSummaryUpdate],
+        failure: Error?,
+        completion: @escaping ([PacketSummaryUpdate], Error?) -> Void
+    ) {
+        guard let route = routes.first else {
+            completion(changedUpdates, failure)
+            return
+        }
+        var collected = changedUpdates
+        route.redissector.redissectPackets(updateHandler: { [weak self] batch in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                collected.append(contentsOf: self.changedSummaryUpdates(batch, workspaceIDByBackingID: route.workspaceIDByBackingID))
+            }
+        }, completion: { [weak self] result in
+            // Batches were queued to main before this completion, so `collected` is complete here.
+            DispatchQueue.main.async {
+                guard let self else {
+                    completion([], nil)
+                    return
+                }
+                var nextFailure = failure
+                if case .failure(let error) = result {
+                    nextFailure = error
+                }
+                self.runTLSRedissectRoutes(routes.dropFirst(), changedUpdates: collected, failure: nextFailure, completion: completion)
+            }
+        })
+    }
+
+    private func changedSummaryUpdates(
+        _ updates: [PacketSummaryUpdate],
+        workspaceIDByBackingID: [PacketSummary.ID: PacketSummary.ID]?
+    ) -> [PacketSummaryUpdate] {
+        updates.compactMap { update in
+            guard let workspaceID = workspaceIDByBackingID.map({ $0[update.packetID] }) ?? update.packetID,
+                  let packet = snapshot.packetIngestState.packet(withID: workspaceID),
+                  packet.protocolSummary != update.protocolSummary
+                    || packet.infoSummary != update.infoSummary
+                    || (update.transportHint != nil && packet.transportHint != update.transportHint) else {
+                return nil
+            }
+            return update.tcpviewerRemapping(packetID: workspaceID)
+        }
+    }
+
+    private func finishTLSRedissect(updates: [PacketSummaryUpdate], failure: Error?) {
+        isRedissectingTLS = false
+        if failure != nil {
+            // Usually Wireshark is busy with a live capture in another tab; try again when it stops.
+            needsTLSRedissect = true
+        }
+        batchSnapshotUpdates {
+            snapshot.packetIngestState.applySummaryUpdates(updates)
+            snapshot.packetIngestState.dissectionRevision &+= 1
+            let message = failure.map { "TLS decryption is waiting: \(tcpviewerError(from: $0, defaultCode: .unavailableFeature).message)" }
+                ?? "Decrypted TLS with the key log; updated \(updates.count) packets."
+            synchronizeVisiblePackets(message: message)
+            // Detail trees change even when a row's text does not (e.g. decrypted handshake messages).
+            if let selectedPacketID = snapshot.selectedPacketID {
+                scheduleInspection(for: selectedPacketID)
+            }
+        }
+    }
+
+    // A capture that stopped with encrypted TLS left may now have every key it needs.
+    private func redissectStoppedLiveCaptureForTLSKeyLogIfNeeded() {
+        if !needsTLSRedissect, hasActiveTLSKeyLog(),
+           snapshot.packetIngestState.packets.contains(where: \.tcpviewerIsEncryptedTLSApplicationData) {
+            needsTLSRedissect = true
+        }
+        TCPViewerWorkspaceControllerRegistry.shared.redissectPendingForTLSKeyLog()
+    }
+
     func inspectPacket(id identifier: PacketSummary.ID, completion: @escaping TCPViewerCompletion<PacketInspection>) {
         guard let packet = snapshot.packetIngestState.packet(withID: identifier) else {
             completion(.failure(TCPViewerCoreError(
@@ -3713,6 +3911,9 @@ final class TCPViewerWorkspaceController {
             if mappedPhase(phase) != .failed {
                 snapshot.sessionState.lastError = nil
             }
+            if mappedPhase(phase) == .stopped {
+                redissectStoppedLiveCaptureForTLSKeyLogIfNeeded()
+            }
         case .documentStateChanged(let phase, let message):
             snapshot.documentState.phase = mappedPhase(phase)
             snapshot.documentState.statusMessage = message
@@ -3900,6 +4101,10 @@ final class TCPViewerWorkspaceController {
         snapshot.documentState.lastError = nil
         snapshot.documentState.statusMessage = resolvedMessage
         synchronizeVisiblePackets(message: "Showing \(packets.count) packets.")
+        if needsTLSRedissect {
+            // The TLS key log changed while this capture was loading.
+            TCPViewerWorkspaceControllerRegistry.shared.redissectPendingForTLSKeyLog()
+        }
     }
 
     private func uniqueSupportedCaptureURLs(_ fileURLs: [URL]) -> [URL] {
@@ -4120,6 +4325,10 @@ final class TCPViewerWorkspaceController {
             message: message
         )
         synchronizeVisiblePackets(message: packetCount == 0 ? message : "Showing \(packetCount) imported packets.")
+        if needsTLSRedissect {
+            // The TLS key log changed while these files were importing.
+            TCPViewerWorkspaceControllerRegistry.shared.redissectPendingForTLSKeyLog()
+        }
     }
 
     private func importCompletionMessage(

@@ -820,7 +820,7 @@ extension PacketSummary {
             timestamp: timestamp,
             source: source,
             interfaceID: interfaceID,
-            transportHint: transportHint,
+            transportHint: summaryUpdate.transportHint ?? transportHint,
             protocolSummary: summaryUpdate.protocolSummary,
             endpoints: endpoints,
             originalLength: originalLength,

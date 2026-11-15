@@ -191,6 +191,18 @@ final class PacketHexViewController: NSViewController {
         updateRenderedHighlight(highlight, force: contentChanged)
     }
 
+    // Show the first byte source whose label starts with `labelPrefix`, e.g. Wireshark's "Decrypted TLS".
+    @discardableResult
+    func showByteView(labelPrefix: String) -> Bool {
+        guard let byteView = renderedByteViews.first(where: { $0.label.hasPrefix(labelPrefix) }) else {
+            return false
+        }
+        manualByteViewID = byteView.id
+        clearManualReveal()
+        display(byteView: byteView, highlight: nil)
+        return true
+    }
+
     // Select the exact byte source and range represented by a Follow Stream transcript record.
     @discardableResult
     func revealFollowStreamPayload(_ target: FollowStreamRevealTarget) -> Bool {

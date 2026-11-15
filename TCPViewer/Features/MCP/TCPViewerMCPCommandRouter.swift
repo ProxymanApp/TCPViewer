@@ -121,6 +121,7 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
     private let exportPathPolicy: TCPViewerMCPExportPathPolicy
     private let workerQueue: DispatchQueue
     private let redactor: TCPViewerMCPSensitiveDataRedactor
+    private let tlsDecryption: () -> TLSDecryptionStore
 
     init(
         resolvesWorkspace: Bool = true,
@@ -142,7 +143,8 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
         },
         exportPathPolicy: TCPViewerMCPExportPathPolicy = TCPViewerMCPExportPathPolicy(),
         workerQueue: DispatchQueue = DispatchQueue(label: "com.proxyman.tcpviewer.mcp.commands", qos: .userInitiated),
-        redactor: TCPViewerMCPSensitiveDataRedactor = TCPViewerMCPSensitiveDataRedactor()
+        redactor: TCPViewerMCPSensitiveDataRedactor = TCPViewerMCPSensitiveDataRedactor(),
+        tlsDecryption: @escaping () -> TLSDecryptionStore = { .shared }
     ) {
         self.resolvesWorkspace = resolvesWorkspace
         self.dataSourceProvider = dataSourceProvider
@@ -154,6 +156,7 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
         self.exportPathPolicy = exportPathPolicy
         self.workerQueue = workerQueue
         self.redactor = redactor
+        self.tlsDecryption = tlsDecryption
     }
 
     // Route one authenticated bridge request and keep all controller access on the main thread.
@@ -175,6 +178,15 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
 
         let preferredSource = dataSourceProvider()
         let hasTarget = ["workspace_id", "tab_id", "pane_id"].contains(where: { request.value($0) != nil })
+        // The TLS key log applies to every capture, so it never resolves a workspace.
+        if command.isTLSDecryptionCommand {
+            guard !hasTarget else {
+                completion(.failure("\(command.rawValue) does not accept target selectors."))
+                return
+            }
+            TCPViewerMCPTLSDecryption.route(command, request: request, store: tlsDecryption(), completion: completion)
+            return
+        }
         if resolvesWorkspace, command != .getAppStatus || hasTarget,
            command.isWorkspaceCommand || preferredSource is TCPViewerWorkspaceAutomationSource || hasTarget {
             TCPViewerAutomationCommandRouter.route(request, preferredSource: preferredSource,
@@ -232,6 +244,8 @@ final class TCPViewerMCPCommandRouter: TCPViewerMCPCommandRouting {
             clearPackets(request, completion: completion)
         case .revealPacket:
             revealPacket(request, completion: completion)
+        case .getTLSDecryption, .updateTLSDecryption:
+            TCPViewerMCPTLSDecryption.route(command, request: request, store: tlsDecryption(), completion: completion)
         }
     }
 
