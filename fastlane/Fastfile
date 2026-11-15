@@ -15,6 +15,8 @@ RELEASE_ROOT = File.expand_path(File.join(Dir.home, "Desktop", "tcpviewer-produc
 REPO_ROOT = File.expand_path("..", __dir__)
 CREATE_DMG_BIN = File.join(REPO_ROOT, "node_modules", ".bin", "create-dmg")
 DEFAULT_SENTRY_URL = "https://sentry.proxyman.com"
+SENTRY_UPLOAD_MAX_ATTEMPTS = 4
+SENTRY_UPLOAD_RETRY_BASE_DELAY_SECONDS = 15
 
 def required_env!(names)
   missing = names.select { |name| ENV[name].to_s.strip.empty? }
@@ -381,7 +383,35 @@ def upload_sentry_debug_files!(path, required_uuids:)
     *base_command,
     path
   ]
-  sh(upload_command.map { |part| shell_escape(part) }.join(" "))
+  run_sentry_upload_with_retry!(upload_command.map { |part| shell_escape(part) }.join(" "))
+end
+
+# Detect server-side Sentry failures that may succeed on retry, such as a self-hosted database lock (HTTP 500 DatabaseError).
+def transient_sentry_upload_failure?(output)
+  output.match?(/http status: 5\d\d/i) || output.match?(/DatabaseError|database is locked/i)
+end
+
+# Run the sentry-cli upload, retrying transient server errors with a linear backoff before failing the release.
+def run_sentry_upload_with_retry!(command)
+  # The release script already exports .env values; stop sentry-cli from re-parsing it and warning on its comments.
+  env = { "SENTRY_LOAD_DOTENV" => "0" }
+
+  (1..SENTRY_UPLOAD_MAX_ATTEMPTS).each do |attempt|
+    failure_output = nil
+    sh(env, command, error_callback: ->(output) { failure_output = output })
+    return if failure_output.nil?
+
+    # Retrying is safe: sentry-cli skips debug files the server already has and uploads only the missing ones.
+    retryable = transient_sentry_upload_failure?(failure_output)
+    if !retryable || attempt == SENTRY_UPLOAD_MAX_ATTEMPTS
+      reason = retryable ? "transient server errors persisted" : "non-retryable error"
+      UI.user_error!("Sentry debug files upload failed after #{attempt} attempt(s) (#{reason}). See sentry-cli output above.")
+    end
+
+    delay = SENTRY_UPLOAD_RETRY_BASE_DELAY_SECONDS * attempt
+    UI.important("Sentry returned a transient server error; retrying upload in #{delay}s (attempt #{attempt + 1}/#{SENTRY_UPLOAD_MAX_ATTEMPTS}).")
+    sleep(delay)
+  end
 end
 
 def build_release_variant!(release_type, options)
