@@ -78,23 +78,22 @@ extension PacketSummaryUpdate {
 
 // What the inspector tells the user about TLS for the selected packet.
 enum TLSInspectorNotice: Equatable {
-    // Encrypted and no key log is in use: offer to add one.
-    case encryptedWithoutKeyLog
     // Encrypted although a key log is in use: its keys or the handshake for this connection are missing.
     case encryptedWithKeyLog(fileName: String)
     // Decrypted; nil when the keys came from the capture file itself (a PCAPNG Decryption Secrets Block).
     case decrypted(keyLogFileName: String?)
 
+    // Encrypted traffic without a key log shows no notice; the user has not opted into decryption.
     static func make(for inspection: PacketInspection?, activeKeyLogURL: URL?) -> TLSInspectorNotice? {
         guard let inspection else { return nil }
         let fileName = activeKeyLogURL?.lastPathComponent
         if inspection.byteViews.contains(where: { $0.label.hasPrefix("Decrypted TLS") || $0.label.hasPrefix("Decrypted QUIC") }) {
             return .decrypted(keyLogFileName: fileName)
         }
-        guard containsEncryptedPayload(inspection.detailNodes) else {
+        guard let fileName, containsEncryptedPayload(inspection.detailNodes) else {
             return nil
         }
-        return fileName.map(TLSInspectorNotice.encryptedWithKeyLog) ?? .encryptedWithoutKeyLog
+        return .encryptedWithKeyLog(fileName: fileName)
     }
 
     private static func containsEncryptedPayload(_ nodes: [PacketDetailNode]) -> Bool {
