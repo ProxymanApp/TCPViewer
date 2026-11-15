@@ -417,6 +417,18 @@
       "bugs": [
         "Fixed: Few crashes in Sentry"
       ]
+    },
+                {
+      "version": "1.26.0",
+      "title": "TCP Viewer 1.26.0: TLS Decryption and HTTP Preview",
+      "features": [
+        "Add TLS decryption with key log files and HTTP Preview feature"
+      ],
+      "improvements": [
+      ],
+      "bugs": [
+        "Fixed: Few crashes in Sentry"
+      ]
     }
   ]
 }
