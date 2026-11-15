@@ -285,19 +285,16 @@
       "features": [
         "Introduce the Team License for teams/companies"
       ],
-      "improvements": [
-      ],
+      "improvements": [],
       "bugs": [
         "Fixed: TCPViewer app doesn't show the correct app name in the System Settings -> General -> Login Item & Extension"
       ]
     },
-        {
+    {
       "version": "1.17.1",
       "title": "TCP Viewer 1.17.1: HOT FIX License Key",
-      "features": [
-      ],
-      "improvements": [
-      ],
+      "features": [],
+      "improvements": [],
       "bugs": [
         "Fixed: Can not activate the license key"
       ]
@@ -395,22 +392,19 @@
         "Fixed: extra colons and repeated labels in Packet Details, such as \"Ethernet: II\" and \"TCP Option - MSS: TCP Option - MSS: 1460 bytes\"."
       ]
     },
-        {
+    {
       "version": "1.24.0",
       "title": "TCP Viewer 1.24.0: Install Helper Tool Fix",
-      "features": [
-      ],
-      "improvements": [
-      ],
+      "features": [],
+      "improvements": [],
       "bugs": [
         "Fixed: Install Helper Tool is not success"
       ]
     },
-            {
+    {
       "version": "1.25.0",
       "title": "TCP Viewer 1.25.0: Device MCP App Introduction",
-      "features": [
-      ],
+      "features": [],
       "improvements": [
         "Update the Product Page: Introduce the Device MCP app"
       ],
@@ -418,17 +412,26 @@
         "Fixed: Few crashes in Sentry"
       ]
     },
-                {
+    {
       "version": "1.26.0",
       "title": "TCP Viewer 1.26.0: TLS Decryption and HTTP Preview",
       "features": [
         "Add TLS decryption with key log files and HTTP Preview feature"
       ],
-      "improvements": [
-      ],
+      "improvements": [],
       "bugs": [
         "Fixed: Few crashes in Sentry"
       ]
+    },
+    {
+      "version": "1.27.0",
+      "title": "TCP Viewer 1.27.0: Cleaner TLS Packet Inspector",
+      "features": [],
+      "improvements": [
+        "Encrypted TLS packets no longer show a banner asking for a key log file.",
+        "You can still add a key log file from the TLS Decryption menu."
+      ],
+      "bugs": []
     }
   ]
 }
